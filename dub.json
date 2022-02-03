@@ -1,0 +1,13 @@
+{
+	"authors": [
+		"Leonardo Tada"
+	],
+	"copyright": "Copyright © 2022, Leonardo Tada",
+	"dependencies": {
+		"raylib-d": "~>4.0.0"
+	},
+	"libs": [ "raylib" ],
+	"description": "A minimal D application.",
+	"license": "proprietary",
+	"name": "game-engine"
+}
