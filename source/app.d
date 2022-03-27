@@ -21,6 +21,16 @@ struct Vector
         return vec;
     }
 
+    // this - Vector
+    Vector opBinary(string op : "-")(Vector rhs)
+    {
+        Vector vec;
+        vec.x = this.x - rhs.x;
+        vec.y = this.y - rhs.y;
+        vec.z = this.z - rhs.z;
+        return vec;
+    }
+
     // this * rhs
     Vector opBinary(string op : "*", T)(T rhs)
     {
@@ -47,6 +57,15 @@ struct Vector
         this.x += rhs.x;
         this.y += rhs.y;
         this.z += rhs.z;
+        return this;
+    }
+
+    // this -= Vector
+    auto ref opOpAssign(string op : "-")(Vector rhs)
+    {
+        this.x -= rhs.x;
+        this.y -= rhs.y;
+        this.z -= rhs.z;
         return this;
     }
 
@@ -98,7 +117,7 @@ public:
         vForces.y = 0;
 
         // Aggregate forces
-        vForces += vGravity;
+        vForces -= vGravity;
     }
 
     // Integrates one time step
@@ -140,21 +159,21 @@ void main()
         particles ~= particle;
     }
 
-  	InitWindow(800, 600, "Hello, Raylib-D!");
-  	while (!WindowShouldClose())
-  	{
-    		BeginDrawing();
-    		ClearBackground(Colors.RAYWHITE);
-    		DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
+    InitWindow(800, 600, "Hello, Raylib-D!");
+    while (!WindowShouldClose())
+    {
+        BeginDrawing();
+        ClearBackground(Colors.RAYWHITE);
+        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
 
 
-            foreach (ref e; particles) {
-                e.CalcLoads();
-                e.UpdateBodyEuler(GetFrameTime());
-                e.Draw();
-            }
+        foreach (ref e; particles) {
+            e.CalcLoads();
+            e.UpdateBodyEuler(GetFrameTime());
+            e.Draw();
+        }
 
-    		EndDrawing();
-  	}
-  	CloseWindow();
+        EndDrawing();
+    }
+    CloseWindow();
 }
