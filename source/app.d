@@ -79,72 +79,54 @@ struct Vector
 
 }
 
-
-class Particle
+struct Particle
 {
-public:
-    float fMass;
+    float fMass = 1.0;
     Vector vPosition;
     Vector vVelocity;
-    float fSpeed;
+    float fSpeed = 0.0;
     Vector vForces;
-    float fRadius;
+    float fRadius = 5;
     Vector vGravity;
+}
 
-    this()
-    {
-        fMass = 1.0;
-        vPosition.x = 0.0;
-        vPosition.y = 0.0;
-        vPosition.z = 0.0;
-        vVelocity.x = 0.0;
-        vVelocity.y = 0.0;
-        vVelocity.z = 0.0;
-        fSpeed = 0.0;
-        vForces.x = 0.0;
-        vForces.y = 0.0;
-        vForces.z = 0.0;
-        fRadius = 10;
-        vGravity.x = 0;
-        vGravity.y = fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
-        vGravity.z = 0;
-    }
-
+class ParticleSystem
+{
     // Aggregates forces acting on the particle
-    void CalcLoads()
+    void CalcLoads(ref Particle particle)
     {
         // Reset forces
-        vForces.x = 0;
-        vForces.y = 0;
+        particle.vForces.x = 0;
+        particle.vForces.y = 0;
 
         // Aggregate forces
-        vForces -= vGravity;
+        particle.vForces -= particle.vGravity;
     }
 
     // Integrates one time step
-    void UpdateBodyEuler(double dt)
+    void UpdateBodyEuler(double dt, ref Particle particle)
     {
         Vector a;
         Vector dv;
         Vector ds;
 
         // Integrate equation of motion
-        a = vForces / fMass;
+        a = particle.vForces / particle.fMass;
 
         dv = a * dt;
-        vVelocity += dv;
+        particle.vVelocity += dv;
 
-        ds = vVelocity * dt;
-        vPosition += ds;
+        ds = particle.vVelocity * dt;
+        particle.vPosition += ds;
 
         // Misc. calculations
-        fSpeed = vVelocity.Magnitude();
+        particle.fSpeed = particle.vVelocity.Magnitude();
     }
 
     // Draws the particle
-    void Draw()
+    void Draw(ref Particle particle)
     {
-        DrawCircle(cast(int) vPosition.x, cast(int) vPosition.y, fRadius, Colors.BROWN);
+        DrawCircle(cast(int) particle.vPosition.x, cast(int) particle.vPosition.y, particle.fRadius, Colors.BROWN);
     }
 
 }
@@ -153,15 +135,29 @@ public:
 void main()
 {
     Particle[] particles;
-    foreach (i; 0 .. 1_000) {
-        auto particle = new Particle();
+    foreach (i; 0 .. 10_000) {
+        auto particle = Particle();
+        particle.vPosition.x = 0.0;
+        particle.vPosition.y = 0.0;
+        particle.vPosition.z = 0.0;
+        particle.vVelocity.x = 0.0;
+        particle.vVelocity.y = 0.0;
+        particle.vVelocity.z = 0.0;
+        particle.vForces.x = 0.0;
+        particle.vForces.y = 0.0;
+        particle.vForces.z = 0.0;
+        particle.vGravity.x = 0;
+        particle.vGravity.y = particle.fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
+        particle.vGravity.z = 0;
         particle.vPosition.x = GetRandomValue(30, 1000);
         particle.vPosition.y = GetRandomValue(20, 800);
         particles ~= particle;
     }
+    auto particleSystem = new ParticleSystem();
 
     // Init Window
     InitWindow(1000, 800, "Hello, Raylib-D!");
+    SetTargetFPS(100);
     scope(exit)
         CloseWindow();
 
@@ -178,10 +174,10 @@ void main()
         DrawFPS(20, 20);
         DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
 
-        foreach (ref e; particles) {
-            e.CalcLoads();
-            e.UpdateBodyEuler(GetFrameTime());
-            e.Draw();
+        foreach (ref p; particles) {
+            particleSystem.CalcLoads(p);
+            particleSystem.UpdateBodyEuler(GetFrameTime(), p);
+            particleSystem.Draw(p);
         }
     }
 }
