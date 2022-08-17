@@ -3,6 +3,7 @@ import raylib;
 /* @safe: */
 
 immutable float GRAVITYACCELERATION = -9.8;
+immutable float PHYSICS_SCALE = 8;
 
 
 struct Vector
@@ -105,7 +106,7 @@ public:
         vForces.z = 0.0;
         fRadius = 10;
         vGravity.x = 0;
-        vGravity.y = fMass * GRAVITYACCELERATION;
+        vGravity.y = fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
         vGravity.z = 0;
     }
 
@@ -152,28 +153,35 @@ public:
 void main()
 {
     Particle[] particles;
-    foreach (i; 0 .. 300) {
+    foreach (i; 0 .. 1_000) {
         auto particle = new Particle();
-        particle.vPosition.x = GetRandomValue(30, 500);
-        particle.vPosition.y = GetRandomValue(20, 500);
+        particle.vPosition.x = GetRandomValue(30, 1000);
+        particle.vPosition.y = GetRandomValue(20, 800);
         particles ~= particle;
     }
 
-    InitWindow(800, 600, "Hello, Raylib-D!");
+    // Init Window
+    InitWindow(1000, 800, "Hello, Raylib-D!");
+    scope(exit)
+        CloseWindow();
+
+    // Game loop
     while (!WindowShouldClose())
     {
         BeginDrawing();
         ClearBackground(Colors.RAYWHITE);
-        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
+        scope(exit)
+            EndDrawing();
 
+        // --- Draw Phase ---
+
+        DrawFPS(20, 20);
+        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
 
         foreach (ref e; particles) {
             e.CalcLoads();
             e.UpdateBodyEuler(GetFrameTime());
             e.Draw();
         }
-
-        EndDrawing();
     }
-    CloseWindow();
 }
