@@ -1,6 +1,8 @@
+import std.random;
+
 import raylib;
 
-/* @safe: */
+// @safe:
 
 immutable float GRAVITYACCELERATION = -9.8;
 immutable float PHYSICS_SCALE = 8;
@@ -8,9 +10,9 @@ immutable float PHYSICS_SCALE = 8;
 
 struct Vector
 {
-    float x;
-    float y;
-    float z;
+    float x = 0;
+    float y = 0;
+    float z = 0;
 
     // this + Vector
     Vector opBinary(string op : "+")(Vector rhs)
@@ -85,9 +87,15 @@ struct Particle
     Vector vPosition;
     Vector vVelocity;
     float fSpeed = 0.0;
-    Vector vForces;
+    private Vector vForces;
+    Vector[] forces;
     float fRadius = 5;
-    Vector vGravity;
+    bool gravity;
+
+    void AddForce(Vector force)
+    {
+        this.forces ~= force;
+    }
 }
 
 class ParticleSystem
@@ -100,7 +108,15 @@ class ParticleSystem
         particle.vForces.y = 0;
 
         // Aggregate forces
-        particle.vForces -= particle.vGravity;
+        foreach (force; particle.forces)
+        {
+            particle.vForces += force;
+        }
+        particle.forces = [];
+        
+        // Apply gravity force
+        if (particle.gravity)
+            particle.vForces.y -= particle.fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
     }
 
     // Integrates one time step
@@ -131,24 +147,13 @@ class ParticleSystem
 
 }
 
-@system:
+
 void main()
 {
     Particle[] particles;
     foreach (i; 0 .. 10_000) {
         auto particle = Particle();
-        particle.vPosition.x = 0.0;
-        particle.vPosition.y = 0.0;
-        particle.vPosition.z = 0.0;
-        particle.vVelocity.x = 0.0;
-        particle.vVelocity.y = 0.0;
-        particle.vVelocity.z = 0.0;
-        particle.vForces.x = 0.0;
-        particle.vForces.y = 0.0;
-        particle.vForces.z = 0.0;
-        particle.vGravity.x = 0;
-        particle.vGravity.y = particle.fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
-        particle.vGravity.z = 0;
+        particle.gravity = true;
         particle.vPosition.x = GetRandomValue(30, 1000);
         particle.vPosition.y = GetRandomValue(20, 800);
         particles ~= particle;
@@ -174,7 +179,12 @@ void main()
         DrawFPS(20, 20);
         DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
 
+        auto rnd = Random(43);
+
         foreach (ref p; particles) {
+            auto i = uniform(-100, 100, rnd);
+            p.AddForce(Vector(40, 0, 0));
+            p.AddForce(Vector(i, i, 0));
             particleSystem.CalcLoads(p);
             particleSystem.UpdateBodyEuler(GetFrameTime(), p);
             particleSystem.Draw(p);
