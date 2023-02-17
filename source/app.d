@@ -1,3 +1,4 @@
+import std.stdio;
 import std.random;
 
 import raylib;
@@ -81,7 +82,12 @@ struct Vector
 
 }
 
-struct Particle
+class Component
+{
+
+}
+
+class Particle : Component
 {
     float fMass = 1.0;
     Vector vPosition;
@@ -147,12 +153,50 @@ class ParticleSystem
 
 }
 
+class RenderSystem
+{
+
+}
+
+class EntityManager
+{
+    // TODO
+}
+
+class Entity
+{
+    Component[][string] components;
+
+    void AddComponent(T)(T component)
+    {
+        string className = typeof(component).mangleof;
+        writeln("Class name: ", className);
+        components[className] ~= component;
+    }
+
+    Component[] GetComponents(T)()
+    {
+        string className = T.mangleof;
+        writeln("Class name: ", className);
+        if (className in this.components)
+            return this.components[className];
+        else
+            return null;
+    }
+}
+
 
 void main()
 {
+    auto e = new Entity();
+    e.AddComponent(new Particle());
+    writeln(e.GetComponents!Particle());
+    
+    
     Particle[] particles;
-    foreach (i; 0 .. 10_000) {
-        auto particle = Particle();
+    foreach (i; 0 .. 5_000)
+    {
+        auto particle = new Particle();
         particle.gravity = true;
         particle.vPosition.x = GetRandomValue(30, 1000);
         particle.vPosition.y = GetRandomValue(20, 800);
@@ -171,17 +215,12 @@ void main()
     {
         BeginDrawing();
         ClearBackground(Colors.RAYWHITE);
-        scope(exit)
-            EndDrawing();
 
         // --- Draw Phase ---
-
-        DrawFPS(20, 20);
-        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
-
         auto rnd = Random(43);
 
-        foreach (ref p; particles) {
+        foreach (ref p; particles)
+        {
             auto i = uniform(-100, 100, rnd);
             p.AddForce(Vector(40, 0, 0));
             p.AddForce(Vector(i, i, 0));
@@ -189,5 +228,10 @@ void main()
             particleSystem.UpdateBodyEuler(GetFrameTime(), p);
             particleSystem.Draw(p);
         }
+
+        DrawFPS(20, 20);
+        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
+
+        EndDrawing();
     }
 }
