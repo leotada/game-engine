@@ -1,13 +1,17 @@
 {
-	"authors": [
-		"Leonardo Tada"
-	],
-	"copyright": "Copyright © 2022, Leonardo Tada",
-	"dependencies": {
-		"raylib-d": "~>4.2.4"
-	},
-	"libs": [ "raylib" ],
-	"description": "A minimal D application.",
-	"license": "proprietary",
-	"name": "game-engine"
+    "authors": [
+	"Leonardo Tada"
+    ],
+    "copyright": "Copyright © 2022, Leonardo Tada",
+    "dependencies": {
+	"raylib-d": "~>4.5.1"
+    },
+    "libs": [ "raylib" ],
+    "lflags-posix" : ["-L."],
+    "lflags-linux" : ["-rpath=$$ORIGIN"],
+    "lflags-osx" : ["-rpath", "@executable_path/"],
+    "dflags": ["-dip1000"],
+    "description": "A minimal D application.",
+    "license": "proprietary",
+    "name": "game-engine"
 }

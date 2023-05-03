@@ -1,9 +1,9 @@
 import std.stdio;
 import std.random;
+// import std.parallelism;
 
 import raylib;
 
-// @safe:
 
 immutable float GRAVITYACCELERATION = -9.8;
 immutable float PHYSICS_SCALE = 8;
@@ -87,6 +87,16 @@ class Component
 
 }
 
+class DrawableComponent : Component
+{
+
+}
+
+class Circle : DrawableComponent
+{
+
+}
+
 class Particle : Component
 {
     float fMass = 1.0;
@@ -160,78 +170,119 @@ class RenderSystem
 
 class EntityManager
 {
-    // TODO
+    Entity[] entities;
+
+    void Add(Entity entity) @safe
+    {
+        entities ~= entity;
+    }
+
+    // Entity[] GetDrawable(int index) @safe
+    // { // TODO
+    //     string className = T.mangleof;
+    //     if (className in this.components)
+    //         return this.components[className];
+    //     else
+    //         return null;
+    // }
+
+    ~this()
+    {
+        this.entities = null;
+    }
 }
 
 class Entity
 {
     Component[][string] components;
 
-    void AddComponent(T)(T component)
+    void AddComponent(T)(T component) @safe
     {
         string className = typeof(component).mangleof;
-        writeln("Class name: ", className);
         components[className] ~= component;
     }
 
-    Component[] GetComponents(T)()
+    Component[] GetComponents(T)() @safe
     {
         string className = T.mangleof;
-        writeln("Class name: ", className);
         if (className in this.components)
             return this.components[className];
         else
             return null;
     }
+
+    ~this()
+    {
+        this.components = null;
+    }
+}
+
+void processPhysics() @safe
+{
+
 }
 
 
 void main()
 {
-    auto e = new Entity();
-    e.AddComponent(new Particle());
-    writeln(e.GetComponents!Particle());
-    
-    
     Particle[] particles;
-    foreach (i; 0 .. 5_000)
-    {
-        auto particle = new Particle();
-        particle.gravity = true;
-        particle.vPosition.x = GetRandomValue(30, 1000);
-        particle.vPosition.y = GetRandomValue(20, 800);
-        particles ~= particle;
-    }
     auto particleSystem = new ParticleSystem();
+    
+    void load()
+    {
+        auto e = new Entity();
+        auto e2 = new Entity();
+        auto particle_test = new Particle();
+        e.AddComponent(particle_test);
+        e2.AddComponent(particle_test);
+        //writeln(e.GetComponents!Particle());
+
+        
+        foreach (i; 0 .. 5_000)
+        {
+            auto particle = new Particle();
+            particle.gravity = true;
+            particle.vPosition.x = GetRandomValue(30, 1000);
+            particle.vPosition.y = GetRandomValue(20, 800);
+            particles ~= particle;
+        }
+        
+    }
+    load();
 
     // Init Window
-    InitWindow(1000, 800, "Hello, Raylib-D!");
-    SetTargetFPS(100);
-    scope(exit)
-        CloseWindow();
-
-    // Game loop
-    while (!WindowShouldClose())
+    void gameLoop()
     {
-        BeginDrawing();
-        ClearBackground(Colors.RAYWHITE);
+        InitWindow(1000, 800, "Hello, Raylib-D!");
+        SetTargetFPS(100);
+        scope(exit)
+            CloseWindow();
 
-        // --- Draw Phase ---
-        auto rnd = Random(43);
-
-        foreach (ref p; particles)
+        // Game loop
+        while (!WindowShouldClose())
         {
-            auto i = uniform(-100, 100, rnd);
-            p.AddForce(Vector(40, 0, 0));
-            p.AddForce(Vector(i, i, 0));
-            particleSystem.CalcLoads(p);
-            particleSystem.UpdateBodyEuler(GetFrameTime(), p);
-            particleSystem.Draw(p);
+            BeginDrawing();
+            ClearBackground(Colors.RAYWHITE);
+
+            // --- Draw Phase ---
+            auto rnd = Random(43);
+
+            foreach (ref p; particles)
+            {
+                auto i = uniform(-100, 100, rnd);
+                p.AddForce(Vector(40, 0, 0));
+                p.AddForce(Vector(i, i, 0));
+                particleSystem.CalcLoads(p);
+                particleSystem.UpdateBodyEuler(GetFrameTime(), p);
+                particleSystem.Draw(p);
+            }
+
+            DrawFPS(20, 20);
+            DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
+
+            EndDrawing();
         }
-
-        DrawFPS(20, 20);
-        DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
-
-        EndDrawing();
     }
+
+    gameLoop();
 }
