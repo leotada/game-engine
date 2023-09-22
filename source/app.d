@@ -84,7 +84,8 @@ struct Vector
 
 class Component
 {
-
+    bool active = true;
+    bool owned = false;
 }
 
 class DrawableComponent : Component
@@ -114,7 +115,12 @@ class Particle : Component
     }
 }
 
-class ParticleSystem
+class System
+{
+
+}
+
+class ParticleSystem : System
 {
     // Aggregates forces acting on the particle
     void CalcLoads(ref Particle particle)
@@ -129,7 +135,7 @@ class ParticleSystem
             particle.vForces += force;
         }
         particle.forces = [];
-        
+
         // Apply gravity force
         if (particle.gravity)
             particle.vForces.y -= particle.fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
@@ -168,23 +174,82 @@ class RenderSystem
 
 }
 
+class ComponentArray(T)
+{
+    private T[] components;
+
+    void Add(T)(T component) @safe
+    {
+        components ~= component;
+    }
+
+    T Get(uint index) @safe
+    {
+        return components[index];
+    }
+
+    ~this() @safe
+    {
+        this.components = null;
+    }
+}
+
+class ComponentManager
+{
+    private Component[][string] componentArray;
+
+    void Add(T)(T component)
+    {
+        string className = T.mangleof;
+        componentArray[className] ~= component;
+    }
+
+    T[] Get(T)()
+    {
+        string className = T.mangleof;
+        if (className in componentArray)
+            return cast(T[]) componentArray[className];
+        else
+            return null;
+    }
+
+    T Get(T)(uint id) @safe
+    {
+        string className = T.mangleof;
+        if (className in componentArray)
+            return componentArray[className][id];
+        else
+            return null;
+    }
+
+    ~this()
+    {
+        this.componentArray = null;
+    }
+}
+
+
+
 class EntityManager
 {
     Entity[] entities;
+    private ComponentManager componentManager;
+
+    this(ComponentManager componentManager)
+    {
+        componentManager = componentManager;
+    }
 
     void Add(Entity entity) @safe
     {
         entities ~= entity;
     }
 
-    // Entity[] GetDrawable(int index) @safe
-    // { // TODO
-    //     string className = T.mangleof;
-    //     if (className in this.components)
-    //         return this.components[className];
-    //     else
-    //         return null;
-    // }
+    private void RegisterComponent(T)(T component)
+    {
+        writeln(componentManager);
+        componentManager.Add!T(component);
+    }
 
     ~this()
     {
@@ -194,12 +259,23 @@ class EntityManager
 
 class Entity
 {
+    uint id;
+    bool active = true;
     Component[][string] components;
+    private EntityManager entityManager;
 
-    void AddComponent(T)(T component) @safe
+    this(EntityManager entityManager)
     {
-        string className = typeof(component).mangleof;
+        entityManager = entityManager;
+    }
+
+    void AddComponent(T)(T component)
+    {
+        if (component.owned)
+            return;
+        string className = T.mangleof;
         components[className] ~= component;
+        component.owned = true;
     }
 
     Component[] GetComponents(T)() @safe
@@ -222,31 +298,61 @@ void processPhysics() @safe
 
 }
 
+class SystemManager
+{
+    private System[] systems;
+
+    void Add(T)(T system)
+    {
+        systems ~= system;
+    }
+
+    void Run() @safe
+    {
+        /* foreach (system; systems)
+        {
+            system.run();
+        } */
+    }
+
+    ~this()
+    {
+        this.systems = null;
+    }
+}
+
 
 void main()
 {
     Particle[] particles;
     auto particleSystem = new ParticleSystem();
-    
+
+    auto sm = new SystemManager();
+    auto cm = new ComponentManager();
+    auto em = new EntityManager(cm);
+
     void load()
     {
-        auto e = new Entity();
-        auto e2 = new Entity();
-        auto particle_test = new Particle();
-        e.AddComponent(particle_test);
-        e2.AddComponent(particle_test);
+
+        //auto e = new Entity();
+        //auto e2 = new Entity(em);
+        //auto particle_test = new Particle();
+        //e.AddComponent(particle_test);
+        //em.Add(e);
+        //cm.Add!Particle(particle_test);
+        writeln("teste");
+        //e2.AddComponent(particle_test);
         //writeln(e.GetComponents!Particle());
 
-        
-        foreach (i; 0 .. 5_000)
+        foreach (i; 0 .. 6_000)
         {
             auto particle = new Particle();
             particle.gravity = true;
             particle.vPosition.x = GetRandomValue(30, 1000);
             particle.vPosition.y = GetRandomValue(20, 800);
-            particles ~= particle;
+            cm.Add!Particle(particle);
         }
-        
+
     }
     load();
 
@@ -254,7 +360,7 @@ void main()
     void gameLoop()
     {
         InitWindow(1000, 800, "Hello, Raylib-D!");
-        SetTargetFPS(100);
+        SetTargetFPS(144);
         scope(exit)
             CloseWindow();
 
@@ -267,7 +373,7 @@ void main()
             // --- Draw Phase ---
             auto rnd = Random(43);
 
-            foreach (ref p; particles)
+            foreach (ref p; cm.Get!Particle())
             {
                 auto i = uniform(-100, 100, rnd);
                 p.AddForce(Vector(40, 0, 0));
