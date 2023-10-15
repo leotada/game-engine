@@ -1,6 +1,5 @@
 import std.stdio;
 import std.random;
-// import std.parallelism;
 
 import raylib;
 
@@ -8,9 +7,10 @@ import entity;
 import entity.entity_manager;
 import component.manager;
 import component.particle;
+import component.graphic.circle;
 import system.system_manager;
 import system.particle;
-
+import system.graphic.circle;
 import math.vector;
 
 
@@ -18,32 +18,29 @@ void main()
 {
     Particle[] particles;
     ParticleSystem particleSystem = new ParticleSystem();
+    CircleSystem circleSystem = new CircleSystem();
 
     ComponentManager cm = new ComponentManager();
     EntityManager em = new EntityManager();
     SystemManager systemManager = new SystemManager(cm);
     systemManager.add(particleSystem);
+    systemManager.add(circleSystem);
 
     void load()
     {
-
-        auto e = new Entity();
-        auto e2 = new Entity();
-        //auto particle_test = new Particle();
-        //e.AddComponent(particle_test);
-        em.add(e);
-        em.add(e2);
-        //cm.Add!Particle(particle_test);
-        //e2.AddComponent(particle_test);
-        //writeln(e.GetComponents!Particle());
-
         foreach (i; 0 .. 6_000)
         {
+            auto e = new Entity();
+            em.add(e);
             auto particle = new Particle();
             particle.gravity = true;
-            particle.vPosition.x = GetRandomValue(30, 1000);
-            particle.vPosition.y = GetRandomValue(20, 800);
+            particle.position.x = GetRandomValue(30, 1000);
+            particle.position.y = GetRandomValue(20, 800);
             cm.Add!Particle(particle);
+            auto circle = new Circle();
+            circle.position = particle.position;
+            circle.radius = 5;
+            cm.Add!Circle(circle);
         }
 
     }
@@ -71,7 +68,6 @@ void main()
             BeginDrawing();
             ClearBackground(Colors.RAYWHITE);
             // --- Draw Phase ---
-            //writeln(systemManager.componentManager);
             systemManager.run();
 
             DrawFPS(20, 20);

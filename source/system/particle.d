@@ -17,19 +17,19 @@ class ParticleSystem : ISystem
     void calcLoads(ref Particle particle) @safe
     {
         // Reset forces
-        particle.vForces.x = 0;
-        particle.vForces.y = 0;
+        particle._forces.x = 0;
+        particle._forces.y = 0;
 
         // Aggregate forces
         foreach (force; particle.forces)
         {
-            particle.vForces += force;
+            particle._forces += force;
         }
         particle.forces = [];
 
         // Apply gravity force
         if (particle.gravity)
-            particle.vForces.y -= particle.fMass * GRAVITYACCELERATION * PHYSICS_SCALE;
+            particle._forces.y -= particle.mass * GRAVITYACCELERATION * PHYSICS_SCALE;
     }
 
     // Integrates one time step
@@ -40,23 +40,17 @@ class ParticleSystem : ISystem
         Vector ds;
 
         // Integrate equation of motion
-        a = particle.vForces / particle.fMass;
+        a = particle._forces / particle.mass;
 
         dv = a * dt;
-        particle.vVelocity += dv;
+        particle.velocity += dv;
 
-        ds = particle.vVelocity * dt;
-        particle.vPosition += ds;
+        ds = particle.velocity * dt;
+        particle.position += ds;
 
         // Misc. calculations
-        particle.fSpeed = particle.vVelocity.magnitude();
+        particle.speed = particle.velocity.magnitude();
     }
-
-    // Draws the particle
-/*     void draw(ref Particle particle)
-    {
-        DrawCircle(cast(int) particle.vPosition.x, cast(int) particle.vPosition.y, particle.fRadius, Colors.BROWN);
-    } */
 
     void run(ref ComponentManager componentManager, double frameTime)
     {

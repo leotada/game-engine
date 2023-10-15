@@ -6,13 +6,12 @@ import math.vector;
 
 class Particle : Component
 {
-    float fMass = 1.0;
-    Vector vPosition;
-    Vector vVelocity;
-    float fSpeed = 0.0;
-    Vector vForces;
+    float mass = 1.0;
+    Vector position;
+    Vector velocity;
+    float speed = 0.0;
+    Vector _forces;
     Vector[] forces;
-    float fRadius = 5;
     bool gravity;
 
     void addForce(Vector force)
