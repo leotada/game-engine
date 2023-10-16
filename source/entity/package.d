@@ -25,6 +25,11 @@ class Entity
         return null;
     }
 
+    TypeInfo[] getComponentTypes()
+    {
+        return componentDict.keys;
+    }
+
     bool hasComponent(T)()
     {
         if (componentDict.length > 0)

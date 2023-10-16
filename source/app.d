@@ -35,7 +35,6 @@ void main()
         foreach (i; 0 .. 6_000)
         {
             auto e = new Entity();
-            em.add(e);
             auto particle = new Particle();
             particle.gravity = true;
             e.position.x = GetRandomValue(30, 1000);
@@ -46,6 +45,7 @@ void main()
             auto circle = new Circle();
             circle.radius = 5;
             e.addComponent!Circle(circle);
+            em.add(e);  // add in the final only
         }
         
     }

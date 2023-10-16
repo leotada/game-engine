@@ -8,8 +8,9 @@ import entity;
 class EntityManager
 {
     immutable int maxSize = 1_000_000;
-    public Entity[maxSize] entities;
+    private Entity[maxSize] entities;
     private uint index = 0;
+    private Entity[][TypeInfo] referenceByComponent;
 
     void add(Entity entity)
     {
@@ -18,12 +19,13 @@ class EntityManager
         entity.id = index;
         this.entities[index] = entity;
         index++;
+        updateReferenceByComponent(entity);
     }
 
-    void remove(uint value)
-    {
-        entities[value] = null;
-    }
+    // void remove(uint value)
+    // {
+    //     entities[value] = null;
+    // }
 
     Entity get(uint value)
     {
@@ -35,19 +37,33 @@ class EntityManager
         return this.entities;
     }
 
-    Entity[] getByComponent(T)()
+    void updateReferenceByComponent(Entity entity)
     {
-        Entity[] entitiesToReturn = [];
-        foreach (ref Entity entity; this.entities)
+        if (entity is null)
+            return;
+
+        TypeInfo[] types = entity.getComponentTypes();
+        foreach (TypeInfo key; types)
         {
-            if (entity !is null)
+            if (cast(bool) (key in referenceByComponent))
             {
-                if (entity.hasComponent!T())
-                    entitiesToReturn ~= entity;
+                referenceByComponent[key] ~= entity;
+            }
+            else
+            {
+                referenceByComponent[key] = [entity];
             }
         }
+    }
 
-        return entitiesToReturn;
+    Entity[] getByComponent(T)()
+    {
+        if (cast(bool) (T.classinfo in referenceByComponent))
+            return referenceByComponent[T.classinfo];
+        else
+        {
+            return [];
+        }
     }
 }
 
