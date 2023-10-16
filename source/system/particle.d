@@ -54,17 +54,20 @@ class ParticleSystem : ISystem
 
     void run(ref EntityManager entityManager, double frameTime)
     {
-        debug {
-            import std.stdio : writeln;
-            writeln(entityManager.get(1).componentDict);
-        }
+        import std.random;
+        auto rnd = Random();
 
         foreach (ref Entity entity; entityManager.getByComponent!Particle())
         {
             Particle particle = entity.getComponent!Particle();
+            //
+            auto i = uniform(-100, 100, rnd);
+            particle.addForce(Vector(40, 0, 0));
+            particle.addForce(Vector(i, i, 0));
+            //
             calcLoads(particle);
             updateBodyEuler(frameTime, particle);
-            entity.position = particle.position;
+            entity.position = particle.position; // TODO refactor
         }
         
     }

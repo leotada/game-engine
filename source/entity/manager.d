@@ -15,9 +15,9 @@ class EntityManager
     {
         if (index > maxSize)
             throw new Exception("Maximum Entities registered reached");
-        index++;
         entity.id = index;
-        entities[index] = entity;
+        this.entities[index] = entity;
+        index++;
     }
 
     void remove(uint value)
@@ -27,16 +27,19 @@ class EntityManager
 
     Entity get(uint value)
     {
-        return entities[value];
+        return this.entities[value];
     }
 
     Entity[] getByComponent(T)()
     {
         Entity[] entitiesToReturn = [];
-        foreach (ref entity; entities)
+        foreach (ref Entity entity; this.entities)
         {
-            if (entity.hasComponent!T())
-                entitiesToReturn ~= entity;
+            if (entity !is null)
+            {
+                if (entity.hasComponent!T())
+                    entitiesToReturn ~= entity;
+            }
         }
 
         return entitiesToReturn;

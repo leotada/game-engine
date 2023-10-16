@@ -28,18 +28,18 @@ void main()
 
     void load()
     {
-        // scope problem
         foreach (i; 0 .. 6_000)
         {
             auto e = new Entity();
             em.add(e);
             auto particle = new Particle();
             particle.gravity = true;
-            particle.position.x = GetRandomValue(30, 1000);
-            particle.position.y = GetRandomValue(20, 800);
+            e.position.x = GetRandomValue(30, 1000);
+            e.position.y = GetRandomValue(20, 800);
+            particle.position.x = e.position.x;
+            particle.position.y = e.position.y;
             e.addComponent!Particle(particle);
             auto circle = new Circle();
-            circle.position = particle.position;
             circle.radius = 5;
             e.addComponent!Circle(circle);
         }
@@ -58,13 +58,6 @@ void main()
         while (!WindowShouldClose())
         {
             // Physics Phase
-            // auto rnd = Random(43);
-            // foreach (ref p; cm.get!Particle())
-            // {
-            //     auto i = uniform(-100, 100, rnd);
-            //     p.addForce(Vector(40, 0, 0));
-            //     p.addForce(Vector(i, i, 0));
-            // }
             
             BeginDrawing();
             ClearBackground(Colors.RAYWHITE);
