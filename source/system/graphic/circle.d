@@ -1,6 +1,7 @@
 module system.graphic.circle;
 
-import system;
+import system.graphic;
+
 import component.graphic.circle;
 import entity.manager;
 import entity;
@@ -9,7 +10,7 @@ import math.vector;
 import raylib;
 
 
-class CircleSystem : ISystem
+class CircleSystem : IGraphic
 {
     void draw(Vector basePosition, ref Circle circle)
     {

@@ -24,7 +24,11 @@ void main()
     systemManager.add(particleSystem);
     systemManager.add(circleSystem);
 
-    
+    void start()
+    {
+        InitWindow(1000, 800, "Hello, Raylib-D!");
+        SetTargetFPS(144);            
+    }
 
     void load()
     {
@@ -49,20 +53,16 @@ void main()
     // Init Window
     void gameLoop()
     {
-        InitWindow(1000, 800, "Hello, Raylib-D!");
-        SetTargetFPS(144);
-        scope(exit)
-            CloseWindow();
-
-        // Game loop
         while (!WindowShouldClose())
         {
-            // Physics Phase
+            // --- Gameplay Phase ---
+            systemManager.run();
+            // --- Gameplay end ---
             
             BeginDrawing();
             ClearBackground(Colors.RAYWHITE);
             // --- Draw Phase ---
-            systemManager.run();
+            systemManager.runGraphics();
 
             DrawFPS(20, 20);
             DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
@@ -70,12 +70,21 @@ void main()
             EndDrawing();
         }
     }
+
+    void shutdown()
+    {
+        CloseWindow();
+
+        debug {
+            import core.memory;
+            writeln("GC Debug:");
+            writeln(GC.profileStats().numCollections);
+            writeln(GC.profileStats().maxCollectionTime);
+        }
+    }
+
+    start();
     load();
     gameLoop();
-    debug {
-        import core.memory;
-        writeln("GC Debug:");
-        writeln(GC.profileStats().numCollections);
-        writeln(GC.profileStats().maxCollectionTime);
-    }
+    shutdown();
 }

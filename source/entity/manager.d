@@ -30,6 +30,11 @@ class EntityManager
         return this.entities[value];
     }
 
+    Entity[] getAll()
+    {
+        return this.entities;
+    }
+
     Entity[] getByComponent(T)()
     {
         Entity[] entitiesToReturn = [];
