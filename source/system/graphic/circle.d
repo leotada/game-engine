@@ -2,7 +2,8 @@ module system.graphic.circle;
 
 import system;
 import component.graphic.circle;
-import component.manager;
+import entity.manager;
+import entity;
 import raylib;
 
 
@@ -13,11 +14,12 @@ class CircleSystem : ISystem
         DrawCircle(cast(int) circle.position.x, cast(int) circle.position.y, circle.radius, circle.color);
     }
 
-    void run(ref ComponentManager componentManager, double frameTime)
+    void run(ref EntityManager entityManager, double frameTime)
     {
-        foreach (ref p; componentManager.Get!Circle())
+        foreach (ref Entity entity; entityManager.getByComponent!Circle())
         {
-            draw(p);
+            Circle circle = entity.getComponent!Circle();
+            draw(circle);
         }
     }
 }

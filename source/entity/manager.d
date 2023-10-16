@@ -1,4 +1,4 @@
-module entity.entity_manager;
+module entity.manager;
 
 import entity;
 
@@ -8,19 +8,16 @@ import entity;
 class EntityManager
 {
     immutable int maxSize = 1_000_000;
-    private Entity[maxSize] entities;
+    public Entity[maxSize] entities;
     private uint index = 0;
 
     void add(Entity entity)
     {
         if (index > maxSize)
             throw new Exception("Maximum Entities registered reached");
-        else if (index == 0)
-            index++;
-
+        index++;
         entity.id = index;
         entities[index] = entity;
-        index++;
     }
 
     void remove(uint value)
@@ -31,6 +28,18 @@ class EntityManager
     Entity get(uint value)
     {
         return entities[value];
+    }
+
+    Entity[] getByComponent(T)()
+    {
+        Entity[] entitiesToReturn = [];
+        foreach (ref entity; entities)
+        {
+            if (entity.hasComponent!T())
+                entitiesToReturn ~= entity;
+        }
+
+        return entitiesToReturn;
     }
 }
 
@@ -44,4 +53,7 @@ unittest
     em.add(e);
     assert(em.index == 1);
     assert(e.id == 1);
+    import component.particle;
+    
+    em.getByComponent!Particle();
 }

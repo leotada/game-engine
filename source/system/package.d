@@ -1,9 +1,9 @@
 module system;
 
-import component.manager;
+import entity.manager;
 
 interface ISystem
 {
-    void run(ref ComponentManager componentManager, double frameTime);
+    void run(ref EntityManager entityManager, double frameTime);
 }
 

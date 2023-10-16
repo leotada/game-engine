@@ -4,11 +4,10 @@ import std.random;
 import raylib;
 
 import entity;
-import entity.entity_manager;
-import component.manager;
+import entity.manager;
 import component.particle;
 import component.graphic.circle;
-import system.system_manager;
+import system.manager;
 import system.particle;
 import system.graphic.circle;
 import math.vector;
@@ -20,14 +19,16 @@ void main()
     ParticleSystem particleSystem = new ParticleSystem();
     CircleSystem circleSystem = new CircleSystem();
 
-    ComponentManager cm = new ComponentManager();
     EntityManager em = new EntityManager();
-    SystemManager systemManager = new SystemManager(cm);
+    SystemManager systemManager = new SystemManager(em);
     systemManager.add(particleSystem);
     systemManager.add(circleSystem);
 
+    
+
     void load()
     {
+        // scope problem
         foreach (i; 0 .. 6_000)
         {
             auto e = new Entity();
@@ -36,13 +37,13 @@ void main()
             particle.gravity = true;
             particle.position.x = GetRandomValue(30, 1000);
             particle.position.y = GetRandomValue(20, 800);
-            cm.Add!Particle(particle);
+            e.addComponent!Particle(particle);
             auto circle = new Circle();
             circle.position = particle.position;
             circle.radius = 5;
-            cm.Add!Circle(circle);
+            e.addComponent!Circle(circle);
         }
-
+        
     }
 
     // Init Window
@@ -57,13 +58,13 @@ void main()
         while (!WindowShouldClose())
         {
             // Physics Phase
-            auto rnd = Random(43);
-            foreach (ref p; cm.Get!Particle())
-            {
-                auto i = uniform(-100, 100, rnd);
-                p.addForce(Vector(40, 0, 0));
-                p.addForce(Vector(i, i, 0));
-            }
+            // auto rnd = Random(43);
+            // foreach (ref p; cm.get!Particle())
+            // {
+            //     auto i = uniform(-100, 100, rnd);
+            //     p.addForce(Vector(40, 0, 0));
+            //     p.addForce(Vector(i, i, 0));
+            // }
             
             BeginDrawing();
             ClearBackground(Colors.RAYWHITE);

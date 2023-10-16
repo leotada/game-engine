@@ -2,8 +2,8 @@ module system.particle;
 
 import system;
 import component.particle;
-import component.manager;
-
+import entity.manager;
+import entity;
 import math.vector;
 
 
@@ -52,13 +52,21 @@ class ParticleSystem : ISystem
         particle.speed = particle.velocity.magnitude();
     }
 
-    void run(ref ComponentManager componentManager, double frameTime)
+    void run(ref EntityManager entityManager, double frameTime)
     {
-        foreach (ref p; componentManager.Get!Particle())
-        {
-            calcLoads(p);
-            updateBodyEuler(frameTime, p);
+        debug {
+            import std.stdio : writeln;
+            writeln(entityManager.get(1).componentDict);
         }
+
+        foreach (ref Entity entity; entityManager.getByComponent!Particle())
+        {
+            Particle particle = entity.getComponent!Particle();
+            calcLoads(particle);
+            updateBodyEuler(frameTime, particle);
+            entity.position = particle.position;
+        }
+        
     }
 
 }
