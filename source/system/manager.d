@@ -34,21 +34,21 @@ class SystemManager
     {
         foreach (ref system; systems)
         {
-            auto before = MonoTime.currTime;
+            // auto before = MonoTime.currTime;
             system.run(entityManager, GetFrameTime());
-            auto timeElapsed = MonoTime.currTime - before;
-            debug { import std.stdio : writeln; try { writeln(system, " ", timeElapsed); } catch (Exception) {} }
+            //~ auto timeElapsed = MonoTime.currTime - before;
+            //~ debug { import std.stdio : writeln; try { writeln(system, " ", timeElapsed); } catch (Exception) {} }
         }
     }
-    
+
     void runGraphics()
     {
         foreach (ref system; graphicSystems)
         {
-            auto before = MonoTime.currTime;
+            // auto before = MonoTime.currTime;
             system.run(entityManager, GetFrameTime());
-            auto timeElapsed = MonoTime.currTime - before;
-            debug { import std.stdio : writeln; try { writeln(system, " ", timeElapsed); } catch (Exception) {} }
+            //~ auto timeElapsed = MonoTime.currTime - before;
+            //~ debug { import std.stdio : writeln; try { writeln(system, " ", timeElapsed); } catch (Exception) {} }
         }
     }
 }

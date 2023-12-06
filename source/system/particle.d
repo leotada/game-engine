@@ -6,6 +6,7 @@ import entity.manager;
 import entity;
 import math.vector;
 
+import std.random;
 
 immutable float GRAVITYACCELERATION = -9.8;
 immutable float PHYSICS_SCALE = 8;
@@ -14,18 +15,18 @@ immutable float PHYSICS_SCALE = 8;
 class ParticleSystem : ISystem
 {
     // Aggregates forces acting on the particle
-    void calcLoads(ref Particle particle) @safe
+    void calcLoads(scope ref Particle particle)
     {
         // Reset forces
         particle._forces.x = 0;
         particle._forces.y = 0;
 
         // Aggregate forces
-        foreach (force; particle.forces)
+        foreach (ref force; particle.forces)
         {
             particle._forces += force;
+            force = Vector(0, 0, 0);
         }
-        particle.forces = [];
 
         // Apply gravity force
         if (particle.gravity)
@@ -33,11 +34,11 @@ class ParticleSystem : ISystem
     }
 
     // Integrates one time step
-    void updateBodyEuler(double dt, ref Particle particle)
+    void updateBodyEuler(double dt, scope ref Particle particle)
     {
-        Vector a;
-        Vector dv;
-        Vector ds;
+        scope Vector a;
+        scope Vector dv;
+        scope Vector ds;
 
         // Integrate equation of motion
         a = particle._forces / particle.mass;
@@ -52,24 +53,23 @@ class ParticleSystem : ISystem
         particle.speed = particle.velocity.magnitude();
     }
 
-    void run(ref EntityManager entityManager, double frameTime)
+    void run(scope ref EntityManager entityManager, double frameTime)
     {
-        import std.random;
-        auto rnd = Random();
+        scope auto rnd = Random();
 
-        foreach (ref Entity entity; entityManager.getByComponent!Particle())
+        foreach (scope ref Entity entity; entityManager.getByComponent!Particle())
         {
-            Particle particle = entity.getComponent!Particle();
+            scope Particle particle = entity.getComponent!Particle();
             //
-            auto i = uniform(-100, 100, rnd);
-            particle.addForce(Vector(40, 0, 0));
-            particle.addForce(Vector(i, i, 0));
+            scope auto i = uniform(-100, 100, rnd);
+            particle.addForce(Vector(40, 0, 0), 0);
+            particle.addForce(Vector(i, i, 0), 1);
             //
             calcLoads(particle);
             updateBodyEuler(frameTime, particle);
             entity.position = particle.position; // TODO refactor
         }
-        
+
     }
 
 }

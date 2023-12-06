@@ -37,7 +37,7 @@ class EntityManager
         return this.entities;
     }
 
-    void updateReferenceByComponent(Entity entity)
+    void updateReferenceByComponent(ref Entity entity)
     {
         if (entity is null)
             return;
@@ -78,6 +78,6 @@ unittest
     assert(em.index == 1);
     assert(e.id == 1);
     import component.particle;
-    
+
     em.getByComponent!Particle();
 }

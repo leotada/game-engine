@@ -1,9 +1,10 @@
 module component.particle;
 
+import core.memory: GC;
+
 import component;
 import math.vector;
 
-@safe:
 
 class Particle : Component
 {
@@ -12,11 +13,21 @@ class Particle : Component
     Vector velocity;
     float speed = 0.0;
     Vector _forces;
-    Vector[] forces;
+    Vector[3] forces;
     bool gravity;
 
     void addForce(Vector force)
     {
-        this.forces ~= force;
+        this.forces[0] = force;
+    }
+
+    void addForce(Vector force, int index)
+    {
+        this.forces[index] = force;
+    }
+
+    ~this()
+    {
+        GC.free(&this.forces);
     }
 }
