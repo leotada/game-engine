@@ -3,7 +3,6 @@ module entity;
 import math.vector;
 import component;
 
-@safe:
 
 class Entity
 {
@@ -36,6 +35,11 @@ class Entity
             return cast(bool) (T.classinfo in componentDict);
         return false;
     }
+
+    // ~this()
+    // {
+    //     componentDict.clear();
+    // }
 }
 
 unittest

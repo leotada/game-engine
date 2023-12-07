@@ -10,9 +10,11 @@ import entity;
 import entity.manager;
 import component.particle;
 import component.graphic.circle;
+import component.timeout;
 import system.manager;
 import system.particle;
 import system.graphic.circle;
+import system.timeout;
 import math.vector;
 
 
@@ -21,11 +23,14 @@ void main()
     Particle[] particles;
     scope ParticleSystem particleSystem = new ParticleSystem();
     scope CircleSystem circleSystem = new CircleSystem();
+    scope TimeoutSystem timeoutSystem = new TimeoutSystem();
 
     scope EntityManager em = new EntityManager();
     scope SystemManager systemManager = new SystemManager(em);
+
     systemManager.add(particleSystem);
     systemManager.add(circleSystem);
+    systemManager.add(timeoutSystem);
 
     void start()
     {
@@ -35,7 +40,7 @@ void main()
 
     void load()
     {
-        foreach (i; 0 .. 6000)
+        foreach (i; 0 .. 600)
         {
             auto e = new Entity();
             auto particle = new Particle();
@@ -48,6 +53,7 @@ void main()
             auto circle = new Circle();
             circle.radius = 5;
             e.addComponent!Circle(circle);
+            e.addComponent!Timeout(new Timeout(2));
             em.add(e);  // add in the final only
         }
 
@@ -56,10 +62,10 @@ void main()
     // Init Window
     void gameLoop()
     {
-		float time = 0;
         float time_raw = 0;
         StopWatch sw = StopWatch();
         float max_frametime = 0;
+        Vector[] vectors;
         while (!WindowShouldClose())
         {
             sw.start();
@@ -78,17 +84,9 @@ void main()
 
             EndDrawing();
 
-			time += GetFrameTime();
-			// manual GC collection
-			if (time > 1)
-			{
-				// GC.collect();
-				// GC.minimize();
-				time = 0;
-			}
-
             sw.stop();
-            time_raw = sw.peek.total!"msecs" / 1000.0f;
+            time_raw = sw.peek.total!"msecs";
+            sw.reset();
             max_frametime = max_frametime > time_raw ? max_frametime : time_raw;
         }
 
@@ -111,8 +109,8 @@ void main()
 
     start();
     load();
-    GC.disable();
+    //GC.disable();
     gameLoop();
-    GC.enable();
+    //GC.enable();
     shutdown();
 }

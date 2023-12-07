@@ -1,7 +1,5 @@
 module component.particle;
 
-import core.memory: GC;
-
 import component;
 import math.vector;
 
@@ -24,10 +22,5 @@ class Particle : Component
     void addForce(Vector force, int index)
     {
         this.forces[index] = force;
-    }
-
-    ~this()
-    {
-        GC.free(&this.forces);
     }
 }

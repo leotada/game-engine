@@ -2,8 +2,6 @@ module entity.manager;
 
 import entity;
 
-@safe:
-
 
 class EntityManager
 {
