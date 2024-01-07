@@ -3,6 +3,8 @@ module component.particle;
 import component;
 import math.vector;
 
+@safe:
+
 
 class Particle : Component
 {

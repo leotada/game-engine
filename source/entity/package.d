@@ -36,10 +36,10 @@ class Entity
         return false;
     }
 
-    // ~this()
-    // {
-    //     componentDict.clear();
-    // }
+    ~this()
+    {
+        componentDict.clear();
+    }
 }
 
 unittest

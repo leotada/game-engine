@@ -20,10 +20,19 @@ class EntityManager
         updateReferenceByComponent(entity);
     }
 
-    // void remove(uint value)
-    // {
-    //     entities[value] = null;
-    // }
+    void remove(ref Entity entity)
+    {
+        entities[entity.id] = null;
+        TypeInfo[] types = entity.getComponentTypes();
+        foreach (TypeInfo key; types)
+        {
+            if (cast(bool) (key in referenceByComponent))
+            {
+                referenceByComponent[key] = null;
+            }
+        }
+        entity.destroy();
+    }
 
     Entity get(uint value)
     {
