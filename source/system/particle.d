@@ -11,7 +11,6 @@ import std.random;
 immutable float GRAVITYACCELERATION = -9.8;
 immutable float PHYSICS_SCALE = 8;
 
-
 class ParticleSystem : ISystem
 {
     // Aggregates forces acting on the particle
@@ -33,8 +32,8 @@ class ParticleSystem : ISystem
             particle._forces.y -= particle.mass * GRAVITYACCELERATION * PHYSICS_SCALE;
     }
 
-    // Integrates one time step
-    void updateBodyEuler(double dt, scope ref Particle particle)
+    // Integrates one time step using entity position directly
+    void updateBodyEuler(double dt, scope ref Particle particle, ref Vector position)
     {
         scope Vector a;
         scope Vector dv;
@@ -47,7 +46,7 @@ class ParticleSystem : ISystem
         particle.velocity += dv;
 
         ds = particle.velocity * dt;
-        particle.position += ds;
+        position += ds;
 
         // Misc. calculations
         particle.speed = particle.velocity.magnitude();
@@ -59,15 +58,19 @@ class ParticleSystem : ISystem
 
         foreach (scope ref Entity entity; entityManager.getByComponent!Particle())
         {
+            if (entity is null || !entity.active)
+                continue;
+
             scope Particle particle = entity.getComponent!Particle();
-            //
+            if (particle is null)
+                continue;
+
             scope auto i = uniform(-100, 100, rnd);
             particle.addForce(Vector(40, 0, 0), 0);
             particle.addForce(Vector(i, i, 0), 1);
-            //
+
             calcLoads(particle);
-            updateBodyEuler(frameTime, particle);
-            entity.position = particle.position; // TODO refactor
+            updateBodyEuler(frameTime, particle, entity.position);
         }
 
     }

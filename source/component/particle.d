@@ -3,13 +3,9 @@ module component.particle;
 import component;
 import math.vector;
 
-@safe:
-
-
 class Particle : Component
 {
     float mass = 1.0;
-    Vector position;
     Vector velocity;
     float speed = 0.0;
     Vector _forces;
@@ -24,5 +20,18 @@ class Particle : Component
     void addForce(Vector force, int index)
     {
         this.forces[index] = force;
+    }
+
+    override void reset()
+    {
+        super.reset();
+        mass = 1.0;
+        velocity = Vector(0, 0, 0);
+        speed = 0.0;
+        _forces = Vector(0, 0, 0);
+        forces[0] = Vector(0, 0, 0);
+        forces[1] = Vector(0, 0, 0);
+        forces[2] = Vector(0, 0, 0);
+        gravity = false;
     }
 }

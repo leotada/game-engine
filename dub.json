@@ -2,7 +2,7 @@
   "authors": ["Leonardo Tada"],
   "copyright": "Copyright © 2022, Leonardo Tada",
     "dependencies": {
-      "raylib-d": "~>5.0.0"
+      "raylib-d": "~>5.5.3"
     },
     "libs": [ "raylib" ],
     "lflags-posix" : ["-L."],
@@ -11,5 +11,17 @@
     "dflags": ["-preview=dip1000"],
     "description": "A minimal D application.",
     "license": "proprietary",
-    "name": "game-engine"
+    "name": "game-engine",
+    "configurations": [
+      {
+        "name": "default",
+        "targetType": "executable",
+        "mainSourceFile": "source/app.d"
+      },
+      {
+        "name": "benchmark",
+        "targetType": "executable",
+        "mainSourceFile": "source/benchmark.d"
+      }
+    ]
   }

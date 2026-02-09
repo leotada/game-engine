@@ -17,7 +17,6 @@ import system.graphic.circle;
 import system.timeout;
 import math.vector;
 
-
 void main()
 {
     Particle[] particles;
@@ -47,14 +46,12 @@ void main()
             particle.gravity = true;
             e.position.x = GetRandomValue(30, 1000);
             e.position.y = GetRandomValue(20, 800);
-            particle.position.x = e.position.x;
-            particle.position.y = e.position.y;
             e.addComponent!Particle(particle);
             auto circle = new Circle();
             circle.radius = 5;
             e.addComponent!Circle(circle);
             e.addComponent!Timeout(new Timeout(2));
-            em.add(e);  // add in the final only
+            em.add(e); // add in the final only
         }
 
     }
@@ -99,7 +96,8 @@ void main()
     {
         CloseWindow();
 
-        debug {
+        debug
+        {
             writeln("GC Debug:");
             writeln(GC.profileStats().numCollections);
             writeln(GC.profileStats().maxCollectionTime);
