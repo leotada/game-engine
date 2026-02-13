@@ -1,78 +1,68 @@
 module system.particle;
 
-import system;
 import component.particle;
-import entity.manager;
-import entity;
+import component.position;
 import math.vector;
-
 import std.random;
 
 immutable float GRAVITYACCELERATION = -9.8;
 immutable float PHYSICS_SCALE = 8;
 
-class ParticleSystem : ISystem
+/// Aggregates forces acting on the particle
+private void calcLoads(ref Particle particle)
 {
-    // Aggregates forces acting on the particle
-    void calcLoads(scope ref Particle particle)
+    // Reset forces
+    particle._forces.x = 0;
+    particle._forces.y = 0;
+
+    // Aggregate forces
+    foreach (ref force; particle.forces)
     {
-        // Reset forces
-        particle._forces.x = 0;
-        particle._forces.y = 0;
-
-        // Aggregate forces
-        foreach (ref force; particle.forces)
-        {
-            particle._forces += force;
-            force = Vector(0, 0, 0);
-        }
-
-        // Apply gravity force
-        if (particle.gravity)
-            particle._forces.y -= particle.mass * GRAVITYACCELERATION * PHYSICS_SCALE;
+        particle._forces += force;
+        force = Vector(0, 0, 0);
     }
 
-    // Integrates one time step using entity position directly
-    void updateBodyEuler(double dt, scope ref Particle particle, ref Vector position)
+    // Apply gravity force
+    if (particle.gravity)
+        particle._forces.y -= particle.mass * GRAVITYACCELERATION * PHYSICS_SCALE;
+}
+
+/// Integrates one time step using Euler method
+private void updateBodyEuler(double dt, ref Particle particle, ref Position pos)
+{
+    // Integrate equation of motion
+    Vector a = particle._forces / particle.mass;
+
+    Vector dv = a * dt;
+    particle.velocity += dv;
+
+    Vector ds = particle.velocity * dt;
+    pos.x += ds.x;
+    pos.y += ds.y;
+    pos.z += ds.z;
+
+    // Misc. calculations
+    particle.speed = particle.velocity.magnitude();
+}
+
+/// Particle physics system — template function, zero virtual dispatch.
+void particleSystem(Registry)(ref Registry reg, double frameTime)
+{
+    auto rng = Random(unpredictableSeed);
+
+    foreach (entityId; reg.entitiesWith!(Particle, Position))
     {
-        scope Vector a;
-        scope Vector dv;
-        scope Vector ds;
+        auto particle = reg.store!Particle.getPointer(entityId);
+        auto pos = reg.store!Position.getPointer(entityId);
 
-        // Integrate equation of motion
-        a = particle._forces / particle.mass;
+        if (particle is null || pos is null)
+            continue;
 
-        dv = a * dt;
-        particle.velocity += dv;
+        auto i = uniform(-100, 100, rng);
+        particle.addForce(Vector(40, 0, 0), 0);
+        particle.addForce(Vector(i, i, 0), 1);
 
-        ds = particle.velocity * dt;
-        position += ds;
-
-        // Misc. calculations
-        particle.speed = particle.velocity.magnitude();
+        calcLoads(*particle);
+        updateBodyEuler(frameTime, *particle, *pos);
     }
-
-    void run(scope ref EntityManager entityManager, double frameTime)
-    {
-        scope auto rnd = Random();
-
-        foreach (scope ref Entity entity; entityManager.getByComponent!Particle())
-        {
-            if (entity is null || !entity.active)
-                continue;
-
-            scope Particle particle = entity.getComponent!Particle();
-            if (particle is null)
-                continue;
-
-            scope auto i = uniform(-100, 100, rnd);
-            particle.addForce(Vector(40, 0, 0), 0);
-            particle.addForce(Vector(i, i, 0), 1);
-
-            calcLoads(particle);
-            updateBodyEuler(frameTime, particle, entity.position);
-        }
-
-    }
-
 }

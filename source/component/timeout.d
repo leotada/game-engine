@@ -1,26 +1,14 @@
 module component.timeout;
 
-import component;
-
-class Timeout : Component
+/// Timeout component — POD struct.
+struct Timeout
 {
     float duration = 1.0;
     float elapsed = 0;
     bool expired = false;
 
-    this()
+    void reset()
     {
-        // Default constructor for pooling
-    }
-
-    this(float duration)
-    {
-        this.duration = duration;
-    }
-
-    override void reset()
-    {
-        super.reset();
         duration = 1.0;
         elapsed = 0;
         expired = false;

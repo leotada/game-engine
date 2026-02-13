@@ -1,16 +1,15 @@
-module component.graphic.circle;
+module component.circle;
 
-import component;
 import raylib : Colors;
 
-class Circle : Component
+/// Circle rendering component — POD struct.
+struct Circle
 {
     float radius = 5;
     Colors color = Colors.GRAY;
 
-    override void reset()
+    void reset()
     {
-        super.reset();
         radius = 5;
         color = Colors.GRAY;
     }

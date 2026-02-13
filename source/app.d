@@ -6,30 +6,17 @@ import std.datetime.stopwatch;
 
 import raylib;
 
-import entity;
-import entity.manager;
-import component.particle;
-import component.graphic.circle;
-import component.timeout;
-import system.manager;
-import system.particle;
-import system.graphic.circle;
-import system.timeout;
+import ecs;
+import component;
+import system;
 import math.vector;
+
+alias GameRegistry = Registry!(Position, Particle, Circle, Timeout);
 
 void main()
 {
-    Particle[] particles;
-    scope ParticleSystem particleSystem = new ParticleSystem();
-    scope CircleSystem circleSystem = new CircleSystem();
-    scope TimeoutSystem timeoutSystem = new TimeoutSystem();
-
-    scope EntityManager em = new EntityManager();
-    scope SystemManager systemManager = new SystemManager(em);
-
-    systemManager.add(particleSystem);
-    systemManager.add(circleSystem);
-    systemManager.add(timeoutSystem);
+    GameRegistry reg;
+    CircleRenderer circleRenderer;
 
     void start()
     {
@@ -39,42 +26,53 @@ void main()
 
     void load()
     {
+        auto rng = Random(unpredictableSeed);
+
         foreach (i; 0 .. 600)
         {
-            auto e = new Entity();
-            auto particle = new Particle();
-            particle.gravity = true;
-            e.position.x = GetRandomValue(30, 1000);
-            e.position.y = GetRandomValue(20, 800);
-            e.addComponent!Particle(particle);
-            auto circle = new Circle();
-            circle.radius = 5;
-            e.addComponent!Circle(circle);
-            e.addComponent!Timeout(new Timeout(2));
-            em.add(e); // add in the final only
-        }
+            auto e = reg.create();
 
+            reg.store!Position.add(e, Position(
+                    uniform(30.0f, 1000.0f, rng),
+                    uniform(20.0f, 800.0f, rng)
+            ));
+
+            Particle p;
+            p.gravity = true;
+            reg.store!Particle.add(e, p);
+
+            reg.store!Circle.add(e, Circle(5, Colors.GRAY));
+
+            reg.store!Timeout.add(e, Timeout(2.0));
+        }
     }
 
-    // Init Window
     void gameLoop()
     {
         float time_raw = 0;
         StopWatch sw = StopWatch();
         float max_frametime = 0;
-        Vector[] vectors;
+
         while (!WindowShouldClose())
         {
             sw.start();
+            double dt = GetFrameTime();
 
             // --- Gameplay Phase ---
-            systemManager.run();
-            // --- Gameplay end ---
+            particleSystem(reg, dt);
+            auto expired = timeoutSystem(reg, dt);
 
+            // Destroy expired entities
+            foreach (id; expired)
+            {
+                reg.destroy(id);
+            }
+
+            // --- Draw Phase ---
             BeginDrawing();
             ClearBackground(Colors.RAYWHITE);
-            // --- Draw Phase ---
-            systemManager.runGraphics();
+
+            circleRenderer.run(reg, dt);
 
             DrawFPS(20, 20);
             DrawText("Hello, World!", 400, 300, 14, Colors.BLACK);
@@ -87,9 +85,7 @@ void main()
             max_frametime = max_frametime > time_raw ? max_frametime : time_raw;
         }
 
-        {
-            writeln("Max game loop time:", max_frametime);
-        }
+        writeln("Max game loop time:", max_frametime);
     }
 
     void shutdown()
@@ -107,8 +103,6 @@ void main()
 
     start();
     load();
-    //GC.disable();
     gameLoop();
-    //GC.enable();
     shutdown();
 }

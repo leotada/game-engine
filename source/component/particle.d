@@ -1,9 +1,9 @@
 module component.particle;
 
-import component;
 import math.vector;
 
-class Particle : Component
+/// Particle physics component — POD struct, no virtual dispatch.
+struct Particle
 {
     float mass = 1.0;
     Vector velocity;
@@ -22,9 +22,8 @@ class Particle : Component
         this.forces[index] = force;
     }
 
-    override void reset()
+    void reset()
     {
-        super.reset();
         mass = 1.0;
         velocity = Vector(0, 0, 0);
         speed = 0.0;

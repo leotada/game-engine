@@ -10,30 +10,23 @@ import std.datetime.stopwatch;
 
 import raylib;
 
-import entity;
-import entity.manager;
-import component.particle;
-import component.graphic.circle;
-import component.timeout;
-import system.manager;
-import system.particle;
-import system.graphic.circle;
-import system.timeout;
+import ecs;
+import component;
+import system;
 import math.vector;
-import pool;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Benchmark Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 immutable int WINDOW_WIDTH = 1200;
 immutable int WINDOW_HEIGHT = 900;
-immutable int SPAWN_POINTS = 7; // Number of particle fountains
-immutable int PARTICLES_PER_SPAWN = 5; // Particles per fountain per frame
+immutable int SPAWN_POINTS = 7;
+immutable int PARTICLES_PER_SPAWN = 5;
 immutable float MIN_TIMEOUT = 0.5;
 immutable float MAX_TIMEOUT = 3.0;
 immutable float MIN_RADIUS = 3.0;
 immutable float MAX_RADIUS = 12.0;
-immutable float BENCHMARK_DURATION = 20.0; // Auto-exit after 20 seconds
+immutable float BENCHMARK_DURATION = 20.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Statistics Tracking
@@ -43,6 +36,8 @@ struct BenchmarkStats
     ulong totalEntitiesCreated = 0;
     ulong peakActiveEntities = 0;
     ulong peakMemoryUsed = 0;
+    ulong totalCollisions = 0;
+    ulong frameCollisions = 0;
     float maxFrameTime = 0;
     float totalFrameTime = 0;
     ulong frameCount = 0;
@@ -52,63 +47,8 @@ struct BenchmarkStats
 // ─────────────────────────────────────────────────────────────────────────────
 // Color Utilities
 // ─────────────────────────────────────────────────────────────────────────────
-Color hsvToRgb(float h, float s, float v)
-{
-    h = h % 360.0f;
-    float c = v * s;
-    float x = c * (1 - abs((h / 60.0f) % 2 - 1));
-    float m = v - c;
-
-    float r, g, b;
-    if (h < 60)
-    {
-        r = c;
-        g = x;
-        b = 0;
-    }
-    else if (h < 120)
-    {
-        r = x;
-        g = c;
-        b = 0;
-    }
-    else if (h < 180)
-    {
-        r = 0;
-        g = c;
-        b = x;
-    }
-    else if (h < 240)
-    {
-        r = 0;
-        g = x;
-        b = c;
-    }
-    else if (h < 300)
-    {
-        r = x;
-        g = 0;
-        b = c;
-    }
-    else
-    {
-        r = c;
-        g = 0;
-        b = x;
-    }
-
-    return Color(
-        cast(ubyte)((r + m) * 255),
-        cast(ubyte)((g + m) * 255),
-        cast(ubyte)((b + m) * 255),
-        255
-    );
-}
-
 Colors hsvToColors(float h, float s, float v)
 {
-    // Raylib-d uses Colors enum, we need to work around this
-    // For the benchmark, we'll cycle through a predefined palette
     int idx = cast(int)(h / 30) % 12;
     Colors[] palette = [
         Colors.RED, Colors.ORANGE, Colors.YELLOW, Colors.LIME,
@@ -119,98 +59,66 @@ Colors hsvToColors(float h, float s, float v)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Type alias for our game world
+// ─────────────────────────────────────────────────────────────────────────────
+alias GameRegistry = Registry!(Position, Particle, Circle, Timeout);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Benchmark
 // ─────────────────────────────────────────────────────────────────────────────
 void main()
 {
     BenchmarkStats stats;
-    scope ParticleSystem particleSystem = new ParticleSystem();
-    scope CircleSystem circleSystem = new CircleSystem();
-    scope TimeoutSystem timeoutSystem = new TimeoutSystem();
-
-    scope EntityManager em = new EntityManager();
-    scope SystemManager systemManager = new SystemManager(em);
-
-    // Component pools for reduced GC pressure
-    auto particlePool = new ObjectPool!Particle();
-    auto circlePool = new ObjectPool!Circle();
-    auto timeoutPool = new ObjectPool!Timeout();
-
-    systemManager.add(particleSystem);
-    systemManager.add(circleSystem);
-    systemManager.add(timeoutSystem);
+    GameRegistry reg;
+    CircleRenderer circleRenderer;
 
     auto rng = Random(unpredictableSeed);
     float hueOffset = 0;
 
     void start()
     {
-        InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Game Engine Benchmark - CPU/GC Stress Test");
-        SetTargetFPS(144);
+        InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Game Engine Benchmark - Metaprogramming ECS");
+        SetTargetFPS(1440);
         stats.runtimeWatch.start();
     }
 
-    // Spawn particles from a fountain at given position
-    void spawnParticles(float spawnX, float spawnY, float hue)
+    // Spawn particles from a fountain at given position with a base direction
+    void spawnParticles(float spawnX, float spawnY, float dirX, float dirY, float hue)
     {
         foreach (i; 0 .. PARTICLES_PER_SPAWN)
         {
-            auto e = em.createEntity();
+            auto e = reg.create();
 
-            // Acquire components from pools
-            auto particle = particlePool.acquire();
+            // Position with slight random offset
+            reg.store!Position.add(e, Position(
+                    spawnX + uniform(-15.0f, 15.0f, rng),
+                    spawnY + uniform(-15.0f, 15.0f, rng)
+            ));
+
+            // Particle with velocity aimed in the given direction + spread
+            Particle particle;
             particle.gravity = true;
+            float speed = uniform(200.0f, 400.0f, rng);
+            float spread = uniform(-0.4f, 0.4f, rng); // radial spread
+            float baseAngle = std.math.atan2(dirY, dirX);
+            float angle = baseAngle + spread;
+            particle.velocity.x = cos(angle) * speed;
+            particle.velocity.y = sin(angle) * speed;
+            reg.store!Particle.add(e, particle);
 
-            // Initial position with slight random offset
-            e.position.x = spawnX + uniform(-20.0f, 20.0f, rng);
-            e.position.y = spawnY;
-
-            // Initial upward velocity with random spread
-            particle.velocity.x = uniform(-150.0f, 150.0f, rng);
-            particle.velocity.y = uniform(-400.0f, -200.0f, rng);
-
-            e.addComponent!Particle(particle);
-
-            // Varying circle sizes and colors
-            auto circle = circlePool.acquire();
-            circle.radius = uniform(MIN_RADIUS, MAX_RADIUS, rng);
+            // Circle with varying sizes and colors
             float particleHue = hue + uniform(-30.0f, 30.0f, rng);
-            circle.color = hsvToColors(particleHue, 0.9, 1.0);
-            e.addComponent!Circle(circle);
+            reg.store!Circle.add(e, Circle(
+                    uniform(MIN_RADIUS, MAX_RADIUS, rng),
+                    hsvToColors(particleHue, 0.9, 1.0)
+            ));
 
-            // Random timeout for GC stress
-            auto timeout = timeoutPool.acquire();
-            timeout.duration = uniform(MIN_TIMEOUT, MAX_TIMEOUT, rng);
-            e.addComponent!Timeout(timeout);
+            // Random timeout
+            reg.store!Timeout.add(e, Timeout(
+                    uniform(MIN_TIMEOUT, MAX_TIMEOUT, rng)
+            ));
 
-            em.add(e);
             stats.totalEntitiesCreated++;
-        }
-    }
-
-    // Cleanup inactive entities and return components to pools
-    void cleanupInactiveEntities()
-    {
-        foreach (ref Entity entity; em.getByComponent!Timeout())
-        {
-            if (entity is null || entity.active)
-                continue;
-
-            // Release components back to pools
-            auto particle = entity.getComponent!Particle();
-            if (particle !is null)
-                particlePool.release(particle);
-
-            auto circle = entity.getComponent!Circle();
-            if (circle !is null)
-                circlePool.release(circle);
-
-            auto timeout = entity.getComponent!Timeout();
-            if (timeout !is null)
-                timeoutPool.release(timeout);
-
-            // Remove entity from manager (returns entity to pool)
-            em.remove(entity);
         }
     }
 
@@ -221,38 +129,58 @@ void main()
         while (!WindowShouldClose() && stats.runtimeWatch.peek.total!"msecs" / 1000.0 < BENCHMARK_DURATION)
         {
             sw.start();
+            double dt = GetFrameTime();
 
             // ─────────────────────────────────────────────────────────────────
-            // Spawn Phase - Create particles from multiple fountain positions
+            // Spawn Phase
             // ─────────────────────────────────────────────────────────────────
-            hueOffset += 2.0f; // Color cycling
+            hueOffset += 2.0f;
+
+            // Center of screen (target for inward-aimed spawners)
+            float cx = WINDOW_WIDTH / 2.0f;
+            float cy = WINDOW_HEIGHT / 2.0f;
 
             foreach (i; 0 .. SPAWN_POINTS)
             {
-                // Semi-circle arrangement at bottom of screen
-                float angle = std.math.PI * (cast(float) i / (SPAWN_POINTS - 1));
-                float spawnX = WINDOW_WIDTH / 2 + cos(angle) * 300;
-                float spawnY = WINDOW_HEIGHT - 50;
+                // Distribute spawn points around the screen perimeter
+                float t = cast(float) i / SPAWN_POINTS;
+                float angle = t * 2.0f * std.math.PI;
+
+                // Elliptical placement along screen edges
+                float spawnX = cx + cos(angle) * (WINDOW_WIDTH / 2.0f - 30);
+                float spawnY = cy + sin(angle) * (WINDOW_HEIGHT / 2.0f - 30);
+
+                // Direction: aim toward center with some offset
+                float dirX = cx - spawnX;
+                float dirY = cy - spawnY;
+                float dirLen = std.math.sqrt(dirX * dirX + dirY * dirY);
+                if (dirLen > 0)
+                {
+                    dirX /= dirLen;
+                    dirY /= dirLen;
+                }
+
                 float hue = hueOffset + (360.0f * i / SPAWN_POINTS);
 
-                spawnParticles(spawnX, spawnY, hue);
+                spawnParticles(spawnX, spawnY, dirX, dirY, hue);
             }
 
             // ─────────────────────────────────────────────────────────────────
-            // Gameplay Phase
+            // Gameplay Phase — direct template calls, no virtual dispatch
             // ─────────────────────────────────────────────────────────────────
-            systemManager.run();
+            particleSystem(reg, dt);
+            stats.frameCollisions = collisionSystem(reg, dt);
+            stats.totalCollisions += stats.frameCollisions;
+            auto expired = timeoutSystem(reg, dt);
 
-            // Release expired entities back to pools
-            cleanupInactiveEntities();
-
-            // Count active entities
-            ulong activeCount = 0;
-            foreach (entity; em.getByComponent!Particle())
+            // Destroy expired entities
+            foreach (id; expired)
             {
-                if (entity !is null && entity.active)
-                    activeCount++;
+                reg.destroy(id);
             }
+
+            // Count active entities (use Particle store as reference)
+            ulong activeCount = reg.store!Particle.length;
             if (activeCount > stats.peakActiveEntities)
                 stats.peakActiveEntities = activeCount;
 
@@ -267,8 +195,7 @@ void main()
             BeginDrawing();
             ClearBackground(Color(15, 15, 25, 255));
 
-            // Draw particles
-            systemManager.runGraphics();
+            circleRenderer.run(reg, dt);
 
             // ─────────────────────────────────────────────────────────────────
             // Stats Overlay
@@ -279,51 +206,47 @@ void main()
             int overlayY = 15;
             int lineHeight = 22;
 
-            // Semi-transparent background for stats
-            DrawRectangle(10, 10, 280, 200, Color(0, 0, 0, 180));
+            DrawRectangle(10, 10, 280, 245, Color(0, 0, 0, 180));
 
-            // FPS
             DrawText("FPS:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%d", GetFPS())), overlayX + 100, overlayY, 18, Colors.LIME);
             overlayY += lineHeight;
 
-            // Active Entities
             DrawText("Entities:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%d", activeCount)), overlayX + 100, overlayY, 18, Colors
                     .YELLOW);
             overlayY += lineHeight;
 
-            // Total Created
             DrawText("Created:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%d", stats.totalEntitiesCreated)), overlayX + 100, overlayY, 18, Colors
                     .ORANGE);
             overlayY += lineHeight;
 
-            // GC Collections
             DrawText("GC Runs:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%d", profileStats.numCollections)), overlayX + 100, overlayY, 18, Colors
                     .SKYBLUE);
             overlayY += lineHeight;
 
-            // Memory Used
             DrawText("Memory:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%.2f MB", gcStats.usedSize / 1024.0 / 1024.0)), overlayX + 100, overlayY, 18, Colors
                     .PINK);
             overlayY += lineHeight;
 
-            // Peak Memory
             DrawText("Peak Mem:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%.2f MB", stats.peakMemoryUsed / 1024.0 / 1024.0)), overlayX + 100, overlayY, 18, Colors
                     .MAGENTA);
             overlayY += lineHeight;
 
-            // Max Pause Time
             DrawText("Max Pause:", overlayX, overlayY, 18, Colors.WHITE);
             DrawText(toStringz(format("%.2f ms", profileStats.maxPauseTime.total!"usecs" / 1000.0)), overlayX + 100, overlayY, 18, Colors
                     .RED);
             overlayY += lineHeight;
 
-            // Title at bottom
+            DrawText("Collisions:", overlayX, overlayY, 18, Colors.WHITE);
+            DrawText(toStringz(format("%d / %d", stats.frameCollisions, stats.totalCollisions)), overlayX + 100, overlayY, 18, Colors
+                    .LIME);
+            overlayY += lineHeight;
+
             DrawText("Press ESC to exit and view report",
                 WINDOW_WIDTH / 2 - 180, WINDOW_HEIGHT - 30, 18, Colors.GRAY);
 
@@ -365,6 +288,7 @@ void main()
         writefln("  Total Frames:          %d", stats.frameCount);
         writefln("  Total Entities Created: %d", stats.totalEntitiesCreated);
         writefln("  Peak Active Entities:   %d", stats.peakActiveEntities);
+        writefln("  Total Collisions:       %d", stats.totalCollisions);
         writeln("───────────────────────────────────────────────────────────────");
         writeln("  GC Statistics:");
         writefln("    Collections:         %d", profileStats.numCollections);
