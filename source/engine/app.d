@@ -2,6 +2,7 @@
 module engine.app;
 
 import bindings.sdl3;
+import bindings.wgpu;
 import engine.platform.window;
 import engine.platform.input;
 import engine.gpu.context;
@@ -20,13 +21,15 @@ struct App {
 
     @disable this(this);
 
-    static App create(const(char)* title, uint width, uint height) @trusted {
+    static App create(const(char)* title, uint width, uint height,
+                      WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
         App app;
         app.window   = Window.create(title, width, height);
         app.gpu      = GpuContext.create(
             app.window.waylandDisplay(),
             app.window.waylandSurface(),
             width, height,
+            presentMode,
         );
         app.renderer = Renderer.create(app.gpu);
         info("App ready");
@@ -56,7 +59,7 @@ struct App {
     }
 
     void destroy() {
-        renderer = Renderer.init;
+        renderer.destroy();
         gpu.destroy();
         window.destroy();
         info("App destroyed");

@@ -1,0 +1,9 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"bindbc-bgfx": "1.129.0",
+		"bindbc-common": "1.0.5",
+		"bindbc-loader": "1.1.5",
+		"raylib-d": "5.5.3"
+	}
+}

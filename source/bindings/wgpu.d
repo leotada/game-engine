@@ -201,15 +201,15 @@ enum WGPUCullMode : uint {
 }
 
 enum WGPUVertexFormat : uint {
-    float32   = 0x0000_0017,
-    float32x2 = 0x0000_0018,
-    float32x3 = 0x0000_0019,
-    float32x4 = 0x0000_001A,
-    uint32    = 0x0000_001F,
+    float32   = 0x0000_001C,
+    float32x2 = 0x0000_001D,
+    float32x3 = 0x0000_001E,
+    float32x4 = 0x0000_001F,
+    uint32    = 0x0000_0020,
     uint32x2  = 0x0000_0021,
     uint32x3  = 0x0000_0022,
     uint32x4  = 0x0000_0023,
-    unorm8x4  = 0x0000_000B,
+    unorm8x4  = 0x0000_0009,
 }
 
 enum WGPUVertexStepMode : uint {
@@ -350,6 +350,66 @@ enum WGPUStencilOperation : uint {
     decrementClamp = 0x0000_0006,
     incrementWrap  = 0x0000_0007,
     decrementWrap  = 0x0000_0008,
+}
+
+enum WGPUBufferBindingType : uint {
+    bindingNotUsed  = 0x0000_0000,
+    undefined       = 0x0000_0001,
+    uniform         = 0x0000_0002,
+    storage         = 0x0000_0003,
+    readOnlyStorage = 0x0000_0004,
+}
+
+enum WGPUSamplerBindingType : uint {
+    bindingNotUsed = 0x0000_0000,
+    undefined      = 0x0000_0001,
+    filtering      = 0x0000_0002,
+    nonFiltering   = 0x0000_0003,
+    comparison     = 0x0000_0004,
+}
+
+enum WGPUTextureSampleType : uint {
+    bindingNotUsed    = 0x0000_0000,
+    undefined         = 0x0000_0001,
+    float_            = 0x0000_0002,
+    unfilterableFloat = 0x0000_0003,
+    depth             = 0x0000_0004,
+    sint              = 0x0000_0005,
+    uint_             = 0x0000_0006,
+}
+
+enum WGPUStorageTextureAccess : uint {
+    bindingNotUsed = 0x0000_0000,
+    undefined      = 0x0000_0001,
+    writeOnly      = 0x0000_0002,
+    readOnly       = 0x0000_0003,
+    readWrite      = 0x0000_0004,
+}
+
+enum WGPUFilterMode : uint {
+    undefined = 0x0000_0000,
+    nearest   = 0x0000_0001,
+    linear    = 0x0000_0002,
+}
+
+enum WGPUMipmapFilterMode : uint {
+    undefined = 0x0000_0000,
+    nearest   = 0x0000_0001,
+    linear    = 0x0000_0002,
+}
+
+enum WGPUAddressMode : uint {
+    undefined    = 0x0000_0000,
+    clampToEdge  = 0x0000_0001,
+    repeat       = 0x0000_0002,
+    mirrorRepeat = 0x0000_0003,
+}
+
+enum WGPUShaderStage : WGPUFlags {
+    none     = 0x0000_0000,
+    vertex   = 0x0000_0001,
+    fragment = 0x0000_0002,
+    compute  = 0x0000_0004,
 }
 
 // ---------------------------------------------------------------------------
@@ -562,9 +622,22 @@ struct WGPURenderPassDescriptor {
     WGPUStringView label;
     size_t colorAttachmentCount = 0;
     const(WGPURenderPassColorAttachment)* colorAttachments;
-    void* depthStencilAttachment;
+    const(WGPURenderPassDepthStencilAttachment)* depthStencilAttachment;
     void* occlusionQuerySet;
     void* timestampWrites;
+}
+
+struct WGPURenderPassDepthStencilAttachment {
+    WGPUChainedStruct* nextInChain;
+    WGPUTextureView view;
+    WGPULoadOp depthLoadOp = WGPULoadOp.undefined;
+    WGPUStoreOp depthStoreOp = WGPUStoreOp.undefined;
+    float depthClearValue = 0.0f;
+    WGPUBool depthReadOnly = WGPU_FALSE;
+    WGPULoadOp stencilLoadOp = WGPULoadOp.undefined;
+    WGPUStoreOp stencilStoreOp = WGPUStoreOp.undefined;
+    uint stencilClearValue = 0;
+    WGPUBool stencilReadOnly = WGPU_FALSE;
 }
 
 // --- Shader ---
@@ -616,8 +689,8 @@ struct WGPUVertexAttribute {
 
 struct WGPUVertexBufferLayout {
     WGPUChainedStruct* nextInChain;
+    WGPUVertexStepMode stepMode = WGPUVertexStepMode.undefined;
     ulong arrayStride;
-    WGPUVertexStepMode stepMode = WGPUVertexStepMode.vertex;
     size_t attributeCount = 0;
     const(WGPUVertexAttribute)* attributes;
 }
@@ -711,6 +784,105 @@ struct WGPUTextureDescriptor {
     WGPUTextureFormat* viewFormats;
 }
 
+// --- Sampler ---
+struct WGPUSamplerDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    WGPUAddressMode addressModeU = WGPUAddressMode.clampToEdge;
+    WGPUAddressMode addressModeV = WGPUAddressMode.clampToEdge;
+    WGPUAddressMode addressModeW = WGPUAddressMode.clampToEdge;
+    WGPUFilterMode magFilter = WGPUFilterMode.nearest;
+    WGPUFilterMode minFilter = WGPUFilterMode.nearest;
+    WGPUMipmapFilterMode mipmapFilter = WGPUMipmapFilterMode.nearest;
+    float lodMinClamp = 0.0f;
+    float lodMaxClamp = 32.0f;
+    WGPUCompareFunction compare = WGPUCompareFunction.undefined;
+    ushort maxAnisotropy = 1;
+}
+
+// --- Bind Group ---
+struct WGPUBufferBindingLayout {
+    WGPUChainedStruct* nextInChain;
+    WGPUBufferBindingType type = WGPUBufferBindingType.bindingNotUsed;
+    WGPUBool hasDynamicOffset = WGPU_FALSE;
+    ulong minBindingSize = 0;
+}
+
+struct WGPUSamplerBindingLayout {
+    WGPUChainedStruct* nextInChain;
+    WGPUSamplerBindingType type = WGPUSamplerBindingType.bindingNotUsed;
+}
+
+struct WGPUTextureBindingLayout {
+    WGPUChainedStruct* nextInChain;
+    WGPUTextureSampleType sampleType = WGPUTextureSampleType.bindingNotUsed;
+    WGPUTextureViewDimension viewDimension = WGPUTextureViewDimension.undefined;
+    WGPUBool multisampled = WGPU_FALSE;
+}
+
+struct WGPUStorageTextureBindingLayout {
+    WGPUChainedStruct* nextInChain;
+    WGPUStorageTextureAccess access = WGPUStorageTextureAccess.bindingNotUsed;
+    WGPUTextureFormat format = WGPUTextureFormat.undefined;
+    WGPUTextureViewDimension viewDimension = WGPUTextureViewDimension.undefined;
+}
+
+struct WGPUBindGroupLayoutEntry {
+    WGPUChainedStruct* nextInChain;
+    uint binding = 0;
+    WGPUShaderStage visibility = WGPUShaderStage.none;
+    uint bindingArraySize = 0;
+    WGPUBufferBindingLayout buffer;
+    WGPUSamplerBindingLayout sampler;
+    WGPUTextureBindingLayout texture;
+    WGPUStorageTextureBindingLayout storageTexture;
+}
+
+struct WGPUBindGroupLayoutDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    size_t entryCount = 0;
+    const(WGPUBindGroupLayoutEntry)* entries;
+}
+
+struct WGPUBindGroupEntry {
+    WGPUChainedStruct* nextInChain;
+    uint binding = 0;
+    WGPUBuffer buffer;
+    ulong offset = 0;
+    ulong size = 0;
+    WGPUSampler sampler;
+    WGPUTextureView textureView;
+}
+
+struct WGPUBindGroupDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    WGPUBindGroupLayout layout;
+    size_t entryCount = 0;
+    const(WGPUBindGroupEntry)* entries;
+}
+
+// --- Texture write ---
+struct WGPUOrigin3D {
+    uint x = 0;
+    uint y = 0;
+    uint z = 0;
+}
+
+struct WGPUImageCopyTexture {
+    WGPUTexture texture;
+    uint mipLevel = 0;
+    WGPUOrigin3D origin;
+    WGPUTextureAspect aspect = WGPUTextureAspect.all;
+}
+
+struct WGPUTextureDataLayout {
+    ulong offset = 0;
+    uint bytesPerRow = 0;
+    uint rowsPerImage = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Functions
 // ---------------------------------------------------------------------------
@@ -737,6 +909,10 @@ WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const(WGPUShade
 WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, const(WGPURenderPipelineDescriptor)* descriptor);
 WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, const(WGPUBufferDescriptor)* descriptor);
 WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, const(WGPUPipelineLayoutDescriptor)* descriptor);
+WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, const(WGPUTextureDescriptor)* descriptor);
+WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, const(WGPUSamplerDescriptor)* descriptor);
+WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(WGPUDevice device, const(WGPUBindGroupLayoutDescriptor)* descriptor);
+WGPUBindGroup wgpuDeviceCreateBindGroup(WGPUDevice device, const(WGPUBindGroupDescriptor)* descriptor);
 void wgpuDeviceDestroy(WGPUDevice device);
 void wgpuDeviceAddRef(WGPUDevice device);
 void wgpuDeviceRelease(WGPUDevice device);
@@ -744,6 +920,7 @@ void wgpuDeviceRelease(WGPUDevice device);
 // Queue
 void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, const(WGPUCommandBuffer)* commands);
 void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, ulong bufferOffset, const(void)* data, size_t size);
+void wgpuQueueWriteTexture(WGPUQueue queue, const(WGPUImageCopyTexture)* destination, const(void)* data, size_t dataSize, const(WGPUTextureDataLayout)* dataLayout, const(WGPUExtent3D)* writeSize);
 void wgpuQueueAddRef(WGPUQueue queue);
 void wgpuQueueRelease(WGPUQueue queue);
 
@@ -779,6 +956,7 @@ void wgpuCommandEncoderRelease(WGPUCommandEncoder encoder);
 void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder encoder, WGPURenderPipeline pipeline);
 void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder encoder, uint slot, WGPUBuffer buffer, ulong offset, ulong size);
 void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder encoder, WGPUBuffer buffer, WGPUIndexFormat format, ulong offset, ulong size);
+void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder encoder, uint groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const(uint)* dynamicOffsets);
 void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder encoder, uint vertexCount, uint instanceCount, uint firstVertex, uint firstInstance);
 void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder encoder, uint indexCount, uint instanceCount, uint firstIndex, int baseVertex, uint firstInstance);
 void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder);
@@ -807,3 +985,15 @@ void wgpuPipelineLayoutRelease(WGPUPipelineLayout layout);
 // CommandBuffer
 void wgpuCommandBufferAddRef(WGPUCommandBuffer buffer);
 void wgpuCommandBufferRelease(WGPUCommandBuffer buffer);
+
+// Sampler
+void wgpuSamplerAddRef(WGPUSampler sampler);
+void wgpuSamplerRelease(WGPUSampler sampler);
+
+// BindGroup
+void wgpuBindGroupAddRef(WGPUBindGroup group);
+void wgpuBindGroupRelease(WGPUBindGroup group);
+
+// BindGroupLayout
+void wgpuBindGroupLayoutAddRef(WGPUBindGroupLayout layout);
+void wgpuBindGroupLayoutRelease(WGPUBindGroupLayout layout);

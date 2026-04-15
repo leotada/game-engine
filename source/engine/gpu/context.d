@@ -14,12 +14,14 @@ struct GpuContext {
     private WGPUQueue     queue;
     private WGPUSurface   surface;
     private WGPUTextureFormat surfaceFormat;
+    private WGPUPresentMode presentModeVal;
     private uint surfW, surfH;
 
     @disable this(this);
 
     /// Initialize the full WGPU stack with a Wayland surface.
-    static GpuContext create(void* wlDisplay, void* wlSurface, uint width, uint height) @trusted {
+    static GpuContext create(void* wlDisplay, void* wlSurface, uint width, uint height,
+                             WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
         GpuContext ctx;
 
         // 1. Instance
@@ -83,6 +85,7 @@ struct GpuContext {
 
         // 6. Configure surface
         ctx.surfaceFormat = WGPUTextureFormat.bgra8Unorm;
+        ctx.presentModeVal = presentMode;
         ctx.surfW = width;
         ctx.surfH = height;
         ctx.configureSurface();
@@ -98,7 +101,7 @@ struct GpuContext {
         config.usage       = WGPUTextureUsage.renderAttachment;
         config.width       = surfW;
         config.height      = surfH;
-        config.presentMode = WGPUPresentMode.fifo;
+        config.presentMode = presentModeVal;
         config.alphaMode   = WGPUCompositeAlphaMode.opaque;
         wgpuSurfaceConfigure(surface, &config);
     }

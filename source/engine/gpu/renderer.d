@@ -13,13 +13,38 @@ struct Color {
 
 struct Renderer {
     private GpuContext* ctx;
+    private WGPUTexture  depthTexture;
+    private WGPUTextureView depthView;
 
     @disable this(this);
 
     static Renderer create(return ref GpuContext gpuCtx) @trusted {
         Renderer r;
         r.ctx = &gpuCtx;
+        r.createDepthBuffer(gpuCtx.width(), gpuCtx.height());
         return r;
+    }
+
+    private void createDepthBuffer(uint w, uint h) nothrow @nogc @trusted {
+        releaseDepthBuffer();
+
+        WGPUTextureDescriptor desc;
+        desc.usage     = WGPUTextureUsage.renderAttachment;
+        desc.dimension = WGPUTextureDimension.dim2D;
+        desc.size      = WGPUExtent3D(w, h, 1);
+        desc.format    = WGPUTextureFormat.depth24Plus;
+
+        depthTexture = wgpuDeviceCreateTexture(ctx.getDevice(), &desc);
+
+        WGPUTextureViewDescriptor viewDesc;
+        viewDesc.format    = WGPUTextureFormat.depth24Plus;
+        viewDesc.dimension = WGPUTextureViewDimension.dim2D;
+        depthView = wgpuTextureCreateView(depthTexture, &viewDesc);
+    }
+
+    private void releaseDepthBuffer() nothrow @nogc @trusted {
+        if (depthView !is null)    { wgpuTextureViewRelease(depthView); depthView = null; }
+        if (depthTexture !is null) { wgpuTextureRelease(depthTexture); depthTexture = null; }
     }
 
     /// Begin a frame: acquire surface texture, clear with given color,
@@ -56,6 +81,13 @@ struct Renderer {
         passDesc.colorAttachmentCount = 1;
         passDesc.colorAttachments     = &colorAtt;
 
+        WGPURenderPassDepthStencilAttachment depthAtt;
+        depthAtt.view           = depthView;
+        depthAtt.depthLoadOp    = WGPULoadOp.clear;
+        depthAtt.depthStoreOp   = WGPUStoreOp.store;
+        depthAtt.depthClearValue = 1.0f;
+        passDesc.depthStencilAttachment = &depthAtt;
+
         auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
 
         return FrameContext(surfTex.texture, view, encoder, pass, true);
@@ -81,6 +113,14 @@ struct Renderer {
         wgpuTextureRelease(frame.texture);
 
         frame = FrameContext.init;
+    }
+
+    void resize(uint w, uint h) nothrow @nogc {
+        createDepthBuffer(w, h);
+    }
+
+    void destroy() nothrow @nogc {
+        releaseDepthBuffer();
     }
 }
 

@@ -17,7 +17,16 @@
         {
             "name": "demo",
             "targetType": "executable",
-            "targetName": "game-engine-demo"
+            "targetName": "game-engine-demo",
+            "mainSourceFile": "source/demo/main.d",
+            "excludedSourceFiles": ["source/demo/benchmark.d"]
+        },
+        {
+            "name": "benchmark",
+            "targetType": "executable",
+            "targetName": "game-engine-benchmark",
+            "mainSourceFile": "source/demo/benchmark.d",
+            "excludedSourceFiles": ["source/demo/main.d"]
         },
         {
             "name": "library",

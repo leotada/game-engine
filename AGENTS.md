@@ -87,19 +87,29 @@ source/
 │   ├── package.d       # Top-level re-export: `import engine;`
 │   ├── core/           # Logging, RAII handles
 │   ├── ecs/            # Sparse-set ComponentStore, World template
-│   ├── gpu/            # WGPU context lifecycle, renderer (frame management)
+│   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text
+│   │   ├── buffer.d    # Vertex, index, uniform, dynamic buffer helpers
+│   │   ├── context.d   # WGPU lifecycle (instance→adapter→device→surface)
+│   │   ├── pipeline.d  # Pipeline3D (instanced 3D) and PipelineText (bitmap font)
+│   │   ├── renderer.d  # Frame management (beginFrame/endFrame, depth buffer)
+│   │   ├── shader.d    # WGSL shader module creation
+│   │   ├── shaders.d   # Embedded WGSL sources (cube3D, text2D)
+│   │   └── text.d      # Bitmap font atlas (8×8 CP437), TextRenderer, FpsCounter
 │   ├── math/           # Vec2/3/4, Mat4 (perspective, lookAt, transforms)
 │   └── platform/       # SDL3 window wrapper, input state
 └── demo/               # Executable demos
-    └── main.d          # Clear-screen demo
+    ├── main.d          # Clear-screen demo
+    └── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
 ```
 
 ## Build Commands
 
 ```bash
-dub build --config=demo              # Debug build
+dub build --config=demo              # Debug build (clear-screen demo)
+dub build --config=benchmark         # Debug build (3D benchmark)
 dub build --config=demo --build=release  # Release build
-dub run --config=demo                # Build and run
+dub run --config=demo                # Build and run demo
+dub run --config=benchmark           # Build and run benchmark
 dub build --config=library           # Build as static library
 ```
 
@@ -138,3 +148,5 @@ dub build --config=library           # Build as static library
 - **Returning scope variables** — DIP1000 forbids returning pointers to stack-allocated data. Use `return ref` or allocate on the caller's side.
 - **Using classes for components** — breaks cache locality and involves GC. Components must be structs.
 - **Adding bindbc dependencies** — we maintain our own bindings. Don't add third-party binding packages to dub.json.
+- **Wrong WGPU enum values** — enum values in `bindings/wgpu.d` **must** match the official `webgpu.h` header exactly. Always cross-reference `https://github.com/webgpu-native/webgpu-headers/blob/main/webgpu.h` when adding or modifying enums. Mismatched values cause silent data corruption (e.g., wrong `WGPUVertexFormat` makes geometry invisible with no errors).
+- **Forgetting `BindingNotUsed = 0`** — since webgpu.h v29, many enums (e.g., `WGPUBufferBindingType`, `WGPUSamplerBindingType`, `WGPUTextureSampleType`, `WGPUStorageTextureAccess`) have `BindingNotUsed = 0` before `Undefined = 1`. Default init values for sub-structs in `WGPUBindGroupLayoutEntry` must use `BindingNotUsed` (0), not `Undefined` (1).
