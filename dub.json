@@ -1,27 +1,29 @@
 {
-  "authors": ["Leonardo Tada"],
-  "copyright": "Copyright © 2022, Leonardo Tada",
-    "dependencies": {
-      "raylib-d": "~>5.5.3"
-    },
-    "libs": [ "raylib" ],
-    "lflags-posix" : ["-L."],
-    "lflags-linux" : ["-rpath=$$ORIGIN"],
-    "lflags-osx" : ["-rpath", "@executable_path/"],
-    "dflags": ["-preview=dip1000"],
-    "description": "A minimal D application.",
-    "license": "proprietary",
     "name": "game-engine",
+    "description": "Modern 3D game engine in D — WGPU + SDL3",
+    "authors": ["Leonardo Tada"],
+    "copyright": "Copyright © 2022-2026, Leonardo Tada",
+    "license": "proprietary",
+
+    "sourcePaths": ["source/engine", "source/bindings", "source/demo"],
+    "importPaths": ["source"],
+
+    "dflags": ["-preview=dip1000"],
+
+    "libs": ["SDL3", "wgpu_native"],
+    "lflags-linux": ["-L./libs"],
+
     "configurations": [
-      {
-        "name": "default",
-        "targetType": "executable",
-        "mainSourceFile": "source/app.d"
-      },
-      {
-        "name": "benchmark",
-        "targetType": "executable",
-        "mainSourceFile": "source/benchmark.d"
-      }
+        {
+            "name": "demo",
+            "targetType": "executable",
+            "targetName": "game-engine-demo"
+        },
+        {
+            "name": "library",
+            "targetType": "library",
+            "targetName": "game-engine",
+            "excludedSourceFiles": ["source/demo/*"]
+        }
     ]
-  }
+}

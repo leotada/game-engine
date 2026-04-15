@@ -1,102 +1,193 @@
 # Game Engine
 
-A high-performance game engine built in D using **Data-Oriented Design** and **compile-time metaprogramming** for zero-overhead ECS architecture.
+A commercial-grade 3D game engine built in **D**, designed to match the architectural quality of Rust's Bevy Engine — proving that D is a viable language for high-performance, production game engines.
 
-## Performance
+**WGPU + SDL3 | ECS with SoA Sparse Sets | `@safe` by Default | DIP1000**
 
-**Benchmark Results** (Release build, 17k active entities):
-- **268.6 FPS** average
-- **0.78 ms** max GC pause time
-- **3.72 ms** average frame time
-- **188k entities** created over 20 seconds
+## Why D?
+
+D sits at the intersection of C++ performance and high-level ergonomics. This engine exploits what makes D uniquely powerful for games:
+
+- **Compile-time metaprogramming** — variadic templates generate zero-overhead ECS stores, no runtime reflection
+- **`@safe` by default** — memory safety without a borrow checker, with `@trusted` escape hatches for C interop
+- **DIP1000 scope semantics** — stack-allocated references with compile-time lifetime tracking
+- **No mandatory GC in hot paths** — struct-based DOD keeps the GC idle during frame execution. Engine core enforces `@nogc` on the entire frame loop while gameplay systems are free to use the GC for convenience
+- **Direct C interop** — `extern(C)` bindings to SDL3 and WGPU-native with zero wrapper overhead
 
 ## Architecture
 
-### Data-Oriented ECS with Metaprogramming
-
-This engine uses **compile-time code generation** to eliminate virtual dispatch and maximize cache locality:
-
-- **Components** are POD structs in contiguous arrays (cache-friendly)
-- **Registry** uses variadic templates to generate stores at compile time
-- **Systems** are template functions (zero vtable overhead)
-- **Entities** are just `uint` IDs (no heap allocations)
-- **Sparse Set** for O(1) component lookup without hash maps
-
 ```
 source/
-├── app.d                  # Main entry point with game loop
-├── benchmark.d            # Performance benchmark (20s stress test)
-├── ecs/
-│   ├── package.d          # ECS public exports
-│   ├── store.d            # ComponentStore(T) with sparse set
-│   └── registry.d         # Registry!(Components...) variadic template
-├── component/
-│   ├── package.d          # Component exports
-│   ├── position.d         # Position struct (x, y, z)
-│   ├── particle.d         # Particle physics struct
-│   ├── circle.d           # Circle rendering struct
-│   └── timeout.d          # Timeout lifecycle struct
-├── system/
-│   ├── package.d          # System exports
-│   ├── particle.d         # Physics system (template function)
-│   ├── timeout.d          # Timeout system (template function)
-│   └── circle.d           # Circle renderer (struct with template method)
-├── math/
-│   └── vector.d           # 3D Vector math (POD struct)
-└── docs/
-    └── why-this-is-fast.md  # Performance explanation for Python programmers
+├── bindings/              # C API bindings (extern(C), @nogc, nothrow)
+│   ├── sdl3.d             # SDL3 — window, events, input, Wayland
+│   └── wgpu.d             # WGPU-native — GPU resources, render pipeline
+├── engine/
+│   ├── app.d              # Application framework (window + GPU + input loop)
+│   ├── core/
+│   │   ├── log.d          # Logging (trace/info/warn/err/fatal)
+│   │   └── resource.d     # RAII Handle(T) — move-only GPU resource wrapper
+│   ├── ecs/
+│   │   ├── store.d        # ComponentStore(T) — sparse-set SoA, O(1) ops
+│   │   └── world.d        # World!(Components...) — compile-time registry
+│   ├── gpu/
+│   │   ├── context.d      # WGPU lifecycle (instance→adapter→device→surface)
+│   │   └── renderer.d     # Frame management (beginFrame/endFrame, clear)
+│   ├── math/
+│   │   ├── vec.d          # Vec2, Vec3, Vec4
+│   │   └── mat.d          # Mat4 (perspective, lookAt, transforms)
+│   └── platform/
+│       ├── window.d       # SDL3 window + Wayland handle extraction
+│       └── input.d        # Per-frame keyboard/mouse state tracking
+└── demo/
+    └── main.d             # Minimal clear-screen demo
 ```
 
-### Key Optimizations
+### Design Principles
 
-1. **Cache Locality**: All components of the same type stored contiguously in `T[]` arrays
-2. **Sparse Set**: O(1) component access via `sparse[entityId] → dense[idx]` (no hash maps)
-3. **Compile-Time Dispatch**: `Registry!(Position, Particle, Circle, Timeout)` generates specialized stores
-4. **Template Systems**: Systems are template functions resolved at compile time (no vtable)
+| Principle | Implementation |
+|:---|:---|
+| **Bevy-like ECS** | Sparse-set stores with compile-time `World!(Components...)` — no vtables, no runtime type lookup |
+| **`@safe` by default** | Every module is `@safe:` at top level. C interop wrapped in `@trusted` with minimal surface |
+| **Data-Oriented Design** | Components are POD structs in contiguous `T[]` arrays. Entities are `uint` IDs |
+| **Zero-overhead abstractions** | Template systems resolved at compile time. RAII handles for GPU resources |
+| **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `!hasIndirections` — no GC pointers in data |
+| **Native Wayland** | SDL3 extracts `wl_display`/`wl_surface` for WGPU surface creation. No X11 dependency |
 
-See [docs/why-this-is-fast.md](docs/why-this-is-fast.md) for detailed explanation.
+### ECS — Bevy-Class Performance in D
+
+The ECS is the heart of the engine, inspired by Bevy's sparse-set architecture:
+
+- **`ComponentStore(T)`** — O(1) add/remove/lookup via sparse-set, swap-and-pop removal, dense iteration over contiguous arrays
+- **`World!(Components...)`** — variadic template generates one store per component at compile time. Zero runtime overhead for type dispatch
+- **Entities** — plain `uint` IDs, no heap allocation, O(1) alive check
+
+```d
+// Define a world with your component types
+alias GameWorld = World!(Position, Velocity, Sprite, Health);
+
+auto world = GameWorld();
+auto player = world.spawn();
+world.set(player, Position(0, 0, 0));
+world.set(player, Velocity(1, 0, 0));
+```
+
+### GPU Stack
+
+| Layer | Technology | Purpose |
+|:---|:---|:---|
+| Window | SDL3 | Cross-platform window, events, Wayland-native |
+| GPU API | WGPU-native | Vulkan/Metal/DX12 via WebGPU abstraction |
+| Bindings | `extern(C)` | Direct C99 API — no bindbc, no wrapper overhead |
+| Resources | `Handle(T)` | RAII move-only wrappers, deterministic release |
+
+### GC Policy — Engine vs Gameplay
+
+The engine uses a **two-layer GC model**, similar to Unity (C++ engine / C# gameplay) but within a single language:
+
+| Layer | GC | Who |
+|:---|:---|:---|
+| **Engine core** (`engine/`) | Forbidden — `@nogc` on all frame-loop functions | Engine developers |
+| **Gameplay** (systems, game logic) | Allowed by default — opt into `@nogc` for perf-critical systems | Game developers |
+
+**Component data is always strict** — `ComponentStore` enforces `!hasIndirections!T` at compile time, so the GC never scans dense arrays even with thousands of entities. **System logic is free** — gameplay code may allocate, use `string`, `format`, dynamic arrays, and closures. Developers who need maximum performance can mark individual systems `@nogc` and use pre-allocated buffers.
+
+```d
+// Gameplay system — GC is allowed, write naturally
+void damageSystem(W)(ref W world) {
+    int[] toKill;  // GC-allocated dynamic array
+    foreach (id; world.query!(Health, DamageReceived)()) {
+        auto hp = world.get!Health(id);
+        hp.current -= world.get!DamageReceived(id).amount;
+        world.set(id, hp);
+        if (hp.current <= 0) toKill ~= id;
+    }
+    foreach (id; toKill) world.destroy(id);
+}
+
+// Same system, optimized — opt into @nogc when needed
+void damageSystem(W)(ref W world) @nogc nothrow {
+    EntityId[128] killBuf = void;
+    size_t killCount = 0;
+    foreach (id; world.query!(Health, DamageReceived)()) {
+        auto hp = world.get!Health(id);
+        hp.current -= world.get!DamageReceived(id).amount;
+        world.set(id, hp);
+        if (hp.current <= 0 && killCount < killBuf.length)
+            killBuf[killCount++] = id;
+    }
+    foreach (id; killBuf[0 .. killCount]) world.destroy(id);
+}
+```
 
 ## Requirements
 
-- D compiler (DMD, LDC, or GDC)
-- [DUB](https://dub.pm/) package manager
-- [Raylib](https://www.raylib.com/) library (version 5.0+)
+- **D compiler**: DMD or LDC2
+- **SDL3**: `libSDL3.so` (system package or built from source)
+- **WGPU-native**: `libwgpu_native.a` in `libs/` (see below)
+- **OS**: Linux with Wayland (primary target)
 
 ## Building
 
 ```bash
-# Build the project
-dub build
+# Build the demo
+dub build --config=demo
 
-# Build with optimizations
-dub build --build=release
+# Build with optimizations (LDC2 recommended for production)
+dub build --config=demo --build=release
 
-# Run the demo
-dub run
+# Run
+dub run --config=demo
 
-# Run benchmark (20 second stress test)
-dub run --config=benchmark --build=release
+# Build as library (for embedding in other projects)
+dub build --config=library
+```
 
-# Run unit tests
-dub test
+### Installing WGPU-native
+
+```bash
+curl -sL https://github.com/gfx-rs/wgpu-native/releases/latest/download/wgpu-linux-x86_64-release.zip \
+  -o /tmp/wgpu.zip
+unzip -o /tmp/wgpu.zip -d /tmp/wgpu
+cp /tmp/wgpu/lib/libwgpu_native.a libs/
 ```
 
 ## Demo
 
-The default demo spawns 600 particles with gravity that timeout after 2 seconds.
+The included demo creates a window and clears it with a dark blue color — the minimal proof that the full stack works (SDL3 window → Wayland surface → WGPU instance → adapter → device → render pass → present):
 
-The benchmark spawns particles continuously from 7 fountain points, stress-testing the ECS with thousands of active entities.
+```d
+import engine;
 
-## GC and Real-Time Performance
+void main() {
+    auto app = App.create("Game Engine Demo", 1280, 720);
+    scope(exit) app.destroy();
 
-This engine proves that **GC + real-time is viable** with proper architecture:
+    while (app.running) {
+        app.pollEvents();
+        if (app.input.keyPressed(Key.escape)) app.close();
 
-- **0.78 ms max pause** (vs 16.6 ms frame budget at 60 FPS)
-- **Struct-based DOD** reduces GC scan from ~100k objects to ~10 objects
-- **No manual memory management** needed — GC overhead is negligible
+        auto frame = app.beginFrame(Color(0.05, 0.05, 0.12, 1.0));
+        app.endFrame(frame);
+    }
+}
+```
 
-The key: keep hot data in structs/arrays, not classes on the heap.
+## Roadmap
+
+- [x] Phase 1 — Core stack (SDL3 + WGPU + ECS + math + clear screen)
+- [ ] Phase 2 — Mesh rendering (vertex/index buffers, WGSL shaders, render pipeline)
+- [ ] Phase 3 — Materials and textures
+- [ ] Phase 4 — Scene graph and transforms
+- [ ] Phase 5 — 3D camera, lighting, shadows
+- [ ] Phase 6 — Asset pipeline (glTF, image loading)
+- [ ] Phase 7 — Audio (SDL3 audio subsystem)
+- [ ] Phase 8 — Editor tooling
+
+## Documentation
+
+- [docs/graphics.md](docs/graphics.md) — GPU architecture and rendering pipeline
+- [docs/why-this-is-fast.md](docs/why-this-is-fast.md) — Data-Oriented Design explained for programmers from other languages
 
 ## License
 
-Proprietary - Copyright © 2022, Leonardo Tada
+Proprietary — Copyright © 2022–2026, Leonardo Tada
