@@ -4,7 +4,6 @@ module demo.game;
 
 import engine.app;
 import engine.gpu.text;
-import engine.gpu.renderer : Color;
 import engine.math.mat;
 import engine.math.vec;
 import engine.core.log;
@@ -308,26 +307,26 @@ void main() {
         }
 
         // --- Render ---
-        auto frame = app.beginFrame(Color(0.05f, 0.06f, 0.12f, 1.0f));
+        auto frame = app.beginFrame(Color4(0.05f, 0.06f, 0.12f));
         if (!frame.valid) continue;
 
         scene.end(frame);
 
         // --- HUD ---
         textRenderer.beginFrame();
-        textRenderer.drawText(frame.pass, fps.text(), 10, 10, 2);
+        textRenderer.drawText(frame, fps.text(), 10, 10, 2);
 
-        textRenderer.drawText(frame.pass, format!"Crystals: %d/%d"(score, NUM_CRYSTALS), SCREEN_W / 2 - 80, 10, 2);
-        textRenderer.drawText(frame.pass, format!"Lives: %d"(lives), SCREEN_W - 150, 10, 2);
+        textRenderer.drawText(frame, format!"Crystals: %d/%d"(score, NUM_CRYSTALS), SCREEN_W / 2 - 80, 10, 2);
+        textRenderer.drawText(frame, format!"Lives: %d"(lives), SCREEN_W - 150, 10, 2);
 
         if (gameState == GameState.won) {
-            textRenderer.drawText(frame.pass, "YOU WIN!", SCREEN_W / 2 - 80, SCREEN_H / 2 - 30, 4);
-            textRenderer.drawText(frame.pass, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
+            textRenderer.drawText(frame, "YOU WIN!", SCREEN_W / 2 - 80, SCREEN_H / 2 - 30, 4);
+            textRenderer.drawText(frame, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
         } else if (gameState == GameState.lost) {
-            textRenderer.drawText(frame.pass, "GAME OVER", SCREEN_W / 2 - 90, SCREEN_H / 2 - 30, 4);
-            textRenderer.drawText(frame.pass, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
+            textRenderer.drawText(frame, "GAME OVER", SCREEN_W / 2 - 90, SCREEN_H / 2 - 30, 4);
+            textRenderer.drawText(frame, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
         } else {
-            textRenderer.drawText(frame.pass, "WASD:move  Arrows:camera", 10, SCREEN_H - 30, 2);
+            textRenderer.drawText(frame, "WASD:move  Arrows:camera", 10, SCREEN_H - 30, 2);
         }
 
         app.endFrame(frame);

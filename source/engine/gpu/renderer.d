@@ -3,6 +3,7 @@ module engine.gpu.renderer;
 
 import bindings.wgpu;
 import engine.gpu.context;
+import engine.graphics.types : Color4;
 import engine.core.log;
 
 @safe:
@@ -51,6 +52,15 @@ struct Renderer {
     /// return the render pass encoder for additional draw commands.
     /// Returns null on surface error (skip frame).
     FrameContext beginFrame(Color clear) nothrow @nogc @trusted {
+        return beginFrameImpl(clear.r, clear.g, clear.b, clear.a);
+    }
+
+    /// Convenience: accept a Color4 directly.
+    FrameContext beginFrame(Color4 clear) nothrow @nogc @trusted {
+        return beginFrameImpl(clear.r, clear.g, clear.b, clear.a);
+    }
+
+    private FrameContext beginFrameImpl(double cr, double cg, double cb, double ca) nothrow @nogc @trusted {
         // 1. Get current surface texture
         WGPUSurfaceTexture surfTex;
         wgpuSurfaceGetCurrentTexture(ctx.getSurface(), &surfTex);
@@ -74,7 +84,7 @@ struct Renderer {
         colorAtt.view       = view;
         colorAtt.loadOp     = WGPULoadOp.clear;
         colorAtt.storeOp    = WGPUStoreOp.store;
-        colorAtt.clearValue = WGPUColor(clear.r, clear.g, clear.b, clear.a);
+        colorAtt.clearValue = WGPUColor(cr, cg, cb, ca);
         colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
 
         WGPURenderPassDescriptor passDesc;

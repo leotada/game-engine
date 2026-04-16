@@ -7,6 +7,7 @@ import bindings.sdl3;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline;
+import engine.gpu.renderer : FrameContext;
 import engine.core.log;
 
 @safe:
@@ -345,6 +346,12 @@ struct TextRenderer {
         viewDesc.format    = WGPUTextureFormat.r8Unorm;
         viewDesc.dimension = WGPUTextureViewDimension.dim2D;
         fontTextureView = wgpuTextureCreateView(fontTexture, &viewDesc);
+    }
+
+    /// Draw a text string at pixel position (x, y) using a FrameContext.
+    void drawText(ref FrameContext frame, scope const(char)[] text,
+                  float x, float y, int scale = 2) nothrow @nogc {
+        if (frame.valid) drawText(frame.pass, text, x, y, scale);
     }
 
     /// Draw a text string at pixel position (x, y) using the given render pass.

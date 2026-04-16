@@ -7,6 +7,7 @@ import engine.platform.window;
 import engine.platform.input;
 import engine.gpu.context;
 import engine.gpu.renderer;
+import engine.graphics.types : Color4;
 import engine.core.log;
 
 @safe:
@@ -51,6 +52,11 @@ struct App {
     }
 
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
+        return renderer.beginFrame(clearColor);
+    }
+
+    /// Convenience: accept a Color4 directly.
+    FrameContext beginFrame(Color4 clearColor) nothrow @nogc {
         return renderer.beginFrame(clearColor);
     }
 

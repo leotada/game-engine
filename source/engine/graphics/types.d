@@ -30,4 +30,5 @@ struct Color4 {
     static Color4 green()  pure nothrow @nogc { return Color4(0, 1, 0, 1); }
     static Color4 blue()   pure nothrow @nogc { return Color4(0, 0, 1, 1); }
     static Color4 yellow() pure nothrow @nogc { return Color4(1, 1, 0, 1); }
+    static Color4 black()  pure nothrow @nogc { return Color4(0, 0, 0, 1); }
 }

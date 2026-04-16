@@ -37,6 +37,13 @@ source/
 │   │   ├── shader.d       # WGSL shader module creation
 │   │   ├── shaders.d      # Embedded WGSL shader sources (cube3D, text2D)
 │   │   └── text.d         # Bitmap font atlas, TextRenderer, FpsCounter
+│   ├── graphics/          # Mid-level graphics resources
+│   │   ├── types.d        # Vert, InstanceData, Color4
+│   │   ├── primitives.d   # Built-in vertex/index data (cube, pyramid, diamond)
+│   │   └── mesh.d         # GPU mesh handle with static factories
+│   ├── scene/             # Game-level scene management
+│   │   ├── camera.d       # Perspective camera (create, lookAt, viewProjection)
+│   │   └── scene3d.d      # Batched instanced 3D renderer (begin/draw/end)
 │   ├── math/
 │   │   ├── vec.d          # Vec2, Vec3, Vec4
 │   │   └── mat.d          # Mat4 (perspective, lookAt, transforms)
@@ -45,6 +52,7 @@ source/
 │       └── input.d        # Per-frame keyboard/mouse state tracking
 └── demo/
     ├── main.d             # Minimal clear-screen demo
+    ├── game.d             # Crystal Collector 3D — high-level API demo
     └── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
 ```
 
