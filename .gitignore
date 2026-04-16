@@ -13,6 +13,9 @@
 
 # Executables
 *.exe
+game-engine-demo
+game-engine-benchmark
+crystal-collector
 
 # DUB
 .dub

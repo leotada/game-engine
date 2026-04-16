@@ -232,6 +232,7 @@ struct TextRenderer {
     private WGPUDevice   device;
     private WGPUQueue    queue;
     private uint screenW, screenH;
+    private size_t frameVertexOffset = 0;  // bytes used so far this frame
 
     enum MAX_CHARS = 256;
     // 6 vertices per char (2 triangles), 4 floats per vertex (x,y,u,v)
@@ -290,6 +291,11 @@ struct TextRenderer {
 
         info("TextRenderer initialized");
         return t;
+    }
+
+    /// Call once per frame before any drawText calls to reset the vertex offset.
+    void beginFrame() nothrow @nogc {
+        frameVertexOffset = 0;
     }
 
     private void createFontAtlas() nothrow @nogc @trusted {
@@ -383,12 +389,18 @@ struct TextRenderer {
         if (vi == 0) return;
 
         immutable vertexBytes = vi * float.sizeof;
-        wgpuQueueWriteBuffer(queue, textVertexBuf, 0, verts.ptr, vertexBytes);
+
+        // Check we don't overflow the vertex buffer
+        if (frameVertexOffset + vertexBytes > VERTEX_BUF_SIZE) return;
+
+        wgpuQueueWriteBuffer(queue, textVertexBuf, frameVertexOffset, verts.ptr, vertexBytes);
 
         wgpuRenderPassEncoderSetPipeline(pass, textPipeline.pipeline);
         wgpuRenderPassEncoderSetBindGroup(pass, 0, textBindGroup, 0, null);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, textVertexBuf, 0, vertexBytes);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, textVertexBuf, frameVertexOffset, vertexBytes);
         wgpuRenderPassEncoderDraw(pass, cast(uint)(vi / 4), 1, 0, 0);
+
+        frameVertexOffset += vertexBytes;
     }
 
     void destroy() nothrow @nogc @trusted {
