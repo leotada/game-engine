@@ -6,4 +6,6 @@ public import engine.ecs;
 public import engine.math;
 public import engine.platform;
 public import engine.gpu;
+public import engine.graphics;
+public import engine.scene;
 public import engine.app;

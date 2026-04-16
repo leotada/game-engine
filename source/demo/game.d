@@ -3,155 +3,21 @@
 module demo.game;
 
 import engine.app;
-import engine.gpu.pipeline;
-import engine.gpu.buffer;
 import engine.gpu.text;
-import engine.gpu.renderer : Color, FrameContext;
-import bindings.wgpu : WGPUIndexFormat;
+import engine.gpu.renderer : Color;
 import engine.math.mat;
 import engine.math.vec;
 import engine.core.log;
 import engine.platform.input : Key;
-import bindings.sdl3;
+import engine.graphics.types : Color4;
+import engine.graphics.mesh : Mesh;
+import engine.scene.camera : Camera;
+import engine.scene.scene3d : Scene3D;
 
 import std.format : format;
 import core.memory : GC;
 
 @safe:
-
-// ---------------------------------------------------------------------------
-// Vertex type — shared by all meshes: position + normal
-// ---------------------------------------------------------------------------
-private struct Vert {
-    float[3] pos;
-    float[3] normal;
-}
-
-// ---------------------------------------------------------------------------
-// Instance data — model matrix (64 bytes) + color (16 bytes) = 80 bytes
-// ---------------------------------------------------------------------------
-private struct InstanceData {
-    float[16] model;
-    float[4]  color;
-}
-
-// ---------------------------------------------------------------------------
-// Cube mesh — 24 vertices, 36 indices (same as benchmark)
-// ---------------------------------------------------------------------------
-private static immutable Vert[24] cubeVerts = [
-    // Front (+Z)
-    Vert([-0.5,-0.5, 0.5], [ 0, 0, 1]), Vert([ 0.5,-0.5, 0.5], [ 0, 0, 1]),
-    Vert([ 0.5, 0.5, 0.5], [ 0, 0, 1]), Vert([-0.5, 0.5, 0.5], [ 0, 0, 1]),
-    // Back (-Z)
-    Vert([ 0.5,-0.5,-0.5], [ 0, 0,-1]), Vert([-0.5,-0.5,-0.5], [ 0, 0,-1]),
-    Vert([-0.5, 0.5,-0.5], [ 0, 0,-1]), Vert([ 0.5, 0.5,-0.5], [ 0, 0,-1]),
-    // Right (+X)
-    Vert([ 0.5,-0.5, 0.5], [ 1, 0, 0]), Vert([ 0.5,-0.5,-0.5], [ 1, 0, 0]),
-    Vert([ 0.5, 0.5,-0.5], [ 1, 0, 0]), Vert([ 0.5, 0.5, 0.5], [ 1, 0, 0]),
-    // Left (-X)
-    Vert([-0.5,-0.5,-0.5], [-1, 0, 0]), Vert([-0.5,-0.5, 0.5], [-1, 0, 0]),
-    Vert([-0.5, 0.5, 0.5], [-1, 0, 0]), Vert([-0.5, 0.5,-0.5], [-1, 0, 0]),
-    // Top (+Y)
-    Vert([-0.5, 0.5, 0.5], [ 0, 1, 0]), Vert([ 0.5, 0.5, 0.5], [ 0, 1, 0]),
-    Vert([ 0.5, 0.5,-0.5], [ 0, 1, 0]), Vert([-0.5, 0.5,-0.5], [ 0, 1, 0]),
-    // Bottom (-Y)
-    Vert([-0.5,-0.5,-0.5], [ 0,-1, 0]), Vert([ 0.5,-0.5,-0.5], [ 0,-1, 0]),
-    Vert([ 0.5,-0.5, 0.5], [ 0,-1, 0]), Vert([-0.5,-0.5, 0.5], [ 0,-1, 0]),
-];
-
-private static immutable ushort[36] cubeIdx = [
-     0, 1, 2,  2, 3, 0,
-     4, 5, 6,  6, 7, 4,
-     8, 9,10, 10,11, 8,
-    12,13,14, 14,15,12,
-    16,17,18, 18,19,16,
-    20,21,22, 22,23,20,
-];
-
-// ---------------------------------------------------------------------------
-// Pyramid mesh — 4 triangular faces + square base = 16 vertices, 18 indices
-// Apex at y=+0.8, base at y=0, base radius ~0.5
-// ---------------------------------------------------------------------------
-// Pre-computed pyramid vertices: apex at (0,0.8,0), base at y=0
-// Face normals computed from cross products and normalized
-private static immutable Vert[16] pyVerts = [
-    // Front face (b3, b2, apex) — normal ≈ (0, 0.53, 0.848)
-    Vert([-0.5, 0,  0.5], [ 0, 0.53, 0.848]),
-    Vert([ 0.5, 0,  0.5], [ 0, 0.53, 0.848]),
-    Vert([ 0, 0.8,    0], [ 0, 0.53, 0.848]),
-    // Right face (b2, b1, apex) — normal ≈ (0.848, 0.53, 0)
-    Vert([ 0.5, 0,  0.5], [ 0.848, 0.53, 0]),
-    Vert([ 0.5, 0, -0.5], [ 0.848, 0.53, 0]),
-    Vert([ 0, 0.8,    0], [ 0.848, 0.53, 0]),
-    // Back face (b1, b0, apex) — normal ≈ (0, 0.53, -0.848)
-    Vert([ 0.5, 0, -0.5], [ 0, 0.53,-0.848]),
-    Vert([-0.5, 0, -0.5], [ 0, 0.53,-0.848]),
-    Vert([ 0, 0.8,    0], [ 0, 0.53,-0.848]),
-    // Left face (b0, b3, apex) — normal ≈ (-0.848, 0.53, 0)
-    Vert([-0.5, 0, -0.5], [-0.848, 0.53, 0]),
-    Vert([-0.5, 0,  0.5], [-0.848, 0.53, 0]),
-    Vert([ 0, 0.8,    0], [-0.848, 0.53, 0]),
-    // Base (two triangles, normal down)
-    Vert([-0.5, 0, -0.5], [ 0,-1, 0]),
-    Vert([ 0.5, 0, -0.5], [ 0,-1, 0]),
-    Vert([ 0.5, 0,  0.5], [ 0,-1, 0]),
-    Vert([-0.5, 0,  0.5], [ 0,-1, 0]),
-];
-
-private static immutable ushort[18] pyramidIdx = [
-    0,  1,  2,   // front
-    3,  4,  5,   // right
-    6,  7,  8,   // back
-    9, 10, 11,   // left
-   12, 13, 14,   // base tri 1
-   14, 15, 12,   // base tri 2
-];
-
-// ---------------------------------------------------------------------------
-// Diamond (octahedron) mesh — 8 triangular faces = 24 vertices, 24 indices
-// Top at y=+0.7, bottom at y=-0.7, equator at y=0 with radius 0.4
-// ---------------------------------------------------------------------------
-// Pre-computed diamond (octahedron) vertices
-// R=0.4 equator, H=0.7 apex height. 8 triangular faces = 24 vertices.
-// Normals computed from cross products of face edges.
-private static immutable Vert[24] diaVerts = () {
-    enum float R = 0.4;
-    enum float H = 0.7;
-    // Equator points
-    enum float[3] e0 = [ R, 0,  0];
-    enum float[3] e1 = [ 0, 0,  R];
-    enum float[3] e2 = [-R, 0,  0];
-    enum float[3] e3 = [ 0, 0, -R];
-    enum float[3] top = [0,  H, 0];
-    enum float[3] bot = [0, -H, 0];
-    // Pre-computed normalized face normals (8 faces of octahedron)
-    enum float[3] n0 = [ 0.655, 0.375, 0.655]; // top: e0,e1
-    enum float[3] n1 = [-0.655, 0.375, 0.655]; // top: e1,e2
-    enum float[3] n2 = [-0.655, 0.375,-0.655]; // top: e2,e3
-    enum float[3] n3 = [ 0.655, 0.375,-0.655]; // top: e3,e0
-    enum float[3] n4 = [ 0.655,-0.375, 0.655]; // bot: e1,e0
-    enum float[3] n5 = [-0.655,-0.375, 0.655]; // bot: e2,e1
-    enum float[3] n6 = [-0.655,-0.375,-0.655]; // bot: e3,e2
-    enum float[3] n7 = [ 0.655,-0.375,-0.655]; // bot: e0,e3
-
-    return [
-        // Top 4 faces
-        Vert(top, n0), Vert(e1, n0), Vert(e0, n0),
-        Vert(top, n1), Vert(e2, n1), Vert(e1, n1),
-        Vert(top, n2), Vert(e3, n2), Vert(e2, n2),
-        Vert(top, n3), Vert(e0, n3), Vert(e3, n3),
-        // Bottom 4 faces
-        Vert(bot, n4), Vert(e0, n4), Vert(e1, n4),
-        Vert(bot, n5), Vert(e1, n5), Vert(e2, n5),
-        Vert(bot, n6), Vert(e2, n6), Vert(e3, n6),
-        Vert(bot, n7), Vert(e3, n7), Vert(e0, n7),
-    ];
-}();
-
-private static immutable ushort[24] diamondIdx = [
-     0, 1, 2,   3, 4, 5,   6, 7, 8,   9,10,11,
-    12,13,14,  15,16,17,  18,19,20,  21,22,23,
-];
 
 // ---------------------------------------------------------------------------
 // Game configuration
@@ -172,11 +38,6 @@ private enum ENEMY_DETECT_RANGE = 8.0f;
 private enum COLLECT_RADIUS = 1.2f;
 private enum HIT_RADIUS = 0.8f;
 private enum INVULN_TIME = 2.0f;       // seconds of invulnerability after hit
-
-// Max instances per draw call
-private enum MAX_CUBE_INSTANCES = 128;
-private enum MAX_PYRAMID_INSTANCES = 4;
-private enum MAX_DIAMOND_INSTANCES = NUM_CRYSTALS;
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -203,47 +64,19 @@ private enum GameState { playing, won, lost }
 void main() {
     auto app = App.create("Crystal Collector 3D", SCREEN_W, SCREEN_H);
 
-    auto device = app.gpu.getDevice();
-    auto queue  = app.gpu.getQueue();
-
-    // --- GPU mesh buffers (safe slice overloads) ---
-    auto cubeVBuf = createVertexBuffer(device, queue, cubeVerts[]);
-    scope(exit) destroyBuffer(cubeVBuf);
-    auto cubeIBuf = createIndexBuffer(device, queue, cubeIdx[]);
-    scope(exit) destroyBuffer(cubeIBuf);
-
-    auto pyrVBuf = createVertexBuffer(device, queue, pyVerts[]);
-    scope(exit) destroyBuffer(pyrVBuf);
-    auto pyrIBuf = createIndexBuffer(device, queue, pyramidIdx[]);
-    scope(exit) destroyBuffer(pyrIBuf);
-
-    auto diaVBuf = createVertexBuffer(device, queue, diaVerts[]);
-    scope(exit) destroyBuffer(diaVBuf);
-    auto diaIBuf = createIndexBuffer(device, queue, diamondIdx[]);
-    scope(exit) destroyBuffer(diaIBuf);
-
-    // Instance buffers (dynamic, per-frame upload)
-    auto cubeInstBuf = createDynamicVertexBuffer(device, MAX_CUBE_INSTANCES * InstanceData.sizeof);
-    scope(exit) destroyBuffer(cubeInstBuf);
-    auto pyrInstBuf = createDynamicVertexBuffer(device, MAX_PYRAMID_INSTANCES * InstanceData.sizeof);
-    scope(exit) destroyBuffer(pyrInstBuf);
-    auto diaInstBuf = createDynamicVertexBuffer(device, MAX_DIAMOND_INSTANCES * InstanceData.sizeof);
-    scope(exit) destroyBuffer(diaInstBuf);
-
-    // Uniform buffer (VP matrix)
-    auto uniformBuf = createUniformBuffer(device, 64);
-    scope(exit) destroyBuffer(uniformBuf);
-
-    // Pipeline
-    auto pipe = createColoredPipeline3D(device, app.gpu.getFormat());
-    scope(exit) pipe.release();
-
-    // Bind group for VP uniform
-    auto vpBindGroup = createUniformBindGroup(device, pipe.bindGroupLayout, uniformBuf, 64);
-    scope(exit) releaseBindGroup(vpBindGroup);
+    // --- High-level GPU resources ---
+    auto scene   = Scene3D.create(app.gpu);
+    scope(exit) scene.destroy();
+    auto cube    = Mesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto pyramid = Mesh.pyramid(app.gpu);
+    scope(exit) pyramid.destroy();
+    auto diamond = Mesh.diamond(app.gpu);
+    scope(exit) diamond.destroy();
+    auto camera  = Camera.create(0.9f, SCREEN_W, SCREEN_H);
 
     // Text renderer
-    auto textRenderer = TextRenderer.create(device, queue, app.gpu.getFormat(), SCREEN_W, SCREEN_H);
+    auto textRenderer = TextRenderer.create(app.gpu, SCREEN_W, SCREEN_H);
     scope(exit) textRenderer.destroy();
 
     auto fps = FpsCounter.create();
@@ -435,49 +268,34 @@ void main() {
         // --- Camera ---
         immutable camX = playerPos.x + sinF(cameraAngle) * CAMERA_DIST;
         immutable camZ = playerPos.z + cosF(cameraAngle) * CAMERA_DIST;
-        immutable eye    = Vec3(camX, CAMERA_HEIGHT, camZ);
-        immutable camTarget = Vec3(playerPos.x, 1.0f, playerPos.z);
-        immutable view   = Mat4.lookAt(eye, camTarget, Vec3(0, 1, 0));
-        immutable proj   = Mat4.perspective(0.9f, cast(float) SCREEN_W / cast(float) SCREEN_H, 0.1f, 100.0f);
-        immutable vp     = proj * view;
+        camera.lookAt(
+            Vec3(camX, CAMERA_HEIGHT, camZ),
+            Vec3(playerPos.x, 1.0f, playerPos.z),
+        );
 
-        // Upload VP matrix
-        updateBuffer(queue, uniformBuf, vp.m[]);
-
-        // --- Build instance data (dynamic arrays — GC allocated each frame) ---
-        InstanceData[] cubeInstances;
-        InstanceData[] pyrInstances;
-        InstanceData[] diaInstances;
+        // --- Build scene ---
+        scene.begin(camera);
 
         // Ground plane
-        cubeInstances ~= InstanceData(
-            (Mat4.translation(0, -0.05f, 0) * Mat4.scaling(ARENA_SIZE * 2, 0.1f, ARENA_SIZE * 2)).m,
-            [0.2f, 0.35f, 0.2f, 1.0f],
-        );
+        scene.draw(cube, Vec3(0, -0.05f, 0), Vec3(ARENA_SIZE * 2, 0.1f, ARENA_SIZE * 2), Color4(0.2f, 0.35f, 0.2f));
 
         // Walls
         foreach (ref w; walls) {
-            cubeInstances ~= InstanceData(
-                (Mat4.translation(w.pos.x, w.pos.y, w.pos.z) * Mat4.scaling(w.scale.x, w.scale.y, w.scale.z)).m,
-                [0.45f, 0.42f, 0.38f, 1.0f],
-            );
+            scene.draw(cube, w.pos, w.scale, Color4(0.45f, 0.42f, 0.38f));
         }
 
         // Enemies
         foreach (ref e; enemies) {
-            cubeInstances ~= InstanceData(
-                (Mat4.translation(e.position.x, e.position.y, e.position.z) * Mat4.rotationY(e.angle) * Mat4.scaling(0.7f, 0.7f, 0.7f)).m,
-                [0.9f, 0.15f, 0.1f, 1.0f],
-            );
+            scene.draw(cube, e.position, Vec3(0.7f, 0.7f, 0.7f), Color4(0.9f, 0.15f, 0.1f), e.angle);
         }
 
         // Player (pyramid)
         {
             immutable visible = invulnTimer <= 0 || (cast(int)(invulnTimer * 8) & 1) == 0;
             if (visible) {
-                pyrInstances ~= InstanceData(
-                    (Mat4.translation(playerPos.x, 0, playerPos.z) * Mat4.rotationY(playerAngle) * Mat4.scaling(1.0f, 1.2f, 1.0f)).m,
-                    [0.1f, 0.9f, 0.85f, 1.0f],
+                scene.drawMatrix(pyramid,
+                    Mat4.translation(playerPos.x, 0, playerPos.z) * Mat4.rotationY(playerAngle) * Mat4.scaling(1.0f, 1.2f, 1.0f),
+                    Color4(0.1f, 0.9f, 0.85f),
                 );
             }
         }
@@ -486,50 +304,14 @@ void main() {
         foreach (ref c; crystals) {
             if (c.collected) continue;
             immutable bob = sinF(c.angle * 1.5f) * 0.2f;
-            diaInstances ~= InstanceData(
-                (Mat4.translation(c.position.x, c.position.y + bob, c.position.z) * Mat4.rotationY(c.angle) * Mat4.scaling(0.8f, 0.8f, 0.8f)).m,
-                [1.0f, 0.85f, 0.1f, 1.0f],
-            );
+            scene.draw(diamond, Vec3(c.position.x, c.position.y + bob, c.position.z), Vec3(0.8f, 0.8f, 0.8f), Color4(1.0f, 0.85f, 0.1f), c.angle);
         }
-
-        // --- Upload instances ---
-        if (cubeInstances.length > 0)
-            updateBuffer(queue, cubeInstBuf, cubeInstances);
-        if (pyrInstances.length > 0)
-            updateBuffer(queue, pyrInstBuf, pyrInstances);
-        if (diaInstances.length > 0)
-            updateBuffer(queue, diaInstBuf, diaInstances);
 
         // --- Render ---
-        auto frame = app.renderer.beginFrame(Color(0.05f, 0.06f, 0.12f, 1.0f));
+        auto frame = app.beginFrame(Color(0.05f, 0.06f, 0.12f, 1.0f));
         if (!frame.valid) continue;
 
-        frame.setPipeline(pipe.pipeline);
-        frame.setBindGroup(0, vpBindGroup);
-
-        // Draw cubes (ground + walls + enemies)
-        if (cubeInstances.length > 0) {
-            frame.setVertexBuffer(0, cubeVBuf, cubeVerts.sizeof);
-            frame.setVertexBuffer(1, cubeInstBuf, cubeInstances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(cubeIBuf, WGPUIndexFormat.uint16, cubeIdx.sizeof);
-            frame.drawIndexed(36, cast(uint) cubeInstances.length);
-        }
-
-        // Draw player (pyramid)
-        if (pyrInstances.length > 0) {
-            frame.setVertexBuffer(0, pyrVBuf, pyVerts.sizeof);
-            frame.setVertexBuffer(1, pyrInstBuf, pyrInstances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(pyrIBuf, WGPUIndexFormat.uint16, pyramidIdx.sizeof);
-            frame.drawIndexed(18, cast(uint) pyrInstances.length);
-        }
-
-        // Draw crystals (diamonds)
-        if (diaInstances.length > 0) {
-            frame.setVertexBuffer(0, diaVBuf, diaVerts.sizeof);
-            frame.setVertexBuffer(1, diaInstBuf, diaInstances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(diaIBuf, WGPUIndexFormat.uint16, diamondIdx.sizeof);
-            frame.drawIndexed(24, cast(uint) diaInstances.length);
-        }
+        scene.end(frame);
 
         // --- HUD ---
         textRenderer.beginFrame();
@@ -548,7 +330,7 @@ void main() {
             textRenderer.drawText(frame.pass, "WASD:move  Arrows:camera", 10, SCREEN_H - 30, 2);
         }
 
-        app.renderer.endFrame(frame);
+        app.endFrame(frame);
     }
 
     // GC stats

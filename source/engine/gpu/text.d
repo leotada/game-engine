@@ -5,6 +5,7 @@ module engine.gpu.text;
 import bindings.wgpu;
 import bindings.sdl3;
 import engine.gpu.buffer;
+import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline;
 import engine.core.log;
 
@@ -239,6 +240,11 @@ struct TextRenderer {
     enum VERTEX_BUF_SIZE = MAX_CHARS * 6 * 4 * float.sizeof;
 
     @disable this(this);
+
+    /// Convenience: create from a GpuContext.
+    static TextRenderer create(ref GpuContext gpu, uint screenW, uint screenH) @trusted {
+        return create(gpu.getDevice(), gpu.getQueue(), gpu.getFormat(), screenW, screenH);
+    }
 
     static TextRenderer create(WGPUDevice device, WGPUQueue queue,
                                WGPUTextureFormat surfaceFormat,
