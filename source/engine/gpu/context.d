@@ -112,9 +112,9 @@ struct GpuContext {
         configureSurface();
     }
 
-    WGPUDevice   getDevice()  nothrow @nogc @trusted { return device; }
-    WGPUQueue    getQueue()   nothrow @nogc @trusted { return queue; }
-    WGPUSurface  getSurface() nothrow @nogc @trusted { return surface; }
+    WGPUDevice   getDevice()  nothrow @nogc { return device; }
+    WGPUQueue    getQueue()   nothrow @nogc { return queue; }
+    WGPUSurface  getSurface() nothrow @nogc { return surface; }
     WGPUTextureFormat getFormat() const nothrow @nogc { return surfaceFormat; }
     uint width()  const nothrow @nogc { return surfW; }
     uint height() const nothrow @nogc { return surfH; }

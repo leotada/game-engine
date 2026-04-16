@@ -21,10 +21,10 @@ struct App {
 
     @disable this(this);
 
-    static App create(const(char)* title, uint width, uint height,
+    static App create(string title, uint width, uint height,
                       WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
         App app;
-        app.window   = Window.create(title, width, height);
+        app.window   = Window.create(title.ptr, width, height);
         app.gpu      = GpuContext.create(
             app.window.waylandDisplay(),
             app.window.waylandSurface(),

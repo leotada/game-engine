@@ -57,3 +57,45 @@ WGPUBuffer createDynamicVertexBuffer(WGPUDevice device, ulong size) nothrow @nog
 void updateBuffer(WGPUQueue queue, WGPUBuffer buffer, const(void)* data, size_t size) nothrow @nogc @trusted {
     wgpuQueueWriteBuffer(queue, buffer, 0, data, size);
 }
+
+// ---------------------------------------------------------------------------
+// @safe slice-based overloads — eliminates @trusted at the call site
+// ---------------------------------------------------------------------------
+
+WGPUBuffer createVertexBuffer(T)(WGPUDevice device, WGPUQueue queue, const(T)[] data) @trusted {
+    return createVertexBuffer(device, queue, data.ptr, data.length * T.sizeof);
+}
+
+WGPUBuffer createIndexBuffer(T)(WGPUDevice device, WGPUQueue queue, const(T)[] data) @trusted {
+    return createIndexBuffer(device, queue, data.ptr, data.length * T.sizeof);
+}
+
+void updateBuffer(T)(WGPUQueue queue, WGPUBuffer buffer, scope const(T)[] data) @trusted {
+    wgpuQueueWriteBuffer(queue, buffer, 0, data.ptr, data.length * T.sizeof);
+}
+
+void destroyBuffer(WGPUBuffer buf) nothrow @nogc @trusted {
+    if (buf !is null) {
+        wgpuBufferDestroy(buf);
+        wgpuBufferRelease(buf);
+    }
+}
+
+WGPUBindGroup createUniformBindGroup(WGPUDevice device, WGPUBindGroupLayout layout,
+                                      WGPUBuffer uniformBuf, ulong size) @trusted {
+    WGPUBindGroupEntry bgEntry;
+    bgEntry.binding = 0;
+    bgEntry.buffer  = uniformBuf;
+    bgEntry.offset  = 0;
+    bgEntry.size    = size;
+
+    WGPUBindGroupDescriptor bgDesc;
+    bgDesc.layout     = layout;
+    bgDesc.entryCount = 1;
+    bgDesc.entries    = &bgEntry;
+    return wgpuDeviceCreateBindGroup(device, &bgDesc);
+}
+
+void releaseBindGroup(WGPUBindGroup bg) nothrow @nogc @trusted {
+    if (bg !is null) wgpuBindGroupRelease(bg);
+}

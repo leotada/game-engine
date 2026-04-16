@@ -2,17 +2,20 @@
 /// WASD to move, Left/Right arrows to orbit camera, ESC to quit.
 module demo.game;
 
-import bindings.wgpu;
 import engine.app;
 import engine.gpu.pipeline;
 import engine.gpu.buffer;
 import engine.gpu.text;
-import engine.gpu.renderer : Color;
+import engine.gpu.renderer : Color, FrameContext;
+import bindings.wgpu : WGPUIndexFormat;
 import engine.math.mat;
 import engine.math.vec;
 import engine.core.log;
 import engine.platform.input : Key;
 import bindings.sdl3;
+
+import std.format : format;
+import core.memory : GC;
 
 @safe:
 
@@ -200,59 +203,44 @@ private enum GameState { playing, won, lost }
 void main() {
     auto app = App.create("Crystal Collector 3D", SCREEN_W, SCREEN_H);
 
-    auto device = () @trusted { return app.gpu.getDevice(); }();
-    auto queue  = () @trusted { return app.gpu.getQueue(); }();
+    auto device = app.gpu.getDevice();
+    auto queue  = app.gpu.getQueue();
 
-    // --- GPU mesh buffers ---
-    // Cube
-    auto cubeVBuf = () @trusted { return createVertexBuffer(device, queue, cubeVerts.ptr, cubeVerts.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(cubeVBuf); wgpuBufferRelease(cubeVBuf); }();
-    auto cubeIBuf = () @trusted { return createIndexBuffer(device, queue, cubeIdx.ptr, cubeIdx.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(cubeIBuf); wgpuBufferRelease(cubeIBuf); }();
+    // --- GPU mesh buffers (safe slice overloads) ---
+    auto cubeVBuf = createVertexBuffer(device, queue, cubeVerts[]);
+    scope(exit) destroyBuffer(cubeVBuf);
+    auto cubeIBuf = createIndexBuffer(device, queue, cubeIdx[]);
+    scope(exit) destroyBuffer(cubeIBuf);
 
-    // Pyramid
-    auto pyrVBuf = () @trusted { return createVertexBuffer(device, queue, pyVerts.ptr, pyVerts.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(pyrVBuf); wgpuBufferRelease(pyrVBuf); }();
-    auto pyrIBuf = () @trusted { return createIndexBuffer(device, queue, pyramidIdx.ptr, pyramidIdx.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(pyrIBuf); wgpuBufferRelease(pyrIBuf); }();
+    auto pyrVBuf = createVertexBuffer(device, queue, pyVerts[]);
+    scope(exit) destroyBuffer(pyrVBuf);
+    auto pyrIBuf = createIndexBuffer(device, queue, pyramidIdx[]);
+    scope(exit) destroyBuffer(pyrIBuf);
 
-    // Diamond
-    auto diaVBuf = () @trusted { return createVertexBuffer(device, queue, diaVerts.ptr, diaVerts.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(diaVBuf); wgpuBufferRelease(diaVBuf); }();
-    auto diaIBuf = () @trusted { return createIndexBuffer(device, queue, diamondIdx.ptr, diamondIdx.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(diaIBuf); wgpuBufferRelease(diaIBuf); }();
+    auto diaVBuf = createVertexBuffer(device, queue, diaVerts[]);
+    scope(exit) destroyBuffer(diaVBuf);
+    auto diaIBuf = createIndexBuffer(device, queue, diamondIdx[]);
+    scope(exit) destroyBuffer(diaIBuf);
 
     // Instance buffers (dynamic, per-frame upload)
-    auto cubeInstBuf = () @trusted { return createDynamicVertexBuffer(device, MAX_CUBE_INSTANCES * InstanceData.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(cubeInstBuf); wgpuBufferRelease(cubeInstBuf); }();
-    auto pyrInstBuf = () @trusted { return createDynamicVertexBuffer(device, MAX_PYRAMID_INSTANCES * InstanceData.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(pyrInstBuf); wgpuBufferRelease(pyrInstBuf); }();
-    auto diaInstBuf = () @trusted { return createDynamicVertexBuffer(device, MAX_DIAMOND_INSTANCES * InstanceData.sizeof); }();
-    scope(exit) () @trusted { wgpuBufferDestroy(diaInstBuf); wgpuBufferRelease(diaInstBuf); }();
+    auto cubeInstBuf = createDynamicVertexBuffer(device, MAX_CUBE_INSTANCES * InstanceData.sizeof);
+    scope(exit) destroyBuffer(cubeInstBuf);
+    auto pyrInstBuf = createDynamicVertexBuffer(device, MAX_PYRAMID_INSTANCES * InstanceData.sizeof);
+    scope(exit) destroyBuffer(pyrInstBuf);
+    auto diaInstBuf = createDynamicVertexBuffer(device, MAX_DIAMOND_INSTANCES * InstanceData.sizeof);
+    scope(exit) destroyBuffer(diaInstBuf);
 
     // Uniform buffer (VP matrix)
     auto uniformBuf = createUniformBuffer(device, 64);
-    scope(exit) () @trusted { wgpuBufferDestroy(uniformBuf); wgpuBufferRelease(uniformBuf); }();
+    scope(exit) destroyBuffer(uniformBuf);
 
-    // Pipeline (colored 3D)
+    // Pipeline
     auto pipe = createColoredPipeline3D(device, app.gpu.getFormat());
     scope(exit) pipe.release();
 
     // Bind group for VP uniform
-    auto vpBindGroup = () @trusted {
-        WGPUBindGroupEntry bgEntry;
-        bgEntry.binding = 0;
-        bgEntry.buffer  = uniformBuf;
-        bgEntry.offset  = 0;
-        bgEntry.size    = 64;
-
-        WGPUBindGroupDescriptor bgDesc;
-        bgDesc.layout     = pipe.bindGroupLayout;
-        bgDesc.entryCount = 1;
-        bgDesc.entries    = &bgEntry;
-        return wgpuDeviceCreateBindGroup(device, &bgDesc);
-    }();
-    scope(exit) () @trusted { wgpuBindGroupRelease(vpBindGroup); }();
+    auto vpBindGroup = createUniformBindGroup(device, pipe.bindGroupLayout, uniformBuf, 64);
+    scope(exit) releaseBindGroup(vpBindGroup);
 
     // Text renderer
     auto textRenderer = TextRenderer.create(device, queue, app.gpu.getFormat(), SCREEN_W, SCREEN_H);
@@ -260,7 +248,7 @@ void main() {
 
     auto fps = FpsCounter.create();
 
-    // --- Initialize game state ---
+    // --- Initialize game state (dynamic arrays — GC allocated) ---
     Vec3 playerPos = Vec3(0, 0, 0);
     float playerAngle = 0;
     int lives = 3;
@@ -270,33 +258,28 @@ void main() {
     GameState gameState = GameState.playing;
 
     // Place crystals in a ring + some random-ish positions
-    Crystal[NUM_CRYSTALS] crystals;
+    Crystal[] crystals;
     foreach (i; 0 .. NUM_CRYSTALS) {
         immutable fi = cast(float) i;
         immutable angle = fi * 6.2832f / cast(float) NUM_CRYSTALS;
         immutable radius = 8.0f + sinF(fi * 2.7f) * 6.0f;
-        crystals[i].position = Vec3(
-            cosF(angle) * radius,
-            1.0f,
-            sinF(angle) * radius,
+        crystals ~= Crystal(
+            Vec3(cosF(angle) * radius, 1.0f, sinF(angle) * radius),
         );
     }
 
     // Place enemies with patrol waypoints
-    Enemy[NUM_ENEMIES] enemies;
+    Enemy[] enemies;
     foreach (i; 0 .. NUM_ENEMIES) {
         immutable fi = cast(float) i;
         immutable angle = fi * 6.2832f / cast(float) NUM_ENEMIES + 0.5f;
         immutable r = 10.0f;
-        enemies[i].position  = Vec3(cosF(angle) * r, 0.4f, sinF(angle) * r);
-        enemies[i].waypointA = Vec3(cosF(angle) * 5.0f, 0.4f, sinF(angle) * 5.0f);
-        enemies[i].waypointB = Vec3(cosF(angle) * (ARENA_SIZE - 2.0f), 0.4f, sinF(angle) * (ARENA_SIZE - 2.0f));
+        enemies ~= Enemy(
+            Vec3(cosF(angle) * r, 0.4f, sinF(angle) * r),
+            Vec3(cosF(angle) * 5.0f, 0.4f, sinF(angle) * 5.0f),
+            Vec3(cosF(angle) * (ARENA_SIZE - 2.0f), 0.4f, sinF(angle) * (ARENA_SIZE - 2.0f)),
+        );
     }
-
-    // CPU-side instance buffers
-    InstanceData[MAX_CUBE_INSTANCES] cubeInstances = void;
-    InstanceData[MAX_PYRAMID_INSTANCES] pyrInstances = void;
-    InstanceData[MAX_DIAMOND_INSTANCES] diaInstances = void;
 
     // --- Arena layout: walls ---
     struct WallDef {
@@ -304,7 +287,6 @@ void main() {
         Vec3 scale;
     }
 
-    // Perimeter walls
     static immutable WallDef[8] walls = [
         // North/South walls
         WallDef(Vec3( 0,       WALL_HEIGHT*0.5, ARENA_SIZE), Vec3(ARENA_SIZE*2, WALL_HEIGHT, 0.5)),
@@ -344,7 +326,6 @@ void main() {
             if (moveDir.lengthSquared() > 0.001f) {
                 moveDir = moveDir.normalized();
                 playerPos = playerPos + moveDir * (PLAYER_SPEED * dt);
-                // Face movement direction
                 import std.math : atan2;
                 playerAngle = atan2(moveDir.x, moveDir.z);
             }
@@ -355,14 +336,13 @@ void main() {
             if (playerPos.z >  ARENA_SIZE - 1.0f) playerPos.z =  ARENA_SIZE - 1.0f;
             if (playerPos.z < -ARENA_SIZE + 1.0f) playerPos.z = -ARENA_SIZE + 1.0f;
 
-            // Simple pillar collision: push player out of pillars
+            // Simple pillar collision
             foreach (ref w; walls[4 .. 8]) {
                 immutable halfW = w.scale.x * 0.5f + 0.5f;
                 immutable halfD = w.scale.z * 0.5f + 0.5f;
                 immutable dx = playerPos.x - w.pos.x;
                 immutable dz = playerPos.z - w.pos.z;
                 if (dx > -halfW && dx < halfW && dz > -halfD && dz < halfD) {
-                    // Push out along the smallest penetration axis
                     immutable overlapX = halfW - (dx > 0 ? dx : -dx);
                     immutable overlapZ = halfD - (dz > 0 ? dz : -dz);
                     if (overlapX < overlapZ)
@@ -394,12 +374,10 @@ void main() {
                 immutable distToPlayer = toPlayer.length();
 
                 if (distToPlayer < ENEMY_DETECT_RANGE) {
-                    // Chase player
                     immutable chaseDir = toPlayer.normalized();
                     e.position.x += chaseDir.x * ENEMY_CHASE_SPEED * dt;
                     e.position.z += chaseDir.z * ENEMY_CHASE_SPEED * dt;
                 } else {
-                    // Patrol between waypoints
                     immutable target = e.goingToB ? e.waypointB : e.waypointA;
                     immutable toTarget = Vec3(target.x - e.position.x, 0, target.z - e.position.z);
                     immutable distTarget = toTarget.length();
@@ -413,7 +391,6 @@ void main() {
                     }
                 }
 
-                // Rotation for visual effect
                 e.angle += 1.5f * dt;
 
                 // Hit check
@@ -425,14 +402,12 @@ void main() {
                         if (lives <= 0) {
                             gameState = GameState.lost;
                         } else {
-                            // Respawn at center
                             playerPos = Vec3(0, 0, 0);
                         }
                     }
                 }
             }
 
-            // Invulnerability cooldown
             if (invulnTimer > 0) invulnTimer -= dt;
         }
 
@@ -461,139 +436,108 @@ void main() {
         immutable camX = playerPos.x + sinF(cameraAngle) * CAMERA_DIST;
         immutable camZ = playerPos.z + cosF(cameraAngle) * CAMERA_DIST;
         immutable eye    = Vec3(camX, CAMERA_HEIGHT, camZ);
-        immutable target = Vec3(playerPos.x, 1.0f, playerPos.z);
-        immutable view   = Mat4.lookAt(eye, target, Vec3(0, 1, 0));
+        immutable camTarget = Vec3(playerPos.x, 1.0f, playerPos.z);
+        immutable view   = Mat4.lookAt(eye, camTarget, Vec3(0, 1, 0));
         immutable proj   = Mat4.perspective(0.9f, cast(float) SCREEN_W / cast(float) SCREEN_H, 0.1f, 100.0f);
         immutable vp     = proj * view;
 
-        // Upload VP
-        () @trusted { wgpuQueueWriteBuffer(queue, uniformBuf, 0, vp.m.ptr, vp.m.sizeof); }();
+        // Upload VP matrix
+        updateBuffer(queue, uniformBuf, vp.m[]);
 
-        // --- Build cube instances: ground + walls + enemies ---
-        int cubeCount = 0;
+        // --- Build instance data (dynamic arrays — GC allocated each frame) ---
+        InstanceData[] cubeInstances;
+        InstanceData[] pyrInstances;
+        InstanceData[] diaInstances;
 
         // Ground plane
-        {
-            immutable model = Mat4.translation(0, -0.05f, 0) * Mat4.scaling(ARENA_SIZE * 2, 0.1f, ARENA_SIZE * 2);
-            cubeInstances[cubeCount].model = model.m;
-            cubeInstances[cubeCount].color = [0.2f, 0.35f, 0.2f, 1.0f];  // dark green
-            cubeCount++;
-        }
+        cubeInstances ~= InstanceData(
+            (Mat4.translation(0, -0.05f, 0) * Mat4.scaling(ARENA_SIZE * 2, 0.1f, ARENA_SIZE * 2)).m,
+            [0.2f, 0.35f, 0.2f, 1.0f],
+        );
 
         // Walls
         foreach (ref w; walls) {
-            immutable model = Mat4.translation(w.pos.x, w.pos.y, w.pos.z)
-                            * Mat4.scaling(w.scale.x, w.scale.y, w.scale.z);
-            cubeInstances[cubeCount].model = model.m;
-            cubeInstances[cubeCount].color = [0.45f, 0.42f, 0.38f, 1.0f]; // stone grey
-            cubeCount++;
+            cubeInstances ~= InstanceData(
+                (Mat4.translation(w.pos.x, w.pos.y, w.pos.z) * Mat4.scaling(w.scale.x, w.scale.y, w.scale.z)).m,
+                [0.45f, 0.42f, 0.38f, 1.0f],
+            );
         }
 
         // Enemies
         foreach (ref e; enemies) {
-            immutable model = Mat4.translation(e.position.x, e.position.y, e.position.z)
-                            * Mat4.rotationY(e.angle)
-                            * Mat4.scaling(0.7f, 0.7f, 0.7f);
-            cubeInstances[cubeCount].model = model.m;
-            cubeInstances[cubeCount].color = [0.9f, 0.15f, 0.1f, 1.0f]; // red
-            cubeCount++;
+            cubeInstances ~= InstanceData(
+                (Mat4.translation(e.position.x, e.position.y, e.position.z) * Mat4.rotationY(e.angle) * Mat4.scaling(0.7f, 0.7f, 0.7f)).m,
+                [0.9f, 0.15f, 0.1f, 1.0f],
+            );
         }
 
-        // --- Build pyramid instances: player ---
-        int pyrCount = 0;
+        // Player (pyramid)
         {
-            // Blink when invulnerable
             immutable visible = invulnTimer <= 0 || (cast(int)(invulnTimer * 8) & 1) == 0;
             if (visible) {
-                immutable model = Mat4.translation(playerPos.x, 0, playerPos.z)
-                                * Mat4.rotationY(playerAngle)
-                                * Mat4.scaling(1.0f, 1.2f, 1.0f);
-                pyrInstances[pyrCount].model = model.m;
-                pyrInstances[pyrCount].color = [0.1f, 0.9f, 0.85f, 1.0f]; // cyan
-                pyrCount++;
+                pyrInstances ~= InstanceData(
+                    (Mat4.translation(playerPos.x, 0, playerPos.z) * Mat4.rotationY(playerAngle) * Mat4.scaling(1.0f, 1.2f, 1.0f)).m,
+                    [0.1f, 0.9f, 0.85f, 1.0f],
+                );
             }
         }
 
-        // --- Build diamond instances: crystals ---
-        int diaCount = 0;
+        // Crystals (diamonds)
         foreach (ref c; crystals) {
             if (c.collected) continue;
-            // Hover bob + rotation
             immutable bob = sinF(c.angle * 1.5f) * 0.2f;
-            immutable model = Mat4.translation(c.position.x, c.position.y + bob, c.position.z)
-                            * Mat4.rotationY(c.angle)
-                            * Mat4.scaling(0.8f, 0.8f, 0.8f);
-            diaInstances[diaCount].model = model.m;
-            diaInstances[diaCount].color = [1.0f, 0.85f, 0.1f, 1.0f]; // gold
-            diaCount++;
+            diaInstances ~= InstanceData(
+                (Mat4.translation(c.position.x, c.position.y + bob, c.position.z) * Mat4.rotationY(c.angle) * Mat4.scaling(0.8f, 0.8f, 0.8f)).m,
+                [1.0f, 0.85f, 0.1f, 1.0f],
+            );
         }
 
         // --- Upload instances ---
-        if (cubeCount > 0) () @trusted {
-            wgpuQueueWriteBuffer(queue, cubeInstBuf, 0,
-                cubeInstances.ptr, cubeCount * InstanceData.sizeof);
-        }();
-        if (pyrCount > 0) () @trusted {
-            wgpuQueueWriteBuffer(queue, pyrInstBuf, 0,
-                pyrInstances.ptr, pyrCount * InstanceData.sizeof);
-        }();
-        if (diaCount > 0) () @trusted {
-            wgpuQueueWriteBuffer(queue, diaInstBuf, 0,
-                diaInstances.ptr, diaCount * InstanceData.sizeof);
-        }();
+        if (cubeInstances.length > 0)
+            updateBuffer(queue, cubeInstBuf, cubeInstances);
+        if (pyrInstances.length > 0)
+            updateBuffer(queue, pyrInstBuf, pyrInstances);
+        if (diaInstances.length > 0)
+            updateBuffer(queue, diaInstBuf, diaInstances);
 
         // --- Render ---
         auto frame = app.renderer.beginFrame(Color(0.05f, 0.06f, 0.12f, 1.0f));
         if (!frame.valid) continue;
 
-        () @trusted {
-            wgpuRenderPassEncoderSetPipeline(frame.pass, pipe.pipeline);
-            wgpuRenderPassEncoderSetBindGroup(frame.pass, 0, vpBindGroup, 0, null);
+        frame.setPipeline(pipe.pipeline);
+        frame.setBindGroup(0, vpBindGroup);
 
-            // Draw cubes (ground + walls + enemies)
-            if (cubeCount > 0) {
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, cubeVBuf, 0, cubeVerts.sizeof);
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 1, cubeInstBuf, 0, cubeCount * InstanceData.sizeof);
-                wgpuRenderPassEncoderSetIndexBuffer(frame.pass, cubeIBuf, WGPUIndexFormat.uint16, 0, cubeIdx.sizeof);
-                wgpuRenderPassEncoderDrawIndexed(frame.pass, 36, cubeCount, 0, 0, 0);
-            }
+        // Draw cubes (ground + walls + enemies)
+        if (cubeInstances.length > 0) {
+            frame.setVertexBuffer(0, cubeVBuf, cubeVerts.sizeof);
+            frame.setVertexBuffer(1, cubeInstBuf, cubeInstances.length * InstanceData.sizeof);
+            frame.setIndexBuffer(cubeIBuf, WGPUIndexFormat.uint16, cubeIdx.sizeof);
+            frame.drawIndexed(36, cast(uint) cubeInstances.length);
+        }
 
-            // Draw player (pyramid)
-            if (pyrCount > 0) {
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, pyrVBuf, 0, pyVerts.sizeof);
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 1, pyrInstBuf, 0, pyrCount * InstanceData.sizeof);
-                wgpuRenderPassEncoderSetIndexBuffer(frame.pass, pyrIBuf, WGPUIndexFormat.uint16, 0, pyramidIdx.sizeof);
-                wgpuRenderPassEncoderDrawIndexed(frame.pass, 18, pyrCount, 0, 0, 0);
-            }
+        // Draw player (pyramid)
+        if (pyrInstances.length > 0) {
+            frame.setVertexBuffer(0, pyrVBuf, pyVerts.sizeof);
+            frame.setVertexBuffer(1, pyrInstBuf, pyrInstances.length * InstanceData.sizeof);
+            frame.setIndexBuffer(pyrIBuf, WGPUIndexFormat.uint16, pyramidIdx.sizeof);
+            frame.drawIndexed(18, cast(uint) pyrInstances.length);
+        }
 
-            // Draw crystals (diamonds)
-            if (diaCount > 0) {
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, diaVBuf, 0, diaVerts.sizeof);
-                wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 1, diaInstBuf, 0, diaCount * InstanceData.sizeof);
-                wgpuRenderPassEncoderSetIndexBuffer(frame.pass, diaIBuf, WGPUIndexFormat.uint16, 0, diamondIdx.sizeof);
-                wgpuRenderPassEncoderDrawIndexed(frame.pass, 24, diaCount, 0, 0, 0);
-            }
-        }();
+        // Draw crystals (diamonds)
+        if (diaInstances.length > 0) {
+            frame.setVertexBuffer(0, diaVBuf, diaVerts.sizeof);
+            frame.setVertexBuffer(1, diaInstBuf, diaInstances.length * InstanceData.sizeof);
+            frame.setIndexBuffer(diaIBuf, WGPUIndexFormat.uint16, diamondIdx.sizeof);
+            frame.drawIndexed(24, cast(uint) diaInstances.length);
+        }
 
         // --- HUD ---
         textRenderer.beginFrame();
         textRenderer.drawText(frame.pass, fps.text(), 10, 10, 2);
 
-        // Score
-        {
-            char[32] scoreBuf = void;
-            auto scoreText = formatHud(scoreBuf[], "Crystals: ", score, "/", NUM_CRYSTALS);
-            textRenderer.drawText(frame.pass, scoreText, SCREEN_W / 2 - 80, 10, 2);
-        }
+        textRenderer.drawText(frame.pass, format!"Crystals: %d/%d"(score, NUM_CRYSTALS), SCREEN_W / 2 - 80, 10, 2);
+        textRenderer.drawText(frame.pass, format!"Lives: %d"(lives), SCREEN_W - 150, 10, 2);
 
-        // Lives
-        {
-            char[32] livesBuf = void;
-            auto livesText = formatHudSingle(livesBuf[], "Lives: ", lives);
-            textRenderer.drawText(frame.pass, livesText, SCREEN_W - 150, 10, 2);
-        }
-
-        // Game state message
         if (gameState == GameState.won) {
             textRenderer.drawText(frame.pass, "YOU WIN!", SCREEN_W / 2 - 80, SCREEN_H / 2 - 30, 4);
             textRenderer.drawText(frame.pass, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
@@ -607,54 +551,16 @@ void main() {
         app.renderer.endFrame(frame);
     }
 
+    // GC stats
+    auto gcStats = GC.profileStats;
+    immutable totalPauseUs = gcStats.totalPauseTime.total!"usecs";
+    immutable maxPauseUs = gcStats.maxPauseTime.total!"usecs";
+    info(format!"GC: %d collections | total pause: %.2f ms | max pause: %.2f ms"(
+        gcStats.numCollections,
+        totalPauseUs / 1000.0,
+        maxPauseUs / 1000.0,
+    ));
     info("Crystal Collector finished");
-}
-
-// ---------------------------------------------------------------------------
-// @nogc text formatting helpers
-// ---------------------------------------------------------------------------
-
-/// Format "Label: N/M" into a pre-allocated buffer, return the used slice.
-private const(char)[] formatHud(return char[] buf, const(char)[] label, int val, const(char)[] sep, int total)
-    nothrow @nogc @safe
-{
-    size_t pos = 0;
-    foreach (ch; label) { if (pos < buf.length) buf[pos++] = ch; }
-    pos = writeInt(buf, pos, val);
-    foreach (ch; sep) { if (pos < buf.length) buf[pos++] = ch; }
-    pos = writeInt(buf, pos, total);
-    if (pos < buf.length) buf[pos] = '\0';
-    return buf[0 .. pos];
-}
-
-private const(char)[] formatHudSingle(return char[] buf, const(char)[] label, int val)
-    nothrow @nogc @safe
-{
-    size_t pos = 0;
-    foreach (ch; label) { if (pos < buf.length) buf[pos++] = ch; }
-    pos = writeInt(buf, pos, val);
-    if (pos < buf.length) buf[pos] = '\0';
-    return buf[0 .. pos];
-}
-
-private size_t writeInt(scope char[] buf, size_t pos, int val) nothrow @nogc @safe {
-    if (val < 0) {
-        if (pos < buf.length) buf[pos++] = '-';
-        val = -val;
-    }
-    if (val == 0) {
-        if (pos < buf.length) buf[pos++] = '0';
-        return pos;
-    }
-    char[10] digits = void;
-    int ndigits = 0;
-    while (val > 0 && ndigits < 10) {
-        digits[ndigits++] = cast(char)('0' + val % 10);
-        val /= 10;
-    }
-    foreach_reverse (i; 0 .. ndigits)
-        if (pos < buf.length) buf[pos++] = digits[i];
-    return pos;
 }
 
 // ---------------------------------------------------------------------------

@@ -130,4 +130,26 @@ struct FrameContext {
     WGPUCommandEncoder     encoder;
     WGPURenderPassEncoder  pass;
     bool                   valid = false;
+
+    // --- @safe render pass commands (wraps @system WGPU calls) ---
+
+    void setPipeline(WGPURenderPipeline pipeline) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+    }
+
+    void setBindGroup(uint group, WGPUBindGroup bg) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderSetBindGroup(pass, group, bg, 0, null);
+    }
+
+    void setVertexBuffer(uint slot, WGPUBuffer buf, ulong size, ulong offset = 0) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderSetVertexBuffer(pass, slot, buf, offset, size);
+    }
+
+    void setIndexBuffer(WGPUBuffer buf, WGPUIndexFormat fmt, ulong size, ulong offset = 0) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderSetIndexBuffer(pass, buf, fmt, offset, size);
+    }
+
+    void drawIndexed(uint indexCount, uint instanceCount) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderDrawIndexed(pass, indexCount, instanceCount, 0, 0, 0);
+    }
 }
