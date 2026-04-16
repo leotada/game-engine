@@ -10,6 +10,14 @@ struct Vert {
     float[3] normal;
 }
 
+/// Per-vertex data for textured meshes: position + normal + uv.
+/// Buffer 0, stride = 32 bytes. Matches textured3dShaderSource layout.
+struct TexVert {
+    float[3] pos;
+    float[3] normal;
+    float[2] uv;
+}
+
 /// Per-instance data: model matrix + RGBA color.
 /// Buffer 1, stride = 80 bytes. Matches colored3dShaderSource layout.
 struct InstanceData {

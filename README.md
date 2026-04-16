@@ -214,8 +214,8 @@ dub run --config=benchmark
 - [x] Phase 3 — Instanced rendering, depth buffer, directional lighting
 - [x] Phase 4 — Bitmap text rendering, FPS overlay
 - [x] Phase 5 — 3D Benchmark (1000 cubes, ~1800 FPS)
-- [ ] Phase 6 — Materials and textures (image loading, sampler, texture binding)
-- [ ] Phase 7 — Scene graph and transforms (parent-child hierarchies)
+- [x] Phase 6 — Materials and textures (RGBA8 textures, samplers, TGA loader, textured pipeline)
+- [x] Phase 7 — Scene graph and transforms (parent-indexed hierarchy, one-pass world matrices)
 - [ ] Phase 8 — 3D camera system (orbit, fly, first-person)
 - [ ] Phase 9 — Shadows (shadow mapping)
 - [ ] Phase 10 — Asset pipeline (glTF, image loading)
