@@ -36,9 +36,11 @@ struct PhysicsWorld(size_t MaxBodies = 4096) {
     SolverConfig  solver;
 
     // --- Broadphase ---------------------------------------------------------
-    // 32×8×64 cells of 8 m → 256×64×512 m window (recentred each step by
-    // calling `recenterGrid(pos)` from the caller — follows the player).
+    // 32×8×64 cells of 4 m → 128×32×256 m window. Call recenterGrid(pos)
+    // every step to keep a moving camera/player near the middle of the
+    // window. The first step auto-centers on (0,0,0) for simpler setups.
     SpatialGrid!(32, 8, 64, 65536) grid;
+    private bool gridInitialized = false;
 
     /// Move the grid origin so that `center` sits roughly in the middle.
     void recenterGrid(Vec3 center) {
@@ -47,6 +49,7 @@ struct PhysicsWorld(size_t MaxBodies = 4096) {
             center.y - 8  * grid.cellSize * 0.5f,
             center.z - 64 * grid.cellSize * 0.5f,
         );
+        gridInitialized = true;
     }
 
     // Per-pair manifold buffer (dedup arena, overwritten each frame).
@@ -99,6 +102,8 @@ struct PhysicsWorld(size_t MaxBodies = 4096) {
 
     /// Advance the world by `dt` seconds.
     void step(float dt) @trusted {
+        if (!gridInitialized) recenterGrid(Vec3(0, 0, 0));
+
         // 1. Integrate velocities (apply gravity + forces).
         integrateVelocities(
             velocity[0 .. bodyCount],
@@ -110,9 +115,10 @@ struct PhysicsWorld(size_t MaxBodies = 4096) {
             gravity, dt,
         );
 
-        // 2. Refresh AABBs.
+        // 2. Refresh AABBs (dynamic bodies only — static shapes never move).
         foreach (i; 0 .. bodyCount) {
-            aabb[i] = computeAabb(position[i], orientation[i], shape[i]);
+            if (invMass[i] > 0.0f)
+                aabb[i] = computeAabb(position[i], orientation[i], shape[i]);
         }
 
         // 3. Broadphase + narrowphase.

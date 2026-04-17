@@ -41,6 +41,20 @@ struct SpatialGrid(size_t DimX, size_t DimY, size_t DimZ, size_t MaxEntries = 32
     }
 
     void insert(uint bodyId, Aabb a) {
+        // Skip bodies that are entirely outside the grid window. Otherwise
+        // they would be clamped onto the border cells (see cellRange above),
+        // which bloats those cells linearly with body count and degrades
+        // perf as the simulation grows.
+        immutable gx0 = origin.x;
+        immutable gy0 = origin.y;
+        immutable gz0 = origin.z;
+        immutable gx1 = origin.x + cast(float) DimX * cellSize;
+        immutable gy1 = origin.y + cast(float) DimY * cellSize;
+        immutable gz1 = origin.z + cast(float) DimZ * cellSize;
+        if (a.max.x < gx0 || a.min.x > gx1) return;
+        if (a.max.y < gy0 || a.min.y > gy1) return;
+        if (a.max.z < gz0 || a.min.z > gz1) return;
+
         int x0, y0, z0, x1, y1, z1;
         cellRange(a, x0, y0, z0, x1, y1, z1);
         foreach (zz; z0 .. z1 + 1)
