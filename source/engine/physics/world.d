@@ -184,9 +184,10 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
             force[i]      = Vec3(0, 0, 0);
         }
 
-        // 2. Update Dbvt for moved bodies.
+        // 2. Update Dbvt for moved bodies. Sleeping bodies do not move,
+        //    so skipping them avoids churning the tree every frame.
         foreach (i; 0 .. bodyCount) {
-            if (invMass[i] == 0 || isPlane[i]) continue;
+            if (invMass[i] == 0 || isPlane[i] || sleeping[i]) continue;
             if (dbvtLeaf[i] < 0) continue;
             immutable a = computeAabb(i);
             immutable v = linearVel[i] * dt;
@@ -223,26 +224,45 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
         stats.broadphasePairs = pairs;
 
         // 4. Islands (union-find over active manifolds).
+        //    Also: wake any sleeping body that shares a manifold with an
+        //    awake dynamic body (collision wake-up). Sleeping ↔ sleeping
+        //    and sleeping ↔ static contacts do NOT wake.
         islands.init_(bodyCount);
         uint manifoldCount = 0;
         foreach (ref m; pool.manifolds) {
             if (m.count == 0 || m.framesSinceUse >= 255) continue;
             manifoldCount++;
-            if (invMass[m.a] > 0 && invMass[m.b] > 0) {
+            immutable dynA = invMass[m.a] > 0;
+            immutable dynB = invMass[m.b] > 0;
+            if (dynA && dynB) {
                 islands.union_(cast(int) m.a, cast(int) m.b);
+                // Collision wake-up: if exactly one side is awake, wake the other.
+                if (sleeping[m.a] && !sleeping[m.b]) { sleeping[m.a] = false; sleepTimer[m.a] = 0; }
+                else if (sleeping[m.b] && !sleeping[m.a]) { sleeping[m.b] = false; sleepTimer[m.b] = 0; }
             }
         }
         stats.manifoldCount = manifoldCount;
 
         // 5. Solver — build SolverBody view, setup + warm-start, iterate.
+        //    Sleeping dynamic bodies are exposed as invMass=0 so the solver
+        //    cannot perturb their velocities. This is what actually lets
+        //    them stay at rest — otherwise residual constraint impulses
+        //    would push ke above the sleep threshold every frame.
         SolverBody[MaxBodies] sb;
         foreach (i; 0 .. bodyCount) {
-            sb[i].linearVel      = linearVel[i];
-            sb[i].angularVel     = angularVel[i];
+            if (sleeping[i]) {
+                sb[i].linearVel      = Vec3(0, 0, 0);
+                sb[i].angularVel     = Vec3(0, 0, 0);
+                sb[i].invMass        = 0;
+                sb[i].invInertiaDiag = Vec3(0, 0, 0);
+            } else {
+                sb[i].linearVel      = linearVel[i];
+                sb[i].angularVel     = angularVel[i];
+                sb[i].invMass        = invMass[i];
+                sb[i].invInertiaDiag = invInertiaDiag[i];
+            }
             sb[i].pseudoLinVel   = Vec3(0, 0, 0);
             sb[i].pseudoAngVel   = Vec3(0, 0, 0);
-            sb[i].invMass        = invMass[i];
-            sb[i].invInertiaDiag = invInertiaDiag[i];
             sb[i].orientation    = orientation[i];
         }
         foreach (ref m; pool.manifolds) {
@@ -261,28 +281,31 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
             }
         }
 
-        // 6. Writeback + integrate transforms.
+        // 6. Writeback + integrate transforms. Sleeping bodies keep their
+        //    stored (zero) velocity and are not integrated.
         foreach (i; 0 .. bodyCount) {
-            if (invMass[i] == 0) continue;
+            if (invMass[i] == 0 || sleeping[i]) continue;
             linearVel[i]  = sb[i].linearVel;
             angularVel[i] = sb[i].angularVel;
-            if (sleeping[i]) continue;
             position[i]    = position[i] + (linearVel[i] + sb[i].pseudoLinVel) * dt;
             orientation[i] = orientation[i].integrate(angularVel[i] + sb[i].pseudoAngVel, dt);
         }
 
         // 7. Sleeping / deactivation.
         foreach (i; 0 .. bodyCount) {
-            if (invMass[i] == 0) continue;
+            if (invMass[i] == 0 || sleeping[i]) continue;
             immutable ke = linearVel[i].lengthSquared
                          + angularVel[i].lengthSquared;
             if (ke < LINEAR_SLEEP_THRESHOLD * LINEAR_SLEEP_THRESHOLD
                   + ANGULAR_SLEEP_THRESHOLD * ANGULAR_SLEEP_THRESHOLD) {
                 sleepTimer[i] += dt;
-                if (sleepTimer[i] > TIME_TO_SLEEP) sleeping[i] = true;
+                if (sleepTimer[i] > TIME_TO_SLEEP) {
+                    sleeping[i]    = true;
+                    linearVel[i]   = Vec3(0, 0, 0);   // zero residual drift
+                    angularVel[i]  = Vec3(0, 0, 0);
+                }
             } else {
                 sleepTimer[i] = 0;
-                sleeping[i]   = false;
             }
         }
         uint active = 0, asleep = 0;
@@ -302,6 +325,11 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
     private void processPair(uint a, uint b) @trusted  {
         if (isPlane[a] && isPlane[b]) return;         // plane-plane = skip
         if (invMass[a] == 0 && invMass[b] == 0 && !isPlane[a] && !isPlane[b]) return; // two statics
+        // Both dynamic bodies asleep → no impulses possible, skip narrowphase.
+        // Wake-up from collision only happens when an awake body touches
+        // the sleeping one, which is handled here because at least one side
+        // will then have sleeping==false.
+        if (invMass[a] > 0 && invMass[b] > 0 && sleeping[a] && sleeping[b]) return;
         // Normalize so plane (if any) is B.
         if (isPlane[a]) { immutable t = a; a = b; b = t; }
         // Sleeping pairs: allow if at least one body can wake.
