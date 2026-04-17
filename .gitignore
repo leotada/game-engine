@@ -27,3 +27,6 @@ __dummy.html
 # Code coverage
 *.lst
 game-engine-test-library
+
+# Reference material (upstream sources we read for inspiration, not redistributed)
+ref/
