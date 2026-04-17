@@ -23,11 +23,16 @@ private enum STREAM_RADIUS   = 4;        // chunks visible around camera
 private enum RENDER_RADIUS   = 3;        // chunks actually rendered (smaller → perf)
 
 // Physics
-private enum PHYS_MAX_BODIES = 4096;     // total (ground + trunks + crowns + rain)
-private enum RAIN_MAX_BODIES = 800;      // cap on dynamic cubes
-private enum TRUNK_BODY_CAP  = 1400;     // cap on static trunk colliders
-private enum CROWN_BODY_CAP  = 1400;     // cap on static crown colliders
-private enum RAIN_SPAWN_RATE = 8;        // cubes per frame while under cap
+// NOTE: current physics backend cost scales poorly past ~300 bodies
+// (broadphase pair tests + narrowphase + solver at 5 substeps per frame).
+// The forest is rendered-only; a small static box cage around the camera
+// plus a modest rain stream is enough to exercise contacts without
+// pushing a 60 fps frame over budget. Increase once physics is optimized.
+private enum PHYS_MAX_BODIES = 4096;     // total pool size
+private enum RAIN_MAX_BODIES = 150;      // cap on dynamic cubes
+private enum TRUNK_BODY_CAP  = 80;       // cap on static trunk colliders
+private enum CROWN_BODY_CAP  = 80;       // cap on static crown colliders
+private enum RAIN_SPAWN_RATE = 2;        // cubes per frame while under cap
 private enum GROUND_HALF     = 512.0f;
 
 // Camera
