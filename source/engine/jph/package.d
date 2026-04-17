@@ -7,3 +7,4 @@ module engine.jph;
 
 public import engine.jph.core;
 public import engine.jph.math;
+public import engine.jph.geometry;

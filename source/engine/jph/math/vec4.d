@@ -6,6 +6,7 @@ import std.math : sqrt, fabs, isNaN;
 import engine.jph.core.types;
 import engine.jph.math.float4;
 import engine.jph.math.uvec4;
+import engine.jph.math.vec3 : Vec3;
 
 @safe:
 
@@ -16,6 +17,10 @@ struct Vec4 {
 
     this(float inX, float inY, float inZ, float inW) pure nothrow @nogc {
         mF32[0] = inX; mF32[1] = inY; mF32[2] = inZ; mF32[3] = inW;
+    }
+    /// Construct from a 3-vector and explicit W. Mirrors Jolt's `Vec4(Vec3Arg, float)`.
+    this(Vec3 v, float inW) pure nothrow @nogc {
+        mF32[0] = v.GetX(); mF32[1] = v.GetY(); mF32[2] = v.GetZ(); mF32[3] = inW;
     }
 
     static Vec4 sZero()      pure nothrow @nogc { return Vec4(0, 0, 0, 0); }
