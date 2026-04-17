@@ -85,6 +85,22 @@ struct Mat4 {
         return r;
     }
 
+    /// Orthographic projection for WebGPU/WGSL clip space (Z in [0,1], Y up).
+    /// Used primarily for directional-light shadow maps.
+    static Mat4 ortho(float left, float right, float bottom, float top,
+                      float near, float far) {
+        Mat4 r;
+        r.m[] = 0;
+        r.m[0]  =  2.0f / (right - left);
+        r.m[5]  =  2.0f / (top - bottom);
+        r.m[10] = -1.0f / (far  - near);
+        r.m[12] = -(right + left)  / (right - left);
+        r.m[13] = -(top   + bottom)/ (top   - bottom);
+        r.m[14] = -near  / (far - near);
+        r.m[15] =  1.0f;
+        return r;
+    }
+
     Mat4 opBinary(string op : "*")(Mat4 b) const {
         Mat4 r;
         r.m[] = 0;
