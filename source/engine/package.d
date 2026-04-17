@@ -11,4 +11,5 @@ public import engine.scene;
 public import engine.assets;
 public import engine.audio;
 public import engine.devtools;
+public import engine.physics;
 public import engine.app;
