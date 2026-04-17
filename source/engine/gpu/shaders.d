@@ -226,3 +226,36 @@ fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
     return u.lightViewProj * model * vec4<f32>(in.position, 1.0);
 }
 `;
+
+/// Unlit 3D line shader for debug gizmos. One buffer (buffer 0) with
+/// position(float32x3) + color(float32x4) per vertex. Single uniform:
+/// viewProj mat4x4. Topology: lineList. No depth testing (overlay).
+enum gizmoLineShaderSource = `
+struct Uniforms {
+    viewProj: mat4x4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.clipPos = u.viewProj * vec4<f32>(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
+`;

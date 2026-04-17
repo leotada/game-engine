@@ -220,7 +220,7 @@ dub run --config=benchmark
 - [x] Phase 9 — Shadows (depth32Float shadow map + depth-only pipeline + directional light VP)
 - [x] Phase 10 — Asset pipeline (BMP + minimal glTF 2.0 mesh loader)
 - [x] Phase 11 — Audio (SDL3 audio streams, WAV loading, playback)
-- [ ] Phase 12 — Editor tooling
+- [x] Phase 12 — Editor tooling (immediate-mode 3D gizmos + debug overlay)
 
 ## Documentation
 

@@ -91,6 +91,9 @@ source/
 │   ├── audio/          # SDL3-backed audio (AudioEngine, AudioClip)
 │   │   └── engine.d
 │   ├── core/           # Logging, RAII handles
+│   ├── devtools/       # In-engine developer tooling
+│   │   ├── gizmos.d    # Immediate-mode 3D line primitives (lineList, overlay depth)
+│   │   └── overlay.d   # Structured FPS + label overlay atop TextRenderer
 │   ├── ecs/            # Sparse-set ComponentStore, World template
 │   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text, shadow
 │   │   ├── buffer.d    # Vertex, index, uniform, dynamic buffer helpers
