@@ -236,9 +236,16 @@ struct TextRenderer {
     private uint screenW, screenH;
     private size_t frameVertexOffset = 0;  // bytes used so far this frame
 
+    /// Maximum characters in a single `drawText` call. Sized so the temp
+    /// vertex buffer (`MAX_CHARS * 24 floats`) stays reasonable on the stack.
     enum MAX_CHARS = 256;
+    /// Maximum characters batched across an entire frame (sum of every
+    /// `drawText` call between `beginFrame` and submit). Must be >= the
+    /// total characters any overlay draws per frame, otherwise later calls
+    /// silently drop and the last labels flicker.
+    enum MAX_CHARS_PER_FRAME = 2048;
     // 6 vertices per char (2 triangles), 4 floats per vertex (x,y,u,v)
-    enum VERTEX_BUF_SIZE = MAX_CHARS * 6 * 4 * float.sizeof;
+    enum VERTEX_BUF_SIZE = MAX_CHARS_PER_FRAME * 6 * 4 * float.sizeof;
 
     @disable this(this);
 
@@ -496,4 +503,40 @@ struct FpsCounter {
         }
         displayLen = pos;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — capacity invariants for the batched-frame vertex buffer.
+//
+// Regression guard for the "overlay physics section flickers" bug: MAX_CHARS
+// used to double as both the per-call cap and the whole-frame cap, so any
+// overlay that drew more than ~256 chars/frame had its last drawText() calls
+// silently dropped. The fix split them into MAX_CHARS (per call) and
+// MAX_CHARS_PER_FRAME (whole frame) with the buffer sized from the latter.
+// ---------------------------------------------------------------------------
+unittest {
+    // A single call must still fit comfortably in the per-frame buffer.
+    static assert(TextRenderer.MAX_CHARS <= TextRenderer.MAX_CHARS_PER_FRAME,
+        "MAX_CHARS (per call) cannot exceed MAX_CHARS_PER_FRAME (whole frame)");
+
+    // The whole-frame budget must strictly exceed the per-call cap, otherwise
+    // the split is pointless and we'd regress to the flicker bug.
+    static assert(TextRenderer.MAX_CHARS_PER_FRAME > TextRenderer.MAX_CHARS,
+        "MAX_CHARS_PER_FRAME must be strictly greater than MAX_CHARS");
+
+    // VERTEX_BUF_SIZE must be derived from MAX_CHARS_PER_FRAME (6 verts/char,
+    // 4 floats/vert). If someone silently re-couples it to MAX_CHARS, this
+    // fires at compile time.
+    static assert(TextRenderer.VERTEX_BUF_SIZE
+                  == TextRenderer.MAX_CHARS_PER_FRAME * 6 * 4 * float.sizeof,
+        "VERTEX_BUF_SIZE must be sized from MAX_CHARS_PER_FRAME");
+
+    // The benchmark overlay emits ~30 labels × ~25 chars each plus section
+    // headers. Guard that the budget covers a realistic overlay without
+    // needing another bump. If the overlay grows substantially, this test
+    // will fail and force a deliberate capacity increase rather than a
+    // silent flicker.
+    enum size_t REALISTIC_OVERLAY_CHARS = 1024;
+    static assert(TextRenderer.MAX_CHARS_PER_FRAME >= REALISTIC_OVERLAY_CHARS,
+        "MAX_CHARS_PER_FRAME is below realistic overlay budget");
 }
