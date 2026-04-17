@@ -407,9 +407,15 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
                                                               position[b], orientation[b]);
         mergeContacts(*m, nr.points[0 .. nr.count]);
 
-        // Wake bodies on contact.
-        if (invMass[a] > 0 && sleeping[a]) { sleeping[a] = false; sleepTimer[a] = 0; }
-        if (invMass[b] > 0 && sleeping[b]) { sleeping[b] = false; sleepTimer[b] = 0; }
+        // Matches Bullet: narrowphase never wakes sleeping bodies. A resting
+        // cube on static ground creates/refreshes a manifold every frame, but
+        // the contact itself must NOT reset the sleep timer — otherwise the
+        // body can never reach TIME_TO_SLEEP. Wake-up happens elsewhere:
+        //   - step 4 below: dyn↔dyn manifolds wake the sleeping side when
+        //     the other side is awake (island-style propagation, one hop/frame).
+        //   - external activate() (force/impulse/teleport) — future work.
+        // Ref: btActivatingCollisionAlgorithm.cpp (activate calls commented out)
+        // and btSimulationIslandManager::findUnions (only kinematic wakes).
     }
 
     private Vec3 approxBoxHalfExtents(uint id) const  {

@@ -377,7 +377,7 @@ void main() {
             profFrames++;
             profAccum  += frameDt;
             if (profAccum >= 1.0) {
-                writefln("[prof] frames=%d phys=%.1fms begin=%.1fms scene=%.1fms end=%.1fms bodies=%d rain=%d manifolds=%d",
+                writefln("[prof] frames=%d phys=%.1fms begin=%.1fms scene=%.1fms end=%.1fms bodies=%d rain=%d manifolds=%d active=%d sleeping=%d",
                          profFrames,
                          physMsAcc / profFrames,
                          beginMsAcc / profFrames,
@@ -385,7 +385,9 @@ void main() {
                          endMsAcc / profFrames,
                          phys.bodyCount,
                          rainCount,
-                         phys.stats.manifoldCount);
+                         phys.stats.manifoldCount,
+                         phys.stats.activeBodies,
+                         phys.stats.sleepingBodies);
                 stdout.flush();
                 profAccum = 0.0;
                 physMsAcc = 0.0; beginMsAcc = 0.0; sceneMsAcc = 0.0; endMsAcc = 0.0;
