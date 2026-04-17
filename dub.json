@@ -26,7 +26,8 @@
             "targetType": "executable",
             "targetName": "game-engine-benchmark",
             "mainSourceFile": "source/demo/benchmark.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d"],
+            "dflags-release-ldc": ["-O3", "-mcpu=native"]
         },
         {
             "name": "game",

@@ -1,266 +1,320 @@
-/// 3D Benchmark — grid of spinning cubes with instanced rendering and FPS overlay.
+// Forest Stress Test — flyover of a dense procedural forest with async chunk
+// streaming and continuous rigid-body rain. Measures frametime stats via
+// FrameTimer (1% low, stddev) and GC pause times via core.memory.GC.profileStats.
 module demo.benchmark;
 
+import core.memory : GC;
+import core.time : Duration;
+import std.parallelism : taskPool, task, Task;
+import std.random : Mt19937, uniform;
+import std.stdio : writeln, writefln;
+import std.math : sin, cos, sqrt;
+
+import engine;
 import bindings.wgpu;
-import engine.app;
-import engine.gpu.pipeline;
-import engine.gpu.buffer;
-import engine.gpu.text;
-import engine.gpu.renderer : Color;
-import engine.math.mat;
-import engine.math.vec;
-import engine.core.log;
-import bindings.sdl3;
 
-@safe:
-
-// ---------------------------------------------------------------------------
-// Cube mesh data — 24 vertices (4 per face, with normals), 36 indices
-// Vertex format: float32x3 position + float32x3 normal = 24 bytes/vertex
-// ---------------------------------------------------------------------------
-private struct CubeVertex {
-    float[3] pos;
-    float[3] normal;
-}
-
-// Unit cube centered at origin, side length 1.0
-private static immutable CubeVertex[24] cubeVertices = [
-    // Front face (z = +0.5, normal = 0,0,1)
-    CubeVertex([-0.5, -0.5,  0.5], [ 0,  0,  1]),
-    CubeVertex([ 0.5, -0.5,  0.5], [ 0,  0,  1]),
-    CubeVertex([ 0.5,  0.5,  0.5], [ 0,  0,  1]),
-    CubeVertex([-0.5,  0.5,  0.5], [ 0,  0,  1]),
-    // Back face (z = -0.5, normal = 0,0,-1)
-    CubeVertex([ 0.5, -0.5, -0.5], [ 0,  0, -1]),
-    CubeVertex([-0.5, -0.5, -0.5], [ 0,  0, -1]),
-    CubeVertex([-0.5,  0.5, -0.5], [ 0,  0, -1]),
-    CubeVertex([ 0.5,  0.5, -0.5], [ 0,  0, -1]),
-    // Right face (x = +0.5, normal = 1,0,0)
-    CubeVertex([ 0.5, -0.5,  0.5], [ 1,  0,  0]),
-    CubeVertex([ 0.5, -0.5, -0.5], [ 1,  0,  0]),
-    CubeVertex([ 0.5,  0.5, -0.5], [ 1,  0,  0]),
-    CubeVertex([ 0.5,  0.5,  0.5], [ 1,  0,  0]),
-    // Left face (x = -0.5, normal = -1,0,0)
-    CubeVertex([-0.5, -0.5, -0.5], [-1,  0,  0]),
-    CubeVertex([-0.5, -0.5,  0.5], [-1,  0,  0]),
-    CubeVertex([-0.5,  0.5,  0.5], [-1,  0,  0]),
-    CubeVertex([-0.5,  0.5, -0.5], [-1,  0,  0]),
-    // Top face (y = +0.5, normal = 0,1,0)
-    CubeVertex([-0.5,  0.5,  0.5], [ 0,  1,  0]),
-    CubeVertex([ 0.5,  0.5,  0.5], [ 0,  1,  0]),
-    CubeVertex([ 0.5,  0.5, -0.5], [ 0,  1,  0]),
-    CubeVertex([-0.5,  0.5, -0.5], [ 0,  1,  0]),
-    // Bottom face (y = -0.5, normal = 0,-1,0)
-    CubeVertex([-0.5, -0.5, -0.5], [ 0, -1,  0]),
-    CubeVertex([ 0.5, -0.5, -0.5], [ 0, -1,  0]),
-    CubeVertex([ 0.5, -0.5,  0.5], [ 0, -1,  0]),
-    CubeVertex([-0.5, -0.5,  0.5], [ 0, -1,  0]),
-];
-
-private static immutable ushort[36] cubeIndices = [
-     0, 1, 2,  2, 3, 0,   // front
-     4, 5, 6,  6, 7, 4,   // back
-     8, 9,10, 10,11, 8,   // right
-    12,13,14, 14,15,12,   // left
-    16,17,18, 18,19,16,   // top
-    20,21,22, 22,23,20,   // bottom
-];
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-private enum GRID_N = 10;                       // 10×10×10 = 1000 cubes
-private enum CUBE_COUNT = GRID_N * GRID_N * GRID_N;
-private enum CUBE_SPACING = 1.5f;               // distance between cube centers
 private enum SCREEN_W = 1280;
 private enum SCREEN_H = 720;
 
-void main() {
-    // -----------------------------------------------------------------------
-    // Init: window + GPU via App
-    // -----------------------------------------------------------------------
-    auto app = App.create("3D Benchmark", SCREEN_W, SCREEN_H, WGPUPresentMode.mailbox);
+// Forest layout
+private enum CHUNK_SIZE      = 16.0f;    // metres per chunk edge
+private enum TREES_PER_CHUNK = 25;
+private enum STREAM_RADIUS   = 4;        // chunks visible around camera
+private enum RENDER_RADIUS   = 3;        // chunks actually rendered (smaller → perf)
 
-    // -----------------------------------------------------------------------
-    // Create GPU resources
-    // -----------------------------------------------------------------------
-    auto device = () @trusted { return app.gpu.getDevice(); }();
-    auto queue  = () @trusted { return app.gpu.getQueue(); }();
+// Physics
+private enum PHYS_MAX_BODIES = 4096;     // total (ground + trunks + rain)
+private enum RAIN_MAX_BODIES = 1024;     // cap on dynamic cubes
+private enum TRUNK_BODY_CAP  = 2048;     // cap on static trunk colliders
+private enum RAIN_SPAWN_RATE = 10;       // cubes per frame while under cap
+private enum GROUND_HALF     = 512.0f;
 
-    // Cube mesh buffers
-    auto vertexBuf = () @trusted {
-        return createVertexBuffer(device, queue,
-            cubeVertices.ptr, cubeVertices.sizeof);
-    }();
-    scope(exit) () @trusted { wgpuBufferDestroy(vertexBuf); wgpuBufferRelease(vertexBuf); }();
+// Camera
+private enum CAM_SPEED       = 30.0f;    // m/s, constant forward motion
+private enum CAM_HEIGHT      = 18.0f;
+private enum CAM_WARMUP      = 10.0f;    // seconds to hold still so physics is visible
 
-    auto indexBuf = () @trusted {
-        return createIndexBuffer(device, queue,
-            cubeIndices.ptr, cubeIndices.sizeof);
-    }();
-    scope(exit) () @trusted { wgpuBufferDestroy(indexBuf); wgpuBufferRelease(indexBuf); }();
+// Chunk coordinate key (XZ grid).
+private struct ChunkKey { int x, z; }
 
-    // Instance buffer (model matrices — 64 bytes per cube)
-    auto instanceBuf = () @trusted {
-        return createDynamicVertexBuffer(device, CUBE_COUNT * 64);
-    }();
-    scope(exit) () @trusted { wgpuBufferDestroy(instanceBuf); wgpuBufferRelease(instanceBuf); }();
+// Data produced by a streaming task.
+private struct ChunkData {
+    int cx, cz;
+    Vec3[] trunkPos;
+    Vec3[] trunkScale;
+    Vec3[] crownPos;
+    Vec3[] crownScale;
+    bool collidersAdded;
+}
 
-    // Uniform buffer (VP matrix — 64 bytes)
-    auto uniformBuf = createUniformBuffer(device, 64);
-    scope(exit) () @trusted { wgpuBufferDestroy(uniformBuf); wgpuBufferRelease(uniformBuf); }();
+// Generate one chunk of forest. Intentionally allocates (arrays, LCG state)
+// to exercise GC pressure when run across many threads.
+private ChunkData generateChunk(int cx, int cz) {
+    ChunkData c;
+    c.cx = cx;
+    c.cz = cz;
+    c.trunkPos   = new Vec3[TREES_PER_CHUNK];
+    c.trunkScale = new Vec3[TREES_PER_CHUNK];
+    c.crownPos   = new Vec3[TREES_PER_CHUNK];
+    c.crownScale = new Vec3[TREES_PER_CHUNK];
 
-    // 3D pipeline
-    auto pipe3d = createPipeline3D(device, app.gpu.getFormat());
-    scope(exit) pipe3d.release();
+    // Deterministic seed per chunk so flyovers look consistent.
+    immutable uint seed = cast(uint)(cx * 73856093 ^ cz * 19349663 ^ 0xBEEF);
+    auto rng = Mt19937(seed);
 
-    // Create bind group for VP uniform
-    auto vpBindGroup = () @trusted {
-        WGPUBindGroupEntry bgEntry;
-        bgEntry.binding = 0;
-        bgEntry.buffer  = uniformBuf;
-        bgEntry.offset  = 0;
-        bgEntry.size    = 64;
+    immutable ox = cx * CHUNK_SIZE;
+    immutable oz = cz * CHUNK_SIZE;
 
-        WGPUBindGroupDescriptor bgDesc;
-        bgDesc.layout     = pipe3d.bindGroupLayout;
-        bgDesc.entryCount = 1;
-        bgDesc.entries    = &bgEntry;
-        return wgpuDeviceCreateBindGroup(device, &bgDesc);
-    }();
-    scope(exit) () @trusted { wgpuBindGroupRelease(vpBindGroup); }();
+    foreach (i; 0 .. TREES_PER_CHUNK) {
+        immutable fx = uniform(0.0f, CHUNK_SIZE, rng);
+        immutable fz = uniform(0.0f, CHUNK_SIZE, rng);
+        immutable trunkH = uniform(3.0f, 7.0f, rng);
+        immutable trunkR = uniform(0.25f, 0.5f, rng);
+        immutable crownR = uniform(1.5f, 3.0f, rng);
+        immutable px = ox + fx;
+        immutable pz = oz + fz;
 
-    // Text renderer
-    auto textRenderer = TextRenderer.create(device, queue, app.gpu.getFormat(), SCREEN_W, SCREEN_H);
-    scope(exit) textRenderer.destroy();
+        c.trunkPos[i]   = Vec3(px, trunkH * 0.5f, pz);
+        c.trunkScale[i] = Vec3(trunkR, trunkH, trunkR);
+        c.crownPos[i]   = Vec3(px, trunkH + crownR * 0.5f, pz);
+        c.crownScale[i] = Vec3(crownR, crownR, crownR);
+    }
+    return c;
+}
 
-    // FPS counter
-    auto fps = FpsCounter.create();
+// Forest world — renderable chunks + their async tasks.
+private struct ForestWorld {
+    ChunkData[ChunkKey] loaded;
+    Task!(generateChunk, int, int)*[ChunkKey] pending;
 
-    // -----------------------------------------------------------------------
-    // Pre-compute per-cube rotation axes and speeds
-    // -----------------------------------------------------------------------
-    struct CubeState {
-        Vec3 position;
-        Vec3 axis;     // rotation axis (normalized)
-        float speed;   // radians per second
-        float angle;   // current angle
+    // Request the given chunk asynchronously if not already loaded/pending.
+    void request(int cx, int cz) {
+        auto k = ChunkKey(cx, cz);
+        if (k in loaded) return;
+        if (k in pending) return;
+        auto t = task!generateChunk(cx, cz);
+        taskPool.put(t);
+        pending[k] = t;
     }
 
-    CubeState[CUBE_COUNT] cubes = void;
-    {
-        immutable halfExtent = (GRID_N - 1) * CUBE_SPACING * 0.5f;
-        size_t idx = 0;
-        foreach (iz; 0 .. GRID_N) {
-            foreach (iy; 0 .. GRID_N) {
-                foreach (ix; 0 .. GRID_N) {
-                    cubes[idx].position = Vec3(
-                        ix * CUBE_SPACING - halfExtent,
-                        iy * CUBE_SPACING - halfExtent,
-                        iz * CUBE_SPACING - halfExtent,
-                    );
-                    // Pseudo-random axis and speed derived from index
-                    immutable fi = cast(float)(idx);
-                    cubes[idx].axis = Vec3(
-                        sinF(fi * 1.37f),
-                        sinF(fi * 2.41f + 1.0f),
-                        sinF(fi * 0.79f + 2.0f),
-                    ).normalized();
-                    cubes[idx].speed = 0.5f + sinF(fi * 0.31f) * sinF(fi * 0.31f) * 2.0f;
-                    cubes[idx].angle = 0;
-                    idx++;
-                }
+    // Harvest any completed chunks into `loaded`.
+    void pumpReady() {
+        ChunkKey[] done;
+        foreach (k, t; pending) {
+            if (t.done) {
+                loaded[k] = t.yieldForce;
+                done ~= k;
             }
         }
+        foreach (k; done) pending.remove(k);
     }
 
-    // Camera setup
-    immutable gridCenter = Vec3(0, 0, 0);
-    immutable cameraDistance = GRID_N * CUBE_SPACING * 1.5f;
-    immutable eye = Vec3(cameraDistance * 0.6f, cameraDistance * 0.5f, cameraDistance * 0.7f);
-    immutable view = Mat4.lookAt(eye, gridCenter, Vec3(0, 1, 0));
-    immutable proj = Mat4.perspective(0.785f, cast(float) SCREEN_W / cast(float) SCREEN_H, 0.1f, 200.0f);
-    immutable vp = proj * view;
+    // Drop chunks outside the streaming radius around (cx, cz).
+    void evictFar(int cx, int cz) {
+        ChunkKey[] drop;
+        foreach (k, _; loaded) {
+            immutable dx = k.x - cx;
+            immutable dz = k.z - cz;
+            if (dx * dx + dz * dz > STREAM_RADIUS * STREAM_RADIUS * 4) drop ~= k;
+        }
+        foreach (k; drop) loaded.remove(k);
+    }
 
-    // Upload VP matrix
-    () @trusted {
-        wgpuQueueWriteBuffer(queue, uniformBuf, 0, vp.m.ptr, vp.m.sizeof);
-    }();
+    size_t loadedCount() const { return loaded.length; }
+    size_t pendingCount() const { return pending.length; }
+}
 
-    // Instance data buffer (CPU side)
-    float[16][CUBE_COUNT] instanceData = void;
+void main() {
+    auto app = App.create("Forest Stress Test", SCREEN_W, SCREEN_H, WGPUPresentMode.mailbox);
+    scope(exit) app.destroy();
+
+    info("Forest Stress Test starting...");
+    GC.profileStats(); // prime GC stats tracking.
+
+    // -----------------------------------------------------------------------
+    // Scene + physics + tooling
+    // -----------------------------------------------------------------------
+    auto scene   = Scene3D.create(app.gpu);
+    scope(exit) scene.destroy();
+    auto cubeMesh   = Mesh.cube(app.gpu);
+    scope(exit) cubeMesh.destroy();
+
+    auto text = TextRenderer.create(() @trusted { return app.gpu.getDevice(); }(),
+                                    () @trusted { return app.gpu.getQueue(); }(),
+                                    app.gpu.getFormat(), SCREEN_W, SCREEN_H);
+    scope(exit) text.destroy();
+
+    auto overlay = DebugOverlay();
+    auto timer   = FrameTimer.create();
+
+    auto phys = new PhysicsWorld!PHYS_MAX_BODIES();
+    phys.gravity = Vec3(0, -20.0f, 0);
+    // Static ground at y = -0.5, spanning the whole flyover path.
+    phys.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(GROUND_HALF, 0.5f, GROUND_HALF)));
+
+    uint rainCount   = 0;  // number of dynamic rain cubes
+    uint trunkCount  = 0;  // number of static trunk colliders
+
+    // Camera.
+    auto camera = Camera.create(0.9f, SCREEN_W, SCREEN_H, 0.1f, 400.0f);
+    float camX = 0, camZ = 0;
+
+    auto forest = ForestWorld();
+
+    immutable trunkColor = Color4(0.35f, 0.22f, 0.12f, 1.0f);
+    immutable crownColor = Color4(0.18f, 0.55f, 0.22f, 1.0f);
+    immutable cubeColor  = Color4(0.85f, 0.85f, 0.92f, 1.0f);
+    immutable groundColor= Color4(0.25f, 0.32f, 0.20f, 1.0f);
+
+    // Rain state: per-body Y rotation just for visual variety (we use physics position).
+    auto rng = Mt19937(0xC001D00D);
+
+    size_t framesRun = 0;
+    double totalDt   = 0;
+    float labelRefreshAccum = 0;
 
     // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
     while (app.running()) {
         app.pollEvents();
+        if (app.input.keyPressed(Key.escape)) app.close();
 
-        // Timing
-        immutable dt = fps.tick();
+        timer.tick();
+        immutable dt = cast(float) timer.dtSeconds();
+        immutable frameDt = dt > 0.1f ? 0.1f : dt; // clamp huge first frame
 
-        // Update cube rotations and build instance data
-        foreach (i; 0 .. CUBE_COUNT) {
-            cubes[i].angle += cubes[i].speed * dt;
-            immutable model = Mat4.translation(
-                cubes[i].position.x,
-                cubes[i].position.y,
-                cubes[i].position.z,
-            ) * axisAngle(cubes[i].axis, cubes[i].angle);
-            instanceData[i] = model.m;
+        // -------- Camera: hold still for CAM_WARMUP s, then fly forward ---
+        if (totalDt >= CAM_WARMUP) camZ += CAM_SPEED * frameDt;
+        immutable eye    = Vec3(camX, CAM_HEIGHT, camZ - 25.0f);
+        immutable target = Vec3(camX, CAM_HEIGHT - 5, camZ + 25.0f);
+        camera.lookAt(eye, target);
+
+        // -------- Streaming: request/evict chunks based on camera ----------
+        immutable int ccx = cast(int)(camX / CHUNK_SIZE);
+        immutable int ccz = cast(int)(camZ / CHUNK_SIZE);
+        foreach (dx; -STREAM_RADIUS .. STREAM_RADIUS + 1)
+            foreach (dz; -STREAM_RADIUS .. STREAM_RADIUS + 1)
+                forest.request(ccx + dx, ccz + dz);
+        forest.pumpReady();
+        forest.evictFar(ccx, ccz);
+
+        // -------- Register static trunk colliders for freshly loaded chunks
+        foreach (k, ref chunk; forest.loaded) {
+            if (chunk.collidersAdded) continue;
+            if (trunkCount >= TRUNK_BODY_CAP) break;
+            foreach (i; 0 .. chunk.trunkPos.length) {
+                if (trunkCount >= TRUNK_BODY_CAP) break;
+                immutable halfExt = Vec3(chunk.trunkScale[i].x * 0.5f,
+                                         chunk.trunkScale[i].y * 0.5f,
+                                         chunk.trunkScale[i].z * 0.5f);
+                phys.addStatic(chunk.trunkPos[i], Shape.makeBox(halfExt));
+                ++trunkCount;
+            }
+            chunk.collidersAdded = true;
         }
 
-        // Upload instance data
-        () @trusted {
-            wgpuQueueWriteBuffer(queue, instanceBuf, 0,
-                instanceData.ptr, instanceData.sizeof);
-        }();
+        // -------- Rain: spawn new rigid-body cubes -------------------------
+        foreach (_; 0 .. RAIN_SPAWN_RATE) {
+            if (rainCount >= RAIN_MAX_BODIES) break;
+            if (phys.bodyCount >= PHYS_MAX_BODIES) break;
+            immutable rx = camX + uniform(-40.0f, 40.0f, rng);
+            immutable rz = camZ + uniform(-10.0f, 60.0f, rng);
+            immutable ry = 40.0f + uniform(0.0f, 20.0f, rng);
+            immutable id = phys.addDynamic(Vec3(rx, ry, rz),
+                            Shape.makeBox(Vec3(0.4f, 0.4f, 0.4f)), 1.0f);
+            if (id != INVALID_BODY) ++rainCount;
+        }
 
-        // Render
-        auto frame = app.renderer.beginFrame(Color(0.05, 0.05, 0.12, 1.0));
-        if (!frame.valid) continue;
+        // -------- Physics tick --------------------------------------------
+        phys.step(frameDt);
 
-        () @trusted {
-            // 3D draw
-            wgpuRenderPassEncoderSetPipeline(frame.pass, pipe3d.pipeline);
-            wgpuRenderPassEncoderSetBindGroup(frame.pass, 0, vpBindGroup, 0, null);
-            wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, vertexBuf, 0, cubeVertices.sizeof);
-            wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 1, instanceBuf, 0, CUBE_COUNT * 64);
-            wgpuRenderPassEncoderSetIndexBuffer(frame.pass, indexBuf, WGPUIndexFormat.uint16, 0, cubeIndices.sizeof);
-            wgpuRenderPassEncoderDrawIndexed(frame.pass, 36, CUBE_COUNT, 0, 0, 0);
-        }();
+        // -------- Render ---------------------------------------------------
+        auto frame = app.beginFrame(Color(0.45f, 0.65f, 0.90f, 1.0f));
+        if (frame.valid) {
+            scene.begin(camera);
 
-        // FPS text overlay
-        textRenderer.drawText(frame.pass, fps.text(), 10, 10, 3);
+            // Ground plate rendered as a huge flat cube.
+            scene.draw(cubeMesh, Vec3(camX, -0.5f, camZ),
+                       Vec3(GROUND_HALF * 2, 1.0f, GROUND_HALF * 2),
+                       groundColor);
 
-        app.renderer.endFrame(frame);
+            // Trees from loaded chunks — only render those near the camera.
+            foreach (k, ref chunk; forest.loaded) {
+                immutable dcx = k.x - ccx;
+                immutable dcz = k.z - ccz;
+                if (dcx * dcx + dcz * dcz > RENDER_RADIUS * RENDER_RADIUS) continue;
+                foreach (i; 0 .. chunk.trunkPos.length) {
+                    scene.draw(cubeMesh, chunk.trunkPos[i], chunk.trunkScale[i], trunkColor);
+                    scene.draw(cubeMesh, chunk.crownPos[i], chunk.crownScale[i], crownColor);
+                }
+            }
+
+            // Rigid-body cubes. Render only dynamic (non-static) bodies.
+            foreach (i; 0 .. phys.bodyCount) {
+                if (phys.invMass[i] == 0.0f) continue; // static (ground/trunks)
+                immutable p = phys.position[i];
+                // Only render bodies ahead of the camera (visible cone).
+                if (p.z < camZ - 30 || p.z > camZ + 120) continue;
+                scene.draw(cubeMesh, p, Vec3(0.8f, 0.8f, 0.8f), cubeColor);
+            }
+
+            scene.end(frame);
+
+            // -------- Overlay stats ---------------------------------------
+            overlay.beginFrame(frameDt);
+            labelRefreshAccum += frameDt;
+            if (labelRefreshAccum > 0.25f) labelRefreshAccum = 0;
+
+            overlay.label("frame_avg_ms", timer.avgMs());
+            overlay.label("frame_stddev_ms", timer.stdDevMs());
+            overlay.label("one_percent_low_ms", timer.onePercentLowMs());
+
+            immutable gs = GC.profileStats;
+            immutable totalPauseMs = gs.totalPauseTime.total!"usecs" / 1000.0;
+            immutable maxPauseUs   = gs.maxPauseTime.total!"usecs";
+            overlay.label("gc_total_pause_ms", totalPauseMs);
+            overlay.label("gc_max_pause_us", maxPauseUs);
+            overlay.label("gc_collections", gs.numCollections);
+
+            overlay.label("chunks_loaded",  forest.loadedCount());
+            overlay.label("chunks_pending", forest.pendingCount());
+            overlay.label("bodies_active",  phys.bodyCount);
+            overlay.label("rain_cubes",     rainCount);
+            overlay.label("trunk_colliders", trunkCount);
+
+            overlay.render(text, frame, 8, 8, 2, 22);
+
+            app.endFrame(frame);
+        }
+
+        ++framesRun;
+        totalDt += frameDt;
+
+        // Run for 30 seconds of simulated time then exit gracefully.
+        if (totalDt > 30.0) app.close();
     }
 
-    info("Benchmark finished");
-}
-
-// ---------------------------------------------------------------------------
-// Math helpers
-// ---------------------------------------------------------------------------
-
-/// Rotation matrix around an arbitrary axis by angle (radians).
-private Mat4 axisAngle(Vec3 axis, float angle) pure nothrow @nogc @safe {
-    import std.math : sin, cos;
-    immutable c = cos(angle);
-    immutable s = sin(angle);
-    immutable t = 1.0f - c;
-    immutable x = axis.x, y = axis.y, z = axis.z;
-
-    Mat4 r;
-    r.m[0]  = t*x*x + c;     r.m[1]  = t*x*y + s*z;   r.m[2]  = t*x*z - s*y;   r.m[3]  = 0;
-    r.m[4]  = t*x*y - s*z;   r.m[5]  = t*y*y + c;     r.m[6]  = t*y*z + s*x;   r.m[7]  = 0;
-    r.m[8]  = t*x*z + s*y;   r.m[9]  = t*y*z - s*x;   r.m[10] = t*z*z + c;     r.m[11] = 0;
-    r.m[12] = 0;             r.m[13] = 0;             r.m[14] = 0;             r.m[15] = 1;
-    return r;
-}
-
-/// @nogc-safe sine approximation using std.math
-private float sinF(float x) pure nothrow @nogc @safe {
-    import std.math : sin;
-    return sin(x);
+    // -----------------------------------------------------------------------
+    // Final summary
+    // -----------------------------------------------------------------------
+    immutable gs = GC.profileStats;
+    writeln("-----------------------------------------------------------------");
+    writeln(" Forest Stress Test — summary");
+    writeln("-----------------------------------------------------------------");
+    writefln(" Frames rendered   : %d", framesRun);
+    writefln(" Simulated seconds : %.2f", totalDt);
+    writefln(" Frametime avg     : %.3f ms", timer.avgMs());
+    writefln(" Frametime stddev  : %.3f ms", timer.stdDevMs());
+    writefln(" Frametime 1%% low : %.3f ms", timer.onePercentLowMs());
+    writefln(" Average FPS       : %.1f", timer.avgFps());
+    writefln(" GC collections    : %d", gs.numCollections);
+    writefln(" GC total pause    : %.3f ms",
+             gs.totalPauseTime.total!"usecs" / 1000.0);
+    writefln(" GC max pause      : %d us", gs.maxPauseTime.total!"usecs");
+    writefln(" GC note: D's DRuntime GC is stop-the-world mark-sweep (not");
+    writefln("          incremental). Pauses reflect worst-case blocking of");
+    writefln("          the main rendering thread while background tasks");
+    writefln("          produced allocation pressure.");
+    writeln("-----------------------------------------------------------------");
 }
