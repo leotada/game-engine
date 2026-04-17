@@ -15,6 +15,8 @@
 *.exe
 game-engine-demo
 game-engine-benchmark
+game-engine-editor
+game-engine-showcase
 crystal-collector
 
 # DUB

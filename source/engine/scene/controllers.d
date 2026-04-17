@@ -79,7 +79,7 @@ struct FlyCamera {
     float pitch = 0;
     float moveSpeed = 6.0f;
     float sprintMultiplier = 3.0f;
-    float mouseSensitivity = 0.003f;
+    float mouseSensitivity = 0.008f;
 
     static FlyCamera create(Vec3 start, float yaw = -cast(float) PI_2, float pitch = 0) {
         FlyCamera c;
@@ -95,11 +95,12 @@ struct FlyCamera {
 
     Vec3 right() const pure nothrow @nogc {
         // Right = cross(forward, worldUp) normalized; worldUp = (0,1,0).
+        // cross((fx,fy,fz),(0,1,0)) = (-fz, 0, fx); |cross| = |cos(pitch)|.
         immutable f = forward();
         immutable len = cast(float) (f.z * f.z + f.x * f.x);
         if (len < EPS) return Vec3(1, 0, 0);
         immutable invL = 1.0f / cast(float)(cos(pitch));
-        return Vec3(f.z * invL, 0, -f.x * invL);
+        return Vec3(-f.z * invL, 0, f.x * invL);
     }
 
     void update(ref const InputState input, float dt, ref Camera camera) {
@@ -107,7 +108,8 @@ struct FlyCamera {
         pitch -= input.mdy() * mouseSensitivity;
         pitch  = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
 
-        immutable speed = moveSpeed * dt;
+        immutable float mul = input.keyDown(Key.lshift) ? sprintMultiplier : 1.0f;
+        immutable speed = moveSpeed * mul * dt;
         immutable f = forward();
         immutable r = right();
 
@@ -117,6 +119,7 @@ struct FlyCamera {
         if (input.keyDown(Key.d)) move = move + r;
         if (input.keyDown(Key.a)) move = move - r;
         if (input.keyDown(Key.space)) move.y += 1;
+        if (input.keyDown(Key.lctrl)) move.y -= 1;
 
         if (move.lengthSquared() > EPS)
             position = position + move.normalized() * speed;

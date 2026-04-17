@@ -30,6 +30,12 @@ struct Window {
     uint width()  const { return w; }
     uint height() const { return h; }
 
+    /// Lock the cursor to the window and switch to relative-motion mode
+    /// (useful for FPS-style camera controllers). Pass `false` to release.
+    bool setRelativeMouseMode(bool enabled) @trusted {
+        return SDL_SetWindowRelativeMouseMode(handle, enabled);
+    }
+
     /// Get Wayland wl_display pointer (for WGPU surface creation).
     void* waylandDisplay() @trusted {
         auto props = SDL_GetWindowProperties(handle);

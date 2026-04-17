@@ -1,12 +1,13 @@
 /// Editor / devtools demo — exercises Phase 12 (gizmos + debug overlay).
 ///
 /// Controls:
-///   WASD / Space    — fly the camera
-///   Mouse           — look around (optional; falls back to no-op if not moved)
-///   Arrow Left/Right — rotate yaw, Up/Down — tilt pitch (for systems without mouse capture)
+///   WASD            — move the camera (horizontal)
+///   Space / LCtrl   — move up / down
+///   LShift          — sprint (x3 speed)
+///   Mouse           — look around (cursor is captured)
 ///   G               — toggle gizmo visibility
 ///   F1              — toggle debug overlay
-///   ESC             — quit
+///   ESC             — quit (releases the cursor)
 module demo.editor;
 
 import std.math : sin, cos;
@@ -62,12 +63,17 @@ void main() {
     auto text    = TextRenderer.create(app.gpu, W, H);
     scope(exit) text.destroy();
     auto overlay = DebugOverlay();
-    bool gizmosVisible = true;
+    bool gizmosVisible  = true;
+    bool overlayVisible = true;
 
     // Camera + controller.
     auto camera = Camera.create(0.9f, W, H);
     camera.lookAt(Vec3(6, 5, 8), Vec3(0, 1, 0));
     auto fly = FlyCamera.create(Vec3(6, 5, 8));
+
+    // Capture the mouse so FPS-style look works without the cursor leaving the window.
+    app.window.setRelativeMouseMode(true);
+    scope(exit) app.window.setRelativeMouseMode(false);
 
     info("Editor demo running — G toggles gizmos, F1 toggles overlay, ESC quits.");
 
@@ -90,10 +96,8 @@ void main() {
         time += dt;
 
         if (app.input.keyPressed(Key.escape)) break;
-        if (app.input.keyPressed(Key.space) && app.input.keyDown(Key.left)) {} // no-op
-        // (Key.g / Key.f1 are not in the Key enum yet — fall back to number keys if needed.)
-        // For portability, use Space to toggle gizmos and nothing for overlay.
-        if (app.input.keyPressed(Key.space)) gizmosVisible = !gizmosVisible;
+        if (app.input.keyPressed(Key.g))      gizmosVisible  = !gizmosVisible;
+        if (app.input.keyPressed(Key.f1))     overlayVisible = !overlayVisible;
 
         fly.update(app.input, dt, camera);
 
@@ -128,15 +132,17 @@ void main() {
         }
 
         // Debug overlay (text)
-        overlay.beginFrame(dt);
-        overlay.label("cam",    "pos=(", fly.position.x, ", ", fly.position.y, ", ", fly.position.z, ")");
-        overlay.label("yaw",    fly.yaw);
-        overlay.label("pitch",  fly.pitch);
-        overlay.label("boxes",  boxes.length);
-        overlay.label("gizmos", gizmosVisible ? "ON (Space=toggle)" : "OFF (Space=toggle)");
-        overlay.label("controls", "WASD+Space move, mouse look, ESC quit");
-        text.beginFrame();
-        overlay.render(text, frame, 16, 16, 2, 22);
+        if (overlayVisible) {
+            overlay.beginFrame(dt);
+            overlay.label("cam",    "pos=(", fly.position.x, ", ", fly.position.y, ", ", fly.position.z, ")");
+            overlay.label("yaw",    fly.yaw);
+            overlay.label("pitch",  fly.pitch);
+            overlay.label("boxes",  boxes.length);
+            overlay.label("gizmos", gizmosVisible ? "ON" : "OFF");
+            overlay.label("keys",   "WASD move, Space/Ctrl up/down, Shift sprint, G gizmos, F1 overlay, ESC quit");
+            text.beginFrame();
+            overlay.render(text, frame, 16, 16, 2, 22);
+        }
 
         app.endFrame(frame);
     }

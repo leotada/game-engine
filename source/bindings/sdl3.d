@@ -238,6 +238,13 @@ void SDL_SetWindowTitle(SDL_Window* window, const(char)* title);
 void* SDL_GetPointerProperty(SDL_PropertiesID props, const(char)* name, void* default_value);
 long SDL_GetNumberProperty(SDL_PropertiesID props, const(char)* name, long default_value);
 
+// Mouse
+bool SDL_SetWindowRelativeMouseMode(SDL_Window* window, bool enabled);
+bool SDL_GetWindowRelativeMouseMode(SDL_Window* window);
+bool SDL_HideCursor();
+bool SDL_ShowCursor();
+bool SDL_WarpMouseInWindow(SDL_Window* window, float x, float y);
+
 // Events
 bool SDL_PollEvent(SDL_Event* event);
 
