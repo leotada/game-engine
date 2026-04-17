@@ -19,28 +19,35 @@
             "targetType": "executable",
             "targetName": "game-engine-demo",
             "mainSourceFile": "source/demo/main.d",
-            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d"]
+            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d"]
         },
         {
             "name": "benchmark",
             "targetType": "executable",
             "targetName": "game-engine-benchmark",
             "mainSourceFile": "source/demo/benchmark.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/game.d", "source/demo/showcase.d"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d"]
         },
         {
             "name": "game",
             "targetType": "executable",
             "targetName": "crystal-collector",
             "mainSourceFile": "source/demo/game.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/showcase.d"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/showcase.d", "source/demo/editor.d"]
         },
         {
             "name": "showcase",
             "targetType": "executable",
             "targetName": "game-engine-showcase",
             "mainSourceFile": "source/demo/showcase.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/editor.d"]
+        },
+        {
+            "name": "editor",
+            "targetType": "executable",
+            "targetName": "game-engine-editor",
+            "mainSourceFile": "source/demo/editor.d",
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d"]
         },
         {
             "name": "library",
