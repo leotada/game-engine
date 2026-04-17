@@ -79,27 +79,48 @@ The engine uses a two-layer model for GC: strict in the engine core, permissive 
 ```
 source/
 ├── bindings/           # extern(C) declarations for C libraries
-│   ├── sdl3.d          # SDL3 (window, events, input, Wayland properties)
+│   ├── sdl3.d          # SDL3 (window, events, input, Wayland properties, audio)
 │   ├── wgpu.d          # WGPU-native (GPU API based on webgpu.h)
 │   └── package.d       # Re-exports
 ├── engine/             # Core engine modules
 │   ├── app.d           # Application framework (window + GPU + input loop)
 │   ├── package.d       # Top-level re-export: `import engine;`
+│   ├── assets/         # Disk-to-engine loaders
+│   │   ├── bmp.d       # Uncompressed 24/32-bpp BMP decoder → Texture
+│   │   └── gltf.d      # Minimal glTF 2.0 mesh loader (JSON + .bin) → TexMesh
+│   ├── audio/          # SDL3-backed audio (AudioEngine, AudioClip)
+│   │   └── engine.d
 │   ├── core/           # Logging, RAII handles
 │   ├── ecs/            # Sparse-set ComponentStore, World template
-│   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text
+│   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text, shadow
 │   │   ├── buffer.d    # Vertex, index, uniform, dynamic buffer helpers
 │   │   ├── context.d   # WGPU lifecycle (instance→adapter→device→surface)
-│   │   ├── pipeline.d  # Pipeline3D (instanced 3D) and PipelineText (bitmap font)
+│   │   ├── pipeline.d  # Pipeline3D (instanced 3D, colored, textured) and PipelineText
 │   │   ├── renderer.d  # Frame management (beginFrame/endFrame, depth buffer)
 │   │   ├── shader.d    # WGSL shader module creation
-│   │   ├── shaders.d   # Embedded WGSL sources (cube3D, text2D)
+│   │   ├── shaders.d   # Embedded WGSL sources (cube3D, colored3D, textured3D, text2D, shadowDepth)
+│   │   ├── shadow.d    # ShadowMap + depth-only pipeline + directional light VP helper
 │   │   └── text.d      # Bitmap font atlas (8×8 CP437), TextRenderer, FpsCounter
-│   ├── math/           # Vec2/3/4, Mat4 (perspective, lookAt, transforms)
+│   ├── graphics/       # High-level mesh, texture, material types
+│   │   ├── mesh.d      # Mesh (position+normal)
+│   │   ├── texmesh.d   # TexMesh (position+normal+uv), textured cube/quad primitives
+│   │   ├── texture.d   # GPU Texture, Sampler, TGA loader, procedural checker/solid
+│   │   ├── material.d  # Bind-group wrapper (uniform + sampler + albedo)
+│   │   ├── primitives.d# Untextured primitive meshes
+│   │   └── types.d     # Vert, TexVert, InstanceData, Color4
+│   ├── math/           # Vec2/3/4, Mat4 (perspective, ortho, lookAt, transforms)
 │   └── platform/       # SDL3 window wrapper, input state
+│   └── scene/          # Camera, controllers, graph, batched 3D renderers
+│       ├── camera.d
+│       ├── controllers.d     # OrbitCamera, FlyCamera, FirstPersonCamera
+│       ├── graph.d           # SceneGraph (Transform hierarchy, parent→child)
+│       ├── scene3d.d         # Batched instanced renderer (colored)
+│       └── scene3d_textured.d# Batched instanced renderer (textured + materials)
 └── demo/               # Executable demos
     ├── main.d          # Clear-screen demo
-    └── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
+    ├── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
+    ├── game.d          # Crystal Collector gameplay demo
+    └── showcase.d      # Solar system (scene graph + textured materials)
 ```
 
 ## Build Commands

@@ -216,10 +216,10 @@ dub run --config=benchmark
 - [x] Phase 5 — 3D Benchmark (1000 cubes, ~1800 FPS)
 - [x] Phase 6 — Materials and textures (RGBA8 textures, samplers, TGA loader, textured pipeline)
 - [x] Phase 7 — Scene graph and transforms (parent-indexed hierarchy, one-pass world matrices)
-- [ ] Phase 8 — 3D camera system (orbit, fly, first-person)
-- [ ] Phase 9 — Shadows (shadow mapping)
-- [ ] Phase 10 — Asset pipeline (glTF, image loading)
-- [ ] Phase 11 — Audio (SDL3 audio subsystem)
+- [x] Phase 8 — 3D camera system (OrbitCamera, FlyCamera, FirstPersonCamera)
+- [x] Phase 9 — Shadows (depth32Float shadow map + depth-only pipeline + directional light VP)
+- [x] Phase 10 — Asset pipeline (BMP + minimal glTF 2.0 mesh loader)
+- [x] Phase 11 — Audio (SDL3 audio streams, WAV loading, playback)
 - [ ] Phase 12 — Editor tooling
 
 ## Documentation
