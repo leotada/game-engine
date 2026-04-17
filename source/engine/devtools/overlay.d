@@ -90,6 +90,20 @@ struct DebugOverlay {
         lineCount++;
     }
 
+    /// Insert a section header line (no "name:" prefix). Renders as
+    /// "-- title --" to visually group following labels.
+    void section(scope const(char)[] title) nothrow @nogc {
+        if (lineCount >= MAX_LINES) return;
+        auto dst = buffer[lineCount][];
+        size_t w = 0;
+        void put(char c) { if (w < dst.length) dst[w++] = c; }
+        put('-'); put('-'); put(' ');
+        foreach (ch; title) put(ch);
+        put(' '); put('-'); put('-');
+        lineLen[lineCount] = w;
+        lineCount++;
+    }
+
     /// Render the overlay via an existing `TextRenderer` into `frame`.
     /// Always shows a top FPS line (when visible).
     void render(ref TextRenderer text, ref FrameContext frame,
