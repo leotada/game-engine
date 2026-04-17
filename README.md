@@ -19,41 +19,58 @@ D sits at the intersection of C++ performance and high-level ergonomics. This en
 ```
 source/
 ├── bindings/              # C API bindings (extern(C), @nogc, nothrow)
-│   ├── sdl3.d             # SDL3 — window, events, input, Wayland
+│   ├── sdl3.d             # SDL3 — window, events, input, Wayland, audio
 │   └── wgpu.d             # WGPU-native — GPU resources, render pipeline
 ├── engine/
 │   ├── app.d              # Application framework (window + GPU + input loop)
+│   ├── assets/            # Disk-to-engine loaders
+│   │   ├── bmp.d          # Uncompressed 24/32-bpp BMP decoder → Texture
+│   │   └── gltf.d         # Minimal glTF 2.0 mesh loader (JSON + .bin) → TexMesh
+│   ├── audio/
+│   │   └── engine.d       # SDL3 audio streams, WAV decoder, AudioEngine/AudioClip
 │   ├── core/
 │   │   ├── log.d          # Logging (trace/info/warn/err/fatal)
 │   │   └── resource.d     # RAII Handle(T) — move-only GPU resource wrapper
+│   ├── devtools/          # In-engine developer tooling
+│   │   ├── gizmos.d       # Immediate-mode 3D line primitives (overlay depth)
+│   │   └── overlay.d      # Structured FPS + label debug overlay
 │   ├── ecs/
 │   │   ├── store.d        # ComponentStore(T) — sparse-set SoA, O(1) ops
 │   │   └── world.d        # World!(Components...) — compile-time registry
 │   ├── gpu/
 │   │   ├── buffer.d       # Vertex, index, uniform, dynamic buffer creation
 │   │   ├── context.d      # WGPU lifecycle (instance→adapter→device→surface)
-│   │   ├── pipeline.d     # Render pipeline builders (Pipeline3D, PipelineText)
+│   │   ├── pipeline.d     # Pipeline3D (colored/textured) + PipelineText
 │   │   ├── renderer.d     # Frame management (beginFrame/endFrame, depth buffer)
 │   │   ├── shader.d       # WGSL shader module creation
-│   │   ├── shaders.d      # Embedded WGSL shader sources (cube3D, text2D)
+│   │   ├── shaders.d      # Embedded WGSL (cube3D, textured3D, text2D, shadowDepth)
+│   │   ├── shadow.d       # ShadowMap + depth-only pipeline + directional light VP
 │   │   └── text.d         # Bitmap font atlas, TextRenderer, FpsCounter
 │   ├── graphics/          # Mid-level graphics resources
-│   │   ├── types.d        # Vert, InstanceData, Color4
+│   │   ├── types.d        # Vert, TexVert, InstanceData, Color4
 │   │   ├── primitives.d   # Built-in vertex/index data (cube, pyramid, diamond)
-│   │   └── mesh.d         # GPU mesh handle with static factories
+│   │   ├── mesh.d         # GPU mesh handle (position + normal)
+│   │   ├── texmesh.d      # Textured mesh (position + normal + uv), cube/quad
+│   │   ├── texture.d      # GPU Texture, Sampler, TGA loader, procedural checker
+│   │   └── material.d     # Bind-group wrapper (uniform + sampler + albedo)
 │   ├── scene/             # Game-level scene management
 │   │   ├── camera.d       # Perspective camera (create, lookAt, viewProjection)
-│   │   └── scene3d.d      # Batched instanced 3D renderer (begin/draw/end)
+│   │   ├── controllers.d  # OrbitCamera, FlyCamera, FirstPersonCamera
+│   │   ├── graph.d        # SceneGraph (Transform hierarchy, parent → child)
+│   │   ├── scene3d.d      # Batched instanced renderer (colored)
+│   │   └── scene3d_textured.d # Batched instanced renderer (textured materials)
 │   ├── math/
 │   │   ├── vec.d          # Vec2, Vec3, Vec4
-│   │   └── mat.d          # Mat4 (perspective, lookAt, transforms)
+│   │   └── mat.d          # Mat4 (perspective, ortho, lookAt, transforms)
 │   └── platform/
 │       ├── window.d       # SDL3 window + Wayland handle extraction
 │       └── input.d        # Per-frame keyboard/mouse state tracking
 └── demo/
     ├── main.d             # Minimal clear-screen demo
+    ├── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
     ├── game.d             # Crystal Collector 3D — high-level API demo
-    └── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
+    ├── showcase.d         # Solar system — scene graph + textured materials
+    └── editor.d           # Editor tooling demo — gizmos + debug overlay
 ```
 
 ### Design Principles
@@ -149,12 +166,24 @@ dub build --config=demo
 # Build the 3D benchmark (1000 spinning cubes + FPS)
 dub build --config=benchmark
 
+# Build the Crystal Collector gameplay demo
+dub build --config=game
+
+# Build the solar-system showcase (scene graph + textured materials)
+dub build --config=showcase
+
+# Build the editor tooling demo (gizmos + debug overlay)
+dub build --config=editor
+
 # Build with optimizations (LDC2 recommended for production)
 dub build --config=demo --build=release
 
 # Run
 dub run --config=demo
 dub run --config=benchmark
+dub run --config=game
+dub run --config=showcase
+dub run --config=editor
 
 # Build as library (for embedding in other projects)
 dub build --config=library
@@ -207,7 +236,33 @@ Features demonstrated:
 dub run --config=benchmark
 ```
 
+### Crystal Collector
+
+A small 3D gameplay demo — first-person exploration with collectible crystals. Shows the full high-level API: ECS, `Scene3D`, camera controllers, audio cues, and HUD text.
+
+```bash
+dub run --config=game
+```
+
+### Solar System Showcase
+
+A textured solar system built on the scene graph: planets parented to the sun, moons parented to planets, one-pass world-matrix propagation, textured materials, and directional lighting with shadows.
+
+```bash
+dub run --config=showcase
+```
+
+### Editor Tooling Demo
+
+Demonstrates `engine.devtools`: immediate-mode 3D gizmos (lines, axes, grids) rendered with overlay depth, plus the structured FPS + label debug overlay.
+
+```bash
+dub run --config=editor
+```
+
 ## Roadmap
+
+All initial roadmap phases are **complete**. The engine is feature-complete for building 3D games with textured meshes, scene graphs, shadows, audio, asset loading, and in-engine debug tooling.
 
 - [x] Phase 1 — Core stack (SDL3 + WGPU + ECS + math + clear screen)
 - [x] Phase 2 — Mesh rendering (vertex/index buffers, WGSL shaders, render pipeline)
@@ -221,6 +276,19 @@ dub run --config=benchmark
 - [x] Phase 10 — Asset pipeline (BMP + minimal glTF 2.0 mesh loader)
 - [x] Phase 11 — Audio (SDL3 audio streams, WAV loading, playback)
 - [x] Phase 12 — Editor tooling (immediate-mode 3D gizmos + debug overlay)
+
+### Next Horizons
+
+Possible directions for future work, in no particular order:
+
+- **Physics** — rigid bodies, colliders, raycasting (either a native D implementation or bindings to a C library)
+- **Post-processing** — bloom, tone mapping, FXAA via offscreen render targets
+- **PBR shading** — metallic/roughness workflow with IBL
+- **Animation** — skeletal animation and glTF skin support
+- **Parallel system scheduling** — auto-parallelize independent ECS systems (Bevy-style)
+- **Scripting / hot reload** — live tweaking of gameplay systems during development
+- **Networking** — authoritative server/client primitives for multiplayer games
+- **Editor UX** — full scene editor on top of the existing gizmo + overlay tooling
 
 ## Documentation
 

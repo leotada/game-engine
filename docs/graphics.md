@@ -7,37 +7,41 @@ A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/evento
 ```
 ┌──────────────────────────────────────────────────────┐
 │  Scene Layer — API de jogo (engine/scene/*)           │
-│  ├── Scene3D  → batched instanced renderer            │
-│  │   ├── begin(camera)  → reset batches, upload VP    │
-│  │   ├── draw(mesh, pos, scale, color, rotY)          │
-│  │   ├── drawMatrix(mesh, model, color)               │
-│  │   └── end(frame)     → upload + draw all batches   │
-│  └── Camera   → perspective projection + view matrix  │
-│      ├── create(fovY, width, height)                  │
-│      └── lookAt(eye, target)                          │
+│  ├── Scene3D          → batched instanced (colorido)  │
+│  ├── Scene3DTextured  → batched instanced (texturas)  │
+│  ├── SceneGraph       → hierarquia Transform          │
+│  ├── Camera           → projeção perspectiva          │
+│  └── Controllers      → Orbit / Fly / FirstPerson    │
 ├──────────────────────────────────────────────────────┤
 │  Graphics Layer — recursos gráficos (engine/graphics/*)│
-│  ├── Mesh       → GPU vertex/index buffers            │
-│  │   ├── cube/pyramid/diamond(gpu) — built-in shapes  │
-│  │   └── fromData(gpu, verts, indices) — custom       │
-│  ├── Color4     → RGBA float (white, red, green, etc) │
-│  ├── Vert       → float[3] pos + float[3] normal     │
-│  └── primitives → vertex/index data arrays            │
+│  ├── Mesh       → vertex/index (pos+normal)           │
+│  ├── TexMesh    → vertex/index (pos+normal+uv)        │
+│  ├── Texture    → GPU texture + TGA loader            │
+│  ├── Material   → bind group (uniform + sampler + tex)│
+│  ├── Color4     → RGBA float                          │
+│  └── primitives → cube, pyramid, diamond, quad        │
 ├──────────────────────────────────────────────────────┤
 │  GPU Layer — wrappers WGPU low-level (engine/gpu/*)   │
 │  ├── App/Renderer → beginFrame/endFrame               │
-│  ├── Pipeline3D   → instanced 3D, depth test, cull   │
+│  ├── Pipeline3D   → colored + textured instanced     │
 │  ├── PipelineText → alpha-blended bitmap text         │
+│  ├── ShadowMap    → depth32Float + depth-only pipeline│
 │  ├── TextRenderer → bitmap font atlas (8×8 CP437)    │
 │  ├── Buffers      → vertex, index, uniform, dynamic  │
 │  ├── Shaders      → embedded WGSL sources            │
 │  └── GpuContext   → Instance→Adapter→Device→Queue    │
 ├──────────────────────────────────────────────────────┤
+│  Assets + DevTools                                    │
+│  ├── assets/bmp.d   → 24/32-bpp BMP → Texture        │
+│  ├── assets/gltf.d  → glTF 2.0 mesh → TexMesh        │
+│  ├── devtools/gizmos.d  → linhas 3D overlay         │
+│  └── devtools/overlay.d → FPS + label debug HUD      │
+├──────────────────────────────────────────────────────┤
 │  Bindings (bindings/wgpu.d + bindings/sdl3.d)        │
 │  └── extern(C) nothrow @nogc — API C99 direta        │
 ├──────────────────────────────────────────────────────┤
 │  libwgpu_native.a          │  libSDL3.so              │
-│  (Vulkan/Metal/DX12)       │  (Wayland/X11)           │
+│  (Vulkan/Metal/DX12)       │  (Wayland/X11 + áudio)  │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -45,8 +49,16 @@ A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/evento
 
 | Quero... | Usar |
 |:---|:---|
-| Desenhar objetos 3D com cores | `Scene3D` + `Mesh` + `Camera` |
+| Desenhar objetos 3D coloridos | `Scene3D` + `Mesh` + `Camera` |
+| Desenhar objetos 3D com texturas | `Scene3DTextured` + `TexMesh` + `Material` |
+| Hierarquia de transforms (planetas, luas, juntas) | `SceneGraph` |
+| Câmera orbital / voo livre / FPS | `engine.scene.controllers` |
+| Sombras direcionais | `ShadowMap` + pipeline texturizado |
+| Carregar BMP / glTF do disco | `engine.assets.bmp`, `engine.assets.gltf` |
+| Tocar WAV / efeitos sonoros | `engine.audio.engine` |
 | Texto HUD | `TextRenderer` |
+| Debug: linhas 3D, grid, eixos | `engine.devtools.gizmos` |
+| Debug: FPS + labels estruturados | `engine.devtools.overlay` |
 | Criar formas personalizadas | `Mesh.fromData` + `Vert` |
 | Pipeline/shader customizado | `engine.gpu.pipeline`, `engine.gpu.shader` |
 | Controle direto de buffers | `engine.gpu.buffer` |
@@ -124,6 +136,25 @@ Pipeline para texto bitmap (FPS overlay):
 - **Font atlas** — 128×48 R8Unorm texture, 8×8 CP437 glyphs (ASCII 32-127)
 - **Shader** — WGSL com uniform screen size, sampler + texture binding
 
+### Pipeline3D Textured
+
+Variante do Pipeline3D que amostra uma textura albedo por material:
+
+- **Vertex buffer 0** — geometria: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32)
+- **Vertex buffer 1** — instâncias: 4×`float32x4` model matrix columns (stride=64, step=instance)
+- **Bind group** — `@group(0)` VP uniform; `@group(1)` sampler + texture_2d (albedo)
+- **Depth/culling** — iguais ao Pipeline3D colorido
+- **Uso** — `Scene3DTextured` agrupa instâncias por `Material`, emitindo uma draw call por material
+
+### ShadowMap (depth-only pipeline)
+
+Mapa de profundidade para sombras direcionais:
+
+- **Target** — textura 2D `depth32Float` (default 2048×2048)
+- **Pipeline** — pipeline dedicado sem fragment shader (depth-only write)
+- **VP da luz** — `directionalLightVP()` gera uma `Mat4` de projeção ortográfica + lookAt a partir da direção da luz e de uma bounding box do mundo
+- **Fluxo** — (1) render pass só de profundidade na shadow map, (2) render pass normal no swapchain usando a shadow map como textura extra para sample comparison
+
 ## Benchmark
 
 O benchmark 3D demonstra o pipeline completo com 1000 cubos girando:
@@ -191,6 +222,58 @@ Vertex shader para quads de texto com coordenadas de tela. Fragment shader amost
 @group(0) @binding(2) var fontTexture: texture_2d<f32>;
 ```
 
+## Texturas e Materiais
+
+`engine/graphics/texture.d` encapsula criação de texturas RGBA8 em GPU, samplers configuráveis e carregamento de arquivos TGA sem compressão. Também expõe helpers procedurais (`checker`, `solid`) para testes.
+
+`engine/graphics/material.d` combina um sampler + textura + uniform buffer em um `WGPUBindGroup` pronto para uso com o pipeline texturizado. Materiais são o "atalho" que o `Scene3DTextured` usa para agrupar instâncias.
+
+### Formatos de imagem suportados
+
+| Formato | Módulo | Observações |
+|:---|:---|:---|
+| TGA (não comprimido) | `engine.graphics.texture` | 24/32-bpp, loader minimalista |
+| BMP (24/32-bpp, não comprimido) | `engine.assets.bmp` | Inverte verticalmente a ordem das linhas |
+| glTF 2.0 (mesh) | `engine.assets.gltf` | Apenas geometria — não carrega texturas/materiais/skin |
+
+## SceneGraph
+
+Hierarquia de transforms para objetos compostos (planetas e luas, corpo + membros, câmera em cockpit, etc.).
+
+- **Nós** são índices (`uint`) em arrays paralelos — `parent[]`, `local[]`, `world[]`
+- **Uma única passada** propaga `world = parent.world × local` em ordem topológica
+- **Sem ponteiros** — sem GC pressure, cache-friendly, compatível com `@nogc`
+- Útil combinado com `Scene3DTextured.drawMatrix(mesh, world, material)`
+
+## Controllers de Câmera
+
+`engine/scene/controllers.d` oferece três controladores prontos para uso:
+
+| Controller | Entrada | Uso típico |
+|:---|:---|:---|
+| `OrbitCamera` | mouse drag + scroll | editor, model viewer, RTS |
+| `FlyCamera` | WASD + mouse look | debug, showcase |
+| `FirstPersonCamera` | WASD + mouse look + gravidade opcional | gameplay FPS |
+
+Todos atualizam a `Camera` interna via `lookAt` — são controllers, não câmeras em si.
+
+## Áudio
+
+`engine/audio/engine.d` expõe uma API simples sobre SDL3 audio streams:
+
+- **`AudioEngine.create()`** — inicializa o subsistema de áudio SDL3
+- **`AudioClip.loadWav(path)`** — decodifica um WAV em memória (PCM)
+- **`engine.play(clip)`** — toca o clip sem bloquear; múltiplas instâncias se sobrepõem
+
+Áudio é orientado a gameplay — não roda dentro do frame loop gráfico nem exige `@nogc`.
+
+## DevTools
+
+Ferramentas de depuração e tooling de editor, em `engine/devtools/`:
+
+- **`Gizmos`** — primitivas imediatas em 3D (linha, eixos XYZ, grid, bounding box). Usa topology `lineList` com depth overlay para aparecerem sempre sobre a cena. API `begin/end` por frame, sem alocações no hot path.
+- **`DebugOverlay`** — overlay estruturado de FPS + labels arbitrários, renderizado sobre o `TextRenderer`. Ideal para posição da câmera, contadores, flags de estado.
+
 ## Estrutura de Bibliotecas
 
 ```
@@ -216,6 +299,15 @@ dub build --config=demo
 # Benchmark 3D (1000 cubos + FPS)
 dub build --config=benchmark
 dub run --config=benchmark
+
+# Crystal Collector (gameplay)
+dub run --config=game
+
+# Solar system (scene graph + texturas)
+dub run --config=showcase
+
+# Editor tooling (gizmos + debug overlay)
+dub run --config=editor
 
 # Release otimizado
 dub build --config=demo --build=release

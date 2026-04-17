@@ -4,11 +4,14 @@ This guide explains how to build a 3D game using the engine's high-level API. Th
 
 | Layer | Purpose | Modules |
 |:------|:--------|:--------|
-| **Scene** | Game-level: camera, batched renderer | `engine.scene.*` |
-| **Graphics** | Resources: meshes, colors, primitives | `engine.graphics.*` |
+| **Scene** | Game-level: camera, controllers, scene graph, batched renderers | `engine.scene.*` |
+| **Graphics** | Resources: meshes, textures, materials, primitives | `engine.graphics.*` |
 | **GPU** | Low-level WGPU wrappers (power users) | `engine.gpu.*` |
+| **Assets** | Disk loaders (BMP, glTF) | `engine.assets.*` |
+| **Audio** | WAV playback via SDL3 streams | `engine.audio.*` |
+| **DevTools** | In-engine gizmos + debug overlay | `engine.devtools.*` |
 
-Most games only need `engine.app`, `engine.scene`, `engine.graphics`, and `engine.math`.
+Most games only need `engine.app`, `engine.scene`, `engine.graphics`, and `engine.math`. Pull in `engine.assets`, `engine.audio`, and `engine.devtools` as you need them — a single `import engine;` re-exports everything.
 
 ---
 
@@ -294,6 +297,160 @@ text.drawText(frame, "Hello World", x, y, scale);  // scale: 1=8px, 2=16px, 3=24
 text.destroy();
 ```
 
+### Scene3DTextured + Texture + Material
+
+For textured 3D rendering, use `Scene3DTextured` with `TexMesh` and `Material`:
+
+```d
+import engine.graphics.texmesh : TexMesh;
+import engine.graphics.texture : Texture, Sampler;
+import engine.graphics.material : Material;
+import engine.scene.scene3d_textured : Scene3DTextured;
+
+auto scene = Scene3DTextured.create(app.gpu);
+scope(exit) scene.destroy();
+
+auto texture  = Texture.loadTga(app.gpu, "assets/crate.tga");
+scope(exit) texture.destroy();
+
+auto sampler  = Sampler.linearRepeat(app.gpu);
+scope(exit) sampler.destroy();
+
+auto material = Material.create(app.gpu, scene.materialLayout, sampler, texture);
+scope(exit) material.destroy();
+
+auto cube = TexMesh.cube(app.gpu);
+scope(exit) cube.destroy();
+
+// Per frame:
+scene.begin(camera);
+scene.draw(cube, material, Vec3(0, 0, 0), Vec3(1, 1, 1), Color4.white());
+scene.drawMatrix(cube, material, modelMatrix, Color4.white());
+scene.end(frame);
+```
+
+Instances of the same `(TexMesh, Material)` pair are batched into a single instanced draw call.
+
+### SceneGraph — Transform Hierarchy
+
+For objects with parent/child relationships (solar systems, characters, vehicles):
+
+```d
+import engine.scene.graph : SceneGraph, Transform, ROOT;
+
+auto graph = SceneGraph.create();
+
+auto sun    = graph.addChild(ROOT, Transform(Vec3(0, 0, 0), Vec3(2, 2, 2), 0));
+auto earth  = graph.addChild(sun,  Transform(Vec3(8, 0, 0), Vec3(1, 1, 1), 0));
+auto moon   = graph.addChild(earth, Transform(Vec3(2, 0, 0), Vec3(0.3, 0.3, 0.3), 0));
+
+// Per frame: animate, then propagate world matrices.
+graph.transform(earth).rotationY += dt * 0.5;
+graph.transform(moon).rotationY  += dt * 2.0;
+graph.updateWorld();
+
+// Draw each node using its world matrix.
+scene.drawMatrix(sphereMesh, sunMat,   graph.worldMatrix(sun),   Color4.white());
+scene.drawMatrix(sphereMesh, earthMat, graph.worldMatrix(earth), Color4.white());
+scene.drawMatrix(sphereMesh, moonMat,  graph.worldMatrix(moon),  Color4.white());
+```
+
+The graph stores parent indices and local transforms in flat arrays, and propagates world matrices in a single O(N) sweep.
+
+### Camera Controllers
+
+`engine.scene.controllers` provides three ready-to-use controllers. They do not replace `Camera` — they drive it via `lookAt`:
+
+```d
+import engine.scene.controllers : OrbitCamera, FlyCamera, FirstPersonCamera;
+
+// Orbit around a target (editor / model viewer)
+auto orbit = OrbitCamera.create(Vec3(0, 0, 0), 10.0);
+orbit.update(app.input, dt, camera);
+
+// Free-flying 6-DOF camera (debug / showcase)
+auto fly = FlyCamera.create(Vec3(0, 5, 10));
+fly.update(app.input, dt, camera);
+
+// First-person look (gameplay — caller owns position)
+auto fp = FirstPersonCamera.create();
+fp.update(app.input, playerEyePosition, camera);
+```
+
+### Audio
+
+```d
+import engine.audio : AudioEngine, AudioClip;
+
+auto audio = AudioEngine.create();
+scope(exit) audio.destroy();
+
+auto click = AudioClip.loadWav("assets/click.wav");
+scope(exit) click.destroy();
+
+// Trigger playback — non-blocking, multiple overlapping plays are OK.
+audio.play(click);
+```
+
+Only uncompressed WAV is supported. Each `play()` queues a copy into the shared output stream.
+
+### Assets (BMP + glTF)
+
+```d
+import engine.assets.bmp  : loadBmpTexture;
+import engine.assets.gltf : loadGltfMesh;
+
+// 24/32-bpp uncompressed BMP → GPU texture
+auto tex = loadBmpTexture(app.gpu, "assets/ground.bmp");
+
+// First primitive of the first mesh of a .gltf file → TexMesh
+auto mesh = loadGltfMesh(app.gpu, "assets/chair.gltf");
+```
+
+glTF support is intentionally minimal: indexed triangle primitives with `POSITION`, `NORMAL`, `TEXCOORD_0`, loaded from an external `.bin` buffer. Materials, skins, animations, and embedded base64 buffers are not supported.
+
+### DevTools — Gizmos and Debug Overlay
+
+```d
+import engine.devtools.gizmos  : GizmoRenderer;
+import engine.devtools.overlay : DebugOverlay;
+
+auto gizmos  = GizmoRenderer.create(app.gpu);
+scope(exit) gizmos.destroy();
+auto overlay = DebugOverlay.create();
+
+// Per frame, after scene rendering:
+gizmos.begin(camera.viewProjection());
+gizmos.axes(Vec3(0, 0, 0), 1.0);
+gizmos.grid(20, 1.0, Color4(0.3, 0.3, 0.3, 1));
+gizmos.line(Vec3(0, 0, 0), playerPos, Color4.yellow());
+gizmos.render(frame);
+
+overlay.beginFrame(fps.fps(), fps.deltaTimeMs());
+overlay.label("pos", camera.eye.x, ",", camera.eye.y, ",", camera.eye.z);
+overlay.label("entities", world.aliveCount());
+overlay.render(textRenderer, frame);
+```
+
+Gizmos use a `lineList` topology with overlay depth (always visible). The debug overlay layers structured FPS + labels on top of `TextRenderer`.
+
+### Shadows
+
+```d
+import engine.gpu.shadow : ShadowMap, directionalLightVP;
+
+auto shadow = ShadowMap.create(app.gpu, 2048, 2048);
+scope(exit) shadow.destroy();
+
+// Per frame: render a depth-only pass from the light's POV, then the main pass.
+auto lightVP = directionalLightVP(Vec3(-1, -1, -0.5), sceneBoundsMin, sceneBoundsMax);
+shadow.beginPass(lightVP);
+//   ... issue depth-only draw calls for each shadow caster ...
+shadow.endPass();
+
+// Pass the shadow map texture + lightVP to your textured pipeline's bind group.
+```
+
 ### Input
 
 ```d
@@ -334,7 +491,15 @@ app.input   // InputState — keyboard/mouse state
 | I want to... | Use |
 |:---|:---|
 | Draw 3D objects with colors | `Scene3D` + `Mesh` + `Camera` |
+| Draw 3D objects with textures | `Scene3DTextured` + `TexMesh` + `Material` |
+| Parent/child transforms (solar systems, rigs) | `SceneGraph` |
+| Orbit / fly / first-person camera | `engine.scene.controllers` |
+| Directional shadows | `ShadowMap` + depth-only pass |
+| Load BMP or glTF from disk | `engine.assets.bmp`, `engine.assets.gltf` |
+| Play WAV sound effects | `engine.audio` |
 | Render HUD text | `TextRenderer` |
+| Debug: 3D lines, axes, grid, bounding boxes | `engine.devtools.gizmos` |
+| Debug: structured FPS + labels | `engine.devtools.overlay` |
 | Create custom mesh shapes | `Mesh.fromData` + `Vert` |
 | Custom shader/pipeline | `engine.gpu.pipeline`, `engine.gpu.shader` |
 | Direct GPU buffer management | `engine.gpu.buffer` |
@@ -373,8 +538,11 @@ dub run --config=game
 # Build with optimizations
 dub build --config=game --build=release
 
-# Build the benchmark (low-level API demo)
-dub build --config=benchmark
+# Other demos
+dub run --config=demo        # minimal clear-screen
+dub run --config=benchmark   # 1000 cubes + FPS (low-level API)
+dub run --config=showcase    # solar system (scene graph + textures)
+dub run --config=editor      # gizmos + debug overlay
 ```
 
 ### Requirements
