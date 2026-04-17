@@ -374,6 +374,7 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
 
         // Refresh existing manifold first (drop stale points).
         auto m = pool.getOrCreate(a, b);
+        if (m is null) return;  // pool saturated — drop this pair this frame
         if (m.count > 0) ManifoldPool!(MaxManifolds).refresh(*m, position[a], orientation[a],
                                                               position[b], orientation[b]);
         mergeContacts(*m, nr.points[0 .. nr.count]);

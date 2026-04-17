@@ -30,10 +30,19 @@ struct ManifoldPool(uint Capacity) {
     enum ulong hashKeyEmpty = ulong.max;
     ulong[Capacity * 2] hashKeys;
     int[Capacity * 2]   hashSlots;  // index into manifolds[]
-    uint count = 0;
+    uint count = 0;                 // high-water mark of slots ever allocated
+
+    // Free list of slots reclaimed by ageAndEvict. Without this the pool
+    // only grows, so a long-running benchmark where pairs churn
+    // (rain cubes pass over/past static colliders) exhausts Capacity even
+    // though at any given instant far fewer than Capacity manifolds are
+    // active. Using a LIFO stack keeps allocation O(1) and cache-friendly.
+    int[Capacity] freeStack;
+    uint freeCount = 0;
 
     void init_()  {
         count = 0;
+        freeCount = 0;
         hashKeys[]  = hashKeyEmpty;
         hashSlots[] = -1;
         foreach (ref m; manifolds) { m.count = 0; m.framesSinceUse = 255; }
@@ -56,6 +65,9 @@ struct ManifoldPool(uint Capacity) {
 
     /// Returns pointer to the manifold for (a,b). Creates one on first use.
     /// Caller must sort a < b before calling.
+    /// Returns null if the pool is fully saturated (both `count` at Capacity
+    /// and the free list empty). Callers MUST null-check — dropping one
+    /// pair's contacts for a frame is preferable to an abort.
     ContactManifold* getOrCreate(uint a, uint b)  {
         immutable packed = packKey(a, b);
         immutable mask = cast(uint)(hashKeys.length - 1);
@@ -66,15 +78,22 @@ struct ManifoldPool(uint Capacity) {
             }
             idx = (idx + 1) & mask;
         }
-        // Allocate a new slot.
-        assert(count < Capacity, "ManifoldPool capacity exhausted");
-        immutable slot = count++;
+        // Allocate a slot: prefer the free list (reclaimed via ageAndEvict),
+        // fall back to the high-water mark.
+        int slot;
+        if (freeCount > 0) {
+            slot = freeStack[--freeCount];
+        } else if (count < Capacity) {
+            slot = cast(int) count++;
+        } else {
+            return null;  // pool saturated — drop this pair this frame
+        }
         manifolds[slot] = ContactManifold.init;
         manifolds[slot].a = a;
         manifolds[slot].b = b;
         manifolds[slot].framesSinceUse = 0;
         hashKeys[idx]  = packed;
-        hashSlots[idx] = cast(int) slot;
+        hashSlots[idx] = slot;
         return &manifolds[slot];
     }
 
@@ -92,21 +111,53 @@ struct ManifoldPool(uint Capacity) {
     }
 
     /// At the end of each frame, age every manifold; those unused for more
-    /// than `maxAge` frames are dropped. We never compact the arrays (hash
-    /// stability matters), just mark count=0.
+    /// than `maxAge` frames are dropped AND their slot is pushed onto the
+    /// free list so a future `getOrCreate` can reuse it.
     void ageAndEvict(ubyte maxAge)  {
-        foreach (ref m; manifolds) {
-            if (m.framesSinceUse >= 255) continue; // free slot
-            if (m.framesSinceUse < 255)  m.framesSinceUse = cast(ubyte)(m.framesSinceUse + 1);
+        immutable mask = cast(uint)(hashKeys.length - 1);
+        foreach (slot, ref m; manifolds) {
+            if (m.framesSinceUse >= 255) continue; // already free
+            if (m.framesSinceUse < 255) m.framesSinceUse = cast(ubyte)(m.framesSinceUse + 1);
             if (m.framesSinceUse > maxAge) {
-                // "Free" by clearing — but keep slot allocated so index is stable.
+                // Locate the hash bucket for this (a,b) pair. Since we
+                // inserted it we know the probe will terminate at the
+                // matching key (hashKeys array is sized 2×Capacity so it
+                // cannot be fully packed).
+                immutable packed = packKey(m.a, m.b);
+                uint idx = hashKey(packed) & mask;
+                while (hashKeys[idx] != packed) {
+                    if (hashKeys[idx] == hashKeyEmpty) { idx = uint.max; break; }
+                    idx = (idx + 1) & mask;
+                }
+                if (idx != uint.max) removeHashAt(idx, mask);
                 m.count = 0;
                 m.framesSinceUse = 255;
-                // Note: we do NOT remove from hash — unused slots just return
-                // a manifold with count == 0 which the narrowphase will
-                // repopulate. Real Bullet uses a free list; this is simpler
-                // and bounded by Capacity.
+                if (freeCount < Capacity) freeStack[freeCount++] = cast(int) slot;
             }
+        }
+    }
+
+    /// Backward-shift deletion for an open-addressed table. Walks forward
+    /// from the empty bucket and pulls back any entry whose probe distance
+    /// can be reduced. Linear-probe-friendly and keeps `find` correct
+    /// without tombstones.
+    private void removeHashAt(uint hole, uint mask)  {
+        hashKeys[hole]  = hashKeyEmpty;
+        hashSlots[hole] = -1;
+        uint j = (hole + 1) & mask;
+        while (hashKeys[j] != hashKeyEmpty) {
+            immutable natural = hashKey(hashKeys[j]) & mask;
+            // Distance from natural bucket to the hole (circular).
+            immutable dHole = (hole - natural) & mask;
+            immutable dJ    = (j    - natural) & mask;
+            if (dHole < dJ) {
+                hashKeys[hole]  = hashKeys[j];
+                hashSlots[hole] = hashSlots[j];
+                hashKeys[j]  = hashKeyEmpty;
+                hashSlots[j] = -1;
+                hole = j;
+            }
+            j = (j + 1) & mask;
         }
     }
 
