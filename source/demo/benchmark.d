@@ -271,7 +271,15 @@ void main() {
             immutable rx = camX + uniform(-35.0f, 35.0f, rng);
             immutable rz = camZ + uniform(-5.0f, 60.0f, rng);
             immutable ry = 25.0f + uniform(0.0f, 15.0f, rng);
-            immutable id = phys.addDynamic(Vec3(rx, ry, rz),
+            // Random orientation so cubes land on an edge/corner and tumble
+            // realistically. With identity orientation they hit flat-side-down,
+            // contact impulses cancel symmetrically, and they never spin.
+            immutable rot = Quat.fromAxisAngle(
+                Vec3(uniform(-1.0f, 1.0f, rng),
+                     uniform(-1.0f, 1.0f, rng),
+                     uniform(-1.0f, 1.0f, rng)).normalized,
+                uniform(0.0f, 6.2831853f, rng));
+            immutable id = phys.addDynamic(Vec3(rx, ry, rz), rot,
                             Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
             if (id != INVALID_BODY) ++rainCount;
         }
