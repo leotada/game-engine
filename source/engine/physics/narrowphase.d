@@ -1,296 +1,396 @@
-// 
+// Narrowphase — specialized pair routines.
+//
+// Philosophy (from Bullet): for the common, cheap pairs (sphere-sphere,
+// sphere-plane, sphere-box) use branch-free analytic tests. For OBB-OBB
+// use the ODE-style SAT 15-axis test with Sutherland-Hodgman clipping to
+// produce up to 4 contact points per manifold — essential for stable
+// stacking.
+//
+// For the first pass, cylinder and capsule fall through to box SAT on
+// their OBB approximation. This yields correct-ish normals and depths for
+// the benchmark (trees at rest on a plane); precise cylinder/capsule
+// contact normals can be swapped in later without changing this module's
+// signature.
 module engine.physics.narrowphase;
 
+import std.math : abs, sqrt, fabs;
 import engine.math.vec;
 import engine.math.quat;
 import engine.physics.types;
-import std.math : abs, sqrt;
 
 @safe:
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-// 
-private Vec3 localAxis(Quat q, int axis) {
-    Vec3 v;
-    if (axis == 0) v = Vec3(1, 0, 0);
-    else if (axis == 1) v = Vec3(0, 1, 0);
-    else v = Vec3(0, 0, 1);
-    return q.rotate(v);
+/// Output of a single-pair narrowphase call. Writes directly into a
+/// caller-provided buffer up to `MANIFOLD_CACHE_SIZE` points.
+struct NarrowResult {
+    ContactPoint[MANIFOLD_CACHE_SIZE] points;
+    ubyte count = 0;
 }
 
-private float projectBox(Vec3 axis, Vec3[3] boxAxes, Vec3 halfExt) {
-    return halfExt.x * abs(axis.dot(boxAxes[0]))
-         + halfExt.y * abs(axis.dot(boxAxes[1]))
-         + halfExt.z * abs(axis.dot(boxAxes[2]));
+// ---------- utility ------------------------------------------------------
+
+private Vec3 clampVec(Vec3 v, Vec3 lo, Vec3 hi) {
+    return Vec3(
+        v.x < lo.x ? lo.x : (v.x > hi.x ? hi.x : v.x),
+        v.y < lo.y ? lo.y : (v.y > hi.y ? hi.y : v.y),
+        v.z < lo.z ? lo.z : (v.z > hi.z ? hi.z : v.z));
 }
 
-private Vec3 closestPointOnSegment(Vec3 p, Vec3 a, Vec3 b) {
-    immutable ab = b - a;
-    immutable denom = ab.dot(ab);
-    if (denom < 1e-20f) return a;
-    float t = (p - a).dot(ab) / denom;
-    if (t < 0) t = 0;
-    else if (t > 1) t = 1;
-    return a + ab * t;
+private Vec3 rotRow(Quat q, int axis) {
+    // q.rotate(unit axis i) — gives row `i` of the world-from-body basis.
+    immutable basis = [Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1)];
+    return q.rotate(basis[axis]);
 }
 
-private Vec3 closestPointOnBox(Vec3 p, Vec3 center, Vec3[3] axes, Vec3 halfExt) {
-    immutable d = p - center;
-    Vec3 q = center;
-    // Project onto each axis, clamp to half extent, walk out from center.
-    float dx = d.dot(axes[0]);
-    if (dx > halfExt.x) dx = halfExt.x;
-    else if (dx < -halfExt.x) dx = -halfExt.x;
-    float dy = d.dot(axes[1]);
-    if (dy > halfExt.y) dy = halfExt.y;
-    else if (dy < -halfExt.y) dy = -halfExt.y;
-    float dz = d.dot(axes[2]);
-    if (dz > halfExt.z) dz = halfExt.z;
-    else if (dz < -halfExt.z) dz = -halfExt.z;
-    q = q + axes[0] * dx + axes[1] * dy + axes[2] * dz;
-    return q;
-}
-
-// -----------------------------------------------------------------------------
-// Box vs Box (SAT, 15 axes, single contact)
-// -----------------------------------------------------------------------------
-
-bool satBoxBox(Vec3 centerA, Quat orientA, Vec3 halfA,
-               Vec3 centerB, Quat orientB, Vec3 halfB,
-               out ContactManifold manifold) {
-    Vec3[3] axesA = [localAxis(orientA, 0), localAxis(orientA, 1), localAxis(orientA, 2)];
-    Vec3[3] axesB = [localAxis(orientB, 0), localAxis(orientB, 1), localAxis(orientB, 2)];
-    immutable t = centerB - centerA;
-
-    Vec3  bestAxis;
-    float minOverlap = float.max;
-
-    // Test a single axis; returns false if separating, else tracks min overlap.
-    bool test(Vec3 axis) {
-        immutable axLenSq = axis.dot(axis);
-        if (axLenSq < 1e-12f) return true; // skip degenerate
-        immutable invLen = 1.0f / sqrt(axLenSq);
-        immutable n = axis * invLen;
-        immutable projT = abs(t.dot(n));
-        immutable projA = projectBox(n, axesA, halfA);
-        immutable projB = projectBox(n, axesB, halfB);
-        immutable overlap = projA + projB - projT;
-        if (overlap <= 0.0f) return false;
-        if (overlap < minOverlap) {
-            minOverlap = overlap;
-            // Ensure axis points from A to B (normal convention).
-            bestAxis = t.dot(n) < 0 ? -n : n;
-        }
-        return true;
-    }
-
-    // 3 face normals of A
-    foreach (i; 0 .. 3) if (!test(axesA[i])) return false;
-    // 3 face normals of B
-    foreach (i; 0 .. 3) if (!test(axesB[i])) return false;
-    // 9 edge-edge cross products
-    foreach (i; 0 .. 3)
-        foreach (j; 0 .. 3) {
-            if (!test(axesA[i].cross(axesB[j]))) return false;
-        }
-
-    // Contact point: closest point on B to A's center, biased by normal.
-    immutable contactOnB = closestPointOnBox(centerA, centerB, axesB, halfB);
-    immutable contactOnA = closestPointOnBox(centerB, centerA, axesA, halfA);
-    immutable worldPos = (contactOnA + contactOnB) * 0.5f;
-
-    manifold.points[0] = ContactPoint(worldPos, bestAxis, minOverlap);
-    manifold.count = 1;
-    return true;
-}
-
-// -----------------------------------------------------------------------------
-// Box vs Capsule (reduce to sphere-vs-box sweep along the capsule segment)
-// -----------------------------------------------------------------------------
-
-bool satBoxCapsule(Vec3 centerBox, Quat orientBox, Vec3 halfBox,
-                   Vec3 centerCap, Quat orientCap, float radius, float halfHeight,
-                   out ContactManifold manifold) {
-    Vec3[3] axesB = [localAxis(orientBox, 0), localAxis(orientBox, 1), localAxis(orientBox, 2)];
-    immutable capDir = localAxis(orientCap, 1); // capsule axis = local Y
-    immutable segA = centerCap - capDir * halfHeight;
-    immutable segB = centerCap + capDir * halfHeight;
-
-    // Find the segment point closest to the box, then do sphere-vs-box.
-    // Sample segment endpoints plus midpoint; use iterative shrink.
-    Vec3 bestSegPt = segA;
-    float bestDistSq = float.max;
-
-    // Parametric sweep (fixed samples — 9 gives plenty of resolution without
-    // allocations; refine to two quick bisections around the best).
-    float bestT = 0;
-    foreach (i; 0 .. 9) {
-        immutable tt = cast(float) i / 8.0f;
-        immutable p  = segA + (segB - segA) * tt;
-        immutable cp = closestPointOnBox(p, centerBox, axesB, halfBox);
-        immutable d  = (p - cp);
-        immutable dsq = d.dot(d);
-        if (dsq < bestDistSq) {
-            bestDistSq = dsq;
-            bestSegPt = p;
-            bestT = tt;
-        }
-    }
-
-    // Two bisection refinements.
-    foreach (_; 0 .. 6) {
-        immutable tL = bestT - 0.0625f < 0 ? 0 : bestT - 0.0625f;
-        immutable tR = bestT + 0.0625f > 1 ? 1 : bestT + 0.0625f;
-        immutable pL = segA + (segB - segA) * tL;
-        immutable pR = segA + (segB - segA) * tR;
-        immutable dL = pL - closestPointOnBox(pL, centerBox, axesB, halfBox);
-        immutable dR = pR - closestPointOnBox(pR, centerBox, axesB, halfBox);
-        immutable dLsq = dL.dot(dL);
-        immutable dRsq = dR.dot(dR);
-        if (dLsq < bestDistSq) { bestDistSq = dLsq; bestSegPt = pL; bestT = tL; }
-        if (dRsq < bestDistSq) { bestDistSq = dRsq; bestSegPt = pR; bestT = tR; }
-    }
-
-    immutable closestOnBox = closestPointOnBox(bestSegPt, centerBox, axesB, halfBox);
-    Vec3 diff = bestSegPt - closestOnBox;
-    float dist = sqrt(diff.dot(diff));
-    if (dist >= radius) return false;
-
-    Vec3 normal;
-    if (dist > 1e-6f) normal = diff * (1.0f / dist);
-    else normal = Vec3(0, 1, 0); // degenerate: pick up as fallback
-
-    // Convention: normal points from box (A) to capsule (B).
-    immutable depth = radius - dist;
-    immutable worldPos = closestOnBox + normal * (radius - depth * 0.5f);
-
-    manifold.points[0] = ContactPoint(worldPos, normal, depth);
-    manifold.count = 1;
-    return true;
-}
-
-// -----------------------------------------------------------------------------
-// Capsule vs Capsule
-// -----------------------------------------------------------------------------
-
-private void closestPointsSegSeg(Vec3 p1, Vec3 q1, Vec3 p2, Vec3 q2,
-                                 out Vec3 c1, out Vec3 c2) {
-    // Real-Time Collision Detection, Ericson. Clamped algorithm.
-    immutable d1 = q1 - p1;
-    immutable d2 = q2 - p2;
-    immutable r  = p1 - p2;
-    immutable a  = d1.dot(d1);
-    immutable e  = d2.dot(d2);
-    immutable f  = d2.dot(r);
-
-    float s, t;
-    if (a <= 1e-12f && e <= 1e-12f) { c1 = p1; c2 = p2; return; }
-    if (a <= 1e-12f) {
-        s = 0;
-        t = f / e;
-        if (t < 0) t = 0;
-        else if (t > 1) t = 1;
+// Helper: build an orthonormal (tangent1, tangent2) from a unit normal.
+void computeBasis(Vec3 n, out Vec3 t1, out Vec3 t2) {
+    if (fabs(n.x) > 0.7071f) {
+        immutable l = 1.0f / sqrt(n.y * n.y + n.x * n.x);
+        t1 = Vec3(-n.y * l, n.x * l, 0);
     } else {
-        immutable c = d1.dot(r);
-        if (e <= 1e-12f) {
-            t = 0;
-            s = -c / a;
-            if (s < 0) s = 0;
-            else if (s > 1) s = 1;
+        immutable l = 1.0f / sqrt(n.z * n.z + n.y * n.y);
+        t1 = Vec3(0, -n.z * l, n.y * l);
+    }
+    t2 = n.cross(t1);
+}
+
+// ---------- sphere-sphere (Bullet: btSphereSphereCollisionAlgorithm) ----
+
+bool sphereSphere(Vec3 pa, float ra, Vec3 pb, float rb, ref NarrowResult out_) {
+    immutable d2 = (pb - pa).lengthSquared;
+    immutable r  = ra + rb;
+    if (d2 >= r * r) return false;
+    Vec3 n;
+    if (d2 > 1e-12f) {
+        immutable inv = 1.0f / sqrt(d2);
+        n = (pb - pa) * inv;
+    } else {
+        n = Vec3(0, 1, 0);
+    }
+    ContactPoint c;
+    c.normal    = n;
+    c.depth     = r - sqrt(d2);
+    c.worldPosA = pa + n * ra;
+    c.worldPosB = pb - n * rb;
+    c.localA    = c.worldPosA - pa;
+    c.localB    = c.worldPosB - pb;
+    out_.points[0] = c;
+    out_.count = 1;
+    return true;
+}
+
+// ---------- sphere vs plane ---------------------------------------------
+
+/// Plane is `normal · x = d`.
+bool spherePlane(Vec3 ps, float rs, Vec3 planeN, float planeD, ref NarrowResult out_) {
+    immutable dist = planeN.dot(ps) - planeD;
+    if (dist >= rs) return false;
+    ContactPoint c;
+    c.normal    = -planeN;           // A = sphere, B = plane → A→B = into plane
+    c.depth     = rs - dist;
+    c.worldPosA = ps - planeN * rs;  // deepest sphere point
+    c.worldPosB = ps - planeN * dist;
+    c.localA    = c.worldPosA - ps;
+    c.localB    = c.worldPosB;       // plane is static → "local" == world
+    out_.points[0] = c;
+    out_.count = 1;
+    return true;
+}
+
+// ---------- sphere vs OBB (Bullet: btSphereBoxCollisionAlgorithm) -------
+
+bool sphereBox(Vec3 ps, float rs, Vec3 pb, Quat qb, Vec3 he,
+               ref NarrowResult out_) {
+    // Transform sphere centre into box local space.
+    immutable local = qb.conjugate().rotate(ps - pb);
+    immutable clamped = clampVec(local, -he, he);
+    immutable diff = local - clamped;
+    immutable d2 = diff.lengthSquared;
+    if (d2 >= rs * rs) return false;
+
+    Vec3 nLocal;
+    float depth;
+    if (d2 > 1e-12f) {
+        immutable d = sqrt(d2);
+        nLocal = diff * (1.0f / d);
+        depth = rs - d;
+    } else {
+        // Centre inside box — push out along least-penetrated axis.
+        immutable px = he.x - fabs(local.x);
+        immutable py = he.y - fabs(local.y);
+        immutable pz = he.z - fabs(local.z);
+        if (px < py && px < pz) {
+            nLocal = Vec3(local.x >= 0 ? 1 : -1, 0, 0);
+            depth = rs + px;
+        } else if (py < pz) {
+            nLocal = Vec3(0, local.y >= 0 ? 1 : -1, 0);
+            depth = rs + py;
         } else {
-            immutable b = d1.dot(d2);
-            immutable denom = a * e - b * b;
-            if (denom != 0.0f) {
-                s = (b * f - c * e) / denom;
-                if (s < 0) s = 0;
-                else if (s > 1) s = 1;
-            } else s = 0;
-            t = (b * s + f) / e;
-            if (t < 0) {
-                t = 0;
-                s = -c / a;
-                if (s < 0) s = 0;
-                else if (s > 1) s = 1;
-            } else if (t > 1) {
-                t = 1;
-                s = (b - c) / a;
-                if (s < 0) s = 0;
-                else if (s > 1) s = 1;
+            nLocal = Vec3(0, 0, local.z >= 0 ? 1 : -1);
+            depth = rs + pz;
+        }
+    }
+
+    immutable nWorld = qb.rotate(nLocal);
+    ContactPoint c;
+    c.normal    = nWorld;                     // A→B where A=sphere, B=box
+    c.depth     = depth;
+    c.worldPosA = ps + nWorld * rs;
+    c.worldPosB = pb + qb.rotate(clamped);
+    c.localA    = c.worldPosA - ps;
+    c.localB    = clamped;
+    out_.points[0] = c;
+    out_.count = 1;
+    return true;
+}
+
+// ---------- box vs plane (4-point clip) ---------------------------------
+
+bool boxPlane(Vec3 pb, Quat qb, Vec3 he, Vec3 planeN, float planeD,
+              ref NarrowResult out_) {
+    // 8 corners in world space; any with plane distance < 0 are contacts.
+    immutable ax = qb.rotate(Vec3(1, 0, 0)) * he.x;
+    immutable ay = qb.rotate(Vec3(0, 1, 0)) * he.y;
+    immutable az = qb.rotate(Vec3(0, 0, 1)) * he.z;
+    ubyte nOut = 0;
+    for (int sx = -1; sx <= 1; sx += 2)
+    for (int sy = -1; sy <= 1; sy += 2)
+    for (int sz = -1; sz <= 1; sz += 2) {
+        immutable w = pb + ax * sx + ay * sy + az * sz;
+        immutable dist = planeN.dot(w) - planeD;
+        if (dist < 0) {
+            if (nOut < MANIFOLD_CACHE_SIZE) {
+                ContactPoint c;
+                c.normal    = -planeN;          // A=box, B=plane
+                c.depth     = -dist;
+                c.worldPosA = w;
+                c.worldPosB = w - planeN * dist;
+                c.localA    = qb.conjugate().rotate(w - pb);
+                c.localB    = c.worldPosB;
+                out_.points[nOut++] = c;
             }
         }
     }
-    c1 = p1 + d1 * s;
-    c2 = p2 + d2 * t;
+    out_.count = nOut;
+    return nOut > 0;
 }
 
-bool satCapsuleCapsule(Vec3 centerA, Quat orientA, float rA, float hhA,
-                       Vec3 centerB, Quat orientB, float rB, float hhB,
-                       out ContactManifold manifold) {
-    immutable axA = localAxis(orientA, 1);
-    immutable axB = localAxis(orientB, 1);
-    immutable pA = centerA - axA * hhA;
-    immutable qA = centerA + axA * hhA;
-    immutable pB = centerB - axB * hhB;
-    immutable qB = centerB + axB * hhB;
+// ---------- box-box SAT (15 axes, face contact = 4-point clip) ----------
 
-    Vec3 cA, cB;
-    closestPointsSegSeg(pA, qA, pB, qB, cA, cB);
-    immutable diff = cB - cA;
-    immutable dsq = diff.dot(diff);
-    immutable sumR = rA + rB;
-    if (dsq >= sumR * sumR) return false;
+/// Reference-face approach: pick axis with minimum penetration, find the
+/// incident face on the other box, clip it against the 4 side planes of
+/// the reference face, then keep up to 4 points where clipped polygon is
+/// below the reference plane.
+bool boxBox(Vec3 pa, Quat qa, Vec3 hea, Vec3 pb, Quat qb, Vec3 heb,
+            ref NarrowResult out_) {
+    // Build 3 world basis vectors per box.
+    Vec3[3] Aax = [rotRow(qa, 0), rotRow(qa, 1), rotRow(qa, 2)];
+    Vec3[3] Bax = [rotRow(qb, 0), rotRow(qb, 1), rotRow(qb, 2)];
 
-    immutable dist = sqrt(dsq);
-    Vec3 normal;
-    if (dist > 1e-6f) normal = diff * (1.0f / dist);
-    else normal = Vec3(0, 1, 0);
+    immutable T = pb - pa;
 
-    immutable depth = sumR - dist;
-    immutable worldPos = (cA + cB) * 0.5f;
-    manifold.points[0] = ContactPoint(worldPos, normal, depth);
-    manifold.count = 1;
-    return true;
+    // R[i][j] = Aax[i] · Bax[j]; absR biased by fudge2 to break ties in
+    // favor of face axes (Bullet / ODE convention).
+    enum float fudge2 = 1e-5f;
+    float[3][3] R;
+    float[3][3] absR;
+    foreach (i; 0 .. 3) {
+        foreach (j; 0 .. 3) {
+            R[i][j]   = Aax[i].dot(Bax[j]);
+            absR[i][j] = fabs(R[i][j]) + fudge2;
+        }
+    }
+
+    // Axis-scan helper.
+    float bestDepth = 1e30f;
+    int   bestAxis  = -1;
+    Vec3  bestN     = Vec3(0, 1, 0);
+    bool  bestFlip  = false;
+
+    // Face axes of A (0..2).
+    foreach (i; 0 .. 3) {
+        immutable ra = (i == 0 ? hea.x : i == 1 ? hea.y : hea.z);
+        immutable rb = heb.x * absR[i][0] + heb.y * absR[i][1] + heb.z * absR[i][2];
+        immutable s  = Aax[i].dot(T);
+        immutable d  = ra + rb - fabs(s);
+        if (d < 0) return false;
+        if (d < bestDepth) {
+            bestDepth = d;
+            bestAxis  = cast(int) i;
+            bestN     = s < 0 ? Aax[i] * -1.0f : Aax[i];
+            bestFlip  = false;
+        }
+    }
+    // Face axes of B (3..5).
+    foreach (i; 0 .. 3) {
+        immutable ra = hea.x * absR[0][i] + hea.y * absR[1][i] + hea.z * absR[2][i];
+        immutable rb = (i == 0 ? heb.x : i == 1 ? heb.y : heb.z);
+        immutable s  = Bax[i].dot(T);
+        immutable d  = ra + rb - fabs(s);
+        if (d < 0) return false;
+        if (d < bestDepth) {
+            bestDepth = d;
+            bestAxis  = 3 + cast(int) i;
+            bestN     = s < 0 ? Bax[i] * -1.0f : Bax[i];
+            bestFlip  = true;
+        }
+    }
+    // Edge-edge axes (6..14) — for a single contact point only.
+    foreach (i; 0 .. 3) foreach (j; 0 .. 3) {
+        immutable axis = Aax[i].cross(Bax[j]);
+        immutable len2 = axis.lengthSquared;
+        if (len2 < 1e-6f) continue;
+        immutable invL = 1.0f / sqrt(len2);
+        immutable n    = axis * invL;
+        immutable ra   = hea.x * fabs(n.dot(Aax[0])) + hea.y * fabs(n.dot(Aax[1])) + hea.z * fabs(n.dot(Aax[2]));
+        immutable rb   = heb.x * fabs(n.dot(Bax[0])) + heb.y * fabs(n.dot(Bax[1])) + heb.z * fabs(n.dot(Bax[2]));
+        immutable s    = n.dot(T);
+        immutable d    = ra + rb - fabs(s);
+        if (d < 0) return false;
+        if (d * 0.95f < bestDepth) {          // bias face axes
+            bestDepth = d;
+            bestAxis  = 6 + cast(int)(i * 3 + j);
+            bestN     = s < 0 ? n * -1.0f : n;
+        }
+    }
+
+    // bestN points A → B. For edge-edge, generate a single deepest-point
+    // contact. For face cases, clip.
+    if (bestAxis >= 6) {
+        // Edge-edge: contact is on the closest segment pair. Approximate by
+        // the midpoint of each box projected along bestN.
+        ContactPoint c;
+        c.normal = bestN;
+        c.depth  = bestDepth;
+        immutable supportA = pa + closestSupport(Aax, hea, bestN);
+        immutable supportB = pb + closestSupport(Bax, heb, -bestN);
+        c.worldPosA = supportA;
+        c.worldPosB = supportB;
+        c.localA = qa.conjugate().rotate(supportA - pa);
+        c.localB = qb.conjugate().rotate(supportB - pb);
+        out_.points[0] = c;
+        out_.count = 1;
+        return true;
+    }
+
+    // Face contact. `ref` is the box whose face axis is chosen; `inc` is
+    // the other box. We clip inc's deepest face against ref's 4 side planes.
+    Vec3[3] refAx, incAx;
+    Vec3    refPos, incPos;
+    Vec3    refHe,  incHe;
+    Quat    refQ,   incQ;
+    Vec3    refN; // outward normal of reference face in world space
+
+    if (bestAxis < 3) {
+        refAx = Aax; incAx = Bax;
+        refPos = pa; incPos = pb;
+        refHe  = hea; incHe = heb;
+        refQ   = qa; incQ   = qb;
+        refN   = bestN;        // A→B
+    } else {
+        refAx = Bax; incAx = Aax;
+        refPos = pb; incPos = pa;
+        refHe  = heb; incHe  = hea;
+        refQ   = qb; incQ   = qa;
+        refN   = -bestN;       // B→A
+    }
+
+    // Find the incident face (the one on `inc` most anti-parallel to refN).
+    int incFace = 0;
+    float maxAlign = -1;
+    bool  incFaceNeg = false;
+    foreach (i; 0 .. 3) {
+        immutable d = incAx[i].dot(refN);
+        if (fabs(d) > maxAlign) {
+            maxAlign = fabs(d);
+            incFace = cast(int) i;
+            incFaceNeg = d > 0; // incident face points opposite to refN
+        }
+    }
+    // 4 corners of incident face in world space.
+    Vec3 center = incPos + incAx[incFace] * (incFaceNeg ? -incHe.get(incFace) : incHe.get(incFace));
+    immutable u = (incFace + 1) % 3;
+    immutable v = (incFace + 2) % 3;
+    Vec3 eu = incAx[u] * incHe.get(u);
+    Vec3 ev = incAx[v] * incHe.get(v);
+    Vec3[4] face = [center - eu - ev, center + eu - ev, center + eu + ev, center - eu + ev];
+
+    // Compute reference face centre + 4 side planes.
+    int refFace = bestAxis < 3 ? bestAxis : (bestAxis - 3);
+    bool refFaceNeg = refN.dot(refAx[refFace]) < 0;
+    Vec3 refCenter = refPos + refAx[refFace] * (refFaceNeg ? -refHe.get(refFace) : refHe.get(refFace));
+    immutable ru = (refFace + 1) % 3;
+    immutable rv = (refFace + 2) % 3;
+    Vec3 refU = refAx[ru]; float refUHE = refHe.get(ru);
+    Vec3 refV = refAx[rv]; float refVHE = refHe.get(rv);
+
+    // Clip the 4-vertex polygon against 4 side planes (+u, -u, +v, -v).
+    Vec3[8] buf1 = void; Vec3[8] buf2 = void;
+    int n1 = 4;
+    buf1[0] = face[0]; buf1[1] = face[1]; buf1[2] = face[2]; buf1[3] = face[3];
+
+    int n2 = clipPolygonAxis(buf1, n1, buf2, refCenter, refU, refUHE);
+    n1 = clipPolygonAxis(buf2, n2, buf1, refCenter, refU * -1.0f, refUHE);
+    n2 = clipPolygonAxis(buf1, n1, buf2, refCenter, refV, refVHE);
+    n1 = clipPolygonAxis(buf2, n2, buf1, refCenter, refV * -1.0f, refVHE);
+
+    // Keep at most 4 points where (p - refCenter) · refN <= 0.
+    ubyte nOut = 0;
+    foreach (i; 0 .. n1) {
+        immutable p = buf1[i];
+        immutable d = (p - refCenter).dot(refN);
+        if (d < 0 && nOut < MANIFOLD_CACHE_SIZE) {
+            ContactPoint c;
+            c.normal    = bestN;               // always A→B
+            c.depth     = -d;
+            c.worldPosA = bestAxis < 3 ? (p - bestN * -d) : p;
+            c.worldPosB = bestAxis < 3 ? p : (p + bestN * -d);
+            c.localA    = qa.conjugate().rotate(c.worldPosA - pa);
+            c.localB    = qb.conjugate().rotate(c.worldPosB - pb);
+            out_.points[nOut++] = c;
+        }
+    }
+    out_.count = nOut;
+    return nOut > 0;
 }
 
-// -----------------------------------------------------------------------------
-// Unit tests
-// -----------------------------------------------------------------------------
-
-unittest {
-    // Two unit cubes axis-aligned, penetrating 0.1 along +X.
-    ContactManifold m;
-    immutable hit = satBoxBox(
-        Vec3(0, 0, 0), Quat.identity, Vec3(0.5f, 0.5f, 0.5f),
-        Vec3(0.9f, 0, 0), Quat.identity, Vec3(0.5f, 0.5f, 0.5f),
-        m);
-    assert(hit);
-    assert(m.count == 1);
-    assert(m.points[0].depth > 0.09f && m.points[0].depth < 0.11f);
-    assert(m.points[0].normal.x > 0.99f);
+// Helper: support point of an OBB in direction `d`, returned as offset from
+// box centre.
+private Vec3 closestSupport(Vec3[3] ax, Vec3 he, Vec3 d) {
+    Vec3 r = Vec3(0, 0, 0);
+    foreach (i; 0 .. 3) {
+        immutable s = ax[i].dot(d) >= 0 ? 1.0f : -1.0f;
+        r = r + ax[i] * (s * (i == 0 ? he.x : i == 1 ? he.y : he.z));
+    }
+    return r;
 }
 
-unittest {
-    // Two unit cubes far apart — no hit.
-    ContactManifold m;
-    immutable hit = satBoxBox(
-        Vec3(0, 0, 0), Quat.identity, Vec3(0.5f, 0.5f, 0.5f),
-        Vec3(5, 0, 0), Quat.identity, Vec3(0.5f, 0.5f, 0.5f),
-        m);
-    assert(!hit);
+// Clip a convex polygon against a half-space { p : (p - origin) · axis <= size }.
+private int clipPolygonAxis(scope const Vec3[] inPoly, int inN, scope ref Vec3[8] outBuf,
+                            Vec3 origin, Vec3 axis, float size) {
+    int outN = 0;
+    if (inN == 0) return 0;
+    Vec3 prev = inPoly[inN - 1];
+    float prevD = (prev - origin).dot(axis) - size;
+    foreach (i; 0 .. inN) {
+        immutable curr = inPoly[i];
+        immutable currD = (curr - origin).dot(axis) - size;
+        if (prevD <= 0) {
+            if (outN < cast(int) outBuf.length) outBuf[outN++] = prev;
+            if (currD > 0 && outN < cast(int) outBuf.length) {
+                immutable t = prevD / (prevD - currD);
+                outBuf[outN++] = prev + (curr - prev) * t;
+            }
+        } else if (currD <= 0 && outN < cast(int) outBuf.length) {
+            immutable t = prevD / (prevD - currD);
+            outBuf[outN++] = prev + (curr - prev) * t;
+        }
+        prev = curr;
+        prevD = currD;
+    }
+    return outN;
 }
 
-unittest {
-    // Capsule vertical over a flat box: resting contact.
-    ContactManifold m;
-    immutable hit = satBoxCapsule(
-        Vec3(0, 0, 0), Quat.identity, Vec3(5, 0.5f, 5),       // big flat box
-        Vec3(0, 1.2f, 0), Quat.identity, 0.5f, 0.5f,          // capsule r=0.5 hh=0.5
-        m);
-    assert(hit);
-    assert(m.count == 1);
-    // penetration: capsule bottom at y=0.2, box top at y=0.5 → overlap 0.3
-    assert(m.points[0].depth > 0.25f && m.points[0].depth < 0.35f);
-}
+// Vec3 component helper (math module has no .get — keep it local).
+private float get(Vec3 v, int i) { return i == 0 ? v.x : i == 1 ? v.y : v.z; }
+// 
