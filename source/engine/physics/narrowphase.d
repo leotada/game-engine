@@ -236,6 +236,16 @@ bool boxBox(Vec3 pa, Quat qa, Vec3 hea, Vec3 pb, Quat qb, Vec3 heb,
         }
     }
     // Edge-edge axes (6..14) — for a single contact point only.
+    //
+    // Bias: we *only* switch to an edge-edge axis when its overlap is
+    // MEANINGFULLY smaller than the best face axis so far. ODE/Bullet use
+    // a ~5% margin so that identical axis-aligned boxes (where face Y and
+    // edge X×Z give numerically identical overlap) always resolve to a
+    // 4-point face contact, not a degenerate single-point edge contact.
+    //
+    // The test is `d * bias < bestDepth` with `bias > 1`; an edge-edge
+    // axis must beat the face candidate by at least (bias-1) to win.
+    enum float edgeBias = 1.05f;
     foreach (i; 0 .. 3) foreach (j; 0 .. 3) {
         immutable axis = Aax[i].cross(Bax[j]);
         immutable len2 = axis.lengthSquared;
@@ -247,7 +257,7 @@ bool boxBox(Vec3 pa, Quat qa, Vec3 hea, Vec3 pb, Quat qb, Vec3 heb,
         immutable s    = n.dot(T);
         immutable d    = ra + rb - fabs(s);
         if (d < 0) return false;
-        if (d * 0.95f < bestDepth) {          // bias face axes
+        if (d * edgeBias < bestDepth) {
             bestDepth = d;
             bestAxis  = 6 + cast(int)(i * 3 + j);
             bestN     = s < 0 ? n * -1.0f : n;

@@ -247,7 +247,9 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
         }
         foreach (ref m; pool.manifolds) {
             if (m.count == 0 || m.framesSinceUse >= 255) continue;
-            setupAndWarmStart(solverCfg, m, sb[0 .. bodyCount]);
+            immutable rest = material[m.a].restitution > material[m.b].restitution
+                ? material[m.a].restitution : material[m.b].restitution;
+            setupAndWarmStart(solverCfg, m, sb[0 .. bodyCount], rest);
         }
         foreach (iter; 0 .. solverCfg.numIterations) {
             foreach (ref m; pool.manifolds) {
@@ -255,11 +257,7 @@ struct PhysicsWorld(uint MaxBodies = 4096, uint MaxManifolds = 8192) {
                 immutable fA = material[m.a].friction;
                 immutable fB = material[m.b].friction;
                 immutable fr = sqrtf(fA * fB);
-                immutable restitution = (iter == 0)
-                    ? (material[m.a].restitution > material[m.b].restitution
-                        ? material[m.a].restitution : material[m.b].restitution)
-                    : 0.0f;
-                iterate(solverCfg, m, sb[0 .. bodyCount], fr, restitution, dt);
+                iterate(solverCfg, m, sb[0 .. bodyCount], fr, dt);
             }
         }
 
@@ -420,3 +418,210 @@ private Vec3 absVec(Vec3 v) @safe pure  {
     import std.math : fabs;
     return Vec3(fabs(v.x), fabs(v.y), fabs(v.z));
 }
+
+// ===========================================================================
+// Unit tests — validate the Bullet-inspired pipeline end-to-end.
+//
+// These are the authoritative regression tests for the physics rewrite. They
+// run under `dub test` (library config, which includes this module).
+// ===========================================================================
+
+version (unittest) {
+    import std.math : abs, sqrt;
+    import std.stdio : writeln, writefln;
+
+    // Alias a conservative capacity for tests — big enough for stacks but
+    // small enough to keep stack frames reasonable.
+    private alias TestWorld = PhysicsWorld!(256, 1024);
+
+    // Run a fixed-step simulation for `frames` iterations at 60 Hz.
+    private void stepFor(TestWorld* w, uint frames) @safe {
+        enum float dt = 1.0f / 60.0f;
+        foreach (_; 0 .. frames) w.step(dt);
+    }
+}
+
+/// Single box free-falls onto a static ground box and comes to rest on top
+/// of it within 3 seconds. Catches: solver sign, manifold reuse, integrator.
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    w.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(10, 0.5f, 10)));
+    immutable cube = w.addDynamic(Vec3(0, 5, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+
+    stepFor(w, 180);
+
+    immutable y = w.position[cube].y;
+    assert(y > 0.3f && y < 0.8f, "cube did not rest on ground: y=" ~ y.stringof);
+    assert(abs(w.linearVel[cube].y) < 0.5f, "cube still moving vertically");
+    assert(w.stats.manifoldCount >= 1, "manifold lost while cube is on ground");
+}
+
+/// A single box on a static-plane body also rests. Exercises the plane
+/// fast-path (planes are NOT in the Dbvt).
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    // Plane with normal +Y at y=0: n·x + d = 0 ⇒ d = 0.
+    w.addStatic(Vec3(0, 0, 0), Shape.makePlane(Vec3(0, 1, 0), 0));
+    immutable cube = w.addDynamic(Vec3(0, 5, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+
+    stepFor(w, 180);
+
+    immutable y = w.position[cube].y;
+    assert(y > 0.3f && y < 0.8f, "cube did not rest on plane");
+    assert(abs(w.linearVel[cube].y) < 0.5f);
+}
+
+/// Stack of three cubes on a ground box. Verifies that persistent manifolds
+/// warm-start correctly (a stack needs converged impulses to avoid jitter).
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    w.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(10, 0.5f, 10)));
+    immutable c0 = w.addDynamic(Vec3(0, 0.55f, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+    immutable c1 = w.addDynamic(Vec3(0, 1.60f, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+    immutable c2 = w.addDynamic(Vec3(0, 2.65f, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+
+    stepFor(w, 300);  // 5 seconds
+
+    // Each cube should stay roughly at its target y (1-box tall step = 1 m).
+    // Allow 15 cm tolerance for penetration depth under 10-iter SI solver.
+    assert(w.position[c0].y > 0.35f && w.position[c0].y < 0.70f,
+        "stack cube 0 out of range");
+    assert(w.position[c1].y > 1.35f && w.position[c1].y < 1.70f,
+        "stack cube 1 out of range");
+    assert(w.position[c2].y > 2.35f && w.position[c2].y < 2.70f,
+        "stack cube 2 out of range");
+
+    // And they should all be essentially at rest.
+    foreach (id; [c0, c1, c2]) {
+        assert(w.linearVel[id].lengthSquared < 4.0f,
+            "stacked cube still moving");
+    }
+}
+
+/// Box dropped off-centre onto the ground tumbles but does not tunnel through.
+/// Guards against manifold drop-outs mid-collision and angular impulse bugs.
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    w.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(10, 0.5f, 10)));
+    // Small cube, tilted 0.3 rad around Z, dropped with some horizontal vel.
+    immutable q = Quat.fromAxisAngle(Vec3(0, 0, 1), 0.3f);
+    immutable cube = w.addDynamic(Vec3(0, 4, 0), q,
+        Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+    w.linearVel[cube] = Vec3(1.0f, 0, 0);
+
+    stepFor(w, 300);
+
+    immutable y = w.position[cube].y;
+    // Must not be below ground (y < 0) and not launched upward.
+    assert(y > 0.0f,  "tilted cube tunneled through ground");
+    assert(y < 2.0f,  "tilted cube launched upward");
+}
+
+/// Many dynamic cubes raining into a ground box — the benchmark scenario
+/// compressed. Verifies: (a) the manifold pool doesn't overflow even with
+/// lots of pairs; (b) nothing explodes to infinity; (c) bodies do not end up
+/// below the ground plane.
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    w.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(20, 0.5f, 20)));
+
+    enum uint N = 64;
+    uint[N] ids;
+    foreach (i; 0 .. N) {
+        // Scatter in a 8x8 grid at varying heights.
+        immutable xi = cast(float)(i % 8) - 3.5f;
+        immutable zi = cast(float)(i / 8) - 3.5f;
+        immutable yi = 2.0f + (i % 4) * 1.2f;
+        ids[i] = w.addDynamic(Vec3(xi * 1.3f, yi, zi * 1.3f),
+            Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+    }
+
+    // 10 seconds of simulation — should complete without assertion failures
+    // (manifold pool exhaustion) or NaNs.
+    stepFor(w, 600);
+
+    foreach (i; 0 .. N) {
+        immutable p = w.position[ids[i]];
+        assert(p.y > -1.0f, "cube fell through ground");
+        assert(p.y <  50.0f, "cube launched to the sky");
+        assert(p.x > -50.0f && p.x < 50.0f, "cube flew sideways");
+        assert(p.z > -50.0f && p.z < 50.0f, "cube flew sideways");
+        // No NaN propagation.
+        assert(p.x == p.x && p.y == p.y && p.z == p.z, "NaN position");
+    }
+}
+
+/// Sphere-on-plane with restitution produces bounces, but energy monotonically
+/// decreases (restitution < 1). Guards restitution sign.
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -10, 0);
+
+    auto plane = w.addStatic(Vec3(0, 0, 0), Shape.makePlane(Vec3(0, 1, 0), 0));
+    w.material[plane].restitution = 0.5f;
+
+    immutable ball = w.addDynamic(Vec3(0, 5, 0), Shape.makeSphere(0.5f), 1.0f);
+    w.material[ball].restitution = 0.5f;
+
+    float maxY = w.position[ball].y;
+    float prevPeak = maxY;
+    int peaks = 0;
+    float lastVy = 0;
+    enum float dt = 1.0f / 60.0f;
+
+    foreach (_; 0 .. 600) {  // 10 s
+        immutable vy = w.linearVel[ball].y;
+        // Detect a peak (vy crosses from + to -).
+        if (lastVy > 0 && vy <= 0 && w.position[ball].y > 0.6f) {
+            peaks++;
+            immutable peakY = w.position[ball].y;
+            assert(peakY <= prevPeak + 0.01f,
+                "bounce height increased — energy gain");
+            prevPeak = peakY;
+        }
+        lastVy = vy;
+        w.step(dt);
+    }
+
+    assert(peaks >= 1, "sphere never bounced");
+    assert(w.position[ball].y > 0.4f, "sphere fell through plane");
+}
+
+/// ManifoldPool: the same (a,b) returns the same manifold across frames
+/// (hash-key stability, not the truncation bug we had).
+@safe unittest {
+    auto w = new TestWorld;
+    w.init_();
+    w.gravity = Vec3(0, -20, 0);
+
+    w.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(10, 0.5f, 10)));
+    w.addDynamic(Vec3(0, 2, 0), Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
+
+    // Drop long enough to establish contact and hold it.
+    stepFor(w, 120);
+
+    // After settling we should have EXACTLY one live manifold for 90+ frames
+    // (proves warm-start & hash lookup are working; otherwise each frame
+    // would allocate a fresh slot).
+    assert(w.stats.manifoldCount == 1,
+        "expected 1 manifold, got " ~ w.stats.manifoldCount.stringof);
+    assert(w.pool.count <= 4,
+        "ManifoldPool leaked slots: count=" ~ w.pool.count.stringof);
+}
+

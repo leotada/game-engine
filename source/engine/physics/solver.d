@@ -66,10 +66,15 @@ struct SolverBody {
 /// components. Also applies warm-start impulses.
 ///
 /// `bodies` must be indexed by the manifold's a/b body ids; static bodies
-/// have invMass == 0.
+/// have invMass == 0. `restitution` is the max of the two materials'
+/// coefficients (Bullet uses max) and is folded INTO velocityBias so every
+/// subsequent iteration drives vrel → -bias rather than only biasing the
+/// first iteration (critical: per-iteration bounce injection would get
+/// cancelled by later iters that see vrel already negative).
 void setupAndWarmStart(const ref SolverConfig cfg,
                        ref ContactManifold m,
-                       scope SolverBody[] bodies) {
+                       scope SolverBody[] bodies,
+                       float restitution) {
     auto A = &bodies[m.a];
     auto B = &bodies[m.b];
 
@@ -117,20 +122,23 @@ void setupAndWarmStart(const ref SolverConfig cfg,
         p.angularA_t2 = Iat2;
         p.angularB_t2 = Ibt2;
 
-        // Velocity bias: restitution for approaching contacts, and
-        // split-impulse won't touch real velocity — so we leave velocityBias
-        // to only restitution here.
+        // Velocity bias: capture the closing relative velocity at the
+        // START of the frame and use it as the restitution target. Stored
+        // on the point so every iteration converges toward the SAME
+        // post-bounce velocity instead of clamping it back to 0.
+        //
+        // Convention (A→B normal):
+        //   vrel > 0 ⇒ A is moving into B.
+        //   After impulse we want vrel = -restitution·vrel_initial.
+        //   Solver drives `vrel → -velocityBias`, so:
+        //       velocityBias = restitution · vrel_initial    (approaching)
+        //       velocityBias = 0                             (otherwise)
         immutable vA_at = A.linearVel + A.angularVel.cross(rAw);
         immutable vB_at = B.linearVel + B.angularVel.cross(rBw);
         immutable rel_n = p.normal.dot(vA_at - vB_at);
         float vb = 0;
-        // NOTE: normal convention is A→B. A relative velocity along +n means
-        // A is moving INTO B (closing). Bullet's restitution threshold uses
-        // -rel_n > threshold.
-        if (-rel_n > cfg.restitutionVelocityThreshold) {
-            // restitution pulled from manifold default — caller sets per-pair
-            // Material. We assume globalFriction used as restitution fallback.
-            // The world passes actual restitution via velocityBias already.
+        if (restitution > 0 && rel_n > cfg.restitutionVelocityThreshold) {
+            vb = restitution * rel_n;
         }
         p.velocityBias = vb;
 
@@ -163,13 +171,12 @@ private void applyImpulse(scope SolverBody* A, scope SolverBody* B, scope Contac
 }
 
 /// One pass of normal-then-friction impulses over all points in the manifold.
-/// `friction` is the combined coefficient (e.g. sqrt(μA·μB)); `restitution`
-/// adds bounce for the first iteration only (caller passes 0 on subsequent).
+/// `friction` is the combined coefficient (e.g. sqrt(μA·μB)).
+/// Restitution was folded into `p.velocityBias` during setup.
 void iterate(const ref SolverConfig cfg,
              ref ContactManifold m,
              scope SolverBody[] bodies,
              float friction,
-             float restitution,
              float positionBiasScale) {
     auto A = &bodies[m.a];
     auto B = &bodies[m.b];
@@ -181,19 +188,15 @@ void iterate(const ref SolverConfig cfg,
         immutable rBw = B.orientation.rotate(p.localB);
         immutable vA_at = A.linearVel + A.angularVel.cross(rAw);
         immutable vB_at = B.linearVel + B.angularVel.cross(rBw);
-        // Sign convention (A→B normal):
         //   vrel > 0 ⇒ A and B are closing along n.
         //   `applyImpulse` with jN > 0 does A.linVel -= n·jN·invMA and
         //   B.linVel += n·jN·invMB, which SEPARATES them.
         //   Derivation: Δvrel = −jN · (invMA + invMB + angular) = −jN / jacDiagN.
-        //   To null vrel → Δvrel = −vrel → jN = vrel · jacDiagN.
+        //   Drive vrel toward −velocityBias (captured closing vel × restitution
+        //   on the first frame of contact) ⇒ Δvrel = (−bias) − vrel.
+        //   jN = −Δvrel · jacDiagN = (vrel + bias) · jacDiagN.
         immutable vrel = p.normal.dot(vA_at - vB_at);
-
-        // Restitution: on first iteration only (caller passes 0 thereafter),
-        // bounce back if approaching above threshold.
-        immutable targetVrel = (restitution > 0 && vrel > cfg.restitutionVelocityThreshold)
-            ? -restitution * vrel : 0.0f;
-        immutable lambdaRaw = (vrel - targetVrel) * p.jacDiagN;
+        immutable lambdaRaw = (vrel + p.velocityBias) * p.jacDiagN;
         float newImpulse = p.normalImpulse + lambdaRaw;
         if (newImpulse < 0) newImpulse = 0;
         immutable applied = newImpulse - p.normalImpulse;
