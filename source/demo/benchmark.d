@@ -175,6 +175,16 @@ void main() {
     double totalDt   = 0;
     float labelRefreshAccum = 0;
 
+    // Fixed-timestep accumulator. The render loop runs as fast as the GPU
+    // allows (mailbox present mode → uncapped, often 200+ FPS with dt ≈ 3 ms),
+    // but physics must advance in deterministic 1/60 s steps. Without this,
+    // rain cubes fall imperceptibly slowly on a fast machine — the user
+    // sees them "parked in the air" while the CPU spins at 100%.
+    // Cap substeps at 5 so a hitch can't cause catch-up explosions.
+    enum float PHYS_STEP = 1.0f / 60.0f;
+    enum uint  MAX_SUBSTEPS = 5;
+    float physAccum = 0.0f;
+
     // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
@@ -243,7 +253,17 @@ void main() {
         }
 
         // -------- Physics tick --------------------------------------------
-        phys.step(frameDt);
+        // Fixed-step accumulator: spend real time into buckets of PHYS_STEP
+        // and run one world.step per bucket (up to MAX_SUBSTEPS per frame).
+        physAccum += frameDt;
+        if (physAccum > PHYS_STEP * MAX_SUBSTEPS)
+            physAccum = PHYS_STEP * MAX_SUBSTEPS;  // drop extra, never catch-up explode
+        uint physSteps = 0;
+        while (physAccum >= PHYS_STEP && physSteps < MAX_SUBSTEPS) {
+            phys.step(PHYS_STEP);
+            physAccum -= PHYS_STEP;
+            ++physSteps;
+        }
 
         // -------- Render ---------------------------------------------------
         auto frame = app.beginFrame(Color(0.45f, 0.65f, 0.90f, 1.0f));
