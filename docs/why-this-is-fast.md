@@ -1,171 +1,71 @@
-# Why This Game Engine Is Fast — Explained for Programmers from Other Languages
+# Why This Game Engine Is Fast
 
-This engine uses the same architectural principles as Rust's **Bevy Engine** — but implemented in D. If you've written Python, Java, C#, or even Rust, this document explains **why our architecture is fast** and how D's compile-time metaprogramming achieves Bevy-class performance without a borrow checker.
-
----
-
-## The Problem: 600 Particles at 60 FPS
-
-Imagine a game with 600 particles on screen. Every frame (ideally 60 times per second), the engine must:
-
-1. **Update physics** for each particle (gravity, velocity, position)
-2. **Check timeouts** for each particle (should it disappear?)
-3. **Draw** each particle on screen
-
-That's ~1,800 operations per frame, 108,000 per second. Every nanosecond counts.
+This engine follows the same core performance principles that make modern ECS-driven engines fast: contiguous data layout, O(1) component lookup, and compile-time specialization. In this codebase, those ideas are implemented in D with templates, `@safe` defaults, and a strict hot-path policy that keeps the frame loop free from GC overhead.
 
 ---
 
-## How Python Would Do It (The Slow Way)
+## The Core Workload
 
-```python
-class Component:
-    pass
+Consider a scene with 600 particles. Every frame, the engine needs to:
 
-class Particle(Component):
-    def __init__(self):
-        self.velocity_x = 0.0
-        self.velocity_y = 0.0
-        self.mass = 1.0
-        self.gravity = False
+1. Update motion and physics
+2. Check lifetime or visibility state
+3. Submit render data
 
-class Circle(Component):
-    def __init__(self):
-        self.radius = 5.0
-        self.color = "gray"
+That is not a large problem algorithmically. The real constraint is how often this work repeats and how predictably the CPU can access the underlying data.
 
-class Entity:
-    def __init__(self):
-        self.components = {}    # {"Particle": <Particle>, "Circle": <Circle>}
-        self.position_x = 0.0
-        self.position_y = 0.0
-
-class ParticleSystem:
-    def run(self, entities):
-        for entity in entities:
-            particle = entity.components.get("Particle")  # dictionary lookup
-            if particle:
-                self.update_physics(entity, particle)
-```
-
-This is clean, readable code. But it has **3 hidden performance killers**.
+The engine is fast because it optimizes the memory and dispatch patterns that dominate frame time.
 
 ---
 
-## Killer #1: Objects Are Scattered in Memory
+## 1. Contiguous Component Storage
 
-### The Python Way (Bad for Speed)
+The first major win is memory layout.
 
-When you create objects in Python (or classes in many languages), each object gets its own chunk of memory, placed **wherever the allocator finds space**:
-
-```
-Memory layout:
-[Particle_0] ... [Circle_3] ... [Particle_1] ... [Entity_5] ... [Particle_2]
-     ↑                              ↑                               ↑
-   addr 1000                      addr 5400                       addr 8200
-```
-
-Each particle lives at a random address. When the CPU needs to process particles one by one, it has to **jump around in memory** like flipping between random pages of a book.
-
-### Why This Is Slow: The CPU Cache
-
-Your CPU has a small, ultra-fast memory called the **cache** (think of it as the CPU's "clipboard"). When the CPU reads data from address 1000, it automatically copies a chunk of **nearby memory** (typically 64 bytes) into the cache — because programs *usually* need nearby data next.
-
-But if Particle_0 is at address 1000 and Particle_1 is at address 5400, that "nearby" prediction is **completely wrong**. The CPU must go to slow main memory for every single particle. This is called a **cache miss**, and it costs ~100 nanoseconds vs ~1 nanosecond for a cache hit. That's **100x slower**.
-
-### Our Way (Fast)
-
-We store all particles in a **contiguous array** — one right after the other:
+Components of the same type are stored together in contiguous arrays rather than being spread across unrelated heap allocations. This means iteration has strong cache locality: when the CPU loads one component, nearby components often arrive in the same cache line.
 
 ```
-Memory layout:
-[Particle_0][Particle_1][Particle_2][Particle_3][Particle_4]...
-     ↑           ↑           ↑
-   addr 1000   addr 1032   addr 1064    ← all sequential!
+Particles: [P0][P1][P2][P3][P4]...
+Positions: [X0][X1][X2][X3][X4]...
+Velocities:[V0][V1][V2][V3][V4]...
 ```
 
-Now when the CPU loads Particle_0 into cache, Particle_1 and Particle_2 come along **for free**. Processing 600 particles becomes a straight sprint through memory instead of a scavenger hunt.
+That layout matters more than the number of operations in a loop. Sequential reads are cheap. Random reads are not.
 
-**In our code:** `ComponentStore(T)` in `engine/ecs/store.d` stores all components of the same type in a `T[] dense` array — a contiguous block. This is the same sparse-set pattern used by Bevy's ECS in Rust.
+In this codebase, `ComponentStore(T)` in `engine/ecs/store.d` keeps component data in dense arrays. This is the same data-oriented principle used by Bevy and other high-performance ECS implementations.
 
 ---
 
-## Killer #2: Dictionary Lookups Are Expensive
+## 2. Sparse-Set Lookup
 
-### The Python Way
-
-```python
-particle = entity.components["Particle"]  # hash "Particle", probe table, follow pointer
-```
-
-A Python dictionary lookup involves:
-1. **Hash** the key string `"Particle"` → compute a number
-2. **Probe** the hash table to find the slot
-3. **Follow a pointer** to the actual object
-4. **Compare** keys to handle collisions
-
-This is O(1) on average, but with a big constant — each step touches different memory, causing more cache misses.
-
-### Our Way: Sparse Set (True O(1))
-
-We use a **sparse array** — literally just indexing into an array:
+Entity-to-component access is handled with a sparse-set layout:
 
 ```
-sparse[entity_id] → index into dense array
-
-// To get Particle for entity 42:
-uint idx = sparse[42];          // ONE array read
-Particle* p = &dense[idx];     // ONE array read, direct pointer
+sparse[entityId] -> dense index
+dense[index] -> component data
 ```
 
-Two array reads. No hashing. No pointer chasing. No string comparisons. The CPU can even **predict** these reads ahead of time (prefetching).
+That keeps lookup effectively O(1) with a very small constant cost. There is no dynamic type discovery in the hot path, no string-based lookup, and no unnecessary pointer chasing.
 
-**In our code:** `ComponentStore(T)` in `engine/ecs/store.d` has `sparse[]` (entity ID → dense index) and `dense[]` (contiguous components). Bevy uses the exact same data structure.
-
----
-
-## Killer #3: Virtual Dispatch (The Invisible Cost)
-
-### What Python Does Every Call
-
-In Python, *every method call* is "virtual" — the interpreter looks up the method at runtime:
-
-```python
-system.run(entities)
-# Python: "What class is `system`? Does it have `run`? Let me check the MRO..."
-```
-
-In compiled languages like C++ or D, using `interface` or base classes creates a similar problem called **virtual dispatch**:
-
-```
-// Old code (D, but same concept as C++):
-interface ISystem {
-    void run(EntityManager em, double dt);
-}
-
-class ParticleSystem : ISystem {
-    void run(EntityManager em, double dt) { ... }
-}
-
-// When called:
-system.run(em, dt);
-//   1. Read the vtable pointer from the object → cache miss
-//   2. Read the function pointer from the vtable → cache miss
-//   3. Jump to that address → branch misprediction penalty
-```
-
-The CPU has a **branch predictor** that guesses where the next instruction is. With virtual dispatch, it **can't predict** which function will be called, because it depends on the runtime type. This causes a **pipeline stall** — the CPU has to throw away speculative work and start over, costing ~10-20 cycles each time.
-
-### Our Way: Templates (Compile-Time Dispatch)
-
-In D, a **template** is like a code generator that runs at compile time:
+For a component fetch, the engine typically does two predictable array reads:
 
 ```d
-// In our engine, World!(Components...) generates stores at compile time.
-// Systems are plain functions — no interface, no vtable:
+uint idx = sparse[entityId];
+auto component = &dense[idx];
+```
 
-void physicsSystem(W)(ref W world, double dt) {
-    // The compiler knows the exact type of W and generates direct calls
+This is fast not only because it is O(1), but because it is CPU-friendly. The memory access pattern is simple, stable, and easy to prefetch.
+
+---
+
+## 3. Compile-Time World and System Specialization
+
+The engine avoids runtime polymorphism in core ECS execution.
+
+`World!(Components...)` generates the required component stores at compile time, and systems are plain or templated functions instead of interface-driven objects. That gives the compiler full visibility into the concrete types involved.
+
+```d
+void physicsSystem(W)(ref W world, float dt) {
     foreach (id; 0 .. world.entityCount()) {
         if (auto vel = world.getPtr!Velocity(id)) {
             auto pos = &world.get!Position(id);
@@ -176,90 +76,49 @@ void physicsSystem(W)(ref W world, double dt) {
 }
 ```
 
-The `(W)` part means: "generate a **specialized version** of this function for the exact type of World I'm using." The compiler sees *exactly* which stores to access and generates **direct function calls** — no vtable, no pointer indirection, no branch misprediction.
-
-This is how D matches Bevy's performance: Bevy uses Rust's monomorphization (generics compiled to concrete types), and D uses template instantiation — the same compile-time specialization strategy.
-
-Think of it like this:
-- **Virtual dispatch** = calling a phone number that forwards to another number (you don't know where it goes)
-- **Templates** = the compiler **hardcodes** the destination at build time (zero overhead)
+Because the compiler knows the exact world type and exact component access path, it can emit direct code without vtable dispatch. The result is the same zero-cost specialization strategy that Rust engines get through monomorphization.
 
 ---
 
-## Summary: Three Optimizations, One Pattern
+## 4. Strict Hot-Path Discipline
 
-| Problem | Python/OOP Way | Our Way | Speedup |
-|:---|:---|:---|:---|
-| Memory layout | Objects scattered on heap | Contiguous arrays (`T[]`) | ~10-100x fewer cache misses |
-| Component lookup | Dictionary (hash + pointer) | Sparse set (two array reads) | ~5-10x faster |
-| System dispatch | Virtual calls (vtable) | Templates (compile-time) | Eliminates ~10-20 cycle penalty per call |
+This repository separates engine-core execution from gameplay-level flexibility.
 
-The unifying principle is **Data-Oriented Design**: instead of organizing code around *objects* (Entity has Components), organize it around *data* (all Positions in one array, all Particles in another). The CPU loves predictable, sequential memory access.
+- Code inside `engine/` that participates in the frame loop is expected to be `@nogc`.
+- Components are POD structs with no GC-tracked indirections.
+- GPU and platform bindings use narrow `@trusted` interop boundaries.
 
----
+That split matters because it keeps the high-frequency execution path predictable while still allowing ergonomic higher-level code where appropriate.
 
-## Visual: Before vs After
-
-```
-BEFORE (Object-Oriented):
-┌─────────────────────────────────────────────────────────┐
-│  Entity_0 ─→ dict ─→ Particle_0 (addr 1000)            │
-│                  ─→ Circle_0   (addr 5400)              │
-│  Entity_1 ─→ dict ─→ Particle_1 (addr 8200)  ← RANDOM  │
-│                  ─→ Circle_1   (addr 2100)              │
-│  ...scattered across memory, vtable for every call...   │
-└─────────────────────────────────────────────────────────┘
-
-AFTER (Data-Oriented):
-┌─────────────────────────────────────────────────────────┐
-│  Particles: [P0][P1][P2][P3][P4]... ← CONTIGUOUS       │
-│  Circles:   [C0][C1][C2][C3][C4]... ← CONTIGUOUS       │
-│  Positions: [X0][X1][X2][X3][X4]... ← CONTIGUOUS       │
-│  Entity = just a number (uint): 0, 1, 2, 3, 4...       │
-│  Systems = direct function calls, no vtable             │
-└─────────────────────────────────────────────────────────┘
-```
+The important point is not merely that D has a GC. It is that this engine is structured so the frame path does not depend on it.
 
 ---
 
-## Analogy
+## Summary
 
-Imagine you manage a warehouse with 600 packages.
+The engine gets its speed from a small set of architectural decisions:
 
-- **OOP approach**: Each package is in a random spot. To process all packages, you walk back and forth across the warehouse for each one. Each package has a note saying "to process this, go to the office and ask which procedure to use" (virtual dispatch).
-
-- **DOD approach**: All packages are lined up in a single row. You walk straight down the line processing each one. The procedure is printed directly on each package (templates = hardcoded instructions).
-
-Same work, dramatically less wasted motion.
-
----
-
-## How We Compare to Bevy (Rust)
-
-Bevy is the gold standard for ECS game engines. Here's how our D engine achieves the same architectural advantages:
-
-| Feature | Bevy (Rust) | This Engine (D) |
+| Concern | Strategy in this engine | Effect |
 |:---|:---|:---|
-| ECS storage | Sparse-set `Table` + `SparseSet` | `ComponentStore(T)` sparse-set |
-| Component registration | `#[derive(Component)]` macro | `World!(Position, Velocity, ...)` variadic template |
-| System dispatch | Trait-based scheduling, monomorphized | Template functions, compile-time resolved |
-| Memory safety | Borrow checker (compile-time) | `@safe` by default + DIP1000 scopes |
-| GPU abstraction | `wgpu` (Rust crate) | `wgpu-native` (same engine, C API) |
-| Zero-cost abstractions | Rust generics → monomorphization | D templates → compile-time instantiation |
-| Entities | `Entity` newtype (u64) | `EntityId` alias (uint) |
-| Hot path GC | N/A (no GC) | No GC in hot paths — structs in contiguous arrays |
+| Memory layout | Dense per-component arrays | Fewer cache misses during iteration |
+| Component lookup | Sparse-set indexing | O(1) access with low constant cost |
+| System execution | Template-based specialization | No virtual dispatch in hot paths |
+| Runtime behavior | `@nogc` frame path and POD components | Predictable per-frame cost |
 
-### Where D Has an Edge
+These choices all reinforce the same principle: organize the engine around data movement and predictable execution, not around object graphs.
 
-- **Faster compile times** — DMD compiles in seconds vs minutes for Rust
-- **`mixin` and `static foreach`** — more powerful compile-time code generation than Rust macros
-- **C interop without FFI boilerplate** — `extern(C)` is a single attribute, not `unsafe extern "C"` blocks
-- **Optional GC** — useful for tooling/editor code while keeping hot paths GC-free
+---
 
-### Where Bevy Has an Edge
+## Relation to Bevy
 
-- **Larger ecosystem** — more plugins, community, documentation
-- **Lifetime guarantees** — borrow checker prevents data races at compile time
-- **Parallel system scheduling** — Bevy auto-parallelizes systems based on component access
+Bevy is a useful comparison because the high-level ideas are the same even though the language is different.
 
-Our goal: match Bevy's runtime performance and architectural quality, while leveraging D's ergonomics and compile-time power for faster iteration.
+| Feature | Bevy (Rust) | This engine (D) |
+|:---|:---|:---|
+| ECS storage | Sparse-set / table-based ECS | `ComponentStore(T)` sparse-set |
+| Entity model | Integer-backed entity handle | `EntityId` alias (`uint`) |
+| System specialization | Generic monomorphization | Template instantiation |
+| Safety model | Borrow checker | `@safe` by default + DIP1000 |
+| GPU backend | `wgpu` | `wgpu-native` via manual bindings |
+
+The goal is the same: achieve modern data-oriented engine performance with abstractions that compile away.
