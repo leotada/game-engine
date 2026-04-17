@@ -49,11 +49,17 @@ struct Dbvt(uint MaxNodes) {
     int count      = 0;
     int freeHead   = NULL_IDX;
 
-    // Persistent traversal stack for findPairs/raycast. 128 pairs is what
-    // btDbvt::stkStack defaults to; grows (well, asserts) if exceeded.
-    private int[256] pairStackA;
-    private int[256] pairStackB;
-    private int[256] singleStack;
+    // Persistent traversal stack for findPairs/raycast. Sized against
+    // MaxNodes so a fully populated tree can't overflow the stack even in
+    // pathological cases (e.g. hundreds of dynamic cubes piled into a
+    // single region producing dense AABB overlap). A fixed 256-slot stack
+    // was previously protected only by `assert`, which is disabled in
+    // release builds \u2014 an overflow would silently corrupt adjacent struct
+    // fields (root / count / freeHead) and then hang the whole frame.
+    private enum uint TraversalStackSize = MaxNodes < 256 ? 256 : MaxNodes;
+    private int[TraversalStackSize] pairStackA;
+    private int[TraversalStackSize] pairStackB;
+    private int[TraversalStackSize] singleStack;
 
     void clear()  {
         root = NULL_IDX;
@@ -230,7 +236,7 @@ struct Dbvt(uint MaxNodes) {
                 immutable c0 = nodes[a].child0;
                 immutable c1 = nodes[a].child1;
                 // (c0, c0), (c1, c1), (c0, c1) — dedup'd via "a <= b" ordering.
-                assert(sp + 3 < cast(int) pairStackA.length);
+                if (sp + 3 > cast(int) pairStackA.length) return;
                 pairStackA[sp] = c0; pairStackB[sp] = c0; sp++;
                 pairStackA[sp] = c1; pairStackB[sp] = c1; sp++;
                 pairStackA[sp] = c0; pairStackB[sp] = c1; sp++;
@@ -241,16 +247,16 @@ struct Dbvt(uint MaxNodes) {
                     immutable idb = nodes[b].leafBodyId;
                     if (ida < idb) sink(ida, idb); else sink(idb, ida);
                 } else if (nodes[a].isLeaf) {
-                    assert(sp + 2 <= cast(int) pairStackA.length);
+                    if (sp + 2 > cast(int) pairStackA.length) return;
                     pairStackA[sp] = a; pairStackB[sp] = nodes[b].child0; sp++;
                     pairStackA[sp] = a; pairStackB[sp] = nodes[b].child1; sp++;
                 } else if (nodes[b].isLeaf) {
-                    assert(sp + 2 <= cast(int) pairStackA.length);
+                    if (sp + 2 > cast(int) pairStackA.length) return;
                     pairStackA[sp] = nodes[a].child0; pairStackB[sp] = b; sp++;
                     pairStackA[sp] = nodes[a].child1; pairStackB[sp] = b; sp++;
                 } else {
                     // Descend the side with the larger volume for better culling.
-                    assert(sp + 4 <= cast(int) pairStackA.length);
+                    if (sp + 4 > cast(int) pairStackA.length) return;
                     pairStackA[sp] = nodes[a].child0; pairStackB[sp] = nodes[b].child0; sp++;
                     pairStackA[sp] = nodes[a].child0; pairStackB[sp] = nodes[b].child1; sp++;
                     pairStackA[sp] = nodes[a].child1; pairStackB[sp] = nodes[b].child0; sp++;
@@ -271,7 +277,7 @@ struct Dbvt(uint MaxNodes) {
             if (!nodes[idx].aabb.overlaps(aabb)) continue;
             if (nodes[idx].isLeaf) sink(nodes[idx].leafBodyId);
             else {
-                assert(sp + 2 <= cast(int) singleStack.length);
+                if (sp + 2 > cast(int) singleStack.length) return;
                 singleStack[sp++] = nodes[idx].child0;
                 singleStack[sp++] = nodes[idx].child1;
             }

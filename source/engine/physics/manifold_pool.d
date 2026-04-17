@@ -28,8 +28,14 @@ struct ManifoldPool(uint Capacity) {
     // getOrCreate fail to find existing entries and allocate a new slot
     // every frame, exhausting the pool within a few frames.
     enum ulong hashKeyEmpty = ulong.max;
-    ulong[Capacity * 2] hashKeys;
-    int[Capacity * 2]   hashSlots;  // index into manifolds[]
+    // Default-init the hash table to "all empty" so a freshly constructed
+    // ManifoldPool is usable without calling init_(). Zero-init (D's
+    // default) would leave every slot looking occupied by pair (0,0),
+    // making the linear-probe loops in getOrCreate/find/ageAndEvict spin
+    // forever on the first real contact — exactly the hang we saw in the
+    // benchmark around frame ~300 (first rain cube landing on ground).
+    ulong[Capacity * 2] hashKeys  = ulong.max;
+    int[Capacity * 2]   hashSlots = -1;  // index into manifolds[]
     uint count = 0;                 // high-water mark of slots ever allocated
 
     // Free list of slots reclaimed by ageAndEvict. Without this the pool
@@ -72,11 +78,18 @@ struct ManifoldPool(uint Capacity) {
         immutable packed = packKey(a, b);
         immutable mask = cast(uint)(hashKeys.length - 1);
         uint idx = hashKey(packed) & mask;
+        // Belt-and-braces: cap the probe at the full table size so any
+        // future corruption (e.g. a missing init_, stack overflow clobber)
+        // degrades to "drop this contact" rather than a hard hang that
+        // only SIGKILL can recover from.
+        uint probes = 0;
+        immutable maxProbes = cast(uint) hashKeys.length;
         while (hashKeys[idx] != hashKeyEmpty) {
             if (hashKeys[idx] == packed) {
                 return &manifolds[hashSlots[idx]];
             }
             idx = (idx + 1) & mask;
+            if (++probes >= maxProbes) return null;
         }
         // Allocate a slot: prefer the free list (reclaimed via ageAndEvict),
         // fall back to the high-water mark.
@@ -101,11 +114,14 @@ struct ManifoldPool(uint Capacity) {
         immutable packed = packKey(a, b);
         immutable mask = cast(uint)(hashKeys.length - 1);
         uint idx = hashKey(packed) & mask;
+        uint probes = 0;
+        immutable maxProbes = cast(uint) hashKeys.length;
         while (hashKeys[idx] != hashKeyEmpty) {
             if (hashKeys[idx] == packed) {
                 return &manifolds[hashSlots[idx]];
             }
             idx = (idx + 1) & mask;
+            if (++probes >= maxProbes) return null;
         }
         return null;
     }
@@ -125,9 +141,12 @@ struct ManifoldPool(uint Capacity) {
                 // cannot be fully packed).
                 immutable packed = packKey(m.a, m.b);
                 uint idx = hashKey(packed) & mask;
+                uint probes = 0;
+                immutable maxProbes = cast(uint) hashKeys.length;
                 while (hashKeys[idx] != packed) {
                     if (hashKeys[idx] == hashKeyEmpty) { idx = uint.max; break; }
                     idx = (idx + 1) & mask;
+                    if (++probes >= maxProbes) { idx = uint.max; break; }
                 }
                 if (idx != uint.max) removeHashAt(idx, mask);
                 m.count = 0;

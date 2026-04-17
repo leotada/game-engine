@@ -4,7 +4,8 @@
 module demo.benchmark;
 
 import core.memory : GC;
-import core.time : Duration;
+import core.time : Duration, MonoTime;
+import core.stdc.stdio : printf, fflush, stdout;
 import std.parallelism : taskPool, task, Task;
 import std.random : Mt19937, uniform;
 import std.stdio : writeln, writefln;
@@ -154,6 +155,7 @@ void main() {
     auto timer   = FrameTimer.create();
 
     auto phys = new PhysicsWorld!PHYS_MAX_BODIES();
+    phys.init_();
     phys.gravity = Vec3(0, -20.0f, 0);
     // Static ground at y = -0.5, spanning the whole flyover path.
     phys.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(GROUND_HALF, 0.5f, GROUND_HALF)));
@@ -190,9 +192,18 @@ void main() {
     enum uint  MAX_SUBSTEPS = 5;
     float physAccum = 0.0f;
 
+    // -- Per-second profile accumulators (diagnostic) -----------------------
+    double profAccum   = 0.0;
+    double physMsAcc   = 0.0;
+    double beginMsAcc  = 0.0;
+    double sceneMsAcc  = 0.0;
+    double endMsAcc    = 0.0;
+    uint   profFrames  = 0;
+
     // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
+    auto tLoopStart = MonoTime.currTime;
     while (app.running()) {
         app.pollEvents();
         if (app.input.keyPressed(Key.escape)) app.close();
@@ -200,6 +211,12 @@ void main() {
         timer.tick();
         immutable dt = cast(float) timer.dtSeconds();
         immutable frameDt = dt > 0.1f ? 0.1f : dt; // clamp huge first frame
+        (() @trusted {
+            auto wall = (MonoTime.currTime - tLoopStart).total!"usecs" / 1000.0;
+            printf("[f] t=%.1fms frame=%zu dt=%.3f bodies=%u rain=%u\n",
+                   wall, framesRun, frameDt, phys.bodyCount, rainCount);
+            fflush(stdout);
+        })();
 
         // -------- Camera: hold still for CAM_WARMUP s, then fly forward ---
         if (totalDt >= CAM_WARMUP) camZ += CAM_SPEED * frameDt;
@@ -264,15 +281,20 @@ void main() {
         if (physAccum > PHYS_STEP * MAX_SUBSTEPS)
             physAccum = PHYS_STEP * MAX_SUBSTEPS;  // drop extra, never catch-up explode
         uint physSteps = 0;
+        auto tP0 = MonoTime.currTime;
         while (physAccum >= PHYS_STEP && physSteps < MAX_SUBSTEPS) {
             phys.step(PHYS_STEP);
             physAccum -= PHYS_STEP;
             ++physSteps;
         }
+        auto tP1 = MonoTime.currTime;
 
         // -------- Render ---------------------------------------------------
+        auto tB0 = MonoTime.currTime;
         auto frame = app.beginFrame(Color(0.45f, 0.65f, 0.90f, 1.0f));
+        auto tB1 = MonoTime.currTime;
         if (frame.valid) {
+            auto tS0 = MonoTime.currTime;
             scene.begin(camera);
 
             // Ground plate rendered as a huge flat cube.
@@ -301,6 +323,7 @@ void main() {
             }
 
             scene.end(frame);
+            auto tS1 = MonoTime.currTime;
 
             // -------- Overlay stats ---------------------------------------
             overlay.beginFrame(frameDt);
@@ -329,7 +352,33 @@ void main() {
             text.beginFrame();
             overlay.render(text, frame, 8, 8, 2, 22);
 
+            auto tE0 = MonoTime.currTime;
             app.endFrame(frame);
+            auto tE1 = MonoTime.currTime;
+
+            physMsAcc  += (tP1 - tP0).total!"usecs" / 1000.0;
+            beginMsAcc += (tB1 - tB0).total!"usecs" / 1000.0;
+            sceneMsAcc += (tS1 - tS0).total!"usecs" / 1000.0;
+            endMsAcc   += (tE1 - tE0).total!"usecs" / 1000.0;
+            profFrames++;
+            profAccum  += frameDt;
+            if (profAccum >= 1.0) {
+                (() @trusted {
+                    printf("[prof] frames=%u phys=%.1fms begin=%.1fms scene=%.1fms end=%.1fms bodies=%u rain=%u manifolds=%u\n",
+                           profFrames,
+                           physMsAcc / profFrames,
+                           beginMsAcc / profFrames,
+                           sceneMsAcc / profFrames,
+                           endMsAcc / profFrames,
+                           phys.bodyCount,
+                           rainCount,
+                           phys.stats.manifoldCount);
+                    fflush(stdout);
+                })();
+                profAccum = 0.0;
+                physMsAcc = 0.0; beginMsAcc = 0.0; sceneMsAcc = 0.0; endMsAcc = 0.0;
+                profFrames = 0;
+            }
         }
 
         ++framesRun;
