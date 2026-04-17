@@ -8,4 +8,6 @@ public import engine.platform;
 public import engine.gpu;
 public import engine.graphics;
 public import engine.scene;
+public import engine.assets;
+public import engine.audio;
 public import engine.app;
