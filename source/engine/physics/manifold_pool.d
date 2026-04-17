@@ -22,13 +22,19 @@ struct ManifoldPool(uint Capacity) {
 @safe:
     // Stored manifolds — pre-allocated, never moved so indices are stable.
     ContactManifold[Capacity] manifolds;
-    int[Capacity * 2]         hashKeys;   // packed (a,b) or -1 if empty
-    int[Capacity * 2]         hashSlots;  // index into manifolds[]
+    // Packed (a,b) as a ulong; hashKeyEmpty == ulong.max marks free slot.
+    // We must store the FULL 64-bit key — truncating to int32 causes
+    // collisions whenever b > 0 (the upper half holds b), which makes
+    // getOrCreate fail to find existing entries and allocate a new slot
+    // every frame, exhausting the pool within a few frames.
+    enum ulong hashKeyEmpty = ulong.max;
+    ulong[Capacity * 2] hashKeys;
+    int[Capacity * 2]   hashSlots;  // index into manifolds[]
     uint count = 0;
 
     void init_()  {
         count = 0;
-        hashKeys[]  = -1;
+        hashKeys[]  = hashKeyEmpty;
         hashSlots[] = -1;
         foreach (ref m; manifolds) { m.count = 0; m.framesSinceUse = 255; }
     }
@@ -54,8 +60,8 @@ struct ManifoldPool(uint Capacity) {
         immutable packed = packKey(a, b);
         immutable mask = cast(uint)(hashKeys.length - 1);
         uint idx = hashKey(packed) & mask;
-        while (hashKeys[idx] != -1) {
-            if (cast(ulong) hashKeys[idx] == packed) {
+        while (hashKeys[idx] != hashKeyEmpty) {
+            if (hashKeys[idx] == packed) {
                 return &manifolds[hashSlots[idx]];
             }
             idx = (idx + 1) & mask;
@@ -67,7 +73,7 @@ struct ManifoldPool(uint Capacity) {
         manifolds[slot].a = a;
         manifolds[slot].b = b;
         manifolds[slot].framesSinceUse = 0;
-        hashKeys[idx]  = cast(int) packed;
+        hashKeys[idx]  = packed;
         hashSlots[idx] = cast(int) slot;
         return &manifolds[slot];
     }
@@ -76,8 +82,8 @@ struct ManifoldPool(uint Capacity) {
         immutable packed = packKey(a, b);
         immutable mask = cast(uint)(hashKeys.length - 1);
         uint idx = hashKey(packed) & mask;
-        while (hashKeys[idx] != -1) {
-            if (cast(ulong) hashKeys[idx] == packed) {
+        while (hashKeys[idx] != hashKeyEmpty) {
+            if (hashKeys[idx] == packed) {
                 return &manifolds[hashSlots[idx]];
             }
             idx = (idx + 1) & mask;

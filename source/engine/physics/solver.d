@@ -181,36 +181,47 @@ void iterate(const ref SolverConfig cfg,
         immutable rBw = B.orientation.rotate(p.localB);
         immutable vA_at = A.linearVel + A.angularVel.cross(rAw);
         immutable vB_at = B.linearVel + B.angularVel.cross(rBw);
+        // Sign convention (A→B normal):
+        //   vrel > 0 ⇒ A and B are closing along n.
+        //   `applyImpulse` with jN > 0 does A.linVel -= n·jN·invMA and
+        //   B.linVel += n·jN·invMB, which SEPARATES them.
+        //   Derivation: Δvrel = −jN · (invMA + invMB + angular) = −jN / jacDiagN.
+        //   To null vrel → Δvrel = −vrel → jN = vrel · jacDiagN.
         immutable vrel = p.normal.dot(vA_at - vB_at);
 
-        // Penetration term via split-impulse path.
-        float positionTerm = 0;
-        if (cfg.splitImpulse && p.depth > -cfg.splitImpulsePenetrationThreshold) {
-            immutable penetration = p.depth;  // positive = penetrating
-            if (penetration > 0)
-                positionTerm = -cfg.erp2 * penetration / positionBiasScale; // dt scale
-        }
-        // vrel > 0 means A moves into B → we want negative impulse λ to push
-        // them apart. Solver convention follows Bullet: λ = -(vrel + bias) * jacDiag.
-        immutable restTerm = restitution * ((-vrel) > cfg.restitutionVelocityThreshold ? -vrel * restitution : 0);
-        immutable lambdaRaw = -(vrel - restTerm) * p.jacDiagN;
+        // Restitution: on first iteration only (caller passes 0 thereafter),
+        // bounce back if approaching above threshold.
+        immutable targetVrel = (restitution > 0 && vrel > cfg.restitutionVelocityThreshold)
+            ? -restitution * vrel : 0.0f;
+        immutable lambdaRaw = (vrel - targetVrel) * p.jacDiagN;
         float newImpulse = p.normalImpulse + lambdaRaw;
         if (newImpulse < 0) newImpulse = 0;
         immutable applied = newImpulse - p.normalImpulse;
         p.normalImpulse = newImpulse;
 
-        // Apply just the delta.
         A.linearVel  = A.linearVel  - p.normal * (applied * A.invMass);
         B.linearVel  = B.linearVel  + p.normal * (applied * B.invMass);
         A.angularVel = A.angularVel - p.angularA_n * applied;
         B.angularVel = B.angularVel + p.angularB_n * applied;
 
-        // Split-impulse: pseudo velocity for position correction.
-        if (cfg.splitImpulse && positionTerm != 0) {
+        // Split-impulse position correction via pseudo velocity.
+        //
+        // Goal: after the frame, reduce penetration by erp2·depth. Split
+        // impulse keeps this OUT of the real velocity loop so Baumgarte
+        // doesn't inject kinetic energy.
+        //
+        // Target pvrel_new = −(erp2·depth/dt) — negative because pushing
+        // apart in A→B convention means A's pseudo vel has a −n component.
+        // Δpvrel = target − pvrel_current.  With Δpvrel = −jP/jacDiagN:
+        //     jP = (pvrel_current + erp2·depth/dt) · jacDiagN.
+        if (cfg.splitImpulse
+            && p.depth > -cfg.splitImpulsePenetrationThreshold
+            && p.depth > 0) {
+            immutable targetMag = cfg.erp2 * p.depth / positionBiasScale;  // > 0
             immutable pvA_at = A.pseudoLinVel + A.pseudoAngVel.cross(rAw);
             immutable pvB_at = B.pseudoLinVel + B.pseudoAngVel.cross(rBw);
-            immutable pvrel = p.normal.dot(pvA_at - pvB_at);
-            immutable plambda = -(pvrel + positionTerm) * p.jacDiagN;
+            immutable pvrel  = p.normal.dot(pvA_at - pvB_at);
+            immutable plambda = (pvrel + targetMag) * p.jacDiagN;
             A.pseudoLinVel  = A.pseudoLinVel  - p.normal * (plambda * A.invMass);
             B.pseudoLinVel  = B.pseudoLinVel  + p.normal * (plambda * B.invMass);
             A.pseudoAngVel  = A.pseudoAngVel  - p.angularA_n * plambda;
@@ -228,14 +239,16 @@ void iterate(const ref SolverConfig cfg,
         immutable vdiff = vA_at - vB_at;
         immutable maxFriction = friction * p.normalImpulse;
 
+        // Same sign derivation as normal: jT = vt · jacDiagT (positive jT
+        // decelerates A along the tangent, accelerates B along it).
         immutable vt1 = p.tangent1.dot(vdiff);
-        immutable dLambda1 = -vt1 * p.jacDiagT1;
+        immutable dLambda1 = vt1 * p.jacDiagT1;
         float newT1 = p.tangent1Impulse + dLambda1;
-        // Clamp combined (t1, t2) to circle of radius maxFriction.
         immutable vt2 = p.tangent2.dot(vdiff);
-        immutable dLambda2 = -vt2 * p.jacDiagT2;
+        immutable dLambda2 = vt2 * p.jacDiagT2;
         float newT2 = p.tangent2Impulse + dLambda2;
 
+        // Cone clamp: ||(λt1, λt2)|| ≤ μ·λn.
         immutable mag = sqrt(newT1 * newT1 + newT2 * newT2);
         if (mag > maxFriction && mag > 0) {
             immutable s = maxFriction / mag;
