@@ -5,14 +5,16 @@ module demo.benchmark;
 
 import core.memory : GC;
 import core.time : Duration, MonoTime;
-import core.stdc.stdio : printf, fflush, stdout;
 import std.parallelism : taskPool, task, Task;
 import std.random : Mt19937, uniform;
-import std.stdio : writeln, writefln;
+import std.stdio : writeln, writef, writefln, stdout;
 import std.math : sin, cos, sqrt;
 
 import engine;
 import bindings.wgpu;
+
+// Duration → milliseconds as double (Duration.total!"msecs" truncates to long).
+private double toMs(Duration d) pure nothrow @safe { return d.total!"hnsecs" / 10_000.0; }
 
 private enum SCREEN_W = 1280;
 private enum SCREEN_H = 720;
@@ -211,12 +213,10 @@ void main() {
         timer.tick();
         immutable dt = cast(float) timer.dtSeconds();
         immutable frameDt = dt > 0.1f ? 0.1f : dt; // clamp huge first frame
-        (() @trusted {
-            auto wall = (MonoTime.currTime - tLoopStart).total!"usecs" / 1000.0;
-            printf("[f] t=%.1fms frame=%zu dt=%.3f bodies=%u rain=%u\n",
-                   wall, framesRun, frameDt, phys.bodyCount, rainCount);
-            fflush(stdout);
-        })();
+        immutable wallMs = toMs(MonoTime.currTime - tLoopStart);
+        writefln("[f] t=%.1fms frame=%d dt=%.3f bodies=%d rain=%d",
+                 wallMs, framesRun, frameDt, phys.bodyCount, rainCount);
+        stdout.flush();
 
         // -------- Camera: hold still for CAM_WARMUP s, then fly forward ---
         if (totalDt >= CAM_WARMUP) camZ += CAM_SPEED * frameDt;
@@ -336,10 +336,10 @@ void main() {
             overlay.label("one_percent_low_ms", timer.onePercentLowMs());
 
             immutable gs = GC.profileStats;
-            immutable totalPauseMs = gs.totalPauseTime.total!"usecs" / 1000.0;
-            immutable maxPauseUs   = gs.maxPauseTime.total!"usecs";
+            immutable totalPauseMs = toMs(gs.totalPauseTime);
+            immutable maxPauseMs   = toMs(gs.maxPauseTime);
             overlay.label("gc_total_pause_ms", totalPauseMs);
-            overlay.label("gc_max_pause_us", maxPauseUs);
+            overlay.label("gc_max_pause_ms", maxPauseMs);
             overlay.label("gc_collections", gs.numCollections);
 
             overlay.label("chunks_loaded",  forest.loadedCount());
@@ -356,25 +356,23 @@ void main() {
             app.endFrame(frame);
             auto tE1 = MonoTime.currTime;
 
-            physMsAcc  += (tP1 - tP0).total!"usecs" / 1000.0;
-            beginMsAcc += (tB1 - tB0).total!"usecs" / 1000.0;
-            sceneMsAcc += (tS1 - tS0).total!"usecs" / 1000.0;
-            endMsAcc   += (tE1 - tE0).total!"usecs" / 1000.0;
+            physMsAcc  += toMs(tP1 - tP0);
+            beginMsAcc += toMs(tB1 - tB0);
+            sceneMsAcc += toMs(tS1 - tS0);
+            endMsAcc   += toMs(tE1 - tE0);
             profFrames++;
             profAccum  += frameDt;
             if (profAccum >= 1.0) {
-                (() @trusted {
-                    printf("[prof] frames=%u phys=%.1fms begin=%.1fms scene=%.1fms end=%.1fms bodies=%u rain=%u manifolds=%u\n",
-                           profFrames,
-                           physMsAcc / profFrames,
-                           beginMsAcc / profFrames,
-                           sceneMsAcc / profFrames,
-                           endMsAcc / profFrames,
-                           phys.bodyCount,
-                           rainCount,
-                           phys.stats.manifoldCount);
-                    fflush(stdout);
-                })();
+                writefln("[prof] frames=%d phys=%.1fms begin=%.1fms scene=%.1fms end=%.1fms bodies=%d rain=%d manifolds=%d",
+                         profFrames,
+                         physMsAcc / profFrames,
+                         beginMsAcc / profFrames,
+                         sceneMsAcc / profFrames,
+                         endMsAcc / profFrames,
+                         phys.bodyCount,
+                         rainCount,
+                         phys.stats.manifoldCount);
+                stdout.flush();
                 profAccum = 0.0;
                 physMsAcc = 0.0; beginMsAcc = 0.0; sceneMsAcc = 0.0; endMsAcc = 0.0;
                 profFrames = 0;
@@ -402,9 +400,8 @@ void main() {
     writefln(" Frametime 1%% low : %.3f ms", timer.onePercentLowMs());
     writefln(" Average FPS       : %.1f", timer.avgFps());
     writefln(" GC collections    : %d", gs.numCollections);
-    writefln(" GC total pause    : %.3f ms",
-             gs.totalPauseTime.total!"usecs" / 1000.0);
-    writefln(" GC max pause      : %d us", gs.maxPauseTime.total!"usecs");
+    writefln(" GC total pause    : %.3f ms", toMs(gs.totalPauseTime));
+    writefln(" GC max pause      : %.3f ms", toMs(gs.maxPauseTime));
     writefln(" GC note: D's DRuntime GC is stop-the-world mark-sweep (not");
     writefln("          incremental). Pauses reflect worst-case blocking of");
     writefln("          the main rendering thread while background tasks");
