@@ -2,6 +2,7 @@
 module engine.scene;
 
 public import engine.scene.camera;
+public import engine.scene.controllers;
 public import engine.scene.graph;
 public import engine.scene.scene3d;
 public import engine.scene.scene3d_textured;
