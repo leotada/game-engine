@@ -26,15 +26,17 @@ private enum STREAM_RADIUS   = 4;        // chunks visible around camera
 private enum RENDER_RADIUS   = 3;        // chunks actually rendered (smaller → perf)
 
 // Physics
-// NOTE: current physics backend cost scales poorly past ~300 bodies
-// (broadphase pair tests + narrowphase + solver at 5 substeps per frame).
-// The forest is rendered-only; a small static box cage around the camera
-// plus a modest rain stream is enough to exercise contacts without
-// pushing a 60 fps frame over budget. Increase once physics is optimized.
+// Caps below are sized so every tree the camera flies past during the 30 s
+// benchmark has a matching static collider — otherwise rain cubes visibly
+// tunnel through uncollidered trees. See cap-derivation note on each cap.
 private enum PHYS_MAX_BODIES = 4096;     // total pool size
 private enum RAIN_MAX_BODIES = 150;      // cap on dynamic cubes
-private enum TRUNK_BODY_CAP  = 80;       // cap on static trunk colliders
-private enum CROWN_BODY_CAP  = 80;       // cap on static crown colliders
+// Trunk/crown caps must cover every tree the camera will fly past, otherwise
+// rain cubes tunnel through trees with no colliders. Flyover of 30 s × 30 m/s
+// ÷ 16 m/chunk ≈ 56 chunks × 25 trees = 1400 trunks + 1400 crowns, comfortably
+// under PHYS_MAX_BODIES after ground + rain (3151 < 4096).
+private enum TRUNK_BODY_CAP  = 1500;     // cap on static trunk colliders
+private enum CROWN_BODY_CAP  = 1500;     // cap on static crown colliders
 private enum RAIN_SPAWN_RATE = 2;        // cubes per frame while under cap
 private enum GROUND_HALF     = 512.0f;
 
@@ -330,11 +332,16 @@ void main() {
             labelRefreshAccum += frameDt;
             if (labelRefreshAccum > 0.25f) labelRefreshAccum = 0;
 
+            overlay.section("live");
+            overlay.label("rigid_bodies_awake", phys.stats.activeBodies);
+
+            overlay.section("frame");
             overlay.label("fps", cast(uint)(1000.0 / (timer.avgMs() > 0 ? timer.avgMs() : 16.0)));
             overlay.label("frame_avg_ms", timer.avgMs());
             overlay.label("frame_stddev_ms", timer.stdDevMs());
             overlay.label("one_percent_low_ms", timer.onePercentLowMs());
 
+            overlay.section("gc");
             immutable gs = GC.profileStats;
             immutable totalPauseMs = toMs(gs.totalPauseTime);
             immutable maxPauseMs   = toMs(gs.maxPauseTime);
@@ -342,12 +349,19 @@ void main() {
             overlay.label("gc_max_pause_ms", maxPauseMs);
             overlay.label("gc_collections", gs.numCollections);
 
+            overlay.section("world");
             overlay.label("chunks_loaded",  forest.loadedCount());
             overlay.label("chunks_pending", forest.pendingCount());
-            overlay.label("bodies_active",  phys.bodyCount);
-            overlay.label("rain_cubes",     rainCount);
             overlay.label("trunk_colliders", trunkCount);
             overlay.label("crown_colliders", crownCount);
+
+            overlay.section("physics");
+            overlay.label("bodies_total",    phys.bodyCount);
+            overlay.label("bodies_active",   phys.stats.activeBodies);
+            overlay.label("bodies_sleeping", phys.stats.sleepingBodies);
+            overlay.label("manifolds",       phys.stats.manifoldCount);
+            overlay.label("broadphase_pairs", phys.stats.broadphasePairs);
+            overlay.label("rain_cubes",       rainCount);
 
             text.beginFrame();
             overlay.render(text, frame, 8, 8, 2, 22);
