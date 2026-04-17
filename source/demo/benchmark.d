@@ -23,10 +23,11 @@ private enum STREAM_RADIUS   = 4;        // chunks visible around camera
 private enum RENDER_RADIUS   = 3;        // chunks actually rendered (smaller → perf)
 
 // Physics
-private enum PHYS_MAX_BODIES = 4096;     // total (ground + trunks + rain)
-private enum RAIN_MAX_BODIES = 1024;     // cap on dynamic cubes
-private enum TRUNK_BODY_CAP  = 2048;     // cap on static trunk colliders
-private enum RAIN_SPAWN_RATE = 10;       // cubes per frame while under cap
+private enum PHYS_MAX_BODIES = 4096;     // total (ground + trunks + crowns + rain)
+private enum RAIN_MAX_BODIES = 800;      // cap on dynamic cubes
+private enum TRUNK_BODY_CAP  = 1400;     // cap on static trunk colliders
+private enum CROWN_BODY_CAP  = 1400;     // cap on static crown colliders
+private enum RAIN_SPAWN_RATE = 8;        // cubes per frame while under cap
 private enum GROUND_HALF     = 512.0f;
 
 // Camera
@@ -154,6 +155,7 @@ void main() {
 
     uint rainCount   = 0;  // number of dynamic rain cubes
     uint trunkCount  = 0;  // number of static trunk colliders
+    uint crownCount  = 0;  // number of static crown colliders
 
     // Camera.
     auto camera = Camera.create(0.9f, SCREEN_W, SCREEN_H, 0.1f, 400.0f);
@@ -199,30 +201,44 @@ void main() {
         forest.pumpReady();
         forest.evictFar(ccx, ccz);
 
-        // -------- Register static trunk colliders for freshly loaded chunks
+        // -------- Register static trunk/crown colliders for fresh chunks --
         foreach (k, ref chunk; forest.loaded) {
             if (chunk.collidersAdded) continue;
-            if (trunkCount >= TRUNK_BODY_CAP) break;
             foreach (i; 0 .. chunk.trunkPos.length) {
-                if (trunkCount >= TRUNK_BODY_CAP) break;
-                immutable halfExt = Vec3(chunk.trunkScale[i].x * 0.5f,
-                                         chunk.trunkScale[i].y * 0.5f,
-                                         chunk.trunkScale[i].z * 0.5f);
-                phys.addStatic(chunk.trunkPos[i], Shape.makeBox(halfExt));
-                ++trunkCount;
+                if (trunkCount < TRUNK_BODY_CAP && phys.bodyCount < PHYS_MAX_BODIES) {
+                    immutable halfExt = Vec3(chunk.trunkScale[i].x * 0.5f,
+                                             chunk.trunkScale[i].y * 0.5f,
+                                             chunk.trunkScale[i].z * 0.5f);
+                    phys.addStatic(chunk.trunkPos[i], Shape.makeBox(halfExt));
+                    ++trunkCount;
+                }
+                if (crownCount < CROWN_BODY_CAP && phys.bodyCount < PHYS_MAX_BODIES) {
+                    // Approximate the bushy crown as a fat box — rain cubes
+                    // bounce off the canopy rather than slipping past the
+                    // thin trunk below.
+                    immutable crownHalf = Vec3(chunk.crownScale[i].x * 0.5f,
+                                               chunk.crownScale[i].y * 0.5f,
+                                               chunk.crownScale[i].z * 0.5f);
+                    phys.addStatic(chunk.crownPos[i], Shape.makeBox(crownHalf));
+                    ++crownCount;
+                }
             }
             chunk.collidersAdded = true;
         }
 
-        // -------- Rain: spawn new rigid-body cubes -------------------------
+        // Keep the broadphase grid window centered on the camera so bodies
+        // are never clamped out of range (which would silently drop pairs).
+        phys.recenterGrid(Vec3(camX, 16.0f, camZ + 40.0f));
+
+        // -------- Rain: spawn new rigid-body cubes above the tree canopy --
         foreach (_; 0 .. RAIN_SPAWN_RATE) {
             if (rainCount >= RAIN_MAX_BODIES) break;
             if (phys.bodyCount >= PHYS_MAX_BODIES) break;
-            immutable rx = camX + uniform(-40.0f, 40.0f, rng);
-            immutable rz = camZ + uniform(-10.0f, 60.0f, rng);
-            immutable ry = 40.0f + uniform(0.0f, 20.0f, rng);
+            immutable rx = camX + uniform(-35.0f, 35.0f, rng);
+            immutable rz = camZ + uniform(-5.0f, 60.0f, rng);
+            immutable ry = 25.0f + uniform(0.0f, 15.0f, rng);
             immutable id = phys.addDynamic(Vec3(rx, ry, rz),
-                            Shape.makeBox(Vec3(0.4f, 0.4f, 0.4f)), 1.0f);
+                            Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
             if (id != INVALID_BODY) ++rainCount;
         }
 
@@ -252,11 +268,11 @@ void main() {
 
             // Rigid-body cubes. Render only dynamic (non-static) bodies.
             foreach (i; 0 .. phys.bodyCount) {
-                if (phys.invMass[i] == 0.0f) continue; // static (ground/trunks)
+                if (phys.invMass[i] == 0.0f) continue; // static (ground/trunks/crowns)
                 immutable p = phys.position[i];
-                // Only render bodies ahead of the camera (visible cone).
+                // Only render bodies roughly within the visible cone.
                 if (p.z < camZ - 30 || p.z > camZ + 120) continue;
-                scene.draw(cubeMesh, p, Vec3(0.8f, 0.8f, 0.8f), cubeColor);
+                scene.draw(cubeMesh, p, Vec3(1.0f, 1.0f, 1.0f), cubeColor);
             }
 
             scene.end(frame);
@@ -266,6 +282,7 @@ void main() {
             labelRefreshAccum += frameDt;
             if (labelRefreshAccum > 0.25f) labelRefreshAccum = 0;
 
+            overlay.label("fps", cast(uint)(1000.0 / (timer.avgMs() > 0 ? timer.avgMs() : 16.0)));
             overlay.label("frame_avg_ms", timer.avgMs());
             overlay.label("frame_stddev_ms", timer.stdDevMs());
             overlay.label("one_percent_low_ms", timer.onePercentLowMs());
@@ -282,6 +299,7 @@ void main() {
             overlay.label("bodies_active",  phys.bodyCount);
             overlay.label("rain_cubes",     rainCount);
             overlay.label("trunk_colliders", trunkCount);
+            overlay.label("crown_colliders", crownCount);
 
             overlay.render(text, frame, 8, 8, 2, 22);
 

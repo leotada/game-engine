@@ -35,8 +35,19 @@ struct PhysicsWorld(size_t MaxBodies = 4096) {
     Vec3          gravity = Vec3(0, -9.81f, 0);
     SolverConfig  solver;
 
-    // --- Broadphase (16×8×16 cells, 4 m each → 64×32×64 m volume) ---------
-    SpatialGrid!(16, 8, 16, 32768) grid;
+    // --- Broadphase ---------------------------------------------------------
+    // 32×8×64 cells of 8 m → 256×64×512 m window (recentred each step by
+    // calling `recenterGrid(pos)` from the caller — follows the player).
+    SpatialGrid!(32, 8, 64, 65536) grid;
+
+    /// Move the grid origin so that `center` sits roughly in the middle.
+    void recenterGrid(Vec3 center) {
+        grid.origin = Vec3(
+            center.x - 32 * grid.cellSize * 0.5f,
+            center.y - 8  * grid.cellSize * 0.5f,
+            center.z - 64 * grid.cellSize * 0.5f,
+        );
+    }
 
     // Per-pair manifold buffer (dedup arena, overwritten each frame).
     private ContactManifold[MaxBodies * 2] manifolds;
