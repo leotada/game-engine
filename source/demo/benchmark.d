@@ -301,6 +301,7 @@ void main() {
             overlay.label("trunk_colliders", trunkCount);
             overlay.label("crown_colliders", crownCount);
 
+            text.beginFrame();
             overlay.render(text, frame, 8, 8, 2, 22);
 
             app.endFrame(frame);
