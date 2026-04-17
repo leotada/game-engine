@@ -1,0 +1,12 @@
+module engine.jph.math;
+public import engine.jph.math.scalar;
+public import engine.jph.math.float2;
+public import engine.jph.math.float3;
+public import engine.jph.math.float4;
+public import engine.jph.math.uvec4;
+public import engine.jph.math.vec4;
+public import engine.jph.math.trig;
+public import engine.jph.math.vec3;
+public import engine.jph.math.quat;
+public import engine.jph.math.mat44;
+public import engine.jph.math.types;

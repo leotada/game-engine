@@ -17,7 +17,12 @@ game-engine-demo
 game-engine-benchmark
 game-engine-editor
 game-engine-showcase
+game-engine-test-library
+game-engine-test-physics
 crystal-collector
+
+# Reference C++ codebases (vendored, not part of build)
+ref/
 
 # DUB
 .dub
@@ -26,8 +31,3 @@ __dummy.html
 
 # Code coverage
 *.lst
-game-engine-test-library
-
-# Reference material (upstream sources we read for inspiration, not redistributed)
-ref/
-/game-engine-test-physics

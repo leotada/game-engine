@@ -158,11 +158,18 @@ void main() {
     auto overlay = DebugOverlay();
     auto timer   = FrameTimer.create();
 
-    auto phys = new PhysicsWorld!PHYS_MAX_BODIES();
+    auto phys = new PhysicsSystem!PHYS_MAX_BODIES();
     phys.init_();
     phys.gravity = Vec3(0, -20.0f, 0);
+    auto bi = phys.getBodyInterface();
     // Static ground at y = -0.5, spanning the whole flyover path.
-    phys.addStatic(Vec3(0, -0.5f, 0), Shape.makeBox(Vec3(GROUND_HALF, 0.5f, GROUND_HALF)));
+    {
+        BodyCreationSettings ground;
+        ground.motionType = EMotionType.Static;
+        ground.position   = Vec3(0, -0.5f, 0);
+        ground.shape      = Shape.makeBox(Vec3(GROUND_HALF, 0.5f, GROUND_HALF));
+        bi.createAndAddBody(ground, EActivation.DontActivate);
+    }
 
     uint rainCount   = 0;  // number of dynamic rain cubes
     uint trunkCount  = 0;  // number of static trunk colliders
@@ -243,7 +250,11 @@ void main() {
                     immutable halfExt = Vec3(chunk.trunkScale[i].x * 0.5f,
                                              chunk.trunkScale[i].y * 0.5f,
                                              chunk.trunkScale[i].z * 0.5f);
-                    phys.addStatic(chunk.trunkPos[i], Shape.makeBox(halfExt));
+                    BodyCreationSettings tcs;
+                    tcs.motionType = EMotionType.Static;
+                    tcs.position   = chunk.trunkPos[i];
+                    tcs.shape      = Shape.makeBox(halfExt);
+                    bi.createAndAddBody(tcs, EActivation.DontActivate);
                     ++trunkCount;
                 }
                 if (crownCount < CROWN_BODY_CAP && phys.bodyCount < PHYS_MAX_BODIES) {
@@ -253,7 +264,11 @@ void main() {
                     immutable crownHalf = Vec3(chunk.crownScale[i].x * 0.5f,
                                                chunk.crownScale[i].y * 0.5f,
                                                chunk.crownScale[i].z * 0.5f);
-                    phys.addStatic(chunk.crownPos[i], Shape.makeBox(crownHalf));
+                    BodyCreationSettings ccs;
+                    ccs.motionType = EMotionType.Static;
+                    ccs.position   = chunk.crownPos[i];
+                    ccs.shape      = Shape.makeBox(crownHalf);
+                    bi.createAndAddBody(ccs, EActivation.DontActivate);
                     ++crownCount;
                 }
             }
@@ -262,7 +277,7 @@ void main() {
 
         // Keep the broadphase grid window centered on the camera so bodies
         // are never clamped out of range (which would silently drop pairs).
-        phys.recenterGrid(Vec3(camX, 16.0f, camZ + 40.0f));
+        phys.world.recenterGrid(Vec3(camX, 16.0f, camZ + 40.0f));
 
         // -------- Rain: spawn new rigid-body cubes above the tree canopy --
         foreach (_; 0 .. RAIN_SPAWN_RATE) {
@@ -279,9 +294,14 @@ void main() {
                      uniform(-1.0f, 1.0f, rng),
                      uniform(-1.0f, 1.0f, rng)).normalized,
                 uniform(0.0f, 6.2831853f, rng));
-            immutable id = phys.addDynamic(Vec3(rx, ry, rz), rot,
-                            Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f)), 1.0f);
-            if (id != INVALID_BODY) ++rainCount;
+            BodyCreationSettings rcs;
+            rcs.motionType = EMotionType.Dynamic;
+            rcs.position   = Vec3(rx, ry, rz);
+            rcs.rotation   = rot;
+            rcs.shape      = Shape.makeBox(Vec3(0.5f, 0.5f, 0.5f));
+            rcs.mass       = 1.0f;
+            immutable bid = bi.createAndAddBody(rcs, EActivation.Activate);
+            if (!bid.isInvalid) ++rainCount;
         }
 
         // -------- Physics tick --------------------------------------------
@@ -293,7 +313,7 @@ void main() {
         uint physSteps = 0;
         auto tP0 = MonoTime.currTime;
         while (physAccum >= PHYS_STEP && physSteps < MAX_SUBSTEPS) {
-            phys.step(PHYS_STEP);
+            phys.update(PHYS_STEP);
             physAccum -= PHYS_STEP;
             ++physSteps;
         }
@@ -324,9 +344,13 @@ void main() {
             }
 
             // Rigid-body cubes. Render only dynamic (non-static) bodies.
+            // Reach into PhysicsSystem.world for the SoA arrays — the
+            // BodyInterface getters would force one virtual-style call per
+            // body, defeating the cache-friendly iteration that makes this
+            // benchmark cheap.
             foreach (i; 0 .. phys.bodyCount) {
-                if (phys.invMass[i] == 0.0f) continue; // static (ground/trunks/crowns)
-                immutable p = phys.position[i];
+                if (phys.world.invMass[i] == 0.0f) continue; // static (ground/trunks/crowns)
+                immutable p = phys.world.position[i];
                 // Only render bodies roughly within the visible cone.
                 if (p.z < camZ - 30 || p.z > camZ + 120) continue;
                 scene.draw(cubeMesh, p, Vec3(1.0f, 1.0f, 1.0f), cubeColor);
