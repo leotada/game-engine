@@ -246,3 +246,42 @@ ulong SDL_GetPerformanceCounter();
 ulong SDL_GetPerformanceFrequency();
 ulong SDL_GetTicks();
 void SDL_Delay(uint ms);
+
+// ---------------------------------------------------------------------------
+// Audio (SDL_audio.h)
+// ---------------------------------------------------------------------------
+alias SDL_AudioDeviceID = uint;
+alias SDL_AudioStream   = void;
+
+enum : SDL_AudioDeviceID {
+    SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK  = 0xFFFF_FFFF,
+    SDL_AUDIO_DEVICE_DEFAULT_RECORDING = 0xFFFF_FFFE,
+}
+
+/// SDL_AudioFormat values — masked ((signed<<15)|(float<<8)|(be<<12)|size_bits)
+enum SDL_AudioFormat : uint {
+    SDL_AUDIO_U8     = 0x0008,
+    SDL_AUDIO_S8     = 0x8008,
+    SDL_AUDIO_S16LE  = 0x8010,
+    SDL_AUDIO_S32LE  = 0x8020,
+    SDL_AUDIO_F32LE  = 0x8120,
+}
+
+struct SDL_AudioSpec {
+    SDL_AudioFormat format;
+    int channels;
+    int freq;
+}
+
+// Loading / device / stream API
+bool SDL_LoadWAV(const(char)* path, SDL_AudioSpec* spec, ubyte** audio_buf, uint* audio_len);
+void SDL_free(void* mem);
+SDL_AudioStream* SDL_OpenAudioDeviceStream(SDL_AudioDeviceID devid,
+                                           const(SDL_AudioSpec)* spec,
+                                           void* callback, void* userdata);
+void SDL_DestroyAudioStream(SDL_AudioStream* stream);
+bool SDL_PutAudioStreamData(SDL_AudioStream* stream, const(void)* buf, int len);
+bool SDL_ResumeAudioStreamDevice(SDL_AudioStream* stream);
+bool SDL_PauseAudioStreamDevice(SDL_AudioStream* stream);
+bool SDL_ClearAudioStream(SDL_AudioStream* stream);
+int  SDL_GetAudioStreamQueued(SDL_AudioStream* stream);
