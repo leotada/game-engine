@@ -192,6 +192,48 @@ struct Mat44 {
         return Mat44(-mCol[0], -mCol[1], -mCol[2], -mCol[3]);
     }
 
+    /// In-place += / -=. Element-wise on all four columns.
+    ref Mat44 opOpAssign(string op : "+")(Mat44 r) pure nothrow @nogc return {
+        mCol[0] = mCol[0] + r.mCol[0];
+        mCol[1] = mCol[1] + r.mCol[1];
+        mCol[2] = mCol[2] + r.mCol[2];
+        mCol[3] = mCol[3] + r.mCol[3];
+        return this;
+    }
+    ref Mat44 opOpAssign(string op : "-")(Mat44 r) pure nothrow @nogc return {
+        mCol[0] = mCol[0] - r.mCol[0];
+        mCol[1] = mCol[1] - r.mCol[1];
+        mCol[2] = mCol[2] - r.mCol[2];
+        mCol[3] = mCol[3] - r.mCol[3];
+        return this;
+    }
+
+    /// 3x3 multiplication with the right-hand side transposed: this * Bt.
+    /// out.col_j = sum_k this.col_k * B.col_j[k] (using row j of B as
+    /// column j of B^T). Bottom row / right column zeroed except (3,3) = 1.
+    Mat44 Multiply3x3RightTransposed(Mat44 b) const pure nothrow @nogc {
+        Mat44 r = void;
+        foreach (j; 0 .. 3) {
+            immutable Vec4 bj = b.mCol[j];
+            immutable Vec4 c = mCol[0] * bj.GetX()
+                             + mCol[1] * bj.GetY()
+                             + mCol[2] * bj.GetZ();
+            r.mCol[j] = Vec4(c.GetX(), c.GetY(), c.GetZ(), 0.0f);
+        }
+        r.mCol[3] = Vec4(0, 0, 0, 1);
+        return r;
+    }
+
+    /// Outer product a * b^T. The bottom row is zero, the bottom right
+    /// element is 1 to keep the matrix in canonical 3x3-in-4x4 form.
+    static Mat44 sOuterProduct(Vec3 a, Vec3 b) pure nothrow @nogc {
+        return Mat44(
+            Vec4(a.GetX() * b.GetX(), a.GetY() * b.GetX(), a.GetZ() * b.GetX(), 0),
+            Vec4(a.GetX() * b.GetY(), a.GetY() * b.GetY(), a.GetZ() * b.GetY(), 0),
+            Vec4(a.GetX() * b.GetZ(), a.GetY() * b.GetZ(), a.GetZ() * b.GetZ(), 0),
+            Vec4(0, 0, 0, 1));
+    }
+
     // ---------- transpose / inverse ---------------------------------------
 
     Mat44 Transposed() const pure nothrow @nogc {
