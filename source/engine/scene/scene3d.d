@@ -23,7 +23,7 @@ struct Scene3D {
 
     // Per-mesh batch tracking — up to 16 different meshes per frame
     private enum MAX_MESH_KINDS = 16;
-    private enum MAX_INSTANCES_PER_MESH = 256;
+    private enum MAX_INSTANCES_PER_MESH = 8192;
 
     private struct MeshBatch {
         Mesh* mesh;
@@ -85,6 +85,7 @@ struct Scene3D {
     void drawMatrix(ref Mesh mesh, Mat4 model, Color4 color) {
         auto batch = findOrAddBatch(mesh);
         if (batch is null) return; // too many mesh kinds
+        if (batch.instances.length >= MAX_INSTANCES_PER_MESH) return; // batch full
         batch.instances ~= InstanceData(model.m, color.toArray());
     }
 
