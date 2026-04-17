@@ -5,5 +5,5 @@
 // pre-jph-port branch). Source of truth: ref/JoltPhysics/Jolt/.
 module engine.jph;
 
-public import engine.jph.core.types;
+public import engine.jph.core;
 public import engine.jph.math;
