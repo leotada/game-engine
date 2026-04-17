@@ -10,3 +10,4 @@ public import engine.jph.math.vec3;
 public import engine.jph.math.quat;
 public import engine.jph.math.mat44;
 public import engine.jph.math.types;
+public import engine.jph.math.findroot;
