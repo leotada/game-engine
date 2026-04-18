@@ -134,7 +134,8 @@ struct ShapeResult {
     }
 
     bool IsValid()    const nothrow @nogc { return mIsValid; }
-    bool HasError()   const nothrow @nogc { return !mIsValid; }
+    bool HasError()   const nothrow @nogc { return !mIsValid && mError.length > 0; }
+    bool IsEmpty()    const nothrow @nogc { return !mIsValid && mError.length == 0; }
     string GetError() const nothrow @nogc { return mError; }
     Ref!Shape Get()        nothrow @nogc { return mShape; }
 }

@@ -170,13 +170,21 @@ consciente à regra "no classes" do AGENTS.md, alinhada a
   símbolos via FQN (atomics, jphDelete, cEmbedded), `Ref!T.GetPtr` é
   `@trusted` para casts de `inout`.
 
-### Phase 4a.1 — ConvexShape + primitivas básicas (próximo)
+### Phase 4a.1 — ConvexShape + primitivas básicas ✅
 
-- [ ] `convex_shape.d` — `ConvexShape` (herda `Shape`), support mapping,
-  `GetSupportFunction`, inner/outer radius, density, `mMaterial` slot.
-- [ ] `sphere_shape.d` — `SphereShape` (support trivial; uniform-scale only).
-- [ ] `box_shape.d` — `BoxShape` (convex radius chanfrado).
-- [ ] `capsule_shape.d` — `CapsuleShape` (caso especial `IsSphere()`).
+- [x] `convex_shape.d` — `abstract class ConvexShape : Shape` com
+  `mMaterial` (RefConst!PhysicsMaterial pré-fillado com sDefault no ctor),
+  `mDensity`, `Support`/`SupportBuffer` (4160-byte aligned)/`ESupportMode`,
+  abstract `GetSupportFunction`. `ConvexShapeSettings` análogo.
+- [x] `sphere_shape.d` — `SphereShape` (point + convex radius), suporta só
+  scale uniforme, `SphereNoConvex`/`SphereWithConvex` placement-emplaced
+  no SupportBuffer via `core.lifetime.emplace`.
+- [x] `box_shape.d` — `BoxShape` com `cDefaultConvexRadius=0.05`, convex
+  radius descontado das half-extents para não inflar a caixa, `BoxSupport`
+  com `AABox.GetSupport` para o GJK, raycast via `RayAABox` slab.
+- [x] `capsule_shape.d` — `CapsuleShape` (segmento Y + convex radius),
+  `IsSphere()` quando halfHeight==0, scale uniforme obrigatório,
+  raycast via `RayCapsule`.
 
 ### Phase 4a.2 — primitivas restantes
 
