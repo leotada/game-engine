@@ -17,7 +17,9 @@ import engine.jph.math.vec3               : Vec3;
 import engine.jph.physics.shape.shape     : Shape, ShapeSettings, EShapeType,
                                              EShapeSubType;
 import engine.jph.physics.shape.physics_material : PhysicsMaterial;
-import engine.jph.physics.shape.sub_shape_id : SubShapeID;
+import engine.jph.physics.shape.sub_shape_id : SubShapeID, SubShapeIDCreator;
+import engine.jph.physics.shape.cast_result   : RayCast, RayCastResult;
+import engine.jph.geometry.gjk             : GJKClosestPoint;
 
 @safe:
 
@@ -123,4 +125,24 @@ abstract class ConvexShape : Shape {
     abstract const(Support) GetSupportFunction(ESupportMode inMode,
                                                ref SupportBuffer inBuffer,
                                                Vec3 inScale) const nothrow @nogc;
+
+    // ----- ray cast ----------------------------------------------------------
+
+    /// GJK-based fallback ray cast. Concrete shapes with cheaper analytic
+    /// formulas (Sphere, Box, Capsule, Cylinder, Triangle) override this.
+    override bool CastRay(const RayCast inRay,
+                          const SubShapeIDCreator inSubShapeIDCreator,
+                          ref RayCastResult ioHit) const nothrow @nogc {
+        SupportBuffer buffer;
+        const(Support) support = GetSupportFunction(
+            ESupportMode.IncludeConvexRadius, buffer, Vec3.sOne());
+        GJKClosestPoint gjk;
+        enum float cDefaultCollisionTolerance = 1.0e-4f;
+        if (gjk.CastRay(inRay.mOrigin, inRay.mDirection,
+                        cDefaultCollisionTolerance, support, ioHit.mFraction)) {
+            ioHit.mSubShapeID2 = inSubShapeIDCreator.GetID();
+            return true;
+        }
+        return false;
+    }
 }

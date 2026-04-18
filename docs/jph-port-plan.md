@@ -186,11 +186,23 @@ consciente à regra "no classes" do AGENTS.md, alinhada a
   `IsSphere()` quando halfHeight==0, scale uniforme obrigatório,
   raycast via `RayCapsule`.
 
-### Phase 4a.2 — primitivas restantes
+### Phase 4a.2 — primitivas restantes ✅
 
-- [ ] `cylinder_shape.d`.
-- [ ] `tapered_capsule_shape.d` e `tapered_cylinder_shape.d`.
-- [ ] `triangle_shape.d`.
+- [x] `cylinder_shape.d` — Y-axis cylinder com convex radius esculpido nas
+  bordas (não infla a caixa), `IsValidScale` exige scale uniforme em XZ,
+  raycast via `RayCylinder`.
+- [x] `tapered_cylinder_shape.d` — radii top/bottom independentes, COM
+  deslocada ao longo de Y (override de `GetCenterOfMass`); inertia
+  fechada (Maxima); fallback para `CylinderShape` quando radii batem.
+- [x] `tapered_capsule_shape.d` — duas semiesferas + frustum tangente,
+  só scale uniforme. Quando degenera para esfera com offset, retorna
+  erro temporariamente até `RotatedTranslatedShape` (4a.4) chegar.
+- [x] `triangle_shape.d` — convex radius só usado para shape-vs-shape;
+  raycast via `RayTriangle`; `GetMassProperties()` retorna properties
+  vazias (triangle não tem volume).
+- [x] `convex_shape.d` ganhou fallback `CastRay` via GJK
+  (`engine.jph.geometry.gjk.GJKClosestPoint.CastRay`) — usado pelos
+  taperdos que não têm forma analítica.
 
 ### Phase 4a.3 — degenerate
 
