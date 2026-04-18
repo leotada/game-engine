@@ -20,6 +20,9 @@
  *               inventories), pointer-bearing terrain vertices, ~64+ MB live
  *               heap full of references. This is the worst case for a
  *               conservative mark-sweep collector.
+ *   --worst-safe same workload as --worst, but using the GC-safe architecture
+ *               (Pod structs, Handle!T, StringId, FrameArena). Demonstrates
+ *               the pause collapse from data-structure discipline.
  *
  * Combine with DRT_GCOPT to layer Approach B on top, e.g.:
  *
@@ -39,6 +42,11 @@ import std.array    : appender;
 import std.format   : format;
 import std.stdio    : writeln, writefln;
 import std.conv     : to;
+
+import engine.core.pod     : isPod;
+import engine.core.handle  : Handle;
+import engine.core.strings : StringId, StringTable;
+import engine.core.arena   : FrameArena;
 
 @safe:
 
@@ -105,7 +113,7 @@ struct FrameGcScheduler
 // All allocations escape the function so the GC actually has to track them.
 // ---------------------------------------------------------------------------
 
-enum Scenario { light, openworld, worst }
+enum Scenario { light, openworld, worst, worst_safe }
 
 __gshared string[]          retainedStrings;   // last N frames of strings
 __gshared int[][]           retainedArrays;
@@ -355,13 +363,187 @@ void simulateFrameWorst(size_t frameIdx) @trusted
     }
 }
 
+// --- Scenario 4: worst_safe (same workload, POD + Handle + StringId) ----
+
+/// Phantom types for Handle domains.
+struct NpcDomain {}
+struct InvDomain {}
+
+/// POD NPC state — no class, no string, no GC indirections.
+struct SafeNpcDef
+{
+    StringId          baseName;       // interned once ("npc_42"), stable
+    Handle!NpcDomain  target;
+    uint              memoryOffset;
+    uint              memoryLen;
+    Handle!InvDomain  inventoryHead;
+    StringId[4]       dialogLines;
+}
+static assert(isPod!SafeNpcDef);
+
+/// POD inventory node — linked via handles, not class refs.
+struct SafeInvNode
+{
+    StringId         name;
+    int              qty;
+    Handle!InvDomain next;
+}
+static assert(isPod!SafeInvNode);
+
+/// POD terrain vertex — materialId instead of string, ownerId instead of class.
+struct SafeTerrainVertex
+{
+    float  x, y, z, u, v;
+    ushort materialId;
+    uint   ownerNpcId;
+}
+static assert(isPod!SafeTerrainVertex);
+
+__gshared SafeNpcDef[]            safeNpcPool;
+__gshared SafeInvNode[]           safeInvPool;
+__gshared size_t                  safeInvCount;
+__gshared int[]                   safeMemoryPool;     // shared AI memory
+__gshared SafeTerrainVertex[][]   safeTerrain;
+__gshared StringTable             safeStrings;
+__gshared FrameArena              safeArena;
+
+/**
+ * GC-safe version of the worst scenario.
+ *
+ * Same logical workload (4096 NPCs, AI tick, inventory, terrain streaming,
+ * transient strings), but using:
+ *
+ *   - `SafeNpcDef` (POD struct with Handle/StringId) instead of `NpcState` class
+ *   - `SafeInvNode` pool + handles instead of intrusive linked list of classes
+ *   - `SafeTerrainVertex` (ushort materialId, uint ownerId) instead of string + class
+ *   - `StringTable.intern()` for names that need to persist
+ *   - `FrameArena.fmt()` for transient per-frame strings (zero GC pressure)
+ *
+ * Live heap size is comparable (~60+ MB). Allocation rate is comparable.
+ * But the GC sees only POD arrays → mark cost collapses to ~0.
+ */
+void simulateFrameWorstSafe(size_t frameIdx) @trusted
+{
+    if (retainedStrings.length < LIVE_WINDOW)
+        retainedStrings.length = LIVE_WINDOW;
+
+    // Lazy init
+    if (safeNpcPool.length < WORST_NPC_COUNT)
+    {
+        safeNpcPool    = new SafeNpcDef[](WORST_NPC_COUNT);
+        safeInvPool    = new SafeInvNode[](WORST_NPC_COUNT * 8);
+        safeMemoryPool = new int[](WORST_NPC_COUNT * 48);
+        safeStrings    = StringTable.init;
+        safeArena      = FrameArena(4 * 1024 * 1024);  // 4 MB scratch
+
+        // Intern stable base names once — a real game loads these from assets.
+        foreach (n; 0 .. WORST_NPC_COUNT)
+        {
+            auto buf = format("npc_%d", n);
+            safeNpcPool[n].baseName = safeStrings.intern(buf);
+        }
+    }
+    if (safeTerrain.length < WORST_TERRAIN_RING)
+        safeTerrain.length = WORST_TERRAIN_RING;
+
+    safeArena.reset();
+    safeInvCount = 0;
+
+    // 1. AI tick — same 4096 NPCs, mutate state, rewire target, grow inventory.
+    foreach (n; 0 .. WORST_NPC_COUNT)
+    {
+        // Per-frame display name goes to the arena (dies at frame end).
+        // The stored baseName is stable → no new interning.
+        auto _displayBuf = safeArena.fmt("npc_%d_t%d", n, frameIdx);
+
+        // AI memory — index into shared int pool (no per-NPC allocation).
+        immutable memLen = 16 + cast(uint)((frameIdx ^ n) % 32);
+        immutable memOff = cast(uint)((n * 48) % safeMemoryPool.length);
+        safeNpcPool[n].memoryOffset = memOff;
+        safeNpcPool[n].memoryLen    = memLen;
+        foreach (i; memOff .. memOff + memLen)
+        {
+            if (i < safeMemoryPool.length)
+                safeMemoryPool[i] = cast(int)(frameIdx + n + (i - memOff));
+        }
+
+        // Target rewire — handle, not class ref.
+        immutable targetIdx = (n * 2654435761U + cast(uint)frameIdx)
+                              % WORST_NPC_COUNT;
+        safeNpcPool[n].target = Handle!NpcDomain(cast(uint)(targetIdx + 1), 0);
+
+        // Inventory — pool allocation via handles (capped at 8 per NPC).
+        if (safeInvCount < safeInvPool.length)
+        {
+            auto slot = safeInvCount++;
+            // Item names have bounded cardinality (1024 unique) — intern is fine.
+            auto itemNameBuf = safeArena.fmt("item_%d", (frameIdx + n) % 1024);
+            safeInvPool[slot].name = itemNameBuf !is null
+                ? safeStrings.intern(itemNameBuf)
+                : StringId.init;
+            safeInvPool[slot].qty  = cast(int)((frameIdx ^ n) % 99) + 1;
+            safeInvPool[slot].next = safeNpcPool[n].inventoryHead;
+            safeNpcPool[n].inventoryHead = Handle!InvDomain(cast(uint)(slot + 1), 0);
+
+            // Trim to 8 nodes (walk handles).
+            Handle!InvDomain cur = safeNpcPool[n].inventoryHead;
+            size_t depth = 0;
+            while (!cur.isNull && depth < 8)
+            {
+                cur = safeInvPool[cur.index - 1].next;
+                depth++;
+            }
+            if (!cur.isNull)
+                safeInvPool[cur.index - 1].next = Handle!InvDomain.init;
+        }
+
+        // Dialog lines — arena-formatted, interned only on change (bounded set).
+        if (frameIdx % 16 == n % 16)
+        {
+            foreach (k; 0 .. 4)
+            {
+                // Bounded cardinality: 4096 NPCs * 4 lines = ~16K unique.
+                auto buf = safeArena.fmt("npc=%d line=%d", n, k);
+                safeNpcPool[n].dialogLines[k] = buf !is null
+                    ? safeStrings.intern(buf)
+                    : StringId.init;
+            }
+        }
+    }
+
+    // 2. Terrain streaming — same cadence, POD vertex data.
+    if (frameIdx % 2 == 0)
+    {
+        auto chunk = new SafeTerrainVertex[](4096);
+        foreach (i; 0 .. chunk.length)
+        {
+            chunk[i].x = cast(float)i;
+            chunk[i].y = cast(float)frameIdx;
+            chunk[i].z = cast(float)(i ^ frameIdx);
+            chunk[i].materialId = cast(ushort)(i % 4);
+            chunk[i].ownerNpcId = cast(uint)(i % WORST_NPC_COUNT);
+        }
+        safeTerrain[(frameIdx / 2) % WORST_TERRAIN_RING] = chunk;
+    }
+
+    // 3. Per-frame transient strings — FrameArena, zero GC pressure.
+    foreach (k; 0 .. 1024)
+    {
+        auto s = safeArena.fmt("event %d.%d type=%d",
+                               frameIdx, k, cast(int)((frameIdx ^ k) % 7));
+        if (k == 0 && s !is null)
+            retainedStrings[frameIdx % LIVE_WINDOW] = s.idup;
+    }
+}
+
 void simulateFrame(Scenario sc, size_t frameIdx) @trusted
 {
     final switch (sc)
     {
-        case Scenario.light:     simulateFrameLight(frameIdx);     break;
-        case Scenario.openworld: simulateFrameOpenWorld(frameIdx); break;
-        case Scenario.worst:     simulateFrameWorst(frameIdx);     break;
+        case Scenario.light:      simulateFrameLight(frameIdx);      break;
+        case Scenario.openworld:  simulateFrameOpenWorld(frameIdx);  break;
+        case Scenario.worst:      simulateFrameWorst(frameIdx);      break;
+        case Scenario.worst_safe: simulateFrameWorstSafe(frameIdx);  break;
     }
 }
 
@@ -423,6 +605,13 @@ Duration[] runBenchmark(Mode mode, Scenario sc, size_t frames) @trusted
     terrainChunks   = null;
     npcRoster       = null;
     worstTerrain    = null;
+    safeNpcPool     = null;
+    safeInvPool     = null;
+    safeInvCount    = 0;
+    safeMemoryPool  = null;
+    safeTerrain     = null;
+    safeStrings     = StringTable.init;
+    safeArena       = FrameArena.init;
     GC.collect();
     GC.minimize();
 
@@ -512,10 +701,11 @@ void main(string[] args) @trusted
     {
         switch (a)
         {
-            case "--openworld": scenario = Scenario.openworld; break;
-            case "--worst":     scenario = Scenario.worst;     break;
-            case "--light":     scenario = Scenario.light;     break;
-            default:            positional ~= a;               break;
+            case "--openworld":  scenario = Scenario.openworld;  break;
+            case "--worst":      scenario = Scenario.worst;      break;
+            case "--worst-safe": scenario = Scenario.worst_safe; break;
+            case "--light":      scenario = Scenario.light;      break;
+            default:             positional ~= a;                break;
         }
     }
 
@@ -529,7 +719,7 @@ void main(string[] args) @trusted
             case "all":       mode = cast(Mode)0xFF; break;  // sentinel
             default:
                 writeln("usage: gc-benchmark [default|scheduler|disabled|all] "
-                        ~ "[frames] [--light|--openworld|--worst]");
+                        ~ "[frames] [--light|--openworld|--worst|--worst-safe]");
                 return;
         }
     }

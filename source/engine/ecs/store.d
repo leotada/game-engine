@@ -2,14 +2,14 @@
 /// Enhanced from the original ECS with @safe support and SoA storage.
 module engine.ecs.store;
 
-import std.traits : hasIndirections;
+import engine.core.pod : isPod;
 
 @safe:
 
 alias EntityId = uint;
 
 struct ComponentStore(T) if (is(T == struct)) {
-    static assert(!hasIndirections!T, "Component " ~ T.stringof ~ " must not contain GC pointers");
+    static assert(isPod!T, "Component " ~ T.stringof ~ " must not contain GC pointers — see docs/gc-safe-architecture-plan.md");
 
     private T[] dense;
     private EntityId[] denseToEntity;

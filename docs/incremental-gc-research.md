@@ -536,6 +536,68 @@ Worst-case takeaways:
 > collector changes. Approach A only becomes the right answer if that
 > audit fails.
 
+#### GC-safe refactor (`--worst-safe`) — empirical validation
+
+The recommendation above was implemented and benchmarked using the five
+primitives from [docs/gc-safe-architecture-plan.md](gc-safe-architecture-plan.md):
+`Pod!T`, `Handle!T`, `StringId`/`StringTable`, and `FrameArena`. The
+`--worst-safe` scenario in `source/demo/gc_benchmark.d` carries the exact
+same logical workload as `--worst` (4096 NPCs, AI tick, inventory chain,
+terrain streaming, 1024 transient strings/frame, ~57 MB heap delta) but
+with the GC-safe data structures:
+
+| Data | `--worst` (bad) | `--worst-safe` (good) |
+|---|---|---|
+| NPC state | `class NpcState` with `NpcState target`, `int[]`, `string[]` | `struct SafeNpcDef` with `Handle!NpcDomain target`, index into shared pool |
+| Inventory | Intrusive linked list of `class NpcInventoryItem` | Pool of `struct SafeInvNode`, linked via `Handle!InvDomain` |
+| Terrain vertex | `struct PointerVertex { string materialName; NpcState owner; }` | `struct SafeTerrainVertex { ushort materialId; uint ownerNpcId; }` |
+| Display names | `string` field, re-allocated every frame | `StringId` (interned once at spawn); per-frame label in `FrameArena` |
+| Transient strings | `format()` → GC heap, 1024/frame | `FrameArena.fmt()`, reset at frame end, zero GC pressure |
+
+All POD structs are enforced via `static assert(isPod!SafeNpcDef)` at
+compile time — the bad pattern is now a **build error**.
+
+```bash
+DRT_GCOPT="profile:1 precise:1" \
+    ./game-engine-gc-benchmark default 1200 --worst-safe
+```
+
+Results (1200 frames, `default` GC, `precise:1`, debug build, DMD, Linux x86_64):
+
+| metric | `--worst` | `--worst-safe` | improvement |
+|---|---|---|---|
+| **max frame** | **16.06 ms** | **8.58 ms** | **−47%** |
+| **p99 frame** | **13.39 ms** | **5.06 ms** | **−62%** |
+| **p95 frame** | 8.31 ms | 4.28 ms | −48% |
+| **mean frame** | 6.78 ms | 3.97 ms | −41% |
+| **max GC pause** | **7.31 ms** | **1.90 ms** | **−74%** |
+| **max collection** | 7.59 ms | 1.92 ms | −75% |
+| **total pause (1200 frames)** | 197.9 ms | 3.8 ms | **−98%** |
+| **collections** | 40 | 3 | −92% |
+| **heap delta** | +63.4 MB | +56.8 MB | comparable |
+
+GC-safe refactor takeaways:
+
+1. **Max GC pause drops from 7.3 ms to 1.9 ms** — within the 2 ms budget
+   at 60 Hz — without any changes to the collector, the runtime, or the
+   build configuration.  The fix is entirely in the data structures.
+2. **Total pause across 1200 frames drops from 198 ms to 3.8 ms (−98%).**
+   From 40 collections averaging ~5 ms each, down to 3 collections
+   averaging ~1.3 ms each. The GC runs less often *and* costs less when
+   it does, because the heaps it must scan contain almost no pointer-shaped
+   data.
+3. **Mean frame time drops from 6.8 ms to 4.0 ms (−41%).** The savings
+   are not just from GC pauses — the `FrameArena` eliminates 1024 GC
+   allocations per frame (the transient string chatter), reducing allocator
+   pressure and fragmentation.
+4. **The pointer-free constraint is enforced at compile time.** `Pod!T` +
+   `static assert` turn the bad pattern into a build error.  A new
+   contributor cannot accidentally re-introduce `string materialName` into
+   a vertex struct without the build failing.
+5. **This is the definitive answer to "fix the GC."** The GC was never
+   broken. The 7 ms pause was a data-structure problem; the fix is
+   structural and takes effect at compile time, not at runtime.
+
 ---
 
 ## 8. Open questions

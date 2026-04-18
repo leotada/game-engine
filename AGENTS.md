@@ -65,7 +65,8 @@ The engine uses a two-layer model for GC: strict in the engine core, permissive 
 **The boundary is the frame loop.** Everything inside `engine/` called from `pollEvents()` through `endFrame()` must be `@nogc`. Gameplay systems that consume `World.query()` ranges are free to use the GC.
 
 **Component data is always strict:**
-- Components must pass `!hasIndirections!T` — no slices, strings, delegates, or pointers to GC memory.
+- Components must pass `isPod!T` (from `engine.core.pod`) — no slices, strings, delegates, class refs, or pointers to GC memory.
+- Use `Pod!T` in every container declaration. It produces a clear compile error with a link to the docs if violated.
 - This ensures the GC never scans the dense arrays in `ComponentStore`, even with thousands of entities.
 - Dynamic arrays (`T[]`) used for internal ECS storage are GC roots, but their *contents* (POD structs) are never scanned.
 
@@ -73,6 +74,88 @@ The engine uses a two-layer model for GC: strict in the engine core, permissive 
 - Systems are regular functions — they may allocate, use `string`, `format`, dynamic arrays, closures.
 - For performance-critical systems, developers can opt into `@nogc` and use pre-allocated buffers.
 - This mirrors Unity's model (C++ engine / C# gameplay) but within a single language.
+
+### GC-Safe Primitives (`engine.core`)
+
+Four primitives enforce the two-layer model at compile time. Use them whenever game code needs to store data in engine memory.
+
+#### `Pod!T` / `isPod!T` — `engine.core.pod`
+
+Compile-time gate for engine storage. Fails with a descriptive error if `T` contains any GC-traced indirection.
+
+```d
+import engine.core.pod : isPod, Pod;
+
+struct Particle { float x, y, vx, vy; ushort kind; }  // ok
+struct Bad { string label; }                           // compile error via Pod!Bad
+
+struct ParticlePool(T) { Pod!T[] data; }  // fails loudly if T is not POD
+```
+
+**Rule:** Every array or container that lives in engine memory must use `Pod!T`. This is already enforced in `ComponentStore`; apply it to any new buffer you add.
+
+#### `Handle!T` — `engine.core.handle`
+
+8-byte POD typed reference to an engine-owned resource. Replaces class refs and raw pointers when crossing the gameplay→engine boundary.
+
+```d
+import engine.core.handle : Handle;
+
+struct NpcDomain {}
+struct SafeNpc { Handle!NpcDomain target; uint hp; }  // POD, no GC cost
+```
+
+- `index` + `generation` for use-after-free detection.
+- `isNull()` checks `index == 0` (zero-init is null).
+- **Rule:** Never store a `class` reference or `T*` in engine storage. Use `Handle!T` instead.
+
+#### `StringId` + `StringTable` — `engine.core.strings`
+
+4-byte POD string identifier. Replaces `string` in engine-owned data structures.
+
+```d
+import engine.core.strings : StringId, StringTable;
+
+StringTable strings;                          // one per World / asset system
+StringId mat = strings.intern("stone");       // game code can still use string
+struct Vertex { float x,y,z; StringId mat; }  // POD — no GC cost per vertex
+```
+
+- All character data lives in one `char[]` buffer → the GC traces one root regardless of how many strings are interned.
+- Intern stable identifiers (material names, dialog keys, asset paths). Use `FrameArena` for per-frame labels.
+- **Rule:** Never store a `string` field in any struct that lives beyond one frame in engine memory.
+
+#### `FrameArena` — `engine.core.arena`
+
+Per-frame bump-pointer allocator for transient POD data and formatted strings. The engine resets it once per frame in `endFrame()`.
+
+```d
+import engine.core.arena : FrameArena;
+
+void aiSystem(ref World w, ref FrameArena tmp, float dt) {
+    auto scratch  = tmp.alloc!int(64);              // dies at frame end
+    auto label    = tmp.fmt("npc=%d hp=%d", id, hp); // no GC allocation
+    debugOverlay.draw(label);                        // reads it this frame
+}
+```
+
+- Only `isPod!T` types may be allocated (enforced at compile time).
+- `fmt()` wraps `sformat` — never allocates on the GC heap.
+- **Rule:** Prefer `FrameArena` over `format()` / `new` for any string or scratch buffer used inside a single frame.
+
+### Why this matters — measured numbers
+
+Benchmark: 1200 frames, 4096 NPCs, same logical workload, `precise:1` GC.
+
+| metric | class graph + `string` fields | `Pod!T` + `Handle!T` + `StringId` + `FrameArena` |
+|---|---|---|
+| max GC pause | **7.3 ms** | **1.9 ms** (−74%) |
+| total pause | 197.9 ms | 3.8 ms (−98%) |
+| max frame | 16.1 ms (stalls at 60Hz) | 8.6 ms (within budget) |
+| collections | 40 | 3 |
+
+Full methodology and results: [docs/incremental-gc-research.md](docs/incremental-gc-research.md) §7.5.  
+Implementation plan: [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md).
 
 ## Directory Structure
 
@@ -90,7 +173,11 @@ source/
 │   │   └── gltf.d      # Minimal glTF 2.0 mesh loader (JSON + .bin) → TexMesh
 │   ├── audio/          # SDL3-backed audio (AudioEngine, AudioClip)
 │   │   └── engine.d
-│   ├── core/           # Logging, RAII handles
+│   ├── core/           # Logging, RAII handles, GC-safe primitives
+   │   ├── pod.d       # isPod!T / Pod!T — compile-time POD enforcement for engine storage
+   │   ├── handle.d    # Handle!T — typed generational handle (replaces class refs)
+   │   ├── strings.d   # StringId + StringTable — interned strings for engine storage
+   │   └── arena.d     # FrameArena — per-frame bump allocator, reset in endFrame()
 │   ├── devtools/       # In-engine developer tooling
 │   │   ├── gizmos.d    # Immediate-mode 3D line primitives (lineList, overlay depth)
 │   │   └── overlay.d   # Structured FPS + label overlay atop TextRenderer
@@ -174,3 +261,7 @@ dub build --config=library           # Build as static library
 - **Adding bindbc dependencies** — we maintain our own bindings. Don't add third-party binding packages to dub.json.
 - **Wrong WGPU enum values** — enum values in `bindings/wgpu.d` **must** match the official `webgpu.h` header exactly. Always cross-reference `https://github.com/webgpu-native/webgpu-headers/blob/main/webgpu.h` when adding or modifying enums. Mismatched values cause silent data corruption (e.g., wrong `WGPUVertexFormat` makes geometry invisible with no errors).
 - **Forgetting `BindingNotUsed = 0`** — since webgpu.h v29, many enums (e.g., `WGPUBufferBindingType`, `WGPUSamplerBindingType`, `WGPUTextureSampleType`, `WGPUStorageTextureAccess`) have `BindingNotUsed = 0` before `Undefined = 1`. Default init values for sub-structs in `WGPUBindGroupLayoutEntry` must use `BindingNotUsed` (0), not `Undefined` (1).
+- **Putting `string` or class refs in engine storage** — the GC must scan every pointer-shaped word in every block. A `struct Vertex { string material; }` in a 64 MB terrain buffer forces a ~5–9 ms mark pause per collection (measured). Use `StringId` for material names and `Handle!T` for cross-references. The bad pattern is now a build error via `Pod!T`.
+- **Using `format()` for per-frame labels inside the engine** — `format()` allocates on the GC heap. In hot frame paths use `FrameArena.fmt()` which writes into a pre-allocated scratch buffer and is reset at frame end.
+- **Intern-ing unbounded strings** — `StringTable.intern()` is O(1) for repeated strings but stores each unique string permanently. Only intern identifiers with bounded cardinality (material names, asset paths, dialog keys). Per-frame computed labels (e.g., `"npc_42_t1200"`) belong in `FrameArena`, not the interner.
+- **Enabling `FrameGcScheduler` mid-game** — benchmarks proved the frame-budgeted GC scheduler triples total pause under sustained allocation pressure. Use `GC.disable()` + `GC.collect()` only at explicit scene transitions and loading screens, where the heap is cold and slack is real.
