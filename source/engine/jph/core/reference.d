@@ -15,39 +15,43 @@ module engine.jph.core.reference;
 
 import engine.jph.core.atomics;
 import engine.jph.core.memory : jphDelete;
-import engine.jph.core.types : uint32;
 
 @safe:
 
 /// Mark used by `SetEmbedded()` so an instance allocated on the stack or
 /// inside another object is never deleted by `Release`. Same magic value as
 /// Jolt's `cEmbedded`.
-enum uint32 cEmbedded = 0x0ebedded;
+enum uint cEmbedded = 0x0ebedded;
 
 /// Mix into a class body to make it a Jolt-style `RefTarget<T>`. T is the
 /// concrete derived class (CRTP) so the templated `Release()` calls the right
 /// destructor via `jphDelete!T(cast(T) this)`.
 mixin template RefTargetMixin(T) {
-    private shared uint32 mRefCount = 0;
+    import engine.jph.core.atomics : atomicLoad, atomicFetchAdd, atomicFetchSub,
+                                     atomicFence, MemoryOrder;
+    import engine.jph.core.memory : jphDelete;
+    import engine.jph.core.reference : cEmbedded;
+
+    private shared uint mRefCount = 0;
 
     /// Get the current reference count.
-    final uint32 GetRefCount() const @trusted nothrow @nogc {
+    final uint GetRefCount() const @trusted nothrow @nogc {
         return atomicLoad!(MemoryOrder.raw)(mRefCount);
     }
 
     /// Mark this instance as embedded — Release() then never deletes it.
     final void SetEmbedded() const @trusted nothrow @nogc {
-        atomicFetchAdd!(MemoryOrder.raw)(*cast(shared(uint32)*) &mRefCount, cEmbedded);
+        atomicFetchAdd!(MemoryOrder.raw)(*cast(shared(uint)*) &mRefCount, cEmbedded);
     }
 
     /// Increment the reference count (relaxed memory order).
     final void AddRef() const @trusted nothrow @nogc {
-        atomicFetchAdd!(MemoryOrder.raw)(*cast(shared(uint32)*) &mRefCount, 1);
+        atomicFetchAdd!(MemoryOrder.raw)(*cast(shared(uint)*) &mRefCount, 1);
     }
 
     /// Decrement the reference count and delete the object on transition 1→0.
     final void Release() const @trusted nothrow @nogc {
-        immutable old = atomicFetchSub!(MemoryOrder.rel)(*cast(shared(uint32)*) &mRefCount, 1);
+        immutable old = atomicFetchSub!(MemoryOrder.rel)(*cast(shared(uint)*) &mRefCount, 1);
         assert(old != 0 && old != cEmbedded, "Too many calls to Release");
         if (old == 1) {
             atomicFence!(MemoryOrder.acq);
@@ -91,7 +95,7 @@ struct Ref(T) if (is(T == class)) {
     }
 
     /// Implicit conversion to the underlying pointer.
-    T GetPtr() inout nothrow @nogc { return cast(T) mPtr; }
+    T GetPtr() inout nothrow @nogc @trusted { return cast(T) mPtr; }
     alias GetPtr this;
 
     bool isNull() const nothrow @nogc { return mPtr is null; }

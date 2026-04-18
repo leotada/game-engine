@@ -2,3 +2,4 @@
 module engine.jph.physics;
 
 public import engine.jph.physics.body;
+public import engine.jph.physics.shape;
