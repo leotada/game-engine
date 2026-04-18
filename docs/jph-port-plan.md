@@ -204,10 +204,18 @@ consciente à regra "no classes" do AGENTS.md, alinhada a
   (`engine.jph.geometry.gjk.GJKClosestPoint.CastRay`) — usado pelos
   taperdos que não têm forma analítica.
 
-### Phase 4a.3 — degenerate
+### Phase 4a.3 — degenerate ✅
 
-- [ ] `plane_shape.d`.
-- [ ] `empty_shape.d`.
+- [x] `plane_shape.d` — plano infinito (`MustBeStatic = true`); meio-espaço
+  negativo é sólido. Bounds locais artificialmente clipadas a `±halfExtent`
+  (default `1000.0f`) para que o broad-phase não precise lidar com infinito.
+  `CastRay` analítico: origem em meio-espaço sólido devolve `fraction = 0`;
+  caso contrário `fraction = -signedDistance / dot(dir, normal)`. Settings
+  validam `mPlane.GetNormal().IsNormalized()`.
+- [x] `empty_shape.d` — placeholder sem volume nem colisão; `CastRay` sempre
+  retorna `false`. Útil para corpos cinemáticos que só seguram constraints
+  ou quando a forma final ainda não é conhecida. `IsValidScale` aceita
+  qualquer escala. `GetCenterOfMass` configurável via construtor.
 
 ### Phase 4a.4 — decorated
 
