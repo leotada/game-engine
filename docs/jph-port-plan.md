@@ -27,6 +27,7 @@ dentro do namespace `engine.jph`. Source-of-truth: `ref/JoltPhysics/Jolt/`.
 | 2b  | `jph.geometry` EPA + raios                | ✅ Concluída | `17d259a` |
 | 3   | `jph.physics.body` (IDs, MP, enums)       | ✅ Concluída | `a325c5a` |
 | 4   | `jph` shapes                              | ⏳ Em curso  | —         |
+| MVP | Caminho mínimo (cubos rígidos)            | ⏳ Em curso  | —         |
 | 5   | Narrowphase + dispatch                    | ⬜ Pendente  | —         |
 | 6   | BroadPhaseQuadTree + SIMD rays            | ⬜ Pendente  | —         |
 | 7   | Constraints + ContactConstraintManager    | ⬜ Pendente  | —         |
@@ -238,6 +239,133 @@ consciente à regra "no classes" do AGENTS.md, alinhada a
 
 **Saída esperada:** 25+ módulos passando unittests; demos continuam a
 compilar.
+
+---
+
+## MVP — Caminho mínimo para benchmark de cubos rígidos ⏳
+
+Track paralelo, focado em fechar o primeiro recorte de **corpos rígidos
+simples**: `benchmark.d` restaurado, `test_physics.d` headless restaurado,
+e suporte de primeira classe para **boxes, spheres, capsules e um chão
+plano estático** com gravidade, contatos, atrito e sleeping.
+**Sem joints, sem QuadTree, sem decorated/compound shapes, sem SIMD em
+lote, sem multithread.** Tudo o que for cortado aqui volta depois numa
+fase "post-MVP" sem quebrar a API.
+
+**Total estimado:** ~4.000 LOC novas (vs ~10.500 do plano completo).
+
+### Cortes aceitos para o MVP
+
+| Adiado                                                         | Justificativa                                                                                  |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Phase 4a.4 (Scaled / RotatedTranslated / OffsetCOM)            | Cubos usam `BoxShape` direto; pose vem do `Body`.                                              |
+| Phase 4a.5 (StaticCompound + BVH)                              | Bodies de shape única.                                                                         |
+| Phase 4b (ConvexHull + builder)                                | Box é primitiva.                                                                               |
+| Manifold clipping genérico para qualquer par convexo           | Box-vs-Box fica analítico (SAT + face clipping). Box/Sphere/Capsule mistos podem começar em fallback GJK+EPA. |
+| Phase 6 QuadTree + RayAABox4/RayTriangle4                      | `BroadPhaseBruteForce` (O(n²)) basta para 1000 corpos.                                         |
+| Phase 7 named constraints (fixed/point/distance/hinge/slider)  | Benchmark não tem joints. Apenas contact constraints.                                          |
+| Position solver completo / Baumgarte tunado                    | Começar com PGS de velocidade + projeção de penetração simples; refinar se pilhas instabilizam. |
+| IslandBuilder                                                  | Tudo numa única "ilha" global no v1.                                                            |
+| Phase 10 JobSystemTaskPool                                     | `JobSystemSingleThreaded` já existe.                                                            |
+
+### Sequência de fases MVP
+
+#### MVP-1 — `MassProperties.Rotate` (mini-4a.4)
+
+- [ ] Portar só `MassProperties.Rotate(Mat44)` em
+  `engine.jph.physics.body.massproperties` (~80 LOC). Necessário para
+  transformar o tensor de inércia para world-space todo frame.
+
+#### MVP-2 — Narrowphase enxuto
+
+- [ ] `collision/collide_shape.d` — `CollideShapeResult`,
+  `CollideShapeSettings`, `ECollisionMode`.
+- [x] `collision/object_layer.d` — `ObjectLayer` (uint16) + filtros.
+- [x] `collision/broad_phase_layer.d` — `BroadPhaseLayer` (uint8) +
+  interface mínima.
+- [ ] `collision/collide_box_vs_box.d` — manifold SAT analítico
+  (15 eixos, edge-edge via cross-product, face clipping
+  Sutherland–Hodgman + redução para ≤4 contatos persistentes).
+- [ ] `collision/collide_box_vs_plane.d`,
+  `collision/collide_sphere_vs_plane.d`,
+  `collision/collide_capsule_vs_plane.d` — contatos analíticos para o
+  conjunto mínimo suportado pelo sandbox.
+- [ ] `collision/collide_convex_vs_convex.d` — fallback genérico via
+  GJK + EPA da Phase 2 (cobre Box/Sphere/Capsule mistos enquanto o
+  narrowphase específico não chega).
+- [ ] `collision/collision_dispatch.d` — tabela 2×2 inicial (Box×Box,
+  Box×Plane); resto cai no fallback GJK+EPA.
+
+#### MVP-3 — BroadPhase brute-force
+
+- [x] `broadphase/broad_phase.d` — interface base.
+- [x] `broadphase/broad_phase_brute_force.d` — varredura O(n²) sobre
+  `Body[]` AABB list, gera `BodyPair[]` ativo por frame.
+
+#### MVP-4 — ContactConstraintManager + solver
+
+- [ ] `physics_settings.d` — steps, slop, baumgarte, iterations.
+- [ ] `constraints/contact_constraint_manager.d` — por contato:
+  jacobianos normal + 2 atritos; cache de warm-start chaveado por
+  `SubShapeIDPair`; PGS sequencial (8 iters velocidade, 2 iters
+  posição). **Maior risco do MVP:** estabilidade do solver determina
+  se pilhas de cubos descansam sem jitter.
+
+#### MVP-5 — BodyManager + PhysicsSystem (mini-Phase 8)
+
+- [x] `body/body.d` — composição final (transform, shape ref,
+  motion props ptr, layers, flags).
+- [x] `body/body_manager.d` — pool SoA de `Body` + `MotionProperties`,
+  free-list de `BodyID`s.
+- [x] `body/body_creation_settings.d`.
+- [x] `body/body_interface.d` — API pública (`AddBody`, `RemoveBody`,
+  `SetPosition`, `SetLinearVelocity`, `ActivateBody`, …).
+- [ ] `physics_system.d` — orquestra: integrar forças → broadphase →
+  narrowphase → solver de contatos → integrar velocidades →
+  atualizar transforms → timers de sleep. **Sem IslandBuilder no v1.**
+- [x] Estado atual de `physics_system.d`: owner mínimo de `BodyManager` +
+  `BodyInterface` + `BroadPhaseBruteForce`, com coleta de `BodyPair[]`
+  e atualização de `broadphasePairs` nas estatísticas.
+- [ ] Sleep simples: threshold de velocidade + timer por body
+  (sem ilhas).
+
+#### MVP-6 — Migrar demos
+
+- [ ] `source/demo/test_physics.d` — sandbox (gravidade, chão,
+  empilhamento, além de drops simples de sphere/capsule) para validação
+  rápida.
+- [ ] `source/demo/benchmark.d` — 1000 cubos dinâmicos + chão
+  estático via novo `BodyInterface`. FPS deve igualar ou superar a
+  versão pré-porte.
+- [ ] Documentar a API gameplay-facing em `docs/`.
+
+### Riscos críticos do MVP
+
+1. **Solver PGS (MVP-4)** — Baumgarte, slop, número de iterações.
+   Pilhas de cubos são o teste-padrão de estabilidade.
+2. **Manifold SAT Box-vs-Box (MVP-2)** — contatos persistentes
+   precisam de face clipping correto para a pilha não vibrar.
+   Referência: `ref/JoltPhysics/Jolt/Physics/Collision/Shape/BoxShape.cpp`
+   (`sCollideBoxVsBox`).
+3. **Tensor de inércia em world-space (MVP-5)** — `R · I_local · Rᵀ`
+   precisa ser recalculado todo frame para corpos rotacionados.
+4. **Sleep sem ilhas (MVP-5)** — sem IslandBuilder, ou nada dorme,
+   ou tudo dorme cedo demais. Ajustar threshold conservador.
+
+### Reincorporação pós-MVP (ordem sugerida)
+
+Quando o benchmark estiver verde, retomar o plano completo nesta ordem
+(sem quebrar a API gameplay-facing já estabilizada):
+
+1. **IslandBuilder** → convergência do solver + sleeping correto sob
+   contato sustentado.
+2. **BroadPhaseQuadTree** (Phase 6) → de O(n²) para O(n log n).
+3. **RayAABox4 / RayTriangle4** (SIMD) → raycasts contra árvore.
+4. **Decorated shapes (4a.4)** + **StaticCompound (4a.5)** → autoria de
+   shapes não-cubo.
+5. **Named constraints (Phase 7 completa)** → joints.
+6. **`ConvexHullShape` (4b)** → autoria de convexos arbitrários.
+7. **JobSystemTaskPool (Phase 10)** → multithread.
 
 ---
 

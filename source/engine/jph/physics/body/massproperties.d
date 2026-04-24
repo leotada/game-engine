@@ -5,9 +5,9 @@
 //   * `DecomposePrincipalMomentsOfInertia` (eigenvalue decomposition)
 //   * `Rotate` (3x3 inertia rotation)
 //   * `Scale` (anisotropic scaling)
-// Those are deferred until a shape implementation needs them (ConvexHull /
-// Compound shapes, Phase 4+). This first port covers the common construction
-// helpers used by primitive shapes.
+// This port now includes `Rotate` because the simple rigid-body solver needs
+// world-space inertia. The eigen decomposition and anisotropic scaling remain
+// deferred until decorated / compound shapes need them.
 //
 // Source: ref/JoltPhysics/Jolt/Physics/Body/MassProperties.h + .cpp.
 module engine.jph.physics.body.massproperties;
@@ -58,6 +58,19 @@ struct MassProperties {
         }
     }
 
+    /// Rotate the inertia tensor by the 3x3 part of `inRotation`:
+    ///   I' = R * I * R^T
+    /// Translation is ignored; the bottom row / column stay canonical.
+    void Rotate(Mat44 inRotation) pure nothrow @nogc {
+        immutable Mat44 rotation = Mat44(
+            Vec4(inRotation.GetAxisX(), 0.0f),
+            Vec4(inRotation.GetAxisY(), 0.0f),
+            Vec4(inRotation.GetAxisZ(), 0.0f),
+            Vec4(0, 0, 0, 1));
+        mInertia = rotation * mInertia * rotation.Transposed3x3();
+        mInertia.SetColumn4(3, Vec4(0, 0, 0, 1));
+    }
+
     /// Translate the inertia using the parallel-axis theorem:
     ///   I' = I + m * (|t|^2 E - t t^T)
     /// where E is the 3x3 identity. Bottom-right of the matrix is reset
@@ -100,6 +113,16 @@ unittest {
         immutable float want = 2.0f * k;
         assert(diag > want - 1.0e-5f && diag < want + 1.0e-5f);
     }
+
+    // Rotate swaps the X / Y principal moments under a 90-degree Z rotation.
+    MassProperties rotated;
+    rotated.mMass = 1.0f;
+    rotated.mInertia = Mat44.sScale(Vec3(1.0f, 2.0f, 3.0f));
+    rotated.Rotate(Mat44.sRotationZ(0.5f * 3.141592653589793f));
+    assert(rotated.mInertia(0, 0) > 2.0f - 1.0e-5f && rotated.mInertia(0, 0) < 2.0f + 1.0e-5f);
+    assert(rotated.mInertia(1, 1) > 1.0f - 1.0e-5f && rotated.mInertia(1, 1) < 1.0f + 1.0e-5f);
+    assert(rotated.mInertia(2, 2) > 3.0f - 1.0e-5f && rotated.mInertia(2, 2) < 3.0f + 1.0e-5f);
+    assert(rotated.mInertia(3, 3) == 1.0f);
 
     // sGetEquivalentSolidBoxSize round-trip on a uniform cube.
     immutable Vec3 size = MassProperties.sGetEquivalentSolidBoxSize(

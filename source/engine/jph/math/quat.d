@@ -41,6 +41,17 @@ struct Quat {
         return Quat(s * inAxis.GetX(), s * inAxis.GetY(), s * inAxis.GetZ(), c);
     }
 
+    /// Integrate an angular velocity over `inDeltaTime` and return the delta
+    /// rotation. Very small steps collapse to identity.
+    static Quat sAngularVelocityStep(Vec3 inAngularVelocity,
+                                     float inDeltaTime) pure nothrow @nogc {
+        immutable Vec3 angularStep = inAngularVelocity * inDeltaTime;
+        immutable float angle = angularStep.Length();
+        if (angle <= 1.0e-6f)
+            return Quat.sIdentity();
+        return Quat.sRotation(angularStep / angle, angle);
+    }
+
     /// Shortest-path rotation that maps `inFrom` (unit) onto `inTo` (unit).
     static Quat sFromTo(Vec3 inFrom, Vec3 inTo) pure nothrow @nogc {
         immutable lenSq = inFrom.LengthSq() * inTo.LengthSq();
@@ -168,4 +179,10 @@ struct Quat {
         immutable float s1 = sin(t * angle) / sinTheta;
         return Quat(mValue * s0 + target.mValue * s1);
     }
+}
+
+unittest {
+    immutable Quat delta = Quat.sAngularVelocityStep(Vec3(0, 0, 3.141592653589793f), 0.5f);
+    immutable Vec3 rotated = delta * Vec3(1, 0, 0);
+    assert(rotated.IsClose(Vec3(0, 1, 0), 1.0e-5f));
 }
