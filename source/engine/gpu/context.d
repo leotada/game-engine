@@ -20,9 +20,11 @@ struct GpuContext {
     @disable this(this);
 
     /// Initialize the full WGPU stack with a Wayland surface.
-    static GpuContext create(void* wlDisplay, void* wlSurface, uint width, uint height,
-                             WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
-        GpuContext ctx;
+    /// Takes a ref to avoid returning a temporary whose destructor would free the
+    /// WGPU handles before the caller can use them (post-blit double-free).
+    static void create(ref GpuContext ctx, void* wlDisplay, void* wlSurface,
+                       uint width, uint height,
+                       WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
 
         // 1. Instance
         WGPUInstanceDescriptor instDesc;
@@ -91,7 +93,6 @@ struct GpuContext {
         ctx.configureSurface();
 
         info("GPU context fully initialized");
-        return ctx;
     }
 
     private void configureSurface() @trusted {

@@ -48,12 +48,11 @@ quebrar a API gameplay-facing definida aqui.**
 | E1-5  | `BodyManager` + `BodyInterface` + `PhysicsSystem.Step()`          | ✅ Concluída | —         |
 | E1-6  | Sensores (triggers) + `ContactListener`                           | ⏳ Em curso  | —         |
 | E1-7  | Scene-level raycast (`NarrowPhaseQuery.CastRay`)                  | ⬜ Pendente  | —         |
-| E1-8  | Sleep simples (sem ilhas)                                         | ⬜ Pendente  | —         |
+| E1-8  | Sleep simples (sem ilhas)                                         | ✅ Concluída | —         |
 | E1-9  | Migrar `test_physics.d` e `benchmark.d`                           | ⬜ Pendente  | —         |
 | E1-10 | Documentar API gameplay-facing                                    | ⬜ Pendente  | —         |
 
-Status do Épico 1: **15 de 19 fases concluídas**; faltam triggers,
-raycast de cena, sleep e migração dos demos.
+Status do Épico 1: **16 de 19 fases concluídas**; faltam raycast de cena e migração dos demos.
 
 ### Épico 2 — Jolt completo (pós-MVP)
 
@@ -409,17 +408,17 @@ um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
   plano, sensor) — closest-hit retorna o mais próximo, `BodyFilter`
   ignora bodies específicos, sensor é ignorável via `ShapeFilter`.
 
-### E1-8 — Sleep simples (sem ilhas) ⬜
+### E1-8 — Sleep simples (sem ilhas) ✅
 
-- [ ] Threshold de velocidade configurável em `PhysicsSettings`
-  (`mPointVelocitySleepThreshold`, `mTimeBeforeSleep`).
-- [ ] Por body: timer acumula enquanto `|v|² + |ω|²·r² < threshold²`;
-  ao estourar `mTimeBeforeSleep`, body vai para inativo
-  (`EActivation.DontActivate`).
-- [ ] Body acorda quando recebe contato/força/impulso, `SetPosition`,
-  `SetVelocity`, ou quando entra na lista de pares broadphase.
-- [ ] Atualizar `PhysicsSystem.GetNumActiveBodies()` para refletir
-  apenas bodies acordados.
+- [x] `mVelocitySleepThreshold` e `mTimeBeforeSleep` já existiam em `PhysicsSettings`.
+- [x] Loop de sleep-check em `PhysicsSystem.Step()`: acumula `mSleepTestTimer` via
+  `AccumulateSleepTime(dt, mTimeBeforeSleep)` enquanto `|v|² + |ω|² < threshold²`;
+  ao estourar, zeraa velocidades e chama `DeactivateBody()`.
+- [x] Body acorda ao receber contato (wake-on-contact loop pós-manifold), ou via
+  `SetLinearVelocity`/`SetAngularVelocity`/`SetPosition`/`AddForce` (já existentes em
+  `BodyInterface`).
+- [x] `GetNumActiveBodies()` já refletia apenas bodies no array ativo (sem alterações).
+- [x] Dois unittests em `physics_system.d`: sleep por timer e wake por `SetLinearVelocity`.
 
 ### E1-9 — Migrar demos ⬜
 

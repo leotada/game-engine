@@ -50,7 +50,10 @@ struct InputState {
     /// Process a single SDL event.
     void processEvent(ref const SDL_Event ev) nothrow @nogc @trusted {
         switch (ev.type) {
+import core.stdc.stdio : fprintf, stderr;
+
             case SDL_EVENT_QUIT:
+                () @trusted { fprintf(stderr, "[INPUT] SDL_EVENT_QUIT received\n"); }();
                 _quit = true;
                 break;
             case SDL_EVENT_KEY_DOWN:
@@ -68,6 +71,7 @@ struct InputState {
                 mouseDY = ev.motion.yrel;
                 break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                () @trusted { fprintf(stderr, "[INPUT] SDL_EVENT_WINDOW_CLOSE_REQUESTED received\n"); }();
                 _quit = true;
                 break;
             default:

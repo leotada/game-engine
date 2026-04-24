@@ -26,7 +26,8 @@ struct App {
                       WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
         App app;
         app.window   = Window.create(title.ptr, width, height);
-        app.gpu      = GpuContext.create(
+        GpuContext.create(
+            app.gpu,
             app.window.waylandDisplay(),
             app.window.waylandSurface(),
             width, height,
