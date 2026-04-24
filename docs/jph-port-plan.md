@@ -17,25 +17,63 @@ dentro do namespace `engine.jph`. Source-of-truth: `ref/JoltPhysics/Jolt/`.
 - **Sem dependências bindbc-*.** Bindings são `extern(C) nothrow @nogc`
   manuais em `source/bindings/`.
 
-## Resumo das fases
+## Estrutura em dois épicos
 
-| #   | Fase                                      | Estado       | Commit    |
-| --- | ----------------------------------------- | ------------ | --------- |
-| 0   | Backup + remoção do `engine.physics`      | ✅ Concluída | `7ce026b` |
-| 1   | `jph.core` (Ref, Array, JobSystem, …)     | ✅ Concluída | `0fe3b25` |
-| 2a  | `jph.geometry` primitives + GJK           | ✅ Concluída | `5fd5f5c` |
-| 2b  | `jph.geometry` EPA + raios                | ✅ Concluída | `17d259a` |
-| 3   | `jph.physics.body` (IDs, MP, enums)       | ✅ Concluída | `a325c5a` |
-| 4   | `jph` shapes                              | ⏳ Em curso  | —         |
-| MVP | Caminho mínimo (cubos rígidos)            | ⏳ Em curso  | —         |
-| 5   | Narrowphase + dispatch                    | ⬜ Pendente  | —         |
-| 6   | BroadPhaseQuadTree + SIMD rays            | ⬜ Pendente  | —         |
-| 7   | Constraints + ContactConstraintManager    | ⬜ Pendente  | —         |
-| 8   | PhysicsSystem + IslandBuilder + API       | ⬜ Pendente  | —         |
-| 9   | Migrar `benchmark.d` e `test_physics.d`   | ⬜ Pendente  | —         |
-| 10  | (opcional) JobSystemTaskPool              | ⬜ Pendente  | —         |
+O porte está organizado em **dois épicos** com escopos bem separados:
 
-Status: **4 de 11 fases concluídas**, fase 4 em andamento.
+### Épico 1 — Rigid body para jogos (foco atual)
+
+Conjunto mínimo, mas completo, para jogos que usam física de
+várias maneiras: muitos corpos rígidos colidindo a 60+ FPS, gatilhos
+(sensors) e raycast contra a cena. Sem joints, sem ilhas, sem
+multithread, sem QuadTree, sem mesh/heightfield/softbody, sem decorated
+ou compound shapes. **Tudo o que ficar de fora vai para o Épico 2 sem
+quebrar a API gameplay-facing definida aqui.**
+
+| #     | Fase                                                              | Estado       | Commit    |
+| ----- | ----------------------------------------------------------------- | ------------ | --------- |
+| 0     | Backup + remoção do `engine.physics`                              | ✅ Concluída | `7ce026b` |
+| 1     | `jph.core` (Ref, Array, JobSystem, …)                             | ✅ Concluída | `0fe3b25` |
+| 2a    | `jph.geometry` primitives + GJK                                   | ✅ Concluída | `5fd5f5c` |
+| 2b    | `jph.geometry` EPA + raios                                        | ✅ Concluída | `17d259a` |
+| 3     | `jph.physics.body` (IDs, MP, enums, MotionProperties)             | ✅ Concluída | `a325c5a` |
+| 4a.0  | Shape base + infra (`Shape`, `ShapeSettings`, `SubShapeID`, …)    | ✅ Concluída | —         |
+| 4a.1  | `ConvexShape` + Sphere/Box/Capsule                                | ✅ Concluída | —         |
+| 4a.2  | Cylinder, TaperedCylinder, TaperedCapsule, Triangle               | ✅ Concluída | —         |
+| 4a.3  | Degenerate (`PlaneShape`, `EmptyShape`)                           | ✅ Concluída | —         |
+| E1-1  | `MassProperties.Rotate`                                           | ✅ Concluída | —         |
+| E1-2  | Narrowphase enxuto (Box/Sphere/Capsule × Box/Plane + GJK fallback)| ✅ Concluída | —         |
+| E1-3  | Broadphase brute-force                                            | ✅ Concluída | —         |
+| E1-4  | `ContactConstraintManager` + solver PGS                           | ✅ Concluída | —         |
+| E1-5  | `BodyManager` + `BodyInterface` + `PhysicsSystem.Step()`          | ✅ Concluída | —         |
+| E1-6  | Sensores (triggers) + `ContactListener`                           | ⏳ Em curso  | —         |
+| E1-7  | Scene-level raycast (`NarrowPhaseQuery.CastRay`)                  | ⬜ Pendente  | —         |
+| E1-8  | Sleep simples (sem ilhas)                                         | ⬜ Pendente  | —         |
+| E1-9  | Migrar `test_physics.d` e `benchmark.d`                           | ⬜ Pendente  | —         |
+| E1-10 | Documentar API gameplay-facing                                    | ⬜ Pendente  | —         |
+
+Status do Épico 1: **15 de 19 fases concluídas**; faltam triggers,
+raycast de cena, sleep e migração dos demos.
+
+### Épico 2 — Jolt completo (pós-MVP)
+
+Funcionalidades avançadas, ordem sugerida quando o Épico 1 estiver
+verde no benchmark. Cada fase deve preservar a API pública estabilizada
+no Épico 1 (apenas adiciona).
+
+| #    | Fase                                                              | Estado       |
+| ---- | ----------------------------------------------------------------- | ------------ |
+| E2-1 | `IslandBuilder` (convergência + sleep correto sob contato)        | ⬜ Pendente  |
+| E2-2 | `BroadPhaseQuadTree` (O(n log n))                                 | ⬜ Pendente  |
+| E2-3 | SIMD em lote (`RayAABox4`, `RayTriangle4`, `Vec4` ops)            | ⬜ Pendente  |
+| E2-4 | Decorated shapes (Scaled, RotatedTranslated, OffsetCOM)           | ⬜ Pendente  |
+| E2-5 | `StaticCompoundShape` (BVH)                                       | ⬜ Pendente  |
+| E2-6 | Named constraints (Fixed, Point, Distance, Hinge, Slider, …)      | ⬜ Pendente  |
+| E2-7 | `ConvexHullShape` + builder                                       | ⬜ Pendente  |
+| E2-8 | `MeshShape`, `HeightFieldShape`, `MutableCompoundShape`           | ⬜ Pendente  |
+| E2-9 | `SoftBodyShape` + soft body solver                                | ⬜ Pendente  |
+| E2-10| `JobSystemTaskPool` (multithread)                                 | ⬜ Pendente  |
+| E2-11| Double-precision world + serialização + step listeners            | ⬜ Pendente  |
 
 ---
 
@@ -242,219 +280,255 @@ compilar.
 
 ---
 
-## MVP — Caminho mínimo para benchmark de cubos rígidos ⏳
+## Épico 1 — Rigid body para jogos ⏳
 
-Track paralelo, focado em fechar o primeiro recorte de **corpos rígidos
-simples**: `benchmark.d` restaurado, `test_physics.d` headless restaurado,
-e suporte de primeira classe para **boxes, spheres, capsules e um chão
-plano estático** com gravidade, contatos, atrito e sleeping.
-**Sem joints, sem QuadTree, sem decorated/compound shapes, sem SIMD em
-lote, sem multithread.** Tudo o que for cortado aqui volta depois numa
-fase "post-MVP" sem quebrar a API.
+Foco: corpos rígidos suficientes para jogos que usam física de várias
+maneiras (plataformas, puzzles, ragdoll-leve, projéteis, gatilhos de
+área, line-of-sight). Tudo single-thread, sem joints, sem ilhas, sem
+QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
 
-**Total estimado:** ~4.000 LOC novas (vs ~10.500 do plano completo).
+**Total estimado:** ~4.000 LOC novas (vs ~10.500 do Jolt completo).
 
-### Cortes aceitos para o MVP
+### Cortes do Épico 1 (movidos para o Épico 2)
 
-| Adiado                                                         | Justificativa                                                                                  |
+| Adiado para Épico 2                                            | Justificativa                                                                                  |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Phase 4a.4 (Scaled / RotatedTranslated / OffsetCOM)            | Cubos usam `BoxShape` direto; pose vem do `Body`.                                              |
-| Phase 4a.5 (StaticCompound + BVH)                              | Bodies de shape única.                                                                         |
-| Phase 4b (ConvexHull + builder)                                | Box é primitiva.                                                                               |
-| Manifold clipping genérico para qualquer par convexo           | Box-vs-Box fica analítico (SAT + face clipping). Box/Sphere/Capsule mistos podem começar em fallback GJK+EPA. |
-| Phase 6 QuadTree + RayAABox4/RayTriangle4                      | `BroadPhaseBruteForce` (O(n²)) basta para 1000 corpos.                                         |
-| Phase 7 named constraints (fixed/point/distance/hinge/slider)  | Benchmark não tem joints. Apenas contact constraints.                                          |
-| Position solver completo / Baumgarte tunado                    | Começar com PGS de velocidade + projeção de penetração simples; refinar se pilhas instabilizam. |
-| IslandBuilder                                                  | Tudo numa única "ilha" global no v1.                                                            |
-| Phase 10 JobSystemTaskPool                                     | `JobSystemSingleThreaded` já existe.                                                            |
+| Decorated shapes (Scaled / RotatedTranslated / OffsetCOM)      | Bodies usam `BoxShape`/`SphereShape`/etc. direto; pose vem do `Body`.                          |
+| `StaticCompoundShape` (+ BVH)                                  | Bodies de shape única bastam para o recorte de jogos visado.                                   |
+| `ConvexHullShape` (+ builder)                                  | Primitivas cobrem 95% do uso comum.                                                            |
+| Manifold clipping convexo genérico                             | Box-vs-Box analítico (SAT + clipping); pares mistos via fallback GJK+EPA.                      |
+| `BroadPhaseQuadTree` + `RayAABox4`/`RayTriangle4` SIMD         | `BroadPhaseBruteForce` (O(n²)) basta até ~1000 corpos.                                         |
+| Named constraints (fixed/point/distance/hinge/slider)          | Sem joints no recorte.                                                                         |
+| `IslandBuilder`                                                | Tudo numa única "ilha" global; sleep apenas por timer.                                         |
+| `JobSystemTaskPool`                                            | `JobSystemSingleThreaded` já existe e cobre o recorte.                                         |
+| Mesh / HeightField / SoftBody                                  | Não são necessários para o conjunto de jogos visado.                                           |
 
-### Sequência de fases MVP
+### E1-1 — `MassProperties.Rotate` ✅
 
-#### MVP-1 — `MassProperties.Rotate` (mini-4a.4)
+- [x] `MassProperties.Rotate(Mat44)` em
+  `engine.jph.physics.body.massproperties` para transformar o tensor
+  de inércia para world-space todo frame.
 
-- [ ] Portar só `MassProperties.Rotate(Mat44)` em
-  `engine.jph.physics.body.massproperties` (~80 LOC). Necessário para
-  transformar o tensor de inércia para world-space todo frame.
+### E1-2 — Narrowphase enxuto ✅
 
-#### MVP-2 — Narrowphase enxuto
-
-- [ ] `collision/collide_shape.d` — `CollideShapeResult`,
+- [x] `collision/collide_shape.d` — `CollideShapeResult`,
   `CollideShapeSettings`, `ECollisionMode`.
 - [x] `collision/object_layer.d` — `ObjectLayer` (uint16) + filtros.
 - [x] `collision/broad_phase_layer.d` — `BroadPhaseLayer` (uint8) +
   interface mínima.
-- [ ] `collision/collide_box_vs_box.d` — manifold SAT analítico
+- [x] `collision/collide_box_vs_box.d` — manifold SAT analítico
   (15 eixos, edge-edge via cross-product, face clipping
   Sutherland–Hodgman + redução para ≤4 contatos persistentes).
-- [ ] `collision/collide_box_vs_plane.d`,
+- [x] `collision/collide_box_vs_plane.d`,
   `collision/collide_sphere_vs_plane.d`,
   `collision/collide_capsule_vs_plane.d` — contatos analíticos para o
-  conjunto mínimo suportado pelo sandbox.
-- [ ] `collision/collide_convex_vs_convex.d` — fallback genérico via
-  GJK + EPA da Phase 2 (cobre Box/Sphere/Capsule mistos enquanto o
-  narrowphase específico não chega).
-- [ ] `collision/collision_dispatch.d` — tabela 2×2 inicial (Box×Box,
-  Box×Plane); resto cai no fallback GJK+EPA.
+  conjunto suportado.
+- [x] `collision/collide_convex_vs_convex.d` — fallback genérico via
+  GJK + EPA da Phase 2 (cobre Box/Sphere/Capsule mistos).
+- [x] `collision/collision_dispatch.d` — tabela de despachos com
+  fallback GJK+EPA.
 
-#### MVP-3 — BroadPhase brute-force
+### E1-3 — Broadphase brute-force ✅
 
 - [x] `broadphase/broad_phase.d` — interface base.
 - [x] `broadphase/broad_phase_brute_force.d` — varredura O(n²) sobre
   `Body[]` AABB list, gera `BodyPair[]` ativo por frame.
 
-#### MVP-4 — ContactConstraintManager + solver
+### E1-4 — `ContactConstraintManager` + solver PGS ✅
 
-- [ ] `physics_settings.d` — steps, slop, baumgarte, iterations.
-- [ ] `constraints/contact_constraint_manager.d` — por contato:
+- [x] `physics_settings.d` — steps, slop, baumgarte, iterations.
+- [x] `constraints/contact_constraint_manager.d` — por contato:
   jacobianos normal + 2 atritos; cache de warm-start chaveado por
   `SubShapeIDPair`; PGS sequencial (8 iters velocidade, 2 iters
-  posição). **Maior risco do MVP:** estabilidade do solver determina
-  se pilhas de cubos descansam sem jitter.
+  posição) com warm-start por ponto mais próximo (5 cm threshold).
 
-#### MVP-5 — BodyManager + PhysicsSystem (mini-Phase 8)
+### E1-5 — `BodyManager` + `BodyInterface` + `PhysicsSystem.Step()` ✅
 
 - [x] `body/body.d` — composição final (transform, shape ref,
-  motion props ptr, layers, flags).
+  motion props ptr, layers, flags, `mIsSensor`).
 - [x] `body/body_manager.d` — pool SoA de `Body` + `MotionProperties`,
   free-list de `BodyID`s.
 - [x] `body/body_creation_settings.d`.
 - [x] `body/body_interface.d` — API pública (`AddBody`, `RemoveBody`,
   `SetPosition`, `SetLinearVelocity`, `ActivateBody`, …).
-- [ ] `physics_system.d` — orquestra: integrar forças → broadphase →
-  narrowphase → solver de contatos → integrar velocidades →
-  atualizar transforms → timers de sleep. **Sem IslandBuilder no v1.**
-- [x] Estado atual de `physics_system.d`: owner mínimo de `BodyManager` +
-  `BodyInterface` + `BroadPhaseBruteForce`, com coleta de `BodyPair[]`
-  e atualização de `broadphasePairs` nas estatísticas.
-- [ ] Sleep simples: threshold de velocidade + timer por body
-  (sem ilhas).
+- [x] `physics_system.d` — `Step(dt, settings)` orquestra:
+  forças → broadphase → narrowphase → solver de contatos →
+  integração → atualização de transforms.
 
-#### MVP-6 — Migrar demos
+### E1-6 — Sensores (triggers) + `ContactListener` ⏳
 
-- [ ] `source/demo/test_physics.d` — sandbox (gravidade, chão,
-  empilhamento, além de drops simples de sphere/capsule) para validação
-  rápida.
-- [ ] `source/demo/benchmark.d` — 1000 cubos dinâmicos + chão
-  estático via novo `BodyInterface`. FPS deve igualar ou superar a
-  versão pré-porte.
-- [ ] Documentar a API gameplay-facing em `docs/`.
+Triggers são corpos com `mIsSensor = true`: detectam sobreposição mas
+não geram resposta de contato. O `ContactListener` é a maneira
+gameplay-facing de reagir a colisões e a entradas/saídas em sensores.
 
-### Riscos críticos do MVP
+- [x] `Body.IsSensor()` + flag `mIsSensor` em `BodyCreationSettings`.
+- [x] Filtro em `Body.sFindCollidingPairsCanCollide` — sensores
+  não colidem com kinematicos passivos.
+- [ ] `collision/contact_listener.d` — interface `ContactListener` com:
+  - `OnContactValidate(body1, body2, manifold) -> EValidateResult`
+  - `OnContactAdded(body1, body2, manifold, settings)`
+  - `OnContactPersisted(body1, body2, manifold, settings)`
+  - `OnContactRemoved(SubShapeIDPair)`
+- [ ] `PhysicsSystem.SetContactListener(ContactListener)`.
+- [ ] Integrar callbacks no fim do narrowphase: emitir `Added`/`Persisted`
+  comparando com o cache do `ContactConstraintManager` do frame anterior;
+  emitir `Removed` para chaves que desapareceram.
+- [ ] Skip da geração de constraints quando `body1.IsSensor() || body2.IsSensor()`
+  — só dispara o callback (`OnContactAdded`/`Persisted`/`Removed`).
+- [ ] `BodyCreationSettings.mUserData` (uint64) — payload livre para o
+  jogo associar entidades ECS aos bodies.
+- [ ] Unittest: dois bodies dinâmicos atravessando um sensor disparam
+  `OnContactAdded` na entrada e `OnContactRemoved` na saída sem
+  alterar velocidades.
 
-1. **Solver PGS (MVP-4)** — Baumgarte, slop, número de iterações.
-   Pilhas de cubos são o teste-padrão de estabilidade.
-2. **Manifold SAT Box-vs-Box (MVP-2)** — contatos persistentes
-   precisam de face clipping correto para a pilha não vibrar.
-   Referência: `ref/JoltPhysics/Jolt/Physics/Collision/Shape/BoxShape.cpp`
-   (`sCollideBoxVsBox`).
-3. **Tensor de inércia em world-space (MVP-5)** — `R · I_local · Rᵀ`
-   precisa ser recalculado todo frame para corpos rotacionados.
-4. **Sleep sem ilhas (MVP-5)** — sem IslandBuilder, ou nada dorme,
-   ou tudo dorme cedo demais. Ajustar threshold conservador.
+### E1-7 — Scene-level raycast ⬜
 
-### Reincorporação pós-MVP (ordem sugerida)
+`Shape.CastRay` (por-shape) já existe. Falta o nível "consulta na cena":
+um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
 
-Quando o benchmark estiver verde, retomar o plano completo nesta ordem
-(sem quebrar a API gameplay-facing já estabilizada):
+- [ ] `collision/ray_cast.d` — `RRayCast` (origem world-space + direção),
+  `RayCastSettings` (`mTreatConvexAsSolid`, `mBackFaceMode`).
+- [ ] `collision/cast_result.d` — `RayCastResult` agregado com `mBodyID`,
+  `mSubShapeID2`, `mFraction`. (Já existe per-shape; estender para
+  carregar `BodyID`.)
+- [ ] `collision/cast_collector.d` — interface `CastRayCollector` +
+  implementações `ClosestHitCollisionCollector`,
+  `AnyHitCollisionCollector`, `AllHitCollisionCollector`.
+- [ ] `collision/narrow_phase_query.d` — `NarrowPhaseQuery` com:
+  - `CastRay(RRayCast, ref RayCastResult, BroadPhaseLayerFilter,
+    ObjectLayerFilter, BodyFilter, ShapeFilter) -> bool`
+    (atalho closest-hit).
+  - `CastRay(RRayCast, RayCastSettings, CastRayCollector, …)`
+    (versão completa).
+  - Usa `BroadPhase.CastRay` (a adicionar) → para cada body candidato,
+    transforma o raio para local-space e chama `Shape.CastRay`.
+- [ ] `BroadPhase.CastRay(ray, collector, …)` — no `BroadPhaseBruteForce`,
+  varre todos os bodies e usa `RayAABox` per-body como early-out.
+- [ ] `PhysicsSystem.GetNarrowPhaseQuery()` — exposição da query.
+- [ ] Unittest: raio contra cena com 5 bodies (esfera, caixa, cápsula,
+  plano, sensor) — closest-hit retorna o mais próximo, `BodyFilter`
+  ignora bodies específicos, sensor é ignorável via `ShapeFilter`.
 
-1. **IslandBuilder** → convergência do solver + sleeping correto sob
-   contato sustentado.
-2. **BroadPhaseQuadTree** (Phase 6) → de O(n²) para O(n log n).
-3. **RayAABox4 / RayTriangle4** (SIMD) → raycasts contra árvore.
-4. **Decorated shapes (4a.4)** + **StaticCompound (4a.5)** → autoria de
-   shapes não-cubo.
-5. **Named constraints (Phase 7 completa)** → joints.
-6. **`ConvexHullShape` (4b)** → autoria de convexos arbitrários.
-7. **JobSystemTaskPool (Phase 10)** → multithread.
+### E1-8 — Sleep simples (sem ilhas) ⬜
+
+- [ ] Threshold de velocidade configurável em `PhysicsSettings`
+  (`mPointVelocitySleepThreshold`, `mTimeBeforeSleep`).
+- [ ] Por body: timer acumula enquanto `|v|² + |ω|²·r² < threshold²`;
+  ao estourar `mTimeBeforeSleep`, body vai para inativo
+  (`EActivation.DontActivate`).
+- [ ] Body acorda quando recebe contato/força/impulso, `SetPosition`,
+  `SetVelocity`, ou quando entra na lista de pares broadphase.
+- [ ] Atualizar `PhysicsSystem.GetNumActiveBodies()` para refletir
+  apenas bodies acordados.
+
+### E1-9 — Migrar demos ⬜
+
+- [ ] `source/demo/test_physics.d` — sandbox com gravidade, chão,
+  empilhamento, drops simples (sphere/capsule), 1 sensor de área que
+  loga entrada/saída, 1 raycast por frame para detectar "chão".
+- [ ] `source/demo/benchmark.d` — 1000 cubos dinâmicos + chão estático
+  via `BodyInterface`. FPS deve igualar ou superar a versão pré-porte.
+
+### E1-10 — Documentar API gameplay-facing ⬜
+
+- [ ] `docs/physics-quickstart.md` — receita de "como criar um corpo,
+  registrar um listener, fazer raycast".
+- [ ] Cobertura mínima: `BodyCreationSettings`, `BodyInterface`,
+  `ContactListener`, `NarrowPhaseQuery`, `PhysicsSettings`.
+
+### Riscos críticos do Épico 1
+
+1. **Solver PGS (E1-4, já implementado)** — Baumgarte, slop, iterações.
+   Pilhas de cubos são o teste-padrão de estabilidade; revisitar se
+   `benchmark.d` mostrar jitter.
+2. **Sensores no dispatch (E1-6)** — sensor não pode entrar no
+   `ContactConstraintManager`, mas precisa gerar manifolds para o
+   listener. Dois caminhos no narrowphase ou um flag no manifold.
+3. **Sleep sem ilhas (E1-8)** — sem `IslandBuilder`, ou nada dorme,
+   ou tudo dorme cedo demais. Threshold conservador + acordar agressivo.
+4. **Tensor de inércia em world-space (E1-5)** — `R · I_local · Rᵀ`
+   recalculado todo frame; já implementado em `IntegrateMotion`.
 
 ---
 
-## Phase 5 — Narrowphase + dispatch ⬜
+## Épico 2 — Implementação completa do Jolt ⬜
 
-- [ ] `collision/collide_shape.d` — `CollideShapeResult`,
-  `CollideShapeSettings`, `ECollisionMode`.
-- [ ] `collision/cast_result.d` — `CastResult`, `CastShapeResult`,
-  `RayCastResult`.
-- [ ] `collision/collide_convex_vs_triangles.d`.
-- [ ] `collision/collision_dispatch.d` — tabela
-  `sCollisionFunctions[sub_type_a][sub_type_b]`.
-- [ ] Ponte `ShapeVsShape` usando GJK + EPA da Phase 2.
-- [ ] `collision/manifold_between_two_faces.d` — clipping de faces para
-  gerar contact manifolds (usado pelo solver).
-- [ ] `collision/collide_shape_dispatch.d` e `cast_shape_dispatch.d`.
-- [ ] `collision/broad_phase_layer.d`, `object_layer.d`,
-  `object_vs_broad_phase_layer_filter.d`,
-  `object_layer_pair_filter.d`.
+Funcionalidades avançadas. Cada fase é aditiva sobre a API estabilizada
+no Épico 1 — quem só precisa de "rigid body para jogos" pode parar lá.
 
----
+### E2-1 — `IslandBuilder` ⬜
 
-## Phase 6 — BroadPhaseQuadTree + SIMD ray ⬜
+- [ ] `island_builder.d` — agrupa bodies conectados por contatos ou
+  constraints por frame (union-find sobre pairs).
+- [ ] `physics_system.d` — usar ilhas no solver (per-island PGS) e no
+  sleep (uma ilha inteira dorme/acorda junta).
+- [ ] Reduz jitter em pilhas grandes; pré-requisito para multithread.
 
-- [ ] `broad_phase.d` — `BroadPhase` base e `BroadPhaseBruteForce` (debug).
+### E2-2 — `BroadPhaseQuadTree` ⬜
+
 - [ ] `broad_phase_quad_tree.d` — árvore de 4 filhos com nós SoA.
-- [ ] `quad_tree.d` — insert/remove/update em batch, cast ray / sphere /
-  box / point.
-- [ ] Implementar as variantes SIMD adiadas:
-  - [ ] `RayAABox4` — interseção com 4 AABoxes em paralelo.
-  - [ ] `RayTriangle4` — interseção com 4 triângulos em paralelo.
-  - [ ] `UVec4` / `Vec4.sMin/sMax/sSelect/sAnd/sOr` que forem necessários.
+- [ ] `quad_tree.d` — insert/remove/update em batch, cast ray /
+  sphere / box / point.
 - [ ] `broad_phase_layer_interface.d`,
-  `broad_phase_layer_interface_table.d`.
+  `broad_phase_layer_interface_table.d` (a versão completa).
+- [ ] Substitui `BroadPhaseBruteForce` (que fica disponível para debug).
 
----
+### E2-3 — SIMD em lote ⬜
 
-## Phase 7 — Constraints + ContactConstraintManager ⬜
+- [ ] `RayAABox4` — interseção com 4 AABoxes em paralelo.
+- [ ] `RayTriangle4` — interseção com 4 triângulos em paralelo.
+- [ ] `UVec4` / `Vec4.sMin/sMax/sSelect/sAnd/sOr` que forem necessários.
+- [ ] Usados pela `QuadTree` (E2-2) e pelo `MeshShape` (E2-8).
+
+### E2-4 — Decorated shapes ⬜
+
+- [ ] `scaled_shape.d` (requer `MassProperties.Scale`).
+- [ ] `rotated_translated_shape.d`.
+- [ ] `offset_center_of_mass_shape.d`.
+
+### E2-5 — `StaticCompoundShape` ⬜
+
+- [ ] `static_compound_shape.d` com partição BVH (sort+mediana, não SAH).
+
+### E2-6 — Named constraints ⬜
 
 - [ ] `constraints/constraint.d` — base + `ConstraintSettings`.
-- [ ] Constraints mínimas:
-  - [ ] `fixed_constraint.d`, `point_constraint.d`,
-    `distance_constraint.d`, `hinge_constraint.d`,
-    `slider_constraint.d`.
-- [ ] `constraint_manager.d`.
-- [ ] `contact_constraint_manager.d` — geração de jacobianos + warm start +
-  solver de velocidade e posição (Gauss-Seidel sequencial).
+- [ ] `fixed_constraint.d`, `point_constraint.d`,
+  `distance_constraint.d`, `hinge_constraint.d`,
+  `slider_constraint.d`, `cone_constraint.d`,
+  `swing_twist_constraint.d`, `six_dof_constraint.d`.
+- [ ] `constraint_manager.d` (solver de constraints integrado às ilhas
+  do E2-1).
 - [ ] `penetration_axis.d`, `estimate_collision_response.d`.
-- [ ] `physics_settings.d` — steps, baumgarte, erp, slop.
 
----
+### E2-7 — `ConvexHullShape` + builder ⬜
 
-## Phase 8 — PhysicsSystem + IslandBuilder + BodyInterface ⬜
+- [ ] `convex_hull_shape.d` — points + faces + edges (geração offline).
+- [ ] `engine.jph.geometry.convex_hull_builder` (~800 LOC).
 
-- [ ] `body/body_manager.d` — alocação/reciclagem de `BodyID`, arrays SoA
-  de `Body` + `MotionProperties`.
-- [ ] `body/body.d` — composição final (`BodyID`, transform, shape ref,
-  motion props ptr, layers, flags).
-- [ ] `body/body_creation_settings.d` e `body/body_filter.d`.
-- [ ] `body/body_interface.d` — API pública para criar/destruir, set
-  transform, aplicar impulsos.
-- [ ] `body/body_activation_listener.d`.
-- [ ] `island_builder.d` — agrupamento de bodies conectados por contatos
-  ou constraints por frame.
-- [ ] `physics_system.d` — orquestra broadphase → narrowphase →
-  constraints → solver → integração.
-- [ ] `physics_update_context.d`, `physics_step_listener.d`.
-- [ ] `contact_listener.d`, `physics_scene.d`.
+### E2-8 — Mesh / HeightField / MutableCompound ⬜
 
----
+- [ ] `mesh_shape.d` — BVH de triângulos para terreno/colisão estática.
+- [ ] `height_field_shape.d` — campo de alturas comprimido.
+- [ ] `mutable_compound_shape.d` — compound editável em runtime.
 
-## Phase 9 — Migrar demos ⬜
+### E2-9 — `SoftBodyShape` ⬜
 
-- [ ] `source/demo/benchmark.d` — usar novo `PhysicsSystem` +
-  `BodyInterface` para criar as 1000 caixas instanciadas.
-- [ ] `source/demo/test_physics.d` — sandbox mínimo (gravity, chão,
-  empilhamento) para validação visual.
-- [ ] Garantir FPS estável no benchmark (≥ antes do porte).
-- [ ] Documentar a API gameplay-facing em `docs/`.
+- [ ] `soft_body_shape.d` + soft body solver (XPBD ou similar).
 
----
-
-## Phase 10 (opcional) — JobSystemTaskPool ⬜
+### E2-10 — `JobSystemTaskPool` ⬜
 
 - [ ] `core/job_system_task_pool.d` — thread-pool com worker queues e
   dependências entre jobs.
 - [ ] Paralelizar: broadphase batch update, narrowphase por par, solver
   por ilha.
 - [ ] Instrumentação / profiling integrado (opcional).
+
+### E2-11 — Double-precision + serialização + step listeners ⬜
+
+- [ ] World em `double` (`RVec3`/`DVec3`) para mundos grandes.
+- [ ] `physics_scene.d` + serialização binária.
+- [ ] `physics_step_listener.d`, `body_activation_listener.d`.
 
 ---
 
