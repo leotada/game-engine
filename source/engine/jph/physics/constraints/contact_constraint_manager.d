@@ -87,6 +87,9 @@ struct ContactConstraintManager {
         return mCache.GetManifolds();
     }
 
+    /// Returns true if the cache is sorted (i.e. safe for binary search).
+    bool IsCacheSorted() const nothrow @nogc { return mCache.mSorted; }
+
     private void buildConstraints(const(ContactManifold)[] inManifolds,
                                    PhysicsSettings inSettings,
                                    float inDeltaTime) nothrow @nogc {
@@ -157,22 +160,18 @@ struct ContactConstraintManager {
     // Finds the cached manifold for the same body pair and copies the
     // accumulated normal/friction lambdas into the new constraint's points.
     // Matching is by closest mPointOn1 within a 5 cm radius.
+    // Cache lookup is O(log N) via binary search (cache is sorted by pair key).
     private static void loadCachedLambdas(ref ContactConstraint inConstraint,
                                           const(CachedManifold)[] inCache) nothrow @nogc {
-        const(CachedManifold)* cached = null;
+        // Try canonical order first, then reversed.
+        const(CachedManifold)* cached =
+            ContactConstraintManagerCache.staticFindIn(
+                inCache, inConstraint.mBody1ID, inConstraint.mBody2ID);
         bool reversed = false;
-        foreach (ref cm; inCache) {
-            if (cm.mBody1ID == inConstraint.mBody1ID &&
-                cm.mBody2ID == inConstraint.mBody2ID) {
-                cached = &cm;
-                break;
-            }
-            if (cm.mBody1ID == inConstraint.mBody2ID &&
-                cm.mBody2ID == inConstraint.mBody1ID) {
-                cached   = &cm;
-                reversed = true;
-                break;
-            }
+        if (cached is null) {
+            cached = ContactConstraintManagerCache.staticFindIn(
+                inCache, inConstraint.mBody2ID, inConstraint.mBody1ID);
+            reversed = (cached !is null);
         }
         if (cached is null || cached.mNumContactPoints == 0)
             return;

@@ -8,7 +8,8 @@
     "sourcePaths": ["source/engine", "source/bindings", "source/demo"],
     "importPaths": ["source"],
 
-    "dflags": ["-preview=dip1000"],
+    "dflags-dmd": ["-preview=dip1000"],
+    "dflags-ldc": ["-preview=dip1000"],
 
     "libs": ["SDL3", "wgpu_native"],
     "lflags-linux": ["-L./libs"],
@@ -27,7 +28,8 @@
             "targetName": "game-engine-benchmark",
             "mainSourceFile": "source/demo/benchmark.d",
             "excludedSourceFiles": ["source/demo/main.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/gc_benchmark.d", "source/demo/_legacy/*"],
-            "dflags-release-ldc": ["-O3", "-mcpu=native"]
+            "dflags-release-ldc": ["-O3", "-mcpu=native"],
+            "dflags-release-gdc": ["-O3", "-march=native"]
         },
         {
             "name": "game",

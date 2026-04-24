@@ -48,9 +48,11 @@ struct CachedManifold {
 struct ContactConstraintManagerCache {
 @safe:
     Array!CachedManifold mManifolds;
+    bool mSorted = false; // true after StoreConstraints sorts the array
 
     void Clear() nothrow @nogc {
         mManifolds.clear();
+        mSorted = false;
     }
 
     void StoreConstraints(const(ContactConstraint)[] inConstraints) nothrow @nogc {
@@ -61,11 +63,69 @@ struct ContactConstraintManagerCache {
             manifold.AssignFromConstraint(constraint);
             mManifolds.push_back(manifold);
         }
+
+        // Sort by canonical pair key so FindManifold can binary-search.
+        // Insertion sort: manifold arrays are small (<= 4096) and nearly
+        // sorted each frame (persistent contacts dominate).
+        size_t n = mManifolds.size;
+        foreach (i; 1 .. n) {
+            immutable ulong ki = pairKey(mManifolds[i].mBody1ID, mManifolds[i].mBody2ID);
+            CachedManifold tmp = mManifolds[i];
+            long j = cast(long) i - 1;
+            while (j >= 0 && pairKey(mManifolds[j].mBody1ID, mManifolds[j].mBody2ID) > ki) {
+                mManifolds[j + 1] = mManifolds[j];
+                --j;
+            }
+            mManifolds[j + 1] = tmp;
+        }
+        mSorted = true;
     }
 
     const(CachedManifold)[] GetManifolds() const nothrow @nogc {
         return mManifolds[];
     }
+
+    /// O(log N) lookup by body pair.  Returns null if not found.
+    /// Caller should try both (a,b) and (b,a) orders.
+    const(CachedManifold)* FindManifold(BodyID a, BodyID b) const nothrow @nogc @trusted {
+        if (!mSorted || mManifolds.size == 0) return null;
+        immutable ulong target = pairKey(a, b);
+        size_t lo = 0, hi = mManifolds.size;
+        while (lo < hi) {
+            immutable size_t mid = (lo + hi) >> 1;
+            immutable ulong k = pairKey(mManifolds[mid].mBody1ID, mManifolds[mid].mBody2ID);
+            if      (k < target) lo = mid + 1;
+            else if (k > target) hi = mid;
+            else                 return &(cast(CachedManifold[]) mManifolds[])[mid];
+        }
+        return null;
+    }
+
+    /// Same lookup on an arbitrary sorted slice — used by ContactConstraintManager
+    /// and PhysicsSystem without needing a struct instance.
+    package(engine.jph.physics)
+    static const(CachedManifold)* staticFindIn(
+            const(CachedManifold)[] cache,
+            BodyID a, BodyID b) nothrow @nogc @trusted {
+        if (cache.length == 0) return null;
+        immutable ulong target = pairKey(a, b);
+        size_t lo = 0, hi = cache.length;
+        while (lo < hi) {
+            immutable size_t mid = (lo + hi) >> 1;
+            immutable ulong k = pairKey(cache[mid].mBody1ID, cache[mid].mBody2ID);
+            if      (k < target) lo = mid + 1;
+            else if (k > target) hi = mid;
+            else                 return &cache[mid];
+        }
+        return null;
+    }
+}
+
+/// Canonical 64-bit key for a body pair (body1 in high 32 bits).
+/// Both (a,b) and (b,a) produce different keys — callers must try both.
+private ulong pairKey(BodyID a, BodyID b) pure nothrow @nogc {
+    return (cast(ulong) a.GetIndexAndSequenceNumber() << 32)
+         | cast(ulong)  b.GetIndexAndSequenceNumber();
 }
 
 unittest {

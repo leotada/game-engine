@@ -52,7 +52,20 @@ struct PhysicsSystem {
     void Init(uint inMaxBodies,
               BroadPhaseLayerInterface inBroadPhaseLayerInterface = null) {
         mBodyManager.Init(inMaxBodies, inBroadPhaseLayerInterface);
-        mBroadPhase = new BroadPhaseGrid(2.0f);
+        mBroadPhase = new BroadPhaseGrid(1.0f); // 1 m cell; exact-range query
+        mBroadPhase.Init(&mBodyManager, inBroadPhaseLayerInterface);
+        mBodyInterface.Init(&mBodyManager, mBroadPhase);
+        mContactConstraintManager.Init(&mBodyManager, mBroadPhase);
+        RefreshStats();
+    }
+
+    /// Variant that lets the caller supply a custom BroadPhase implementation.
+    /// Used by tests and tools that want BroadPhaseQuadTree instead of Grid.
+    void InitWithBroadPhase(uint inMaxBodies,
+                            BroadPhase inBroadPhase,
+                            BroadPhaseLayerInterface inBroadPhaseLayerInterface = null) {
+        mBodyManager.Init(inMaxBodies, inBroadPhaseLayerInterface);
+        mBroadPhase = inBroadPhase;
         mBroadPhase.Init(&mBodyManager, inBroadPhaseLayerInterface);
         mBodyInterface.Init(&mBodyManager, mBroadPhase);
         mContactConstraintManager.Init(&mBodyManager, mBroadPhase);

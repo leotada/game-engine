@@ -44,6 +44,8 @@ quebrar a API gameplay-facing definida aqui.**
 | E1-1  | `MassProperties.Rotate`                                           | ✅ Concluída | —         |
 | E1-2  | Narrowphase enxuto (Box/Sphere/Capsule × Box/Plane + GJK fallback)| ✅ Concluída | —         |
 | E1-3  | Broadphase brute-force                                            | ✅ Concluída | —         |
+| E1-3b | `BroadPhaseGrid` (spatial hash O(n·k))                            | ✅ Concluída | —         |
+| E1-P  | Tuning de performance (dedup pares, ERP, iterações)               | ⏳ Em curso  | —         |
 | E1-4  | `ContactConstraintManager` + solver PGS                           | ✅ Concluída | —         |
 | E1-5  | `BodyManager` + `BodyInterface` + `PhysicsSystem.Step()`          | ✅ Concluída | —         |
 | E1-6  | Sensores (triggers) + `ContactListener`                           | ⏳ Em curso  | —         |
@@ -52,7 +54,7 @@ quebrar a API gameplay-facing definida aqui.**
 | E1-9  | Migrar `test_physics.d` e `benchmark.d`                           | ⬜ Pendente  | —         |
 | E1-10 | Documentar API gameplay-facing                                    | ⬜ Pendente  | —         |
 
-Status do Épico 1: **16 de 19 fases concluídas**; faltam raycast de cena e migração dos demos.
+Status do Épico 1: **17 de 21 fases concluídas** (E1-P em curso); faltam raycast de cena, migração dos demos e tuning de performance.
 
 ### Épico 2 — Jolt completo (pós-MVP)
 
@@ -296,7 +298,7 @@ QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
 | `StaticCompoundShape` (+ BVH)                                  | Bodies de shape única bastam para o recorte de jogos visado.                                   |
 | `ConvexHullShape` (+ builder)                                  | Primitivas cobrem 95% do uso comum.                                                            |
 | Manifold clipping convexo genérico                             | Box-vs-Box analítico (SAT + clipping); pares mistos via fallback GJK+EPA.                      |
-| `BroadPhaseQuadTree` + `RayAABox4`/`RayTriangle4` SIMD         | `BroadPhaseBruteForce` (O(n²)) basta até ~1000 corpos.                                         |
+| `BroadPhaseQuadTree` + `RayAABox4`/`RayTriangle4` SIMD         | `BroadPhaseGrid` (hash espacial) já implementado; QuadTree é Épico 2.                          |
 | Named constraints (fixed/point/distance/hinge/slider)          | Sem joints no recorte.                                                                         |
 | `IslandBuilder`                                                | Tudo numa única "ilha" global; sleep apenas por timer.                                         |
 | `JobSystemTaskPool`                                            | `JobSystemSingleThreaded` já existe e cobre o recorte.                                         |
@@ -332,6 +334,88 @@ QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
 - [x] `broadphase/broad_phase.d` — interface base.
 - [x] `broadphase/broad_phase_brute_force.d` — varredura O(n²) sobre
   `Body[]` AABB list, gera `BodyPair[]` ativo por frame.
+
+### E1-3b — `BroadPhaseGrid` (spatial hash) ✅
+
+Substitui o brute-force por padrão em `PhysicsSystem`. Hash 3D uniforme
+com tabela open-addressed (`HASH_SIZE=8192`): cada body dinâmico é
+inserido nas células que sua AABB cobre (até 8 células); narrowphase
+recebe apenas pares de corpos em células vizinhas (27-cell neighborhood).
+Bodies estáticos (ex.: chão 40 m) ficam em lista separada e são testados
+diretamente — sem inflar o grid com AABBs enormes.
+
+Complexidade vs brute-force para N dinâmicos + S estáticos:
+- Brute-force: O(N × (N+S)) testes de AABB por frame
+- Grid:        O(N × (k×27 + S)) onde k = avg de bodies por célula ≪ N
+
+Benchmark medido (1000 dinâmicos, 1 estático, célula=2m): ≈200 000 testes
+de AABB por frame vs ≈1 000 000 do brute-force (≈5× menos trabalho).
+
+- [x] `broadphase/broad_phase_grid.d` — hash 3D, pool de `CellEntry`,
+  `gridCoord()` com floor negativo correto, `cellHash()` com co-primos.
+- [x] `PhysicsSystem` inicializa com `new BroadPhaseGrid(2.0f)` — célula
+  de 2 m é ótima para corpos de 1 m com spacing ≥ 1 m.
+- [x] Bodies estáticos separados em `mStaticBodyIDs` dentro do grid.
+
+### E1-P — Tuning de performance ⏳
+
+Diagnóstico do benchmark de 1000 cubos (release, 12 s, `BroadPhaseGrid`):
+
+| t (s) | fps  | pairs  | manifolds | avgY  |
+|------:|-----:|-------:|----------:|------:|
+|   2.1 | 29.7 |  5 941 |     2 254 |  4.74 |
+|   4.1 | 10.0 | 10 653 |     2 487 |  3.48 |
+|  12.1 | 10.0 | 15 209 |     3 705 |  1.12 |
+
+**Problema 1 — pares duplicados no broadphase (2× inflação)**
+
+`BroadPhaseGrid.FindCollidingPairs` emite o par (A,B) quando processa A
+e também (B,A) quando processa B. A narrowphase executa `CollideBoxVsBox`
+para ambos, dobrando o custo. O `ContactConstraintManager` absorve o
+duplicado via cache, mas o custo da narrowphase já foi pago.
+
+Fix (O(1)): dentro do loop de vizinhança do grid, adicionar guard:
+```d
+if (entry.bodyID.GetIndex() <= bodyID1.GetIndex()) {
+    idx = entry.next;
+    continue; // apenas emite pares canônicos (menor_idx, maior_idx)
+}
+```
+Efeito esperado: pairs 15 000 → ~7 500; manifolds e fps proporcionais.
+
+**Problema 2 — avgY caindo (cubos afundando 1,12 m em 12 s)**
+
+Causa: `mBaumgarteERP=0.2` corrige apenas 20 % da penetração por step;
+`mNumPositionIterations=2` é insuficiente para pilhas de 10 camadas.
+
+Fix: ajustar `physics_settings.d`:
+- `mBaumgarteERP` 0.2 → 0.3
+- `mNumPositionIterations` 2 → 4
+- `mNumVelocityIterations` 10 → 8 (reduz custo sem perder estabilidade
+  após a correção do dedup)
+
+**Problema 3 — nenhum body dormindo (`active=1000` ao final)**
+
+Sleep por timer não funciona em pilhas densas: o corpo de baixo
+continua recebendo impulsos dos de cima → timer nunca estoura.
+Requer `IslandBuilder` (E2-1) para detectar ilhas estabilizadas e
+dormir o grupo inteiro de uma vez.
+
+**Tarefas:**
+
+- [ ] `broadphase/broad_phase_grid.d` — dedup por índice no loop de
+  vizinhança dinâmico-dinâmico.
+- [ ] `physics_settings.d` — novos defaults: `mBaumgarteERP=0.3f`,
+  `mNumPositionIterations=4`, `mNumVelocityIterations=8`.
+- [ ] `demo/benchmark.d` — corrigir comentário do módulo (usa grid, não
+  brute-force).
+- [ ] `dub run --config=test-physics --force` — assertions devem passar.
+- [ ] Benchmark release 12 s — meta: fps ≥ 20, avgY ≥ 3.0 ao final.
+- [ ] Commit após validação.
+
+**Próximo passo de performance após E1-P:** `IslandBuilder` (E2-1) —
+habilita sleep por ilha e reduz `mActiveBodies` de 1000 → ~200 em 12 s,
+com ganho de fps proporcional.
 
 ### E1-4 — `ContactConstraintManager` + solver PGS ✅
 
@@ -465,12 +549,18 @@ no Épico 1 — quem só precisa de "rigid body para jogos" pode parar lá.
 
 ### E2-2 — `BroadPhaseQuadTree` ⬜
 
+> **Contexto:** `BroadPhaseGrid` (spatial hash, E1-3b) já substitui o
+> brute-force e reduz AABB tests em ≈5×. O QuadTree do Jolt (O(n log n)
+> com atualização incremental) é necessário para cenas dinâmicas grandes
+> (>5000 bodies móveis) ou para `CastRay` broadphase eficiente.
+> Para o benchmark de 1000 cubos, E1-P (dedup + tuning) é suficiente.
+
 - [ ] `broad_phase_quad_tree.d` — árvore de 4 filhos com nós SoA.
 - [ ] `quad_tree.d` — insert/remove/update em batch, cast ray /
   sphere / box / point.
 - [ ] `broad_phase_layer_interface.d`,
   `broad_phase_layer_interface_table.d` (a versão completa).
-- [ ] Substitui `BroadPhaseBruteForce` (que fica disponível para debug).
+- [ ] Substitui `BroadPhaseGrid` (que fica disponível para debug/small scenes).
 
 ### E2-3 — SIMD em lote ⬜
 
