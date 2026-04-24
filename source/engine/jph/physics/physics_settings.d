@@ -5,7 +5,7 @@ module engine.jph.physics.physics_settings;
 
 struct PhysicsSettings {
 @safe:
-    uint mNumVelocityIterations = 8;
+    uint mNumVelocityIterations = 6;
     uint mNumPositionIterations = 2;
     float mBaumgarteERP = 0.2f;
     float mPenetrationSlop = 0.01f;
@@ -15,7 +15,7 @@ struct PhysicsSettings {
 
 unittest {
     PhysicsSettings settings;
-    assert(settings.mNumVelocityIterations == 8);
+    assert(settings.mNumVelocityIterations == 6);
     assert(settings.mNumPositionIterations == 2);
     assert(settings.mBaumgarteERP == 0.2f);
     assert(settings.mPenetrationSlop == 0.01f);

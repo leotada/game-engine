@@ -66,7 +66,7 @@ final class BroadPhaseBruteForce : BroadPhase {
                                      float inSpeculativeContactDistance,
                                      ObjectVsBroadPhaseLayerFilter inObjectVsBroadPhaseLayerFilter,
                                      ObjectLayerPairFilter inObjectLayerPairFilter,
-                                     ref Array!BodyPair ioPairs) const nothrow @nogc {
+                                     ref Array!BodyPair ioPairs) nothrow @nogc {
         auto bodyManager = getBodyManagerConst();
         if (bodyManager is null) {
             ioPairs.clear();

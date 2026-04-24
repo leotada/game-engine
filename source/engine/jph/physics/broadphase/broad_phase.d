@@ -44,7 +44,7 @@ abstract class BroadPhase {
                                      float inSpeculativeContactDistance,
                                      ObjectVsBroadPhaseLayerFilter inObjectVsBroadPhaseLayerFilter,
                                      ObjectLayerPairFilter inObjectLayerPairFilter,
-                                     ref Array!BodyPair ioPairs) const nothrow @nogc;
+                                     ref Array!BodyPair ioPairs) nothrow @nogc;
 
     abstract uint GetNumBodies() const nothrow @nogc;
     abstract AABox GetBounds() const nothrow @nogc;

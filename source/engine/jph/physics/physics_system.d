@@ -7,7 +7,7 @@ module engine.jph.physics.physics_system;
 
 import std.math : fabs;
 import engine.jph.core.array : Array;
-import engine.jph.physics.broadphase : BroadPhase, BroadPhaseBruteForce;
+import engine.jph.physics.broadphase : BroadPhase, BroadPhaseGrid;
 import engine.jph.physics.body.bodyid : BodyID;
 import engine.jph.physics.body.bodypair : BodyPair;
 import engine.jph.math.quat : Quat;
@@ -22,6 +22,7 @@ import engine.jph.physics.collision.collision_dispatch : CollideBodies;
 import engine.jph.physics.constraints.contact_constraint_manager : ContactConstraintManager;
 import engine.jph.physics.collision.object_layer_pair_filter : ObjectLayerPairFilter;
 import engine.jph.physics.collision.object_vs_broad_phase_layer_filter : ObjectVsBroadPhaseLayerFilter;
+import engine.jph.physics.body.motionproperties : ECanSleep;
 import engine.jph.physics.eactivation : EActivation;
 import engine.jph.physics.physics_settings : PhysicsSettings;
 
@@ -51,7 +52,7 @@ struct PhysicsSystem {
     void Init(uint inMaxBodies,
               BroadPhaseLayerInterface inBroadPhaseLayerInterface = null) {
         mBodyManager.Init(inMaxBodies, inBroadPhaseLayerInterface);
-        mBroadPhase = new BroadPhaseBruteForce();
+        mBroadPhase = new BroadPhaseGrid(2.0f);
         mBroadPhase.Init(&mBodyManager, inBroadPhaseLayerInterface);
         mBodyInterface.Init(&mBodyManager, mBroadPhase);
         mContactConstraintManager.Init(&mBodyManager, mBroadPhase);
@@ -77,7 +78,6 @@ struct PhysicsSystem {
 
     void Step(float inDeltaTime,
               PhysicsSettings inSettings = PhysicsSettings.init) nothrow @nogc {
-        cast(void) inSettings;
         if (inDeltaTime <= 0.0f) {
             RefreshStats();
             return;
@@ -85,6 +85,7 @@ struct PhysicsSystem {
 
         collectActiveBodiesScratch();
 
+        // --- 1. Apply forces + integrate active bodies ---
         foreach (bodyID; mActiveBodiesScratch[]) {
             auto body = mBodyManager.TryGetBody(bodyID);
             if (body is null)
@@ -105,13 +106,59 @@ struct PhysicsSystem {
             body.ResetTorque();
         }
 
+        // --- 2. Collect contacts + solve constraints ---
+        // mMaxSeparationDistance=0: only detect actual penetrations.
+        // Speculative contacts (> 0) inflate manifold count 3–4x for stacked
+        // towers, overwhelming the solver and starving the render thread.
         auto manifolds = CollectContactManifolds(CollideShapeSettings(
             1.0e-4f,
             1.0e-4f,
-            inSettings.mPenetrationSlop));
-        mContactConstraintManager.Solve(manifolds, inSettings);
+            0.0f));
+
+        // --- 3. Wake sleeping bodies that entered a contact manifold ---
+        foreach (ref manifold; manifolds) {
+            auto b1 = mBodyManager.TryGetBody(manifold.mBody1ID);
+            if (b1 !is null && !b1.IsStatic() && !b1.IsActive())
+                mBodyManager.ActivateBody(manifold.mBody1ID);
+
+            auto b2 = mBodyManager.TryGetBody(manifold.mBody2ID);
+            if (b2 !is null && !b2.IsStatic() && !b2.IsActive())
+                mBodyManager.ActivateBody(manifold.mBody2ID);
+        }
+
+        mContactConstraintManager.Solve(manifolds, inSettings, inDeltaTime);
         mStats.mBroadphasePairs = cast(uint) mBroadPhasePairs.size;
-        mStats.mManifoldCount = cast(uint) manifolds.length;
+        mStats.mManifoldCount   = cast(uint) manifolds.length;
+
+        // --- 4. Sleep-check: deactivate bodies below velocity threshold ---
+        immutable float thresholdSq = inSettings.mVelocitySleepThreshold
+                                    * inSettings.mVelocitySleepThreshold;
+        foreach (bodyID; mActiveBodiesScratch[]) {
+            auto body = mBodyManager.TryGetBody(bodyID);
+            if (body is null || !body.IsDynamic() || !body.GetAllowSleeping())
+                continue;
+
+            auto motion = body.GetMotionPropertiesUnchecked();
+            if (motion is null)
+                continue;
+
+            immutable float vSq     = motion.GetLinearVelocity().LengthSq();
+            immutable float omegaSq = motion.GetAngularVelocity().LengthSq();
+
+            if (vSq + omegaSq < thresholdSq) {
+                if (motion.AccumulateSleepTime(inDeltaTime, inSettings.mTimeBeforeSleep)
+                    == ECanSleep.CanSleep) {
+                    // Zero residual velocities so the body is truly at rest.
+                    motion.SetLinearVelocityClamped(Vec3(0, 0, 0));
+                    motion.SetAngularVelocityClamped(Vec3(0, 0, 0));
+                    mBodyManager.DeactivateBody(bodyID);
+                }
+            } else {
+                motion.ResetSleepTestTimer();
+            }
+        }
+
+        RefreshStats();
     }
 
     const(BodyPair)[] CollectBroadPhasePairs(float inSpeculativeContactDistance = 0.0f,
@@ -167,8 +214,10 @@ struct PhysicsSystem {
         immutable active = GetNumActiveBodies();
         mStats.mActiveBodies = active;
         mStats.mSleepingBodies = GetNumBodies() > active ? GetNumBodies() - active : 0;
-        mStats.mManifoldCount = 0;
-        mStats.mBroadphasePairs = 0;
+        // NOTE: do not clear mManifoldCount / mBroadphasePairs here \u2014 those
+        // are produced by the latest Step() / CollectBroadPhasePairs() call
+        // and external observers (debug HUD, benchmark) read them after the
+        // step completes. Zeroing them would hide useful diagnostics.
     }
 
     private static const(BodyID)[] sliceFromPtr(const(BodyID)* inBodies,
@@ -430,4 +479,68 @@ unittest {
     assert(body !is null);
     assert(body.GetCenterOfMassPosition().GetY() > 0.47f);
     assert(fabs(body.GetLinearVelocity().GetY()) < 0.2f);
+}
+
+// E1-8: body with zero velocity eventually goes to sleep.
+unittest {
+    import engine.jph.physics.body.body_creation_settings : BodyCreationSettings;
+    import engine.jph.physics.body.motiontype : EMotionType;
+    import engine.jph.physics.shape.box_shape : BoxShape;
+
+    PhysicsSystem system;
+    system.Init(8);
+    system.mGravity = Vec3.sZero(); // no gravity so velocity stays near zero
+
+    auto bodyInterface = &system.GetBodyInterface();
+    BodyCreationSettings settings = BodyCreationSettings(
+        new BoxShape(Vec3(0.5f, 0.5f, 0.5f)),
+        Vec3.sZero(),
+        Quat.sIdentity(),
+        EMotionType.Dynamic);
+
+    immutable bodyID = bodyInterface.CreateAndAddBody(settings, EActivation.Activate);
+    assert(system.GetNumActiveBodies() == 1);
+
+    // Use tight threshold so the body sleeps quickly.
+    PhysicsSettings sleepSettings;
+    sleepSettings.mVelocitySleepThreshold = 1000.0f; // very large — everything is "slow"
+    sleepSettings.mTimeBeforeSleep = 0.5f;
+
+    // 60 steps × 1/60 s = 1.0 s > 0.5 s → must sleep.
+    foreach (_; 0 .. 60)
+        system.Step(1.0f / 60.0f, sleepSettings);
+
+    assert(system.GetNumActiveBodies() == 0,
+           "body should have gone to sleep after 1 s with zero velocity");
+    assert(system.mStats.mSleepingBodies == 1);
+}
+
+// E1-8: sleeping body is woken by SetLinearVelocity and counted as active.
+unittest {
+    import engine.jph.physics.body.body_creation_settings : BodyCreationSettings;
+    import engine.jph.physics.body.motiontype : EMotionType;
+    import engine.jph.physics.shape.box_shape : BoxShape;
+
+    PhysicsSystem system;
+    system.Init(8);
+    system.mGravity = Vec3.sZero();
+
+    auto bodyInterface = &system.GetBodyInterface();
+    BodyCreationSettings settings = BodyCreationSettings(
+        new BoxShape(Vec3(0.5f, 0.5f, 0.5f)),
+        Vec3.sZero(),
+        Quat.sIdentity(),
+        EMotionType.Dynamic);
+
+    immutable bodyID = bodyInterface.CreateAndAddBody(settings, EActivation.Activate);
+
+    // Force the body to sleep immediately via BodyManager.
+    system.mBodyManager.DeactivateBody(bodyID);
+    system.RefreshStats();
+    assert(system.GetNumActiveBodies() == 0, "body must be deactivated first");
+
+    // Wake by setting a velocity — BodyInterface.SetLinearVelocity calls ActivateBody.
+    bodyInterface.SetLinearVelocity(bodyID, Vec3(1, 0, 0));
+    system.RefreshStats();
+    assert(system.GetNumActiveBodies() == 1, "body should be awake after SetLinearVelocity");
 }

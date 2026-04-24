@@ -326,20 +326,19 @@ bool CollideBoxVsBox(ref const Body inBody1,
                                   pointOn1, pointOn2))
         return false;
 
-    // Contact normal (body2 → body1).  Use COM-to-COM as primary direction;
-    // fall back to the EPA contact delta for coincident-COM edge cases.
-    immutable Vec3 centerDelta =
-        inBody1.GetCenterOfMassPosition() - inBody2.GetCenterOfMassPosition();
-    immutable Vec3 delta  = pointOn1 - pointOn2;
-    immutable Vec3 normal = centerDelta.NormalizedOr(delta.NormalizedOr(Vec3.sAxisY()));
-
-    // Single-contact depth for the EPA fallback
-    float singleDepth = delta.Dot(normal);
-    if (singleDepth < 0.0f) singleDepth = -singleDepth;
-    if (singleDepth <= inSettings.mPenetrationTolerance)
-        singleDepth = delta.Length();
-    if (singleDepth <= inSettings.mPenetrationTolerance)
+    // Contact normal (body2 → body1).
+    // After GetPenetrationDepth, 'separatingAxis' (= ioV from GJK/EPA) has been
+    // modified in-place.  GJK convention: ioV points FROM the Minkowski-diff
+    // closest face TOWARD the origin = FROM body1 TOWARD body2.  The contact
+    // normal is body2→body1, so we NEGATE it.  This is the correct physics
+    // normal for any box orientation; the old COM-to-COM direction was only
+    // valid for centred sphere-like contacts and caused lateral explosions when
+    // cubes were off-centre on the floor (tilted normal → horizontal impulse).
+    immutable float mtdLen = separatingAxis.Length();
+    if (mtdLen <= inSettings.mPenetrationTolerance)
         return false;
+    immutable Vec3  normal      = -separatingAxis / mtdLen;  // body2→body1
+    immutable float singleDepth = mtdLen;
 
     // -----------------------------------------------------------------------
     // Face selection
