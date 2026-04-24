@@ -107,6 +107,20 @@ struct ContactConstraintManager {
             // Load warm-start impulses from matching cached contact points.
             loadCachedLambdas(constraint, prevCache);
 
+            // Baumgarte-in-velocity bias: adds a separating velocity proportional
+            // to penetration depth so the velocity solver itself corrects sinking.
+            // bias = max(0, pen - slop) * ERP / dt  (m/s separating velocity target)
+            // This is how Jolt implements position correction — no separate
+            // explicit position-correction pass is needed for small penetrations.
+            foreach (i; 0 .. constraint.GetNumContactPoints()) {
+                immutable float pen = constraint.mPoints[i].mPenetrationDepth;
+                immutable float biasVel =
+                    (pen > inSettings.mPenetrationSlop)
+                    ? (pen - inSettings.mPenetrationSlop) * inSettings.mBaumgarteERP / inDeltaTime
+                    : 0.0f;
+                constraint.mPoints[i].mNormalPart.mBias = biasVel;
+            }
+
             // Compute two stable friction tangents from the contact normal using
             // the "least axis" trick: pick the world axis most perpendicular to
             // the normal, cross to get tangent1, then cross(n, t1) for tangent2.
