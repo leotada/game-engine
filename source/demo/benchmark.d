@@ -1,5 +1,7 @@
 module demo.benchmark;
 
+import core.memory : GC;
+import core.time : Duration;
 import std.format : format;
 import std.math : cos, sin;
 import std.random : Mt19937, uniform;
@@ -37,8 +39,10 @@ private enum FOREST_X = 18;
 private enum FOREST_Z = 18;
 private enum TREE_SPACING = 6.0f;
 private enum GROUND_HALF = 70.0f;
-private enum RAIN_LANES = 12;
+private enum MAX_RAIN_DROPS = 500;
 private enum TAU = 6.283185307179586f;
+
+private double toMs(Duration d) pure nothrow @safe { return d.total!"hnsecs" / 10_000.0; }
 
 private RenderVec3 toRenderVec3(PhysVec3 inValue) pure nothrow @nogc {
     return RenderVec3(inValue.GetX(), inValue.GetY(), inValue.GetZ());
@@ -61,10 +65,7 @@ private struct TreeInstance {
     PhysVec3 crownScale;
 }
 
-private struct RainLane {
-    PhysVec3 spawnPos;
-    PhysVec3 initialVelocity;
-    Quat spawnRotation;
+private struct RainDrop {
     BodyID bodyID;
 }
 
@@ -127,34 +128,26 @@ private BodyID spawnRainBody(ref BodyInterface inBodyInterface,
     return inBodyInterface.CreateAndAddBody(settings, EActivation.Activate);
 }
 
-private RainLane[] buildRainLanes(scope const(TreeInstance)[] inTrees) {
-    RainLane[] lanes;
-    lanes.reserve(RAIN_LANES);
-
-    auto rng = Mt19937(0xCAFEu);
-
-    foreach (index; 0 .. RAIN_LANES) {
-        immutable tree = inTrees[(index * 19) % inTrees.length];
-        RainLane lane;
-        lane.spawnPos = tree.crownPos + PhysVec3(0, 9.0f + (index % 3), 0);
-        lane.initialVelocity = PhysVec3(index % 2 == 0 ? 0.8f : -0.8f, 0, index % 3 == 0 ? 0.4f : -0.4f);
-        lane.spawnRotation = Quat.sRotation(PhysVec3.sAxisX(), uniform(0.0f, TAU, rng))
-                           * Quat.sRotation(PhysVec3.sAxisY(), uniform(0.0f, TAU, rng))
-                           * Quat.sRotation(PhysVec3.sAxisZ(), uniform(0.0f, TAU, rng));
-        lane.bodyID = BodyID();
-        lanes ~= lane;
+private RainDrop[] buildRainDrops() {
+    RainDrop[] drops;
+    drops.reserve(MAX_RAIN_DROPS);
+    foreach (index; 0 .. MAX_RAIN_DROPS) {
+        RainDrop drop;
+        drop.bodyID = BodyID();
+        drops ~= drop;
     }
-
-    return lanes;
+    return drops;
 }
 
-private bool shouldRecycleBody(ref BodyInterface inBodyInterface, BodyID inBodyID) {
+private bool shouldRecycleBody(ref BodyInterface inBodyInterface, BodyID inBodyID, float inElapsed) {
     if (inBodyID.IsInvalid())
-        return true;
+        return inElapsed < 10.0f;
 
     immutable position = inBodyInterface.GetCenterOfMassPosition(inBodyID);
-    immutable velocity = inBodyInterface.GetLinearVelocity(inBodyID);
-    return position.GetY() < 0.7f || velocity.LengthSq() < 0.02f || position.GetY() < -5.0f;
+    if (position.GetY() < -5.0f)
+        return inElapsed < 10.0f;
+
+    return false;
 }
 
 int main() {
@@ -170,7 +163,7 @@ int main() {
 
     PhysicsSystem physics;
     auto trees = buildForest();
-    immutable maxBodies = cast(uint)(trees.length * 2 + RAIN_LANES + 8);
+    immutable maxBodies = cast(uint)(trees.length * 2 + MAX_RAIN_DROPS + 8);
     physics.Init(maxBodies);
 
     auto bodyInterface = &physics.GetBodyInterface();
@@ -180,9 +173,9 @@ int main() {
         addStaticBox(*bodyInterface, tree.crownPos, tree.crownScale, 0.8f);
     }
 
-    auto lanes = buildRainLanes(trees);
-    foreach (ref lane; lanes)
-        lane.bodyID = spawnRainBody(*bodyInterface, lane.spawnPos, lane.initialVelocity, lane.spawnRotation);
+    auto drops = buildRainDrops();
+    uint activeDrops = 0;
+    auto rng = Mt19937(0xCAFEu);
 
     auto camera = Camera.create(0.9f, SCREEN_W, SCREEN_H, 0.1f, 300.0f);
 
@@ -192,7 +185,9 @@ int main() {
     uint maxManifolds = 0;
     uint maxPairs = 0;
 
-    writefln("[benchmark] forest=%d trees static_bodies=%d rain_lanes=%d", trees.length, trees.length * 2 + 1, RAIN_LANES);
+    GC.profileStats(); // Prime GC stats tracking
+
+    writefln("[benchmark] forest=%d trees static_bodies=%d max_rain_drops=%d", trees.length, trees.length * 2 + 1, MAX_RAIN_DROPS);
 
     while (app.running() && elapsed < BENCHMARK_SECONDS) {
         app.pollEvents();
@@ -204,13 +199,43 @@ int main() {
         if (app.input.keyPressed(Key.escape))
             break;
 
-        foreach (ref lane; lanes) {
-            if (!shouldRecycleBody(*bodyInterface, lane.bodyID))
-                continue;
+        if (elapsed < 10.0f) {
+            uint toSpawn = cast(uint)(dt * 150.0f); // 150 drops per second -> 1500 drops total
+            if (toSpawn == 0 && uniform(0.0f, 1.0f, rng) < (dt * 150.0f)) toSpawn = 1;
+            while (toSpawn > 0 && activeDrops < MAX_RAIN_DROPS) {
+                float px = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
+                float pz = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
+                float py = uniform(40.0f, 60.0f, rng);
+                
+                PhysVec3 spawnPos = PhysVec3(px, py, pz);
+                PhysVec3 initialVec = PhysVec3(0, -2.0f, 0);
+                Quat spawnRot = Quat.sRotation(PhysVec3.sAxisX(), uniform(0.0f, TAU, rng))
+                              * Quat.sRotation(PhysVec3.sAxisY(), uniform(0.0f, TAU, rng))
+                              * Quat.sRotation(PhysVec3.sAxisZ(), uniform(0.0f, TAU, rng));
+                              
+                drops[activeDrops].bodyID = spawnRainBody(*bodyInterface, spawnPos, initialVec, spawnRot);
+                activeDrops++;
+                toSpawn--;
+            }
+        }
 
-            if (!lane.bodyID.IsInvalid())
-                bodyInterface.DestroyBody(lane.bodyID);
-            lane.bodyID = spawnRainBody(*bodyInterface, lane.spawnPos, lane.initialVelocity, lane.spawnRotation);
+        foreach (ref drop; drops[0 .. activeDrops]) {
+            if (shouldRecycleBody(*bodyInterface, drop.bodyID, elapsed)) {
+                if (!drop.bodyID.IsInvalid())
+                    bodyInterface.DestroyBody(drop.bodyID);
+                
+                float px = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
+                float pz = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
+                float py = uniform(40.0f, 60.0f, rng);
+                
+                PhysVec3 spawnPos = PhysVec3(px, py, pz);
+                PhysVec3 initialVec = PhysVec3(0, -2.0f, 0);
+                Quat spawnRot = Quat.sRotation(PhysVec3.sAxisX(), uniform(0.0f, TAU, rng))
+                              * Quat.sRotation(PhysVec3.sAxisY(), uniform(0.0f, TAU, rng))
+                              * Quat.sRotation(PhysVec3.sAxisZ(), uniform(0.0f, TAU, rng));
+                              
+                drop.bodyID = spawnRainBody(*bodyInterface, spawnPos, initialVec, spawnRot);
+            }
         }
 
         accumulator += dt;
@@ -245,8 +270,8 @@ int main() {
             scene.draw(cubeMesh, toRenderVec3(tree.crownPos), toRenderVec3(tree.crownScale), Color4(0.18f, 0.48f, 0.24f, 1.0f));
         }
 
-        foreach (lane; lanes) {
-            immutable worldTransform = bodyInterface.GetWorldTransform(lane.bodyID);
+        foreach (drop; drops[0 .. activeDrops]) {
+            immutable worldTransform = bodyInterface.GetWorldTransform(drop.bodyID);
             scene.drawMatrix(cubeMesh, toRenderMat4(worldTransform), Color4(0.85f, 0.86f, 0.92f, 1.0f));
         }
 
@@ -255,20 +280,28 @@ int main() {
         text.beginFrame();
         text.drawText(frame, format("Benchmark t=%.1fs / %.1fs", elapsed, BENCHMARK_SECONDS), 16, 16, 2);
         text.drawText(frame, fps.text(), 16, 40, 2);
-        text.drawText(frame, format("Static=%d  Dynamic=%d", trees.length * 2 + 1, RAIN_LANES), 16, 64, 2);
+        text.drawText(frame, format("Static=%d  Dynamic=%d", trees.length * 2 + 1, activeDrops), 16, 64, 2);
         text.drawText(frame, format("Pairs=%d  Manifolds=%d", physics.mStats.mBroadphasePairs, physics.mStats.mManifoldCount), 16, 88, 2);
         text.drawText(frame, format("Peak pairs=%d  Peak manifolds=%d", maxPairs, maxManifolds), 16, 112, 2);
+        
+        immutable gs = GC.profileStats;
+        text.drawText(frame, format("GC: %d col | total: %.1f ms | max: %.1f ms", gs.numCollections, toMs(gs.totalPauseTime), toMs(gs.maxPauseTime)), 16, 136, 2);
 
         app.endFrame(frame);
     }
 
     immutable float avgFps = elapsed > 0.0f ? frames / elapsed : 0.0f;
+    immutable gs = GC.profileStats;
     writefln("[benchmark] done frames=%d elapsed=%.2fs avg_fps=%.1f peak_pairs=%d peak_manifolds=%d",
         frames,
         elapsed,
         avgFps,
         maxPairs,
         maxManifolds);
+    writefln("[benchmark] gc collections=%d total_pause=%.1fms max_pause=%.1fms",
+        gs.numCollections,
+        toMs(gs.totalPauseTime),
+        toMs(gs.maxPauseTime));
     writefln("[benchmark] adapted legacy benchmark preserved at source/demo/_legacy/benchmark.d.txt");
     return 0;
 }
