@@ -1,7 +1,7 @@
 // E1-9 — Migrar demos: visual 12-second benchmark.
 //
-// Scene: 1 static floor (40m × 1m × 40m) + 1000 dynamic unit cubes
-// in a 10×10×10 grid. Measures physics throughput and GC behaviour
+// Scene: 1 static floor and a grid of dynamic unit cubes.
+// Measures physics throughput and GC behaviour
 // under sustained load with the brute-force O(n²) broadphase.
 module demo.benchmark;
 
@@ -43,8 +43,8 @@ private enum MAX_SUBSTEPS = 4;
 
 private enum CUBE_COLS   = 10;   // X axis
 private enum CUBE_ROWS   = 10;   // Z axis
-private enum CUBE_LAYERS = 10;   // Y axis
-private enum NUM_CUBES   = CUBE_COLS * CUBE_ROWS * CUBE_LAYERS; // 1000
+private enum CUBE_LAYERS = 8;    // Y axis
+private enum NUM_CUBES   = CUBE_COLS * CUBE_ROWS * CUBE_LAYERS;
 
 private double toMs(Duration d) pure nothrow @safe { return d.total!"hnsecs" / 10_000.0; }
 
@@ -61,8 +61,8 @@ private Mat4 toRenderMat4(Mat44 m) pure nothrow @nogc {
 }
 
 int main() {
-    auto app = App.create("JPH 1000-Cube Benchmark", SCREEN_W, SCREEN_H,
-                          WGPUPresentMode.fifo);
+    auto app = App.create(format("JPH Cube Benchmark %d cubes", NUM_CUBES), SCREEN_W, SCREEN_H,
+                          WGPUPresentMode.immediate);
 
     auto scene = Scene3D.create(app.gpu);
     scope(exit) scene.destroy();
@@ -73,7 +73,7 @@ int main() {
     auto fps = FpsCounter.create();
 
     PhysicsSystem physics;
-    physics.Init(NUM_CUBES + 8); // 1000 dynamic + 1 static + headroom
+    physics.Init(NUM_CUBES + 8);
 
     auto bi = &physics.GetBodyInterface();
 
@@ -92,7 +92,6 @@ int main() {
     }
 
     // -----------------------------------------------------------------------
-    // 1000 dynamic cubes: 10 cols × 10 rows × 10 layers.
     // Small per-cube jitter avoids perfectly aligned stacks (which produce
     // degenerate contact patterns and hide broadphase pair counts).
     // -----------------------------------------------------------------------
@@ -106,7 +105,7 @@ int main() {
                     // 1.3 m horizontal spacing on a 1 m cube (convexRadius=0.05) =>
                     // outer-shell gap = 1.3 - 2*0.55 = 0.20 m > combinedConvexRadius (0.10 m).
                     // This prevents GJK from generating lateral speculative contacts between
-                    // side-by-side cubes, keeping manifold count ~1000 instead of ~4000.
+                    // side-by-side cubes.
                     immutable float x = (col - (CUBE_COLS  - 1) * 0.5f) * 1.3f + uniform(-0.02f, 0.02f, rng);
                     immutable float z = (row - (CUBE_ROWS  - 1) * 0.5f) * 1.3f + uniform(-0.02f, 0.02f, rng);
                     immutable float y = 1.5f + layer * 1.2f + uniform(-0.01f, 0.01f, rng);
