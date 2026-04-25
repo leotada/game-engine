@@ -15,6 +15,7 @@
 *.exe
 game-engine-demo
 game-engine-benchmark
+game-engine-benchmark2
 game-engine-editor
 game-engine-showcase
 game-engine-test-library
