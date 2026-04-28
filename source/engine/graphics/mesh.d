@@ -31,6 +31,10 @@ struct Mesh {
         return fromData(gpu, diamondVertices[], diamondIndices[]);
     }
 
+    static Mesh sphere(ref GpuContext gpu) {
+        return fromData(gpu, sphereVertices[], sphereIndices[]);
+    }
+
     /// Create a mesh from custom vertex/index data.
     static Mesh fromData(ref GpuContext gpu, const(Vert)[] verts, const(ushort)[] indices) {
         auto device = gpu.getDevice();
