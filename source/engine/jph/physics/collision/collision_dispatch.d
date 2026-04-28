@@ -8,6 +8,8 @@ import engine.jph.physics.collision.collide_box_vs_plane : CollideBoxVsPlane,
 import engine.jph.physics.collision.collide_capsule_vs_plane : CollideCapsuleVsPlane,
 																CollidePlaneVsCapsule;
 import engine.jph.physics.collision.collide_shape : CollideShapeSettings, ContactManifold;
+import engine.jph.physics.collision.collide_sphere_vs_box : CollideBoxVsSphere,
+															  CollideSphereVsBox;
 import engine.jph.physics.collision.collide_sphere_vs_plane : CollidePlaneVsSphere,
 															  CollideSphereVsPlane;
 import engine.jph.physics.shape.shape : EShapeSubType;
@@ -34,6 +36,12 @@ bool CollideBodies(ref const Body inBody1,
 
 	if (subType1 == EShapeSubType.Box && subType2 == EShapeSubType.Plane)
 		return CollideBoxVsPlane(inBody1, inBody2, inSettings, ioManifold);
+
+	if (subType1 == EShapeSubType.Sphere && subType2 == EShapeSubType.Box)
+		return CollideSphereVsBox(inBody1, inBody2, inSettings, ioManifold);
+
+	if (subType1 == EShapeSubType.Box && subType2 == EShapeSubType.Sphere)
+		return CollideBoxVsSphere(inBody1, inBody2, inSettings, ioManifold);
 
 	if (subType1 == EShapeSubType.Box && subType2 == EShapeSubType.Box)
 		return CollideBoxVsBox(inBody1, inBody2, inSettings, ioManifold);
