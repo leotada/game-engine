@@ -12,20 +12,13 @@ import engine.gpu.text : FpsCounter, TextRenderer;
 import engine.graphics.mesh : Mesh;
 import engine.graphics.types : Color4;
 import engine.math.mat : Mat4;
-import engine.math.vec : RenderVec3 = Vec3;
+import engine.math.quat : Quat;
+import engine.math.vec : Vec3;
 import engine.platform.input : Key;
+import engine.physics;
 import engine.scene.camera : Camera;
 import engine.scene.scene3d : Scene3D;
-import engine.jph.math.mat44 : Mat44;
-import engine.jph.math.quat : Quat;
-import engine.jph.math.vec3 : PhysVec3 = Vec3;
-import engine.jph.physics.body.body_creation_settings : BodyCreationSettings;
-import engine.jph.physics.body.body_interface : BodyInterface;
-import engine.jph.physics.body.bodyid : BodyID;
-import engine.jph.physics.body.motiontype : EMotionType;
-import engine.jph.physics.eactivation : EActivation;
-import engine.jph.physics.physics_system : PhysicsSystem;
-import engine.jph.physics.shape.box_shape : BoxShape;
+import bindings.box3d : b3BodyId;
 
 @safe:
 
@@ -44,29 +37,23 @@ private enum TAU = 6.283185307179586f;
 
 private double toMs(Duration d) pure nothrow @safe { return d.total!"hnsecs" / 10_000.0; }
 
-private RenderVec3 toRenderVec3(PhysVec3 inValue) pure nothrow @nogc {
-    return RenderVec3(inValue.GetX(), inValue.GetY(), inValue.GetZ());
-}
-
-private Mat4 toRenderMat4(Mat44 inValue) pure nothrow @nogc {
-    Mat4 result;
-
-    foreach (column; 0 .. 4)
-        foreach (row; 0 .. 4)
-            result.m[column * 4 + row] = inValue(cast(uint) row, cast(uint) column);
-
+private Mat4 toRenderMat4(PhysicsTransform transform) {
+    Mat4 result = transform.rotation.toMat4();
+    result.m[12] = transform.position.x;
+    result.m[13] = transform.position.y;
+    result.m[14] = transform.position.z;
     return result;
 }
 
 private struct TreeInstance {
-    PhysVec3 trunkPos;
-    PhysVec3 trunkScale;
-    PhysVec3 crownPos;
-    PhysVec3 crownScale;
+    Vec3 trunkPos;
+    Vec3 trunkScale;
+    Vec3 crownPos;
+    Vec3 crownScale;
 }
 
 private struct RainDrop {
-    BodyID bodyID;
+    b3BodyId bodyID;
 }
 
 private TreeInstance[] buildForest() {
@@ -88,10 +75,10 @@ private TreeInstance[] buildForest() {
             immutable float pz = originZ + gz * TREE_SPACING + jitterZ;
 
             TreeInstance tree;
-            tree.trunkScale = PhysVec3(trunkRadius * 2.0f, trunkHeight, trunkRadius * 2.0f);
-            tree.trunkPos = PhysVec3(px, trunkHeight * 0.5f, pz);
-            tree.crownScale = PhysVec3(crownRadius * 2.0f, crownRadius * 1.4f, crownRadius * 2.0f);
-            tree.crownPos = PhysVec3(px, trunkHeight + crownRadius * 0.55f, pz);
+            tree.trunkScale = Vec3(trunkRadius * 2.0f, trunkHeight, trunkRadius * 2.0f);
+            tree.trunkPos = Vec3(px, trunkHeight * 0.5f, pz);
+            tree.crownScale = Vec3(crownRadius * 2.0f, crownRadius * 1.4f, crownRadius * 2.0f);
+            tree.crownPos = Vec3(px, trunkHeight + crownRadius * 0.55f, pz);
             trees ~= tree;
         }
     }
@@ -99,33 +86,20 @@ private TreeInstance[] buildForest() {
     return trees;
 }
 
-private void addStaticBox(ref BodyInterface inBodyInterface,
-                          PhysVec3 inPosition,
-                          PhysVec3 inScale,
+private void addStaticBox(ref PhysicsWorld physics,
+                          Vec3 inPosition,
+                          Vec3 inScale,
                           float inFriction = 0.9f) {
-    BodyCreationSettings settings = BodyCreationSettings(
-        new BoxShape(inScale * 0.5f),
-        inPosition,
-        Quat.sIdentity(),
-        EMotionType.Static);
-    settings.mFriction = inFriction;
-    settings.mRestitution = 0.0f;
-    inBodyInterface.CreateAndAddBody(settings, EActivation.DontActivate);
+    createStaticBox(physics, inPosition, inScale * 0.5f, noPhysicsEntity, inFriction);
 }
 
-private BodyID spawnRainBody(ref BodyInterface inBodyInterface,
-                             PhysVec3 inPosition,
-                             PhysVec3 inInitialVelocity,
+private b3BodyId spawnRainBody(ref PhysicsWorld physics,
+                             Vec3 inPosition,
+                             Vec3 inInitialVelocity,
                              Quat inRotation) {
-    BodyCreationSettings settings = BodyCreationSettings(
-        new BoxShape(PhysVec3(0.5f, 0.5f, 0.5f)),
-        inPosition,
-        inRotation,
-        EMotionType.Dynamic);
-    settings.mLinearVelocity = inInitialVelocity;
-    settings.mFriction = 0.7f;
-    settings.mRestitution = 0.0f;
-    return inBodyInterface.CreateAndAddBody(settings, EActivation.Activate);
+    immutable body = createDynamicBox(physics, inPosition, Vec3(0.5f, 0.5f, 0.5f), inRotation, 1.0f, noPhysicsEntity, 0.7f);
+    setLinearVelocity(body, inInitialVelocity);
+    return body;
 }
 
 private RainDrop[] buildRainDrops() {
@@ -133,25 +107,25 @@ private RainDrop[] buildRainDrops() {
     drops.reserve(MAX_RAIN_DROPS);
     foreach (index; 0 .. MAX_RAIN_DROPS) {
         RainDrop drop;
-        drop.bodyID = BodyID();
+        drop.bodyID = b3BodyId.init;
         drops ~= drop;
     }
     return drops;
 }
 
-private bool shouldRecycleBody(ref BodyInterface inBodyInterface, BodyID inBodyID, float inElapsed) {
-    if (inBodyID.IsInvalid())
+private bool shouldRecycleBody(b3BodyId inBodyID, float inElapsed) {
+    if (!isBodyValid(inBodyID))
         return inElapsed < 10.0f;
 
-    immutable position = inBodyInterface.GetCenterOfMassPosition(inBodyID);
-    if (position.GetY() < -5.0f)
+    immutable position = getPosition(inBodyID);
+    if (position.y < -5.0f)
         return inElapsed < 10.0f;
 
     return false;
 }
 
 int main() {
-    auto app = App.create("JPH Forest Benchmark", SCREEN_W, SCREEN_H);
+    auto app = App.create("Box3D Forest Benchmark", SCREEN_W, SCREEN_H);
 
     auto scene = Scene3D.create(app.gpu);
     scope(exit) scene.destroy();
@@ -161,16 +135,13 @@ int main() {
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
 
-    PhysicsSystem physics;
+    auto physics = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
     auto trees = buildForest();
-    immutable maxBodies = cast(uint)(trees.length * 2 + MAX_RAIN_DROPS + 8);
-    physics.Init(maxBodies);
 
-    auto bodyInterface = &physics.GetBodyInterface();
-    addStaticBox(*bodyInterface, PhysVec3(0, -0.5f, 0), PhysVec3(GROUND_HALF * 2.0f, 1.0f, GROUND_HALF * 2.0f), 1.0f);
+    addStaticBox(physics, Vec3(0, -0.5f, 0), Vec3(GROUND_HALF * 2.0f, 1.0f, GROUND_HALF * 2.0f), 1.0f);
     foreach (tree; trees) {
-        addStaticBox(*bodyInterface, tree.trunkPos, tree.trunkScale, 0.9f);
-        addStaticBox(*bodyInterface, tree.crownPos, tree.crownScale, 0.8f);
+        addStaticBox(physics, tree.trunkPos, tree.trunkScale, 0.9f);
+        addStaticBox(physics, tree.crownPos, tree.crownScale, 0.8f);
     }
 
     auto drops = buildRainDrops();
@@ -182,8 +153,7 @@ int main() {
     float elapsed = 0.0f;
     float accumulator = 0.0f;
     uint frames = 0;
-    uint maxManifolds = 0;
-    uint maxPairs = 0;
+    uint maxActiveDrops = 0;
 
     GC.profileStats();
 
@@ -207,34 +177,34 @@ int main() {
                 immutable float pz = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
                 immutable float py = uniform(40.0f, 60.0f, rng);
 
-                PhysVec3 spawnPos = PhysVec3(px, py, pz);
-                PhysVec3 initialVec = PhysVec3(0, -2.0f, 0);
-                Quat spawnRot = Quat.sRotation(PhysVec3.sAxisX(), uniform(0.0f, TAU, rng))
-                              * Quat.sRotation(PhysVec3.sAxisY(), uniform(0.0f, TAU, rng))
-                              * Quat.sRotation(PhysVec3.sAxisZ(), uniform(0.0f, TAU, rng));
+                Vec3 spawnPos = Vec3(px, py, pz);
+                Vec3 initialVec = Vec3(0, -2.0f, 0);
+                Quat spawnRot = Quat.fromAxisAngle(Vec3(1.0f, 0.0f, 0.0f), uniform(0.0f, TAU, rng))
+                              * Quat.fromAxisAngle(Vec3(0.0f, 1.0f, 0.0f), uniform(0.0f, TAU, rng))
+                              * Quat.fromAxisAngle(Vec3(0.0f, 0.0f, 1.0f), uniform(0.0f, TAU, rng));
 
-                drops[activeDrops].bodyID = spawnRainBody(*bodyInterface, spawnPos, initialVec, spawnRot);
+                drops[activeDrops].bodyID = spawnRainBody(physics, spawnPos, initialVec, spawnRot);
                 activeDrops++;
                 toSpawn--;
             }
         }
 
         foreach (ref drop; drops[0 .. activeDrops]) {
-            if (shouldRecycleBody(*bodyInterface, drop.bodyID, elapsed)) {
-                if (!drop.bodyID.IsInvalid())
-                    bodyInterface.DestroyBody(drop.bodyID);
+            if (shouldRecycleBody(drop.bodyID, elapsed)) {
+                if (isBodyValid(drop.bodyID))
+                    destroyBody(drop.bodyID);
 
                 immutable float px = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
                 immutable float pz = uniform(-GROUND_HALF + 10.0f, GROUND_HALF - 10.0f, rng);
                 immutable float py = uniform(40.0f, 60.0f, rng);
 
-                PhysVec3 spawnPos = PhysVec3(px, py, pz);
-                PhysVec3 initialVec = PhysVec3(0, -2.0f, 0);
-                Quat spawnRot = Quat.sRotation(PhysVec3.sAxisX(), uniform(0.0f, TAU, rng))
-                              * Quat.sRotation(PhysVec3.sAxisY(), uniform(0.0f, TAU, rng))
-                              * Quat.sRotation(PhysVec3.sAxisZ(), uniform(0.0f, TAU, rng));
+                Vec3 spawnPos = Vec3(px, py, pz);
+                Vec3 initialVec = Vec3(0, -2.0f, 0);
+                Quat spawnRot = Quat.fromAxisAngle(Vec3(1.0f, 0.0f, 0.0f), uniform(0.0f, TAU, rng))
+                              * Quat.fromAxisAngle(Vec3(0.0f, 1.0f, 0.0f), uniform(0.0f, TAU, rng))
+                              * Quat.fromAxisAngle(Vec3(0.0f, 0.0f, 1.0f), uniform(0.0f, TAU, rng));
 
-                drop.bodyID = spawnRainBody(*bodyInterface, spawnPos, initialVec, spawnRot);
+                drop.bodyID = spawnRainBody(physics, spawnPos, initialVec, spawnRot);
             }
         }
 
@@ -244,35 +214,34 @@ int main() {
 
         uint subSteps = 0;
         while (accumulator >= PHYS_STEP && subSteps < MAX_SUBSTEPS) {
-            physics.Step(PHYS_STEP);
+            physics.step(PHYS_STEP, 4);
             accumulator -= PHYS_STEP;
             ++subSteps;
         }
 
-        if (physics.mStats.mManifoldCount > maxManifolds)
-            maxManifolds = physics.mStats.mManifoldCount;
-        if (physics.mStats.mBroadphasePairs > maxPairs)
-            maxPairs = physics.mStats.mBroadphasePairs;
+        if (activeDrops > maxActiveDrops)
+            maxActiveDrops = activeDrops;
 
         immutable float camAngle = elapsed * 0.22f;
-        immutable RenderVec3 eye = RenderVec3(cos(camAngle) * 78.0f, 36.0f, sin(camAngle) * 78.0f);
-        camera.lookAt(eye, RenderVec3(0, 8, 0));
+        immutable Vec3 eye = Vec3(cos(camAngle) * 78.0f, 36.0f, sin(camAngle) * 78.0f);
+        camera.lookAt(eye, Vec3(0, 8, 0));
 
         auto frame = app.beginFrame(Color4(0.05f, 0.08f, 0.11f, 1.0f));
         if (!frame.valid)
             continue;
 
         scene.begin(camera);
-        scene.draw(cubeMesh, RenderVec3(0, -0.5f, 0), RenderVec3(GROUND_HALF * 2.0f, 1.0f, GROUND_HALF * 2.0f), Color4(0.25f, 0.30f, 0.22f, 1.0f));
+        scene.draw(cubeMesh, Vec3(0, -0.5f, 0), Vec3(GROUND_HALF * 2.0f, 1.0f, GROUND_HALF * 2.0f), Color4(0.25f, 0.30f, 0.22f, 1.0f));
 
         foreach (tree; trees) {
-            scene.draw(cubeMesh, toRenderVec3(tree.trunkPos), toRenderVec3(tree.trunkScale), Color4(0.33f, 0.22f, 0.14f, 1.0f));
-            scene.draw(cubeMesh, toRenderVec3(tree.crownPos), toRenderVec3(tree.crownScale), Color4(0.18f, 0.48f, 0.24f, 1.0f));
+            scene.draw(cubeMesh, tree.trunkPos, tree.trunkScale, Color4(0.33f, 0.22f, 0.14f, 1.0f));
+            scene.draw(cubeMesh, tree.crownPos, tree.crownScale, Color4(0.18f, 0.48f, 0.24f, 1.0f));
         }
 
         foreach (drop; drops[0 .. activeDrops]) {
-            immutable worldTransform = bodyInterface.GetWorldTransform(drop.bodyID);
-            scene.drawMatrix(cubeMesh, toRenderMat4(worldTransform), Color4(0.85f, 0.86f, 0.92f, 1.0f));
+            if (!isBodyValid(drop.bodyID))
+                continue;
+            scene.drawMatrix(cubeMesh, toRenderMat4(readBodyTransform(drop.bodyID)), Color4(0.85f, 0.86f, 0.92f, 1.0f));
         }
 
         scene.end(frame);
@@ -281,23 +250,21 @@ int main() {
         text.drawText(frame, format("Benchmark2 t=%.1fs / %.1fs", elapsed, BENCHMARK_SECONDS), 16, 16, 2);
         text.drawText(frame, fps.text(), 16, 40, 2);
         text.drawText(frame, format("Static=%d  Dynamic=%d", trees.length * 2 + 1, activeDrops), 16, 64, 2);
-        text.drawText(frame, format("Pairs=%d  Manifolds=%d", physics.mStats.mBroadphasePairs, physics.mStats.mManifoldCount), 16, 88, 2);
-        text.drawText(frame, format("Peak pairs=%d  Peak manifolds=%d", maxPairs, maxManifolds), 16, 112, 2);
+        text.drawText(frame, format("Peak dynamic=%d", maxActiveDrops), 16, 88, 2);
 
         immutable gs = GC.profileStats;
-        text.drawText(frame, format("GC: %d col | total: %.1f ms | max: %.1f ms", gs.numCollections, toMs(gs.totalPauseTime), toMs(gs.maxPauseTime)), 16, 136, 2);
+        text.drawText(frame, format("GC: %d col | total: %.1f ms | max: %.1f ms", gs.numCollections, toMs(gs.totalPauseTime), toMs(gs.maxPauseTime)), 16, 112, 2);
 
         app.endFrame(frame);
     }
 
     immutable float avgFps = elapsed > 0.0f ? frames / elapsed : 0.0f;
     immutable gs = GC.profileStats;
-    writefln("[benchmark2] done frames=%d elapsed=%.2fs avg_fps=%.1f peak_pairs=%d peak_manifolds=%d",
+    writefln("[benchmark2] done frames=%d elapsed=%.2fs avg_fps=%.1f peak_dynamic=%d",
         frames,
         elapsed,
         avgFps,
-        maxPairs,
-        maxManifolds);
+        maxActiveDrops);
     writefln("[benchmark2] gc collections=%d total_pause=%.1fms max_pause=%.1fms",
         gs.numCollections,
         toMs(gs.totalPauseTime),

@@ -20,7 +20,9 @@ game-engine-editor
 game-engine-showcase
 game-engine-test-library
 game-engine-test-physics
+game-engine-test-physics-box3d
 crystal-collector
+marble-run
 
 # Reference C++ codebases (vendored, not part of build)
 ref/

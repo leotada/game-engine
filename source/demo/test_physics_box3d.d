@@ -1,4 +1,4 @@
-module demo.test_physics;
+module demo.test_physics_box3d;
 
 import std.math : fabs;
 import std.stdio : writefln, writeln;
@@ -69,7 +69,7 @@ int main() {
     bool rayHitGround = false;
     float lastRayFraction = 1.0f;
 
-    writeln("[test-physics] Box3D headless gameplay smoke test");
+    writeln("[test-physics-box3d] headless smoke test");
 
     foreach (frame; 1 .. totalFrames + 1) {
         world.step(dt, 4);
@@ -82,12 +82,12 @@ int main() {
         }
 
         if (events.sensorEntered && !events.printedEnter) {
-            writefln("[test-physics] frame %3d: SENSOR ENTER", frame);
+            writefln("[test-physics-box3d] frame %3d: SENSOR ENTER", frame);
             events.printedEnter = true;
         }
 
         if (events.sensorExited && !events.printedExit) {
-            writefln("[test-physics] frame %3d: SENSOR EXIT", frame);
+            writefln("[test-physics-box3d] frame %3d: SENSOR EXIT", frame);
             events.printedExit = true;
         }
 
@@ -104,40 +104,40 @@ int main() {
 
     immutable spherePos = getPosition(sphere);
     if (fabs(spherePos.y - 0.5f) > 0.35f) {
-        writefln("[test-physics] FAIL: sphere rested at y=%.3f", spherePos.y);
+        writefln("[test-physics-box3d] FAIL: sphere rested at y=%.3f", spherePos.y);
         pass = false;
     }
 
     foreach (i, body; stack) {
         immutable p = getPosition(body);
         if (p.y < 0.35f || p.y > 8.0f || fabs(p.x) > 2.0f || fabs(p.z) > 2.0f) {
-            writefln("[test-physics] FAIL: stack-%u unstable at pos=(%.3f, %.3f, %.3f)",
+            writefln("[test-physics-box3d] FAIL: stack-%u unstable at pos=(%.3f, %.3f, %.3f)",
                 i, p.x, p.y, p.z);
             pass = false;
         }
     }
 
     if (!events.sensorEntered || !events.sensorExited) {
-        writefln("[test-physics] FAIL: sensor events enter=%s exit=%s",
+        writefln("[test-physics-box3d] FAIL: sensor events enter=%s exit=%s",
             events.sensorEntered, events.sensorExited);
         pass = false;
     }
 
     if (!rayHitGround || lastRayFraction >= 1.0f) {
-        writefln("[test-physics] FAIL: raycast hit=%s fraction=%.3f", rayHitGround, lastRayFraction);
+        writefln("[test-physics-box3d] FAIL: raycast hit=%s fraction=%.3f", rayHitGround, lastRayFraction);
         pass = false;
     }
 
     if (getBodyEntity(sphere) != sphereEntity || getBodyEntity(sensor) != sensorEntity) {
-        writeln("[test-physics] FAIL: body userData entity mapping mismatch");
+        writeln("[test-physics-box3d] FAIL: body userData entity mapping mismatch");
         pass = false;
     }
 
     if (pass) {
-        writeln("[test-physics] PASS");
+        writeln("[test-physics-box3d] PASS");
         return 0;
     }
 
-    writeln("[test-physics] FAIL");
+    writeln("[test-physics-box3d] FAIL");
     return 1;
 }
