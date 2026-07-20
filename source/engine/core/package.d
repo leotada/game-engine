@@ -7,3 +7,4 @@ public import engine.core.pod;
 public import engine.core.handle;
 public import engine.core.strings;
 public import engine.core.arena;
+public import engine.core.attrs;

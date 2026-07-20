@@ -16,7 +16,7 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 | # | Feature | Doc | Prioridade | Dependências / por quê nesta posição |
 |---:|:---|:---|:---|:---|
 | 1 | API física gameplay (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **feito** (P5 mesh adiado) | Base de gameplay; demos `pong3d`, etc. |
-| 2 | Fechar GC-safe (adoção + lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | alta | Storage POD correto antes de mais features (anim, ser) |
+| 2 | Fechar GC-safe (adoção + lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **feito** (#9 Handle API adiado) | Storage POD + lint |
 | 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | média | `ShadowMap` já existe; PBR-0 (PCF) não precisa de post |
 | 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | média | Offscreen + tone map; habilita HDR/IBL sem clamp |
 | 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
@@ -31,8 +31,9 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
   Tone map (post) é recomendado antes de IBL brilhante, não antes de sombra.
 - **Hot reload antes de ECS paralelo:** ganho de produtividade no dia a dia;
   paralelismo é escala, não desbloqueia conteúdo.
-- **GC-safe em #2:** não bloqueia demos atuais, mas animações/buffers novos
-  devem nascer em `Pod!T` / `Handle!T` / `StringId` — fechar adoção cedo.
+- **GC-safe (#2) fechado:** `Pod!T[]` no storage, `World.strings`,
+  `App.frameArena`, `dub run --config=lint`. Novos buffers devem
+  nascer em `Pod!T` / `Handle!T` / `StringId`.
 
 ## Já entregue (não reabrir)
 
@@ -47,8 +48,8 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 - Física gameplay: `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors,
   raycast + overlap, joints (distance/revolute/weld), character controller,
   contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
-- Primitivas GC-safe: módulos `Pod!T`, `Handle!T`, `StringId`, `FrameArena`
-  (wiring/`Pod!T[]`/lint ainda incompletos — ver plano GC)
+- Primitivas GC-safe: `Pod!T`, `Handle!T`, `StringId`, `FrameArena`,
+  `@noGcStorage` + lint (`dub run --config=lint`) — ver [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
 
 ## Limpeza pendente (não-feature)
 

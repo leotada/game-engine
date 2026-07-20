@@ -2,7 +2,7 @@
 /// Enhanced from the original ECS with @safe support and SoA storage.
 module engine.ecs.store;
 
-import engine.core.pod : isPod;
+import engine.core.pod : isPod, Pod;
 
 @safe:
 
@@ -11,7 +11,7 @@ alias EntityId = uint;
 struct ComponentStore(T) if (is(T == struct)) {
     static assert(isPod!T, "Component " ~ T.stringof ~ " must not contain GC pointers — see docs/gc-safe-architecture-plan.md");
 
-    private T[] dense;
+    private Pod!T[] dense;
     private EntityId[] denseToEntity;
     private uint[] sparse;
     private size_t _length;

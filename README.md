@@ -287,7 +287,7 @@ Suggested order (see [`docs/roadmap.md`](docs/roadmap.md)):
 | # | Feature | Plan |
 |---:|:---|:---|
 | 1 | Physics API (done; mesh P5 optional) | [docs/physics-quickstart.md](docs/physics-quickstart.md) |
-| 2 | GC-safe adoption + lint CI | [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) |
+| 2 | GC-safe adoption + lint (done; #9 deferred) | [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) |
 | 3 | PBR + shadow PCF + IBL | [docs/plan-pbr.md](docs/plan-pbr.md) |
 | 4 | Post-processing (bloom, tone map, FXAA) | [docs/plan-post-processing.md](docs/plan-post-processing.md) |
 | 5 | Skeletal animation + glTF skin | [docs/plan-animation.md](docs/plan-animation.md) |

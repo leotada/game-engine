@@ -9,23 +9,29 @@ import engine.gpu.context;
 import engine.gpu.renderer;
 import engine.graphics.types : Color4;
 import engine.core.log;
+import engine.core.arena : FrameArena;
 
 @safe:
+
+private enum size_t FRAME_ARENA_CAPACITY = 4 * 1024 * 1024; // 4 MB
 
 struct App {
     Window    window;
     GpuContext gpu;
     Renderer  renderer;
     InputState input;
+    FrameArena frameArena;
 
     private bool _running = true;
 
     @disable this(this);
 
-    static App create(string title, uint width, uint height,
+    static App create(scope const(char)[] title, uint width, uint height,
                       WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
+        import std.string : toStringz;
+
         App app;
-        app.window   = Window.create(title.ptr, width, height);
+        app.window   = Window.create(toStringz(title), width, height);
         GpuContext.create(
             app.gpu,
             app.window.waylandDisplay(),
@@ -34,6 +40,7 @@ struct App {
             presentMode,
         );
         app.renderer = Renderer.create(app.gpu);
+        app.frameArena = FrameArena(FRAME_ARENA_CAPACITY);
         info("App ready");
         return app;
     }
@@ -41,6 +48,9 @@ struct App {
     bool running() const nothrow @nogc { return _running; }
 
     void close() nothrow @nogc { _running = false; }
+
+    /// Per-frame scratch arena; reset at end of every frame.
+    ref FrameArena arena() return nothrow @nogc { return frameArena; }
 
     void pollEvents() nothrow @nogc @trusted {
         input.beginFrame();
@@ -63,6 +73,7 @@ struct App {
 
     void endFrame(ref FrameContext frame) nothrow @nogc {
         renderer.endFrame(frame);
+        frameArena.reset();
     }
 
     void destroy() {

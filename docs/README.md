@@ -20,7 +20,7 @@ descrevem o que falta. Visão geral: [roadmap.md](roadmap.md).
 |:---|:---|:---|
 | [roadmap.md](roadmap.md) | ativo | Visão geral do que falta e ordem sugerida |
 | [plan-physics-api.md](plan-physics-api.md) | P0–P4+P6 feitos; P5 mesh adiado | Completar API gameplay sobre Box3D (#1) |
-| [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | parcialmente feito | Adoção GC-safe + lint CI (#2) |
+| [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | feito (#9 adiado) | Adoção GC-safe + lint (#2) |
 | [plan-pbr.md](plan-pbr.md) | pendente | PBR + PCF shadow + IBL (#3) |
 | [plan-post-processing.md](plan-post-processing.md) | pendente | Bloom, tone mapping, FXAA (#4) |
 | [plan-animation.md](plan-animation.md) | pendente | Skeletal animation + skin glTF (#5) |

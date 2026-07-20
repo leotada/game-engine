@@ -111,6 +111,24 @@
             "targetType": "library",
             "targetName": "game-engine",
             "excludedSourceFiles": ["source/demo/*", "source/demo/_legacy/*"]
+        },
+        {
+            "name": "lint",
+            "targetType": "executable",
+            "targetName": "game-engine-lint",
+            "mainSourceFile": "tools/lint.d",
+            "sourcePaths": ["tools"],
+            "importPaths": ["tools"],
+            "excludedSourceFiles": [
+                "source/demo/*",
+                "source/demo/_legacy/*",
+                "source/engine/*",
+                "source/bindings/*",
+                "source/bindings/box3d/box3d_import.c"
+            ],
+            "sourceFiles": [],
+            "libs": [],
+            "versions": ["NoSDL", "NoWGPU"]
         }
     ]
 }

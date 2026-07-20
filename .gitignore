@@ -25,6 +25,7 @@ crystal-collector
 marble-run
 pong3d
 game-engine-gc-benchmark
+game-engine-lint
 
 # Reference C++ codebases (vendored, not part of build)
 ref/

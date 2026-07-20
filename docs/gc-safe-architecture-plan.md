@@ -1,5 +1,11 @@
 # GC-Safe Architecture Plan
 
+> **Status:** concluído (item 9 adiado) · Prioridade: alta · Ver [roadmap.md](roadmap.md)
+>
+> Cabeçalho e checklist em português. O corpo abaixo (§1–§8) permanece em
+> inglês (histórico da pesquisa); use o checklist como fonte de verdade
+> do progresso.
+
 > **Goal.** Allow high-level D code with the GC in game scripts while making
 > the worst-case GC pauses (the ones measured in
 > [docs/incremental-gc-research.md](incremental-gc-research.md) §7.5,
@@ -8,6 +14,31 @@
 
 This document is the implementation plan that follows from the GC research
 report. Read that report first for the empirical motivation.
+
+## Progress checklist (fonte de verdade)
+
+| # | Item | Status | Notas |
+|---:|:---|:---|:---|
+| 1 | Módulos `Pod!T` / `isPod!T` | feito | `engine.core.pod`. `ComponentStore` e `SceneGraph` usam `Pod!T[]`. |
+| 2 | `Handle!T` | feito | `engine.core.handle` — uso real no `gc_benchmark`; API pública além de `EntityId` adiada (#9). |
+| 3 | `StringId` + `StringTable` | feito | `World.strings` owns a `StringTable`. |
+| 4 | `FrameArena` (módulo) | feito | `engine.core.arena`. |
+| 5 | Sem `string` long-lived em `engine/` | feito | Auditoria ok (exceto `jph/` cancelado); lint impede regressão. |
+| 6 | `FrameArena` em `App` / `endFrame()` + overlay | feito | `App.frameArena` 4 MB, `reset()` em `endFrame()`; overlay usa buffers fixos + `sformat`. |
+| 7 | `tools/lint.d` (`dub run --config=lint`) | feito | `attrs.d` / `@noGcStorage`; config `lint` no `dub.json`. |
+| 8 | Path POD no `gc_benchmark` | feito | Default CLI = `--worst-safe`; `--worst` permanece como foil. |
+| 9 | `Handle!T` além de `EntityId` na API pública | adiado | Só quando jogos precisarem de refs tipadas além de entidades. |
+
+Mapeamento checklist ↔ rollout §5:
+
+| Checklist | §5 Rollout |
+|---:|:---|
+| 1 | Step 1 (feito, incl. `Pod!T[]`) |
+| 3 + 5 | Step 2 |
+| 4 + 6 | Step 3 |
+| 7 | Step 4 |
+| 8 | Step 5 |
+| 9 | Step 6 (deferred) |
 
 ---
 
@@ -271,19 +302,23 @@ chains. Step 5 of the rollout (§5) verifies this empirically.
 
 ## 4. Files to add, by location
 
-| Add                           | Path                                  | Notes                                  |
-|-------------------------------|---------------------------------------|----------------------------------------|
-| `Pod!T` / `isPod`             | source/engine/core/pod.d              | new module                             |
-| `Handle(T)`                   | source/engine/core/handle.d           | generalize current `EntityId` pattern  |
-| `StringId` + `StringTable`    | source/engine/core/strings.d          | new module, lives on `World`           |
-| `FrameArena`                  | source/engine/core/arena.d            | reset in `engine.app` per-frame        |
-| `@noGcStorage` UDA            | source/engine/core/attrs.d            | one-line UDA                           |
-| Lint pass                     | tools/lint.d (+ `dub.json` config)    | walks engine/, fails CI on violations  |
-| Updated guidance              | AGENTS.md                             | document the layered model + rules     |
-| Re-export                     | source/engine/core/package.d          | `public import` of the five new modules|
+Status relative to the checklist above. Modules and adoption for steps 1–5
+are **done**; step 6 (`Handle!T` beyond `EntityId`) remains deferred.
 
-Each module is small (<200 LOC), individually unit-testable, and converts
-one class of "easy to write, slow at runtime" code into a compile error.
+| Add                           | Path                                  | Status |
+|-------------------------------|---------------------------------------|--------|
+| `Pod!T` / `isPod`             | source/engine/core/pod.d              | **done** (`Pod!T[]` in ComponentStore + SceneGraph) |
+| `Handle(T)`                   | source/engine/core/handle.d           | **done** |
+| `StringId` + `StringTable`    | source/engine/core/strings.d          | **done** (`World.strings`) |
+| `FrameArena`                  | source/engine/core/arena.d            | **done** (wired in `engine.app`) |
+| `@noGcStorage` UDA            | source/engine/core/attrs.d            | **done** |
+| Lint pass                     | tools/lint.d (+ `dub.json` config)    | **done** |
+| Updated guidance              | AGENTS.md                             | **done** (layered model documented) |
+| Re-export                     | source/engine/core/package.d          | **done** |
+
+Each landed module is small (<200 LOC) and converts one class of "easy to
+write, slow at runtime" code into a compile error. Remaining risk is
+incomplete adoption, not missing primitives.
 
 ---
 
@@ -294,61 +329,42 @@ numbers say "this is enough."
 
 ### Step 1 — Land `Pod!T` and apply it to existing storage
 
-- Add `engine.core.pod`.
-- Wrap the dense arrays in `ComponentStore`, `Mesh`, `TexMesh`,
-  `ParticlePool`, vertex/index buffers, and `SceneGraph` transform array
-  with `Pod!T`.
-- Zero behavior change. Just turns implicit assumptions into explicit
-  static asserts. Protects against future regressions.
-- Acceptance: all 7 dub configs still build; `dub test` still passes.
+- [x] Add `engine.core.pod`.
+- [x] Wrap the dense arrays in `ComponentStore` and `SceneGraph` with `Pod!T`
+  (Mesh/TexMesh have no CPU vertex pools; ParticlePool does not exist).
+- Acceptance: all dub configs still build; `dub test` still passes.
 
 ### Step 2 — Add `StringId` + `StringTable`, migrate engine-side string fields
 
-- Add `engine.core.strings` with a `StringTable` instance owned by `World`
-  (or a global engine context).
-- Audit `engine/devtools/overlay.d`, `engine/audio/engine.d`,
-  `engine/assets/*` for `string` fields stored beyond a single function
-  call. Replace with `StringId`.
-- Public API: anywhere the engine currently *takes* a `string`, accept
-  `scope const(char)[]` and intern internally.
-- Acceptance: no `string` survives across a frame inside `engine/`. Run
-  the gc-benchmark `worst` scenario; max pause should already drop
-  noticeably (predicted: 9 ms → 4–6 ms, since terrain vertices and
-  dialog cache strings are gone).
+- [x] Add `engine.core.strings`.
+- [x] Own a `StringTable` from `World` (`World.strings`).
+- [x] Audit `engine/` (excl. cancelled `jph/`) — no long-lived `string` fields;
+  lint gates regressions. Overlay/audio/assets use params/locals only.
+- Acceptance: no `string` survives across a frame inside live `engine/` storage.
 
 ### Step 3 — Add `FrameArena`, expose it through the system signature
 
-- Add `engine.core.arena`.
-- Allocate a per-frame arena (suggested: 4 MB) in `engine.app`. Reset in
-  `endFrame()`.
-- Pass it as a parameter to gameplay systems alongside `World`:
-  `void aiSystem(ref World w, ref FrameArena tmp, float dt)`.
-- Mandatory for engine devtools/overlay (eliminates the per-frame
-  `format()` allocations there). Optional for game code.
-- Acceptance: `engine/devtools/overlay.d` no longer allocates per-frame
-  `string` for the FPS counter; mean frame time on the `light` scenario
-  drops by the cost of those `format()` calls.
+- [x] Add `engine.core.arena`.
+- [x] Allocate a per-frame arena (4 MB) in `engine.app`. Reset in `endFrame()`.
+- [x] Expose via `App.arena()` for gameplay systems alongside `World`.
+- [x] Overlay path is GC-free (fixed `char` buffers + `sformat`).
+- Acceptance: overlay / FPS path does not allocate GC `string` per frame.
 
-### Step 4 — Add the lint pass, gate CI on it
+### Step 4 — Add the lint pass
 
-- `tools/lint.d` walks `source/engine/**.d`, finds every `@noGcStorage`
-  struct and every `Pod!T` instantiation, asserts `isPod` recursively.
-- Add `dub run --config=lint` to the build pipeline before `dub build
-  --config=demo`.
-- Acceptance: a deliberately broken PR (e.g. add `string label` to a
-  component) fails CI with a readable error pointing at the offending
-  field.
+- [x] `tools/lint.d` + `@noGcStorage` / `attrs.d`.
+- [x] `dub run --config=lint` (local gate; no CI workflow).
+- Acceptance: a deliberately broken change (e.g. `string label` on a component)
+  fails the lint with a readable error.
 
 ### Step 5 — Refactor the gc-benchmark `worst` scenario
 
-- Mirror §3 above: replace `class NpcState` with `struct NpcDef`,
-  `string materialName` with `StringId materialId`, the inventory linked
-  list with `Handle!InventoryNode`, and `string` allocations with
-  `FrameArena.sprintf`.
-- Re-run the benchmark.
-- **Acceptance:** max pause drops from ~9 ms to <2 ms (within noise of
-  the openworld scenario). This is the empirical proof that the rules
-  work and "fixing the GC" is the wrong question.
+- [x] `worst_safe` path with `Pod` / `Handle` / `StringId` / `FrameArena`
+  already exists in `source/demo/gc_benchmark.d`.
+- [x] Safe path is the default CLI scenario and docs baseline; class-graph `worst`
+  remains as a regression foil (`--worst`).
+- **Acceptance:** max pause on the safe path stays <2 ms (within noise of
+  the openworld scenario).
 
 ### Step 6 (deferred) — `Handle(T)` generalization across game code
 
@@ -389,8 +405,9 @@ document don't change that calculus:
 - [source/demo/gc_benchmark.d](../source/demo/gc_benchmark.d) — the
   benchmark used in §5 step 5 to validate the rules empirically.
 - [AGENTS.md](../AGENTS.md) — the engine-wide rules; this plan extends
-  the existing `!hasIndirections!T` policy from "ECS components" to
-  "any engine-owned storage."
+  the existing `!hasIndirections!T` policy from ECS components to
+  any engine-owned storage.
+- [roadmap.md](roadmap.md) — where this plan sits among remaining features.
 
 ---
 

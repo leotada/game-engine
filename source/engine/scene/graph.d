@@ -5,6 +5,8 @@ module engine.scene.graph;
 
 import engine.math.vec : Vec3;
 import engine.math.mat : Mat4;
+import engine.core.pod : Pod;
+import engine.core.attrs : noGcStorage;
 
 @safe:
 
@@ -15,6 +17,7 @@ enum NodeId INVALID_NODE = uint.max;
 
 /// Local transform: translation + uniform Y rotation + non-uniform scale.
 /// Components are POD — safe for the ECS and no GC indirections.
+@noGcStorage
 struct Transform {
     Vec3  position = Vec3(0, 0, 0);
     Vec3  scale    = Vec3(1, 1, 1);
@@ -32,9 +35,9 @@ struct Transform {
 /// Nodes must be added in parent-before-child order — this is natural when
 /// you build the tree by calling `addChild` from the root downward.
 struct SceneGraph {
-    Transform[] local;       // per-node local transform
-    NodeId[]    parent;      // parent index; ROOT's parent is itself
-    Mat4[]      world;       // computed world matrix (updated by `updateWorld`)
+    Pod!Transform[] local;   // per-node local transform
+    Pod!NodeId[]    parent;  // parent index; ROOT's parent is itself
+    Pod!Mat4[]      world;   // computed world matrix (updated by `updateWorld`)
 
     static SceneGraph create() {
         SceneGraph g;

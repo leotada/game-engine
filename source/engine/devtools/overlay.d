@@ -13,8 +13,8 @@
 ///
 /// Lines are fixed-width char buffers (128 bytes each, up to 32 lines);
 /// rendering is @nogc. Formatting uses `std.format.sformat` into the
-/// fixed buffer — allowed because this path is developer-facing, not the
-/// engine frame-hot path in the strict sense.
+/// fixed buffer — no GC `string` per frame (GC-safe; App.frameArena is
+/// available for gameplay scratch, but overlay keeps its own stack buffers).
 module engine.devtools.overlay;
 
 import std.format : sformat;

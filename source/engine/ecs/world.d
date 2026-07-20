@@ -3,18 +3,22 @@
 module engine.ecs.world;
 
 import engine.ecs.store;
+import engine.core.pod : isPod;
+import engine.core.strings : StringTable;
 import std.meta : allSatisfy;
-import std.traits : hasIndirections;
 
 @safe:
 
 private template isValidComponent(T) {
-    enum isValidComponent = is(T == struct) && !hasIndirections!T;
+    enum isValidComponent = is(T == struct) && isPod!T;
 }
 
 struct World(Components...) if (Components.length > 0 && allSatisfy!(isValidComponent, Components)) {
     private EntityId _nextId = 0;
     private bool[] _alive;
+
+    /// Interned strings for engine-owned identifiers (material names, dialog keys, …).
+    StringTable strings;
 
     // One ComponentStore per component type, generated at compile time.
     private alias Stores = StoresOf!Components;

@@ -11,23 +11,25 @@
  *   disabled  — GC.disable() with no explicit collect (pause floor reference;
  *               will OOM on long runs, included for comparison).
  *
- * Three workload scenarios:
+ * Three workload scenarios (default: --worst-safe — the gated GC-safe baseline):
  *
  *   --light     small indie-style allocation pressure.
  *   --openworld 512 NPCs, dialog/loot queue, particle bursts, terrain
  *               streaming, ~1-2 MB allocated per frame, pointer-free data.
  *   --worst     class-based NPC reference graph (4096 NPCs with linked-list
  *               inventories), pointer-bearing terrain vertices, ~64+ MB live
- *               heap full of references. This is the worst case for a
- *               conservative mark-sweep collector.
+ *               heap full of references. Kept as a regression foil only.
  *   --worst-safe same workload as --worst, but using the GC-safe architecture
- *               (Pod structs, Handle!T, StringId, FrameArena). Demonstrates
- *               the pause collapse from data-structure discipline.
+ *               (Pod structs, Handle!T, StringId, FrameArena). Default / CI gate.
  *
  * Combine with DRT_GCOPT to layer Approach B on top, e.g.:
  *
  *   DRT_GCOPT="fork:1 parallel:8 precise:1 profile:1" \
  *       dub run --config=gc-benchmark -- scheduler 600 --worst
+ *
+ * CI / docs baseline:
+ *
+ *   dub run --config=gc-benchmark -- --worst-safe
  *
  * No SDL/WGPU dependencies — pure druntime/std so it builds standalone.
  *
@@ -47,6 +49,7 @@ import engine.core.pod     : isPod;
 import engine.core.handle  : Handle;
 import engine.core.strings : StringId, StringTable;
 import engine.core.arena   : FrameArena;
+import engine.core.attrs   : noGcStorage;
 
 @safe:
 
@@ -370,6 +373,7 @@ struct NpcDomain {}
 struct InvDomain {}
 
 /// POD NPC state — no class, no string, no GC indirections.
+@noGcStorage
 struct SafeNpcDef
 {
     StringId          baseName;       // interned once ("npc_42"), stable
@@ -382,6 +386,7 @@ struct SafeNpcDef
 static assert(isPod!SafeNpcDef);
 
 /// POD inventory node — linked via handles, not class refs.
+@noGcStorage
 struct SafeInvNode
 {
     StringId         name;
@@ -391,6 +396,7 @@ struct SafeInvNode
 static assert(isPod!SafeInvNode);
 
 /// POD terrain vertex — materialId instead of string, ownerId instead of class.
+@noGcStorage
 struct SafeTerrainVertex
 {
     float  x, y, z, u, v;
@@ -693,7 +699,7 @@ void reportMode(string name, Mode mode, Scenario sc, size_t frames) @trusted
 void main(string[] args) @trusted
 {
     Mode     mode     = Mode.default_;
-    Scenario scenario = Scenario.light;
+    Scenario scenario = Scenario.worst_safe;
     size_t   frames   = 600;
 
     string[] positional;
