@@ -51,10 +51,10 @@ quebrar a API gameplay-facing definida aqui.**
 | E1-6  | Sensores (triggers) + `ContactListener`                           | ⏳ Em curso  | —         |
 | E1-7  | Scene-level raycast (`NarrowPhaseQuery.CastRay`)                  | ⬜ Pendente  | —         |
 | E1-8  | Sleep simples (sem ilhas)                                         | ✅ Concluída | —         |
-| E1-9  | Migrar `test_physics.d` e `benchmark.d`                           | ⬜ Pendente  | —         |
+| E1-9  | Migrar `test_physics.d` e `benchmark.d`                           | ✅ Concluída | —         |
 | E1-10 | Documentar API gameplay-facing                                    | ⬜ Pendente  | —         |
 
-Status do Épico 1: **17 de 21 fases concluídas** (E1-P em curso); faltam raycast de cena, migração dos demos e tuning de performance.
+Status do Épico 1: **17 de 21 fases concluídas**; `E1-P` e `E1-6` seguem em curso, e ainda faltam a query de raycast em cena e a documentação gameplay-facing.
 
 ### Épico 2 — Jolt completo (pós-MVP)
 
@@ -65,8 +65,8 @@ no Épico 1 (apenas adiciona).
 | #    | Fase                                                              | Estado       |
 | ---- | ----------------------------------------------------------------- | ------------ |
 | E2-1 | `IslandBuilder` (convergência + sleep correto sob contato)        | ⬜ Pendente  |
-| E2-2 | `BroadPhaseQuadTree` (O(n log n))                                 | ⬜ Pendente  |
-| E2-3 | SIMD em lote (`RayAABox4`, `RayTriangle4`, `Vec4` ops)            | ⬜ Pendente  |
+| E2-2 | `BroadPhaseQuadTree` (O(n log n))                                 | ⏳ Em curso  |
+| E2-3 | SIMD em lote (`RayAABox4`, `RayTriangle4`, `Vec4` ops)            | ⏳ Em curso  |
 | E2-4 | Decorated shapes (Scaled, RotatedTranslated, OffsetCOM)           | ⬜ Pendente  |
 | E2-5 | `StaticCompoundShape` (BVH)                                       | ⬜ Pendente  |
 | E2-6 | Named constraints (Fixed, Point, Distance, Hinge, Slider, …)      | ⬜ Pendente  |
@@ -285,8 +285,10 @@ compilar.
 
 Foco: corpos rígidos suficientes para jogos que usam física de várias
 maneiras (plataformas, puzzles, ragdoll-leve, projéteis, gatilhos de
-área, line-of-sight). Tudo single-thread, sem joints, sem ilhas, sem
-QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
+área, line-of-sight). Tudo single-thread, sem joints, sem ilhas; o
+caminho padrão do MVP continua no `BroadPhaseGrid` (o `BroadPhaseQuadTree`
+já existe como alternativa opcional), sem decorated/compound shapes,
+sem mesh/heightfield/softbody.
 
 **Total estimado:** ~4.000 LOC novas (vs ~10.500 do Jolt completo).
 
@@ -298,7 +300,7 @@ QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
 | `StaticCompoundShape` (+ BVH)                                  | Bodies de shape única bastam para o recorte de jogos visado.                                   |
 | `ConvexHullShape` (+ builder)                                  | Primitivas cobrem 95% do uso comum.                                                            |
 | Manifold clipping convexo genérico                             | Box-vs-Box analítico (SAT + clipping); pares mistos via fallback GJK+EPA.                      |
-| `BroadPhaseQuadTree` + `RayAABox4`/`RayTriangle4` SIMD         | `BroadPhaseGrid` (hash espacial) já implementado; QuadTree é Épico 2.                          |
+| `BroadPhaseQuadTree` + `RayAABox4`/`RayTriangle4` SIMD         | `BroadPhaseGrid` segue como default do MVP; o QuadTree já foi iniciado no Épico 2, mas o caminho SIMD ainda fica para depois. |
 | Named constraints (fixed/point/distance/hinge/slider)          | Sem joints no recorte.                                                                         |
 | `IslandBuilder`                                                | Tudo numa única "ilha" global; sleep apenas por timer.                                         |
 | `JobSystemTaskPool`                                            | `JobSystemSingleThreaded` já existe e cobre o recorte.                                         |
@@ -337,85 +339,57 @@ QuadTree, sem decorated/compound shapes, sem mesh/heightfield/softbody.
 
 ### E1-3b — `BroadPhaseGrid` (spatial hash) ✅
 
-Substitui o brute-force por padrão em `PhysicsSystem`. Hash 3D uniforme
-com tabela open-addressed (`HASH_SIZE=8192`): cada body dinâmico é
-inserido nas células que sua AABB cobre (até 8 células); narrowphase
-recebe apenas pares de corpos em células vizinhas (27-cell neighborhood).
-Bodies estáticos (ex.: chão 40 m) ficam em lista separada e são testados
-diretamente — sem inflar o grid com AABBs enormes.
+Substitui o brute-force por padrão em `PhysicsSystem`. A versão atual
+reconstrói um hash 3D uniforme por frame com query por faixa exata de
+células, sem o scan antigo de 27 vizinhos: cada body dinâmico é inserido
+nas células que sua AABB cobre; o par só é emitido na célula canônica
+compartilhada. Bodies estáticos (ex.: chão 40 m) ficam em lista separada
+e são testados diretamente — sem inflar o grid com AABBs enormes.
 
 Complexidade vs brute-force para N dinâmicos + S estáticos:
 - Brute-force: O(N × (N+S)) testes de AABB por frame
-- Grid:        O(N × (k×27 + S)) onde k = avg de bodies por célula ≪ N
+- Grid:        O(N × (d×c + S)) onde d = diâmetro médio do body em células
+               e c = avg de bodies por célula ≪ N
 
-Benchmark medido (1000 dinâmicos, 1 estático, célula=2m): ≈200 000 testes
-de AABB por frame vs ≈1 000 000 do brute-force (≈5× menos trabalho).
+Benchmark medido (1000 dinâmicos, 1 estático, query exata, célula=1m):
+≈30 000 testes de AABB por frame vs ≈1 000 000 do brute-force (≈33× menos
+trabalho), com saída de ~3 000 pares em vez de ~15 000.
 
 - [x] `broadphase/broad_phase_grid.d` — hash 3D, pool de `CellEntry`,
-  `gridCoord()` com floor negativo correto, `cellHash()` com co-primos.
-- [x] `PhysicsSystem` inicializa com `new BroadPhaseGrid(2.0f)` — célula
-  de 2 m é ótima para corpos de 1 m com spacing ≥ 1 m.
+  `gridCoord()` com floor negativo correto, `cellHash()` com co-primos,
+  query por faixa exata e dedup por célula canônica.
+- [x] `PhysicsSystem` inicializa com `new BroadPhaseGrid(1.0f)` — célula
+  de 1 m com query exata é o default atual do runtime.
 - [x] Bodies estáticos separados em `mStaticBodyIDs` dentro do grid.
 
 ### E1-P — Tuning de performance ⏳
 
-Diagnóstico do benchmark de 1000 cubos (release, 12 s, `BroadPhaseGrid`):
+O grosso do tuning estrutural já entrou no broadphase padrão:
 
-| t (s) | fps  | pairs  | manifolds | avgY  |
-|------:|-----:|-------:|----------:|------:|
-|   2.1 | 29.7 |  5 941 |     2 254 |  4.74 |
-|   4.1 | 10.0 | 10 653 |     2 487 |  3.48 |
-|  12.1 | 10.0 | 15 209 |     3 705 |  1.12 |
+- `BroadPhaseGrid` agora usa query por faixa exata de células e dedup por
+  célula canônica compartilhada, eliminando o padrão antigo de 27 vizinhos
+  e a inflação de pares duplicados.
+- `PhysicsSystem` passou a usar `new BroadPhaseGrid(1.0f)` por padrão.
+- O comentário do módulo documenta a nova ordem de grandeza do benchmark:
+  ~30 000 testes de AABB/frame e ~3 000 pares no caso de 1000 cubos.
 
-**Problema 1 — pares duplicados no broadphase (2× inflação)**
+Pendências atuais:
 
-`BroadPhaseGrid.FindCollidingPairs` emite o par (A,B) quando processa A
-e também (B,A) quando processa B. A narrowphase executa `CollideBoxVsBox`
-para ambos, dobrando o custo. O `ContactConstraintManager` absorve o
-duplicado via cache, mas o custo da narrowphase já foi pago.
-
-Fix (O(1)): dentro do loop de vizinhança do grid, adicionar guard:
-```d
-if (entry.bodyID.GetIndex() <= bodyID1.GetIndex()) {
-    idx = entry.next;
-    continue; // apenas emite pares canônicos (menor_idx, maior_idx)
-}
-```
-Efeito esperado: pairs 15 000 → ~7 500; manifolds e fps proporcionais.
-
-**Problema 2 — avgY caindo (cubos afundando 1,12 m em 12 s)**
-
-Causa: `mBaumgarteERP=0.2` corrige apenas 20 % da penetração por step;
-`mNumPositionIterations=2` é insuficiente para pilhas de 10 camadas.
-
-Fix: ajustar `physics_settings.d`:
-- `mBaumgarteERP` 0.2 → 0.3
-- `mNumPositionIterations` 2 → 4
-- `mNumVelocityIterations` 10 → 8 (reduz custo sem perder estabilidade
-  após a correção do dedup)
-
-**Problema 3 — nenhum body dormindo (`active=1000` ao final)**
-
-Sleep por timer não funciona em pilhas densas: o corpo de baixo
-continua recebendo impulsos dos de cima → timer nunca estoura.
-Requer `IslandBuilder` (E2-1) para detectar ilhas estabilizadas e
-dormir o grupo inteiro de uma vez.
-
-**Tarefas:**
-
-- [ ] `broadphase/broad_phase_grid.d` — dedup por índice no loop de
-  vizinhança dinâmico-dinâmico.
+- [x] `broadphase/broad_phase_grid.d` — dedup dinâmico-dinâmico no loop
+  principal e query exata de células.
 - [ ] `physics_settings.d` — novos defaults: `mBaumgarteERP=0.3f`,
   `mNumPositionIterations=4`, `mNumVelocityIterations=8`.
-- [ ] `demo/benchmark.d` — corrigir comentário do módulo (usa grid, não
-  brute-force).
-- [ ] `dub run --config=test-physics --force` — assertions devem passar.
-- [ ] Benchmark release 12 s — meta: fps ≥ 20, avgY ≥ 3.0 ao final.
+- [ ] `demo/benchmark.d` — comentário do módulo ainda menciona
+  brute-force, embora o runtime use grid.
+- [x] `dub run --config=test-physics --force` — sandbox atual executa e
+  termina com `PASS`.
+- [ ] Benchmark release 12 s — revalidar a meta de fps/avgY com a versão
+  atual do grid.
 - [ ] Commit após validação.
 
 **Próximo passo de performance após E1-P:** `IslandBuilder` (E2-1) —
-habilita sleep por ilha e reduz `mActiveBodies` de 1000 → ~200 em 12 s,
-com ganho de fps proporcional.
+resolver sleep/convergência de pilhas densas sem depender só do timer de
+repouso por body.
 
 ### E1-4 — `ContactConstraintManager` + solver PGS ✅
 
@@ -447,6 +421,11 @@ gameplay-facing de reagir a colisões e a entradas/saídas em sensores.
 - [x] `Body.IsSensor()` + flag `mIsSensor` em `BodyCreationSettings`.
 - [x] Filtro em `Body.sFindCollidingPairsCanCollide` — sensores
   não colidem com kinematicos passivos.
+- [x] `ContactConstraintManager` ignora manifolds com sensor na fase de
+  geração de constraints — sensor continua gerando detecção, mas não
+  participa da resposta física.
+- [x] `BodyCreationSettings.mUserData` (uint64) — payload livre para o
+  jogo associar entidades ECS aos bodies.
 - [ ] `collision/contact_listener.d` — interface `ContactListener` com:
   - `OnContactValidate(body1, body2, manifold) -> EValidateResult`
   - `OnContactAdded(body1, body2, manifold, settings)`
@@ -456,18 +435,23 @@ gameplay-facing de reagir a colisões e a entradas/saídas em sensores.
 - [ ] Integrar callbacks no fim do narrowphase: emitir `Added`/`Persisted`
   comparando com o cache do `ContactConstraintManager` do frame anterior;
   emitir `Removed` para chaves que desapareceram.
-- [ ] Skip da geração de constraints quando `body1.IsSensor() || body2.IsSensor()`
-  — só dispara o callback (`OnContactAdded`/`Persisted`/`Removed`).
-- [ ] `BodyCreationSettings.mUserData` (uint64) — payload livre para o
-  jogo associar entidades ECS aos bodies.
 - [ ] Unittest: dois bodies dinâmicos atravessando um sensor disparam
   `OnContactAdded` na entrada e `OnContactRemoved` na saída sem
   alterar velocidades.
+
+Hoje o sandbox `test_physics.d` já valida entrada/saída em sensores por
+varredura manual de manifolds; o que falta é transformar isso na API
+gameplay-facing via `ContactListener`.
 
 ### E1-7 — Scene-level raycast ⬜
 
 `Shape.CastRay` (por-shape) já existe. Falta o nível "consulta na cena":
 um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
+
+Hoje `source/demo/test_physics.d` faz isso manualmente: transforma o raio
+para o espaço local de cada body e chama `Shape.CastRay` inline. A fase
+continua pendente porque esse fluxo ainda não foi encapsulado em
+`NarrowPhaseQuery`/`BroadPhase.CastRay`.
 
 - [ ] `collision/ray_cast.d` — `RRayCast` (origem world-space + direção),
   `RayCastSettings` (`mTreatConvexAsSolid`, `mBackFaceMode`).
@@ -504,13 +488,15 @@ um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
 - [x] `GetNumActiveBodies()` já refletia apenas bodies no array ativo (sem alterações).
 - [x] Dois unittests em `physics_system.d`: sleep por timer e wake por `SetLinearVelocity`.
 
-### E1-9 — Migrar demos ⬜
+### E1-9 — Migrar demos ✅
 
-- [ ] `source/demo/test_physics.d` — sandbox com gravidade, chão,
+- [x] `source/demo/test_physics.d` — sandbox com gravidade, chão,
   empilhamento, drops simples (sphere/capsule), 1 sensor de área que
-  loga entrada/saída, 1 raycast por frame para detectar "chão".
-- [ ] `source/demo/benchmark.d` — 1000 cubos dinâmicos + chão estático
-  via `BodyInterface`. FPS deve igualar ou superar a versão pré-porte.
+  loga entrada/saída e 1 raycast inline por frame. Validado com
+  `dub run --config=test-physics --force`.
+- [x] `source/demo/benchmark.d` — benchmark visual com cubos dinâmicos +
+  chão estático via `BodyInterface`. Compila com
+  `dub build --config=benchmark --force`.
 
 ### E1-10 — Documentar API gameplay-facing ⬜
 
@@ -524,9 +510,9 @@ um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
 1. **Solver PGS (E1-4, já implementado)** — Baumgarte, slop, iterações.
    Pilhas de cubos são o teste-padrão de estabilidade; revisitar se
    `benchmark.d` mostrar jitter.
-2. **Sensores no dispatch (E1-6)** — sensor não pode entrar no
-   `ContactConstraintManager`, mas precisa gerar manifolds para o
-   listener. Dois caminhos no narrowphase ou um flag no manifold.
+2. **Sensores / listener (E1-6)** — o solver já ignora constraints de
+  sensor, mas ainda falta consolidar a API de callbacks
+  `Added`/`Persisted`/`Removed` sobre os manifolds gerados.
 3. **Sleep sem ilhas (E1-8)** — sem `IslandBuilder`, ou nada dorme,
    ou tudo dorme cedo demais. Threshold conservador + acordar agressivo.
 4. **Tensor de inércia em world-space (E1-5)** — `R · I_local · Rᵀ`
@@ -534,7 +520,7 @@ um raio contra todos os bodies, com filtros e `RayCastResult` agregado.
 
 ---
 
-## Épico 2 — Implementação completa do Jolt ⬜
+## Épico 2 — Implementação completa do Jolt ⏳
 
 Funcionalidades avançadas. Cada fase é aditiva sobre a API estabilizada
 no Épico 1 — quem só precisa de "rigid body para jogos" pode parar lá.
@@ -547,7 +533,7 @@ no Épico 1 — quem só precisa de "rigid body para jogos" pode parar lá.
   sleep (uma ilha inteira dorme/acorda junta).
 - [ ] Reduz jitter em pilhas grandes; pré-requisito para multithread.
 
-### E2-2 — `BroadPhaseQuadTree` ⬜
+### E2-2 — `BroadPhaseQuadTree` ⏳
 
 > **Contexto:** `BroadPhaseGrid` (spatial hash, E1-3b) já substitui o
 > brute-force e reduz AABB tests em ≈5×. O QuadTree do Jolt (O(n log n)
@@ -555,19 +541,23 @@ no Épico 1 — quem só precisa de "rigid body para jogos" pode parar lá.
 > (>5000 bodies móveis) ou para `CastRay` broadphase eficiente.
 > Para o benchmark de 1000 cubos, E1-P (dedup + tuning) é suficiente.
 
-- [ ] `broad_phase_quad_tree.d` — árvore de 4 filhos com nós SoA.
-- [ ] `quad_tree.d` — insert/remove/update em batch, cast ray /
-  sphere / box / point.
-- [ ] `broad_phase_layer_interface.d`,
-  `broad_phase_layer_interface_table.d` (a versão completa).
-- [ ] Substitui `BroadPhaseGrid` (que fica disponível para debug/small scenes).
+- [x] `broad_phase_quad_tree.d` — adapter broadphase com dinâmica/cinética
+  no tree e corpos estáticos em lista flat, além de testes integrados via
+  `PhysicsSystem.InitWithBroadPhase()`.
+- [x] `quad_tree.d` — build O(N log N) por Morton code, nós SoA e query de
+  pares para broadphase single-threaded.
+- [ ] `broad_phase_layer_interface_table.d` (a versão completa).
+- [ ] Queries adicionais (`CastRay`, sphere/box/point) e atualização
+  incremental do tree.
+- [ ] Tornar o `BroadPhaseQuadTree` o caminho padrão em vez do grid.
 
-### E2-3 — SIMD em lote ⬜
+### E2-3 — SIMD em lote ⏳
 
 - [ ] `RayAABox4` — interseção com 4 AABoxes em paralelo.
 - [ ] `RayTriangle4` — interseção com 4 triângulos em paralelo.
-- [ ] `UVec4` / `Vec4.sMin/sMax/sSelect/sAnd/sOr` que forem necessários.
-- [ ] Usados pela `QuadTree` (E2-2) e pelo `MeshShape` (E2-8).
+- [x] `UVec4` + subset de comparações/seleções em `Vec3`/`Vec4` já existe
+  e é usado por `AABox`, GJK/EPA e utilitários geométricos.
+- [ ] Portar o restante necessário para batch broadphase / `MeshShape`.
 
 ### E2-4 — Decorated shapes ⬜
 

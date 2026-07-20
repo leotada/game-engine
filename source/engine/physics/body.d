@@ -4,7 +4,7 @@ import bindings.box3d;
 import engine.ecs.store : EntityId;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
-import engine.physics.convert : readBodyTransform, toB3Pos, toB3Quat, toB3Vec3, toEngineVec3;
+import engine.physics.convert : toB3Pos, toB3Quat, toB3Vec3, toEngineVec3;
 import engine.physics.world : PhysicsWorld;
 
 @safe:
@@ -45,8 +45,11 @@ b3BodyId createStaticBox(ref PhysicsWorld world,
                          Vec3 position,
                          Vec3 halfExtent,
                          EntityId entityId = noPhysicsEntity,
-                         float friction = 0.7f) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f, entityId, friction, false);
+                         float friction = 0.7f,
+                         float restitution = 0.0f,
+                         bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
 }
 
 b3BodyId createStaticBox(ref PhysicsWorld world,
@@ -54,8 +57,34 @@ b3BodyId createStaticBox(ref PhysicsWorld world,
                          Vec3 halfExtent,
                          Quat rotation,
                          EntityId entityId = noPhysicsEntity,
-                         float friction = 0.7f) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, rotation, 0.0f, entityId, friction, false);
+                         float friction = 0.7f,
+                         float restitution = 0.0f,
+                         bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_staticBody, position, halfExtent, rotation, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
+}
+
+b3BodyId createKinematicBox(ref PhysicsWorld world,
+                            Vec3 position,
+                            Vec3 halfExtent,
+                            EntityId entityId = noPhysicsEntity,
+                            float friction = 0.7f,
+                            float restitution = 0.0f,
+                            bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_kinematicBody, position, halfExtent, Quat.init, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
+}
+
+b3BodyId createKinematicBox(ref PhysicsWorld world,
+                            Vec3 position,
+                            Vec3 halfExtent,
+                            Quat rotation,
+                            EntityId entityId = noPhysicsEntity,
+                            float friction = 0.7f,
+                            float restitution = 0.0f,
+                            bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_kinematicBody, position, halfExtent, rotation, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
 }
 
 b3BodyId createDynamicBox(ref PhysicsWorld world,
@@ -63,8 +92,11 @@ b3BodyId createDynamicBox(ref PhysicsWorld world,
                           Vec3 halfExtent,
                           float density = 1.0f,
                           EntityId entityId = noPhysicsEntity,
-                          float friction = 0.7f) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_dynamicBody, position, halfExtent, Quat.init, density, entityId, friction, false);
+                          float friction = 0.7f,
+                          float restitution = 0.0f,
+                          bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_dynamicBody, position, halfExtent, Quat.init, density,
+        entityId, friction, restitution, false, enableHitEvents);
 }
 
 b3BodyId createDynamicBox(ref PhysicsWorld world,
@@ -73,8 +105,11 @@ b3BodyId createDynamicBox(ref PhysicsWorld world,
                           Quat rotation,
                           float density = 1.0f,
                           EntityId entityId = noPhysicsEntity,
-                          float friction = 0.7f) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_dynamicBody, position, halfExtent, rotation, density, entityId, friction, false);
+                          float friction = 0.7f,
+                          float restitution = 0.0f,
+                          bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createBoxBody(world, b3_dynamicBody, position, halfExtent, rotation, density,
+        entityId, friction, restitution, false, enableHitEvents);
 }
 
 b3BodyId createDynamicSphere(ref PhysicsWorld world,
@@ -82,7 +117,9 @@ b3BodyId createDynamicSphere(ref PhysicsWorld world,
                              float radius,
                              float density = 1.0f,
                              EntityId entityId = noPhysicsEntity,
-                             float friction = 0.7f) nothrow @nogc @trusted {
+                             float friction = 0.7f,
+                             float restitution = 0.0f,
+                             bool enableHitEvents = false) nothrow @nogc @trusted {
     b3BodyDef bodyDef = b3DefaultBodyDefD();
     bodyDef.type = b3_dynamicBody;
     bodyDef.position = toB3Pos(position);
@@ -94,7 +131,7 @@ b3BodyId createDynamicSphere(ref PhysicsWorld world,
     sphere.center = b3Vec3(0.0f, 0.0f, 0.0f);
     sphere.radius = radius;
 
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, false);
+    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, false, enableHitEvents);
     b3CreateSphereShapeD(bodyId, &shapeDef, &sphere);
     return bodyId;
 }
@@ -103,7 +140,8 @@ b3BodyId createSensorBox(ref PhysicsWorld world,
                          Vec3 position,
                          Vec3 halfExtent,
                          EntityId entityId = noPhysicsEntity) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f, entityId, 0.0f, true);
+    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f,
+        entityId, 0.0f, 0.0f, true, false);
 }
 
 b3BodyId createGroundSlab(ref PhysicsWorld world,
@@ -148,6 +186,22 @@ void setAngularDamping(const b3BodyId bodyId, float damping) nothrow @nogc @trus
     b3Body_SetAngularDampingD(bodyId, damping);
 }
 
+void enableBodyHitEvents(const b3BodyId bodyId, bool enabled) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_EnableHitEventsD(bodyId, enabled);
+}
+
+void setBodyRestitution(const b3BodyId bodyId, float restitution) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return;
+    b3ShapeId[8] shapes;
+    immutable count = b3Body_GetShapesD(bodyId, shapes.ptr, cast(int) shapes.length);
+    foreach (i; 0 .. count) {
+        if (b3Shape_IsValidD(shapes[i]))
+            b3Shape_SetRestitutionD(shapes[i], restitution);
+    }
+}
+
 void destroyBody(const b3BodyId bodyId) nothrow @nogc @trusted {
     if (b3Body_IsValidD(bodyId))
         b3DestroyBodyD(bodyId);
@@ -166,7 +220,9 @@ private b3BodyId createBoxBody(ref PhysicsWorld world,
                                float density,
                                EntityId entityId,
                                float friction,
-                               bool sensor) nothrow @nogc @trusted {
+                               float restitution,
+                               bool sensor,
+                               bool enableHitEvents) nothrow @nogc @trusted {
     b3BodyDef bodyDef = b3DefaultBodyDefD();
     bodyDef.type = type;
     bodyDef.position = toB3Pos(position);
@@ -175,7 +231,7 @@ private b3BodyId createBoxBody(ref PhysicsWorld world,
     b3BodyId bodyId = b3CreateBodyD(world.handle, &bodyDef);
 
     b3BoxHull hull = b3MakeBoxHullD(halfExtent.x, halfExtent.y, halfExtent.z);
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, sensor);
+    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
     b3CreateHullShapeD(bodyId, &shapeDef, &hull.base);
     return bodyId;
 }
@@ -183,14 +239,17 @@ private b3BodyId createBoxBody(ref PhysicsWorld world,
 private b3ShapeDef defaultShapeDef(float density,
                                    EntityId entityId,
                                    float friction,
-                                   bool sensor) nothrow @nogc @trusted {
+                                   float restitution,
+                                   bool sensor,
+                                   bool enableHitEvents) nothrow @nogc @trusted {
     b3ShapeDef shapeDef = b3DefaultShapeDefD();
     shapeDef.userData = encodeEntityUserData(entityId);
     shapeDef.density = density;
     shapeDef.baseMaterial.friction = friction;
-    shapeDef.baseMaterial.restitution = 0.0f;
+    shapeDef.baseMaterial.restitution = restitution;
     shapeDef.isSensor = sensor;
     shapeDef.enableSensorEvents = true;
     shapeDef.enableContactEvents = !sensor;
+    shapeDef.enableHitEvents = enableHitEvents && !sensor;
     return shapeDef;
 }

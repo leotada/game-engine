@@ -43,6 +43,31 @@ struct AudioClip {
 
     bool isValid() const nothrow @nogc { return data !is null && length > 0; }
 
+    /// Build a clip from interleaved float32 PCM (matches AudioEngine default format).
+    /// `samples` length must be `frameCount * channels`. Copied into SDL-owned memory.
+    static AudioClip fromInterleavedF32(const(float)[] samples,
+                                        int sampleRate = 48000,
+                                        int channels = 2) @trusted {
+        AudioClip clip;
+        if (samples.length == 0 || channels <= 0) {
+            err("AudioClip.fromInterleavedF32: empty samples or invalid channels");
+            return clip;
+        }
+        clip.spec.format = SDL_AudioFormat.SDL_AUDIO_F32LE;
+        clip.spec.channels = channels;
+        clip.spec.freq = sampleRate;
+        clip.length = cast(uint)(samples.length * float.sizeof);
+        clip.data = cast(ubyte*) SDL_malloc(clip.length);
+        if (clip.data is null) {
+            err("AudioClip.fromInterleavedF32: SDL_malloc failed");
+            clip.length = 0;
+            return clip;
+        }
+        import core.stdc.string : memcpy;
+        memcpy(clip.data, samples.ptr, clip.length);
+        return clip;
+    }
+
     void destroy() @trusted nothrow @nogc {
         if (data !is null) {
             SDL_free(data);

@@ -13,7 +13,7 @@ struct Window {
     @disable this(this);
 
     static Window create(const(char)* title, uint width, uint height) @trusted {
-        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
             err("SDL_Init failed");
             assert(false);
         }

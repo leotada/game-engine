@@ -17,6 +17,7 @@ pragma(mangle, "b3World_EnableSleeping") void b3World_EnableSleepingD(b3WorldId 
 pragma(mangle, "b3World_EnableContinuous") void b3World_EnableContinuousD(b3WorldId worldId, bool flag);
 pragma(mangle, "b3World_GetContactEvents") b3ContactEvents b3World_GetContactEventsD(b3WorldId worldId);
 pragma(mangle, "b3World_GetSensorEvents") b3SensorEvents b3World_GetSensorEventsD(b3WorldId worldId);
+pragma(mangle, "b3World_SetHitEventThreshold") void b3World_SetHitEventThresholdD(b3WorldId worldId, float value);
 pragma(mangle, "b3World_CastRayClosest") b3RayResult b3World_CastRayClosestD(b3WorldId worldId, b3Pos origin, b3Vec3 translation, b3QueryFilter filter);
 
 pragma(mangle, "b3DefaultBodyDef") b3BodyDef b3DefaultBodyDefD();
@@ -36,12 +37,17 @@ pragma(mangle, "b3Body_ApplyForceToCenter") void b3Body_ApplyForceToCenterD(b3Bo
 pragma(mangle, "b3Body_ApplyLinearImpulseToCenter") void b3Body_ApplyLinearImpulseToCenterD(b3BodyId bodyId, b3Vec3 impulse, bool wake);
 pragma(mangle, "b3Body_SetLinearDamping") void b3Body_SetLinearDampingD(b3BodyId bodyId, float linearDamping);
 pragma(mangle, "b3Body_SetAngularDamping") void b3Body_SetAngularDampingD(b3BodyId bodyId, float angularDamping);
+pragma(mangle, "b3Body_EnableHitEvents") void b3Body_EnableHitEventsD(b3BodyId bodyId, bool enableHitEvents);
+pragma(mangle, "b3Body_GetShapes") int b3Body_GetShapesD(b3BodyId bodyId, b3ShapeId* shapeArray, int capacity);
 
 pragma(mangle, "b3DefaultShapeDef") b3ShapeDef b3DefaultShapeDefD();
 pragma(mangle, "b3CreateSphereShape") b3ShapeId b3CreateSphereShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3Sphere)* sphere);
 pragma(mangle, "b3CreateHullShape") b3ShapeId b3CreateHullShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3HullData)* hull);
 pragma(mangle, "b3Shape_IsValid") bool b3Shape_IsValidD(b3ShapeId id);
 pragma(mangle, "b3Shape_GetBody") b3BodyId b3Shape_GetBodyD(b3ShapeId shapeId);
+pragma(mangle, "b3Shape_SetRestitution") void b3Shape_SetRestitutionD(b3ShapeId shapeId, float restitution);
+pragma(mangle, "b3Shape_GetRestitution") float b3Shape_GetRestitutionD(b3ShapeId shapeId);
+pragma(mangle, "b3Shape_EnableHitEvents") void b3Shape_EnableHitEventsD(b3ShapeId shapeId, bool flag);
 
 pragma(mangle, "b3MakeBoxHull") b3BoxHull b3MakeBoxHullD(float hx, float hy, float hz);
 pragma(mangle, "b3DefaultQueryFilter") b3QueryFilter b3DefaultQueryFilterD();

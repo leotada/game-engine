@@ -21,14 +21,14 @@
             "targetType": "executable",
             "targetName": "game-engine-demo",
             "mainSourceFile": "source/demo/main.d",
-            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"]
         },
         {
             "name": "benchmark",
             "targetType": "executable",
             "targetName": "game-engine-benchmark",
             "mainSourceFile": "source/demo/benchmark.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"],
             "dflags-release-gdc": ["-O3", "-march=native"]
         },
@@ -37,7 +37,7 @@
             "targetType": "executable",
             "targetName": "game-engine-benchmark2",
             "mainSourceFile": "source/demo/benchmark2.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"],
             "dflags-release-gdc": ["-O3", "-march=native"]
         },
@@ -46,28 +46,28 @@
             "targetType": "executable",
             "targetName": "crystal-collector",
             "mainSourceFile": "source/demo/game.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"]
         },
         {
             "name": "showcase",
             "targetType": "executable",
             "targetName": "game-engine-showcase",
             "mainSourceFile": "source/demo/showcase.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"]
         },
         {
             "name": "editor",
             "targetType": "executable",
             "targetName": "game-engine-editor",
             "mainSourceFile": "source/demo/editor.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"]
         },
         {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
             "mainSourceFile": "source/demo/test_physics.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"],
             "libs": ["box3d", "m"],
             "versions": ["NoSDL", "NoWGPU"]
         },
@@ -76,7 +76,7 @@
             "targetType": "executable",
             "targetName": "game-engine-test-physics-box3d",
             "mainSourceFile": "source/demo/test_physics_box3d.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"],
             "libs": ["box3d", "m"],
             "versions": ["NoSDL", "NoWGPU"]
         },
@@ -87,7 +87,7 @@
             "mainSourceFile": "source/demo/gc_benchmark.d",
             "sourcePaths": ["source/demo"],
             "importPaths": ["source"],
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/marble_run.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/_legacy/*"],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"]
@@ -97,7 +97,14 @@
             "targetType": "executable",
             "targetName": "marble-run",
             "mainSourceFile": "source/demo/marble_run.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/pong3d.d", "source/demo/_legacy/*"]
+        },
+        {
+            "name": "pong3d",
+            "targetType": "executable",
+            "targetName": "pong3d",
+            "mainSourceFile": "source/demo/pong3d.d",
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/_legacy/*"]
         },
         {
             "name": "library",

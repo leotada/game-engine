@@ -23,6 +23,8 @@ game-engine-test-physics
 game-engine-test-physics-box3d
 crystal-collector
 marble-run
+pong3d
+game-engine-gc-benchmark
 
 # Reference C++ codebases (vendored, not part of build)
 ref/

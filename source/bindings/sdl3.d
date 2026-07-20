@@ -282,6 +282,7 @@ struct SDL_AudioSpec {
 
 // Loading / device / stream API
 bool SDL_LoadWAV(const(char)* path, SDL_AudioSpec* spec, ubyte** audio_buf, uint* audio_len);
+void* SDL_malloc(size_t size);
 void SDL_free(void* mem);
 SDL_AudioStream* SDL_OpenAudioDeviceStream(SDL_AudioDeviceID devid,
                                            const(SDL_AudioSpec)* spec,

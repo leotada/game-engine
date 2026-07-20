@@ -63,4 +63,9 @@ struct PhysicsWorld {
     void enableContinuous(bool enabled) nothrow @nogc @trusted {
         b3World_EnableContinuousD(_world, enabled);
     }
+
+    /// Minimum approach speed (m/s) that generates hit events. Game code sets this.
+    void setHitEventThreshold(float value) nothrow @nogc @trusted {
+        b3World_SetHitEventThresholdD(_world, value);
+    }
 }
