@@ -7,11 +7,12 @@ This guide explains how to build a 3D game using the engine's high-level API. Th
 | **Scene** | Game-level: camera, controllers, scene graph, batched renderers | `engine.scene.*` |
 | **Graphics** | Resources: meshes, textures, materials, primitives | `engine.graphics.*` |
 | **GPU** | Low-level WGPU wrappers (power users) | `engine.gpu.*` |
+| **Physics** | Rigid bodies via Box3D (shapes, sensors, queries, joints, character) | `engine.physics.*` |
 | **Assets** | Disk loaders (BMP, glTF) | `engine.assets.*` |
 | **Audio** | WAV playback via SDL3 streams | `engine.audio.*` |
 | **DevTools** | In-engine gizmos + debug overlay | `engine.devtools.*` |
 
-Most games only need `engine.app`, `engine.scene`, `engine.graphics`, and `engine.math`. Pull in `engine.assets`, `engine.audio`, and `engine.devtools` as you need them — a single `import engine;` re-exports everything.
+Most games only need `engine.app`, `engine.scene`, `engine.graphics`, and `engine.math`. Pull in `engine.physics`, `engine.assets`, `engine.audio`, and `engine.devtools` as you need them — a single `import engine;` re-exports everything.
 
 ---
 
@@ -436,19 +437,29 @@ Gizmos use a `lineList` topology with overlay depth (always visible). The debug 
 
 ### Shadows
 
+Infrastructure only today: a depth-only pass and comparison sampler.
+**PCF sampling is not wired into the default textured pipeline** — see
+[plan-pbr.md](plan-pbr.md) (fase PBR-0). Demos do not use `ShadowMap` yet.
+
 ```d
-import engine.gpu.shadow : ShadowMap, directionalLightVP;
+import engine.gpu.shadow :
+    ShadowMap, ShadowPipeline, createShadowPipeline,
+    beginShadowPass, endShadowPass, directionalLightVP;
 
-auto shadow = ShadowMap.create(app.gpu, 2048, 2048);
+auto shadow = ShadowMap.create(app.gpu, 2048);  // square resolution
 scope(exit) shadow.destroy();
+auto shadowPipe = createShadowPipeline(app.gpu.getDevice());
+scope(exit) shadowPipe.release();
 
-// Per frame: render a depth-only pass from the light's POV, then the main pass.
-auto lightVP = directionalLightVP(Vec3(-1, -1, -0.5), sceneBoundsMin, sceneBoundsMax);
-shadow.beginPass(lightVP);
-//   ... issue depth-only draw calls for each shadow caster ...
-shadow.endPass();
+// Per frame, BEFORE the main color pass:
+immutable lightVP = directionalLightVP(Vec3(-1, -1, -0.5), Vec3(0, 0, 0), 20.0f);
+// write lightVP into a uniform + bind group for shadowPipe...
+auto shadowPass = beginShadowPass(encoder, shadow);
+//   bind shadowPipe + light bind group, draw shadow casters
+endShadowPass(shadowPass);
 
-// Pass the shadow map texture + lightVP to your textured pipeline's bind group.
+// Main pass: today albedo/N·L only. Future shadowed material samples
+// shadow.depthView + shadow.comparisonSampler (plan-pbr PBR-0).
 ```
 
 ### Input
@@ -494,7 +505,8 @@ app.input   // InputState — keyboard/mouse state
 | Draw 3D objects with textures | `Scene3DTextured` + `TexMesh` + `Material` |
 | Parent/child transforms (solar systems, rigs) | `SceneGraph` |
 | Orbit / fly / first-person camera | `engine.scene.controllers` |
-| Directional shadows | `ShadowMap` + depth-only pass |
+| Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-pbr.md](plan-pbr.md) |
+| Physics (Box3D) | `engine.physics` — [physics-quickstart.md](physics-quickstart.md) |
 | Load BMP or glTF from disk | `engine.assets.bmp`, `engine.assets.gltf` |
 | Play WAV sound effects | `engine.audio` |
 | Render HUD text | `TextRenderer` |
@@ -559,6 +571,35 @@ curl -sL https://github.com/gfx-rs/wgpu-native/releases/latest/download/wgpu-lin
   -o /tmp/wgpu.zip
 unzip -o /tmp/wgpu.zip -d /tmp/wgpu
 cp /tmp/wgpu/lib/libwgpu_native.a libs/
+```
+
+---
+
+## Physics (Box3D)
+
+Rigid-body physics lives in `engine.physics` (Box3D backend):
+
+- `PhysicsWorld` — step, gravity, sleep, CCD
+- Bodies — boxes, spheres, capsules, cylinders, sensors
+- `drainPhysicsEvents` — contacts, sensors, hits
+- `castRayClosest`, `overlapAabb`, `overlapSphere`
+- Joints — distance, revolute, weld
+- `CharacterController` — kinematic capsule mover
+
+Full guide: [physics-quickstart.md](physics-quickstart.md). Demos: `pong3d`,
+`marble_run`, `test_physics_box3d`.
+
+```d
+import engine.physics;
+
+auto world = PhysicsWorld.createDefault();
+auto floor = createGroundSlab(world, 0.0f, Vec3(20, 0, 20), 0.5f);
+auto ball  = createDynamicSphere(world, Vec3(0, 5, 0), 0.5f, 1.0f);
+
+// each frame:
+world.step(dt);
+drainPhysicsEvents(world, listener);
+immutable hit = castRayClosest(world, origin, dir, 100.0f);
 ```
 
 ---

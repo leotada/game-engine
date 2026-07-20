@@ -2,6 +2,10 @@
 
 This documents the benchmark run used to validate the gameplay physics migration from the native D JPH port to Box3D.
 
+> The native JPH D port is **cancelled**. Box3D + `engine.physics` is the
+> official path. Remaining API work: [plan-physics-api.md](plan-physics-api.md).
+> Historical port notes: [jph-port-plan.md](jph-port-plan.md).
+
 ## LDC2 Release Scenario
 
 - Config: `benchmark`

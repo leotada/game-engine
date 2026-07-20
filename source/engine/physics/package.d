@@ -5,3 +5,5 @@ public import engine.physics.body;
 public import engine.physics.convert;
 public import engine.physics.events;
 public import engine.physics.queries;
+public import engine.physics.joints;
+public import engine.physics.character;

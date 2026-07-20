@@ -1,5 +1,27 @@
 # Plano de porte: JoltPhysics → D (`engine.jph.*`)
 
+> ## Status: CANCELADO
+>
+> Este porte nativo foi **abandonado**. A física oficial da engine é
+> **Box3D** via `bindings/box3d` + API gameplay em `engine.physics`.
+>
+> Motivo: o porte D do Jolt ficou bem atrás em throughput (ver
+> [physics-box3d-benchmark.md](physics-box3d-benchmark.md) — ~4× mais
+> lento com LDC2 release, ~30× com DMD release) e ainda faltava fechar
+> a API gameplay. Box3D entregou performance e features (sensors,
+> raycasts, CCD, etc.) sem manter um segundo motor em D.
+>
+> **Ainda no tree:** removido em P6 (`source/engine/jph/` apagado;
+> `public import engine.jph` retirado de `source/engine/package.d`).
+> Não execute as fases pendentes deste documento.
+>
+> Física atual: [physics-quickstart.md](physics-quickstart.md) ·
+> [plan-physics-api.md](plan-physics-api.md). Visão geral: [roadmap.md](roadmap.md).
+>
+> O texto abaixo é **histórico**.
+
+---
+
 Porte incremental e commit-por-fase do Jolt Physics (C++) para D nativo
 dentro do namespace `engine.jph`. Source-of-truth: `ref/JoltPhysics/Jolt/`.
 

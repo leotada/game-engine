@@ -12,6 +12,8 @@ alias Box3DCustomFilterCallback = b3CustomFilterFcn;
 alias Box3DPreSolveCallback = b3PreSolveFcn;
 alias Box3DOverlapResultCallback = b3OverlapResultFcn;
 alias Box3DCastResultCallback = b3CastResultFcn;
+alias Box3DPlaneResultCallback = b3PlaneResultFcn;
+alias Box3DMoverFilterCallback = b3MoverFilterFcn;
 alias Box3DFrictionCallback = b3FrictionCallback;
 alias Box3DRestitutionCallback = b3RestitutionCallback;
 

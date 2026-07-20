@@ -262,7 +262,7 @@ dub run --config=editor
 
 ## Roadmap
 
-All initial roadmap phases are **complete**. The engine is feature-complete for building 3D games with textured meshes, scene graphs, shadows, audio, asset loading, and in-engine debug tooling.
+All initial roadmap phases are **complete**. The engine supports textured meshes, scene graphs, directional lighting, **shadow-map depth infrastructure** (PCF sampling not yet in the default lit path), audio, asset loading, debug tooling, and rigid-body physics via **Box3D** (`engine.physics`).
 
 - [x] Phase 1 — Core stack (SDL3 + WGPU + ECS + math + clear screen)
 - [x] Phase 2 — Mesh rendering (vertex/index buffers, WGSL shaders, render pipeline)
@@ -272,28 +272,45 @@ All initial roadmap phases are **complete**. The engine is feature-complete for 
 - [x] Phase 6 — Materials and textures (RGBA8 textures, samplers, TGA loader, textured pipeline)
 - [x] Phase 7 — Scene graph and transforms (parent-indexed hierarchy, one-pass world matrices)
 - [x] Phase 8 — 3D camera system (OrbitCamera, FlyCamera, FirstPersonCamera)
-- [x] Phase 9 — Shadows (depth32Float shadow map + depth-only pipeline + directional light VP)
+- [x] Phase 9 — Shadow map infra (depth32Float + depth-only pipeline + light VP; PCF in default path → [docs/plan-pbr.md](docs/plan-pbr.md))
 - [x] Phase 10 — Asset pipeline (BMP + minimal glTF 2.0 mesh loader)
 - [x] Phase 11 — Audio (SDL3 audio streams, WAV loading, playback)
 - [x] Phase 12 — Editor tooling (immediate-mode 3D gizmos + debug overlay)
+- [x] Phase 13 — Physics MVP (Box3D: rigid bodies, sensors, raycast, contact events)
+
+Active plans and remaining work live under [`docs/`](docs/README.md). Overview: [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Next Horizons
 
-Possible directions for future work, in no particular order:
+Suggested order (see [`docs/roadmap.md`](docs/roadmap.md)):
 
-- **Physics** — rigid bodies, colliders, raycasting (either a native D implementation or bindings to a C library)
-- **Post-processing** — bloom, tone mapping, FXAA via offscreen render targets
-- **PBR shading** — metallic/roughness workflow with IBL
-- **Animation** — skeletal animation and glTF skin support
-- **Parallel system scheduling** — auto-parallelize independent ECS systems (Bevy-style)
-- **Scripting / hot reload** — live tweaking of gameplay systems during development
-- **Networking** — authoritative server/client primitives for multiplayer games
-- **Editor UX** — full scene editor on top of the existing gizmo + overlay tooling
+| # | Feature | Plan |
+|---:|:---|:---|
+| 1 | Physics API (done; mesh P5 optional) | [docs/physics-quickstart.md](docs/physics-quickstart.md) |
+| 2 | GC-safe adoption + lint CI | [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) |
+| 3 | PBR + shadow PCF + IBL | [docs/plan-pbr.md](docs/plan-pbr.md) |
+| 4 | Post-processing (bloom, tone map, FXAA) | [docs/plan-post-processing.md](docs/plan-post-processing.md) |
+| 5 | Skeletal animation + glTF skin | [docs/plan-animation.md](docs/plan-animation.md) |
+| 6 | Scene editor UX | [docs/plan-editor-ux.md](docs/plan-editor-ux.md) |
+| 7 | Hot reload (assets + data) | [docs/plan-scripting-hot-reload.md](docs/plan-scripting-hot-reload.md) |
+| 8 | Parallel ECS scheduling | [docs/plan-parallel-ecs.md](docs/plan-parallel-ecs.md) |
+| 9 | Networking | [docs/plan-networking.md](docs/plan-networking.md) |
+
+The native Jolt (`engine.jph`) port was **cancelled** in favor of Box3D and
+removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.md),
+[docs/jph-port-plan.md](docs/jph-port-plan.md), and
+[docs/physics-box3d-benchmark.md](docs/physics-box3d-benchmark.md).
 
 ## Documentation
 
+- [docs/README.md](docs/README.md) — index of guides and plans
+- [docs/roadmap.md](docs/roadmap.md) — remaining work overview
+- [docs/game-development-guide.md](docs/game-development-guide.md) — how to build a 3D game with the high-level API
+- [docs/physics-quickstart.md](docs/physics-quickstart.md) — Box3D gameplay physics API
 - [docs/graphics.md](docs/graphics.md) — GPU architecture and rendering pipeline
 - [docs/why-this-is-fast.md](docs/why-this-is-fast.md) — Data-Oriented Design explained for programmers from other languages
+- [docs/incremental-gc-research.md](docs/incremental-gc-research.md) — GC pause research and measurements
+- [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) — POD / Handle / StringId / FrameArena plan
 
 ## License
 
