@@ -1,4 +1,5 @@
-/// Top-level engine module — one import for everything.
+/// Top-level engine module — one import for gameplay/runtime.
+/// Level editor is opt-in: `import engine.editor;` (not re-exported here).
 module engine;
 
 public import engine.core;

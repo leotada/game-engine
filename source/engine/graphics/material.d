@@ -131,6 +131,12 @@ struct Material {
 
     bool valid() const nothrow @nogc { return bindGroup !is null; }
 
+    /// Upload new PBR params to the material UBO (live editor overrides).
+    void updateParams(ref GpuContext gpu, MaterialParams params) nothrow @nogc @trusted {
+        if (paramsBuf is null) return;
+        updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
+    }
+
     void destroy() nothrow @nogc @trusted {
         if (bindGroup !is null) { wgpuBindGroupRelease(bindGroup); bindGroup = null; }
         destroyBuffer(paramsBuf);
