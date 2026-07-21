@@ -3,7 +3,7 @@
     "description": "Modern 3D game engine in D — WGPU + SDL3",
     "authors": ["Leonardo Tada"],
     "copyright": "Copyright © 2022-2026, Leonardo Tada",
-    "license": "proprietary",
+    "license": "MIT",
 
     "sourcePaths": ["source/engine", "source/bindings", "source/demo"],
     "importPaths": ["source", "source/bindings/box3d"],

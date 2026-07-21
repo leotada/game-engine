@@ -2,75 +2,56 @@
 
 A commercial-grade 3D game engine built in **D**, designed to match the architectural quality of Rust's Bevy Engine — proving that D is a viable language for high-performance, production game engines.
 
-**WGPU + SDL3 | ECS with SoA Sparse Sets | `@safe` by Default | DIP1000**
+**WGPU + SDL3 | ECS with SoA Sparse Sets | `@safe` by Default | DIP1000 | MIT**
 
 ## Why D?
 
 D sits at the intersection of C++ performance and high-level ergonomics. This engine exploits what makes D uniquely powerful for games:
 
-- **Compile-time metaprogramming** — variadic templates generate zero-overhead ECS stores, no runtime reflection
+- **Compile-time metaprogramming** — variadic templates generate zero-overhead ECS stores (`World!(Components...)`), no runtime reflection
 - **`@safe` by default** — memory safety without a borrow checker, with `@trusted` escape hatches for C interop
 - **DIP1000 scope semantics** — stack-allocated references with compile-time lifetime tracking
 - **No mandatory GC in hot paths** — struct-based DOD keeps the GC idle during frame execution. Engine core enforces `@nogc` on the entire frame loop while gameplay systems are free to use the GC for convenience
-- **Direct C interop** — `extern(C)` bindings to SDL3 and WGPU-native with zero wrapper overhead
+- **GC-safe storage primitives** — `Pod!T`, `Handle!T`, `StringId`, and `FrameArena` keep engine memory free of GC-traced indirections without giving up gameplay ergonomics
+- **ImportC** — Box3D types and structs come straight from C headers (`box3d_import.c` → `public import box3d_import`); thin `pragma(mangle)` wrappers bridge D linkage where needed
+- **Direct C interop** — thin manual `extern(C)` bindings for SDL3 and WGPU-native (no bindbc) where we want full control of the GPU/window stack
 
 ## Architecture
 
 ```
 source/
-├── bindings/              # C API bindings (extern(C), @nogc, nothrow)
+├── bindings/              # C interop (manual extern(C) + ImportC)
 │   ├── sdl3.d             # SDL3 — window, events, input, Wayland, audio
-│   └── wgpu.d             # WGPU-native — GPU resources, render pipeline
+│   ├── wgpu.d             # WGPU-native — GPU resources, render pipeline
+│   └── box3d/             # Box3D via ImportC (box3d_import.c + shim)
 ├── engine/
 │   ├── app.d              # Application framework (window + GPU + input loop)
-│   ├── assets/            # Disk-to-engine loaders
-│   │   ├── bmp.d          # Uncompressed 24/32-bpp BMP decoder → Texture
-│   │   └── gltf.d         # Minimal glTF 2.0 mesh loader (JSON + .bin) → TexMesh
-│   ├── audio/
-│   │   └── engine.d       # SDL3 audio streams, WAV decoder, AudioEngine/AudioClip
-│   ├── core/
+│   ├── assets/            # Disk-to-engine loaders (BMP, glTF, asset files)
+│   ├── audio/             # SDL3 audio streams, WAV, AudioEngine/AudioClip
+│   ├── core/              # Logging, RAII resources, GC-safe primitives
+│   │   ├── pod.d          # isPod!T / Pod!T — compile-time POD gate
+│   │   ├── handle.d       # Handle!T — generational typed refs (gameplay→engine)
+│   │   ├── strings.d      # StringId + StringTable — interned strings
+│   │   ├── arena.d        # FrameArena — per-frame bump allocator
 │   │   ├── log.d          # Logging (trace/info/warn/err/fatal)
-│   │   └── resource.d     # RAII Handle(T) — move-only GPU resource wrapper
-│   ├── devtools/          # In-engine developer tooling
-│   │   ├── gizmos.d       # Immediate-mode 3D line primitives (overlay depth)
-│   │   └── overlay.d      # Structured FPS + label debug overlay
-│   ├── ecs/
-│   │   ├── store.d        # ComponentStore(T) — sparse-set SoA, O(1) ops
-│   │   └── world.d        # World!(Components...) — compile-time registry
-│   ├── gpu/
-│   │   ├── buffer.d       # Vertex, index, uniform, dynamic buffer creation
-│   │   ├── context.d      # WGPU lifecycle (instance→adapter→device→surface)
-│   │   ├── pipeline.d     # Pipeline3D (colored/textured) + PipelineText
-│   │   ├── renderer.d     # Frame management (beginFrame/endFrame, depth buffer)
-│   │   ├── shader.d       # WGSL shader module creation
-│   │   ├── shaders.d      # Embedded WGSL (cube3D, textured3D, text2D, shadowDepth)
-│   │   ├── shadow.d       # ShadowMap + depth-only pipeline + directional light VP
-│   │   └── text.d         # Bitmap font atlas, TextRenderer, FpsCounter
-│   ├── graphics/          # Mid-level graphics resources
-│   │   ├── types.d        # Vert, TexVert, InstanceData, Color4
-│   │   ├── primitives.d   # Built-in vertex/index data (cube, pyramid, diamond)
-│   │   ├── mesh.d         # GPU mesh handle (position + normal)
-│   │   ├── texmesh.d      # Textured mesh (position + normal + uv), cube/quad
-│   │   ├── texture.d      # GPU Texture, Sampler, TGA loader, procedural checker
-│   │   └── material.d     # Bind-group wrapper (uniform + sampler + albedo)
-│   ├── scene/             # Game-level scene management
-│   │   ├── camera.d       # Perspective camera (create, lookAt, viewProjection)
-│   │   ├── controllers.d  # OrbitCamera, FlyCamera, FirstPersonCamera
-│   │   ├── graph.d        # SceneGraph (Transform hierarchy, parent → child)
-│   │   ├── scene3d.d      # Batched instanced renderer (colored)
-│   │   └── scene3d_textured.d # Batched instanced renderer (textured materials)
-│   ├── math/
-│   │   ├── vec.d          # Vec2, Vec3, Vec4
-│   │   └── mat.d          # Mat4 (perspective, ortho, lookAt, transforms)
-│   └── platform/
-│       ├── window.d       # SDL3 window + Wayland handle extraction
-│       └── input.d        # Per-frame keyboard/mouse state tracking
+│   │   └── resource.d     # RAII GPU Handle(T, releaseFn) — move-only resources
+│   ├── devtools/          # Immediate-mode gizmos + FPS/label overlay
+│   ├── ecs/               # Sparse-set ComponentStore + World!(Components...)
+│   ├── editor/            # Scene editor UX (picking, gizmos, inspector, I/O)
+│   ├── gpu/               # WGPU context, pipelines, shadows, IBL, post, text
+│   ├── graphics/          # Mesh, TexMesh, Texture, Material, primitives
+│   ├── math/              # Vec, Mat4, Quat, Ray
+│   ├── physics/           # Box3D gameplay API (bodies, queries, joints, character)
+│   ├── platform/          # SDL3 window + per-frame input
+│   └── scene/             # Camera, controllers, graph, Scene3D (+ textured)
 └── demo/
     ├── main.d             # Minimal clear-screen demo
     ├── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
     ├── game.d             # Crystal Collector 3D — high-level API demo
     ├── showcase.d         # Solar system — scene graph + textured materials
-    └── editor.d           # Editor tooling demo — gizmos + debug overlay
+    ├── pbr.d              # PBR + IBL + shadow PCF demo
+    ├── editor.d           # Scene editor (gizmos, hierarchy, scene I/O)
+    └── pong3d.d           # Physics gameplay demo (Box3D)
 ```
 
 ### Design Principles
@@ -79,10 +60,11 @@ source/
 |:---|:---|
 | **Bevy-like ECS** | Sparse-set stores with compile-time `World!(Components...)` — no vtables, no runtime type lookup |
 | **`@safe` by default** | Every module is `@safe:` at top level. C interop wrapped in `@trusted` with minimal surface |
-| **Data-Oriented Design** | Components are POD structs in contiguous `T[]` arrays. Entities are `uint` IDs |
+| **Data-Oriented Design** | Components are POD structs in contiguous arrays. Entities are `uint` IDs |
 | **Zero-overhead abstractions** | Template systems resolved at compile time. RAII handles for GPU resources |
-| **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `!hasIndirections` — no GC pointers in data |
-| **Native Wayland** | SDL3 extracts `wl_display`/`wl_surface` for WGPU surface creation. No X11 dependency |
+| **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `isPod!T` / `Pod!T` — no GC pointers in engine storage |
+| **C interop that fits** | ImportC for Box3D headers; controlled `extern(C)` for SDL3/WGPU |
+| **Wayland-first** | SDL3 extracts `wl_display`/`wl_surface` for WGPU. Linux Wayland primary; X11 secondary |
 
 ### ECS — Bevy-Class Performance in D
 
@@ -108,8 +90,9 @@ world.set(player, Velocity(1, 0, 0));
 |:---|:---|:---|
 | Window | SDL3 | Cross-platform window, events, Wayland-native |
 | GPU API | WGPU-native | Vulkan/Metal/DX12 via WebGPU abstraction |
-| Bindings | `extern(C)` | Direct C99 API — no bindbc, no wrapper overhead |
-| Resources | `Handle(T)` | RAII move-only wrappers, deterministic release |
+| Bindings | `extern(C)` | Direct C99 API for SDL3/WGPU — no bindbc |
+| Physics | Box3D + ImportC | Types from C headers; thin mangled D wrappers for calls |
+| Resources | RAII `Handle(T, releaseFn)` | Move-only GPU wrappers, deterministic release |
 
 ### GC Policy — Engine vs Gameplay
 
@@ -120,7 +103,16 @@ The engine uses a **two-layer GC model**, similar to Unity (C++ engine / C# game
 | **Engine core** (`engine/`) | Forbidden — `@nogc` on all frame-loop functions | Engine developers |
 | **Gameplay** (systems, game logic) | Allowed by default — opt into `@nogc` for perf-critical systems | Game developers |
 
-**Component data is always strict** — `ComponentStore` enforces `!hasIndirections!T` at compile time, so the GC never scans dense arrays even with thousands of entities. **System logic is free** — gameplay code may allocate, use `string`, `format`, dynamic arrays, and closures. Developers who need maximum performance can mark individual systems `@nogc` and use pre-allocated buffers.
+**Component data is always strict** — `ComponentStore` enforces `isPod!T` at compile time (`Pod!T[]` dense storage), so the GC never scans dense arrays even with thousands of entities. **System logic is free** — gameplay code may allocate, use `string`, `format`, dynamic arrays, and closures. Developers who need maximum performance can mark individual systems `@nogc` and use pre-allocated buffers.
+
+#### GC-safe primitives (`engine.core`)
+
+| Primitive | Role |
+|:---|:---|
+| **`Pod!T` / `isPod!T`** | Compile-time gate: engine storage may not hold GC-traced indirections |
+| **`Handle!T`** | 8-byte generational ref (not the RAII GPU `Handle`) — replaces class pointers across the gameplay→engine boundary |
+| **`StringId` + `StringTable`** | Interned 4-byte string IDs — no `string` fields in long-lived engine data |
+| **`FrameArena`** | Per-frame bump allocator for scratch buffers and labels (`fmt`), reset in `endFrame()` |
 
 ```d
 // Gameplay system — GC is allowed, write naturally
@@ -155,7 +147,8 @@ void damageSystem(W)(ref W world) @nogc nothrow {
 - **D compiler**: DMD or LDC2
 - **SDL3**: `libSDL3.so` (system package or built from source)
 - **WGPU-native**: `libwgpu_native.a` in `libs/` (see below)
-- **OS**: Linux with Wayland (primary target)
+- **Box3D**: `libbox3d` linked from `libs/`; headers under `vendor/box3d/include` (ImportC via `-P-Ivendor/box3d/include`)
+- **OS**: Linux with Wayland (primary); X11 secondary
 
 ## Building
 
@@ -172,8 +165,14 @@ dub build --config=game
 # Build the solar-system showcase (scene graph + textured materials)
 dub build --config=showcase
 
-# Build the editor tooling demo (gizmos + debug overlay)
+# Build the PBR + IBL demo
+dub build --config=pbr
+
+# Build the scene editor
 dub build --config=editor
+
+# Build the physics gameplay demo
+dub build --config=pong3d
 
 # Build with optimizations (LDC2 recommended for production)
 dub build --config=demo --build=release
@@ -183,7 +182,9 @@ dub run --config=demo
 dub run --config=benchmark
 dub run --config=game
 dub run --config=showcase
+dub run --config=pbr
 dub run --config=editor
+dub run --config=pong3d
 
 # Build as library (for embedding in other projects)
 dub build --config=library
@@ -252,17 +253,33 @@ A textured solar system built on the scene graph: planets parented to the sun, m
 dub run --config=showcase
 ```
 
-### Editor Tooling Demo
+### PBR Demo
 
-Demonstrates `engine.devtools`: immediate-mode 3D gizmos (lines, axes, grids) rendered with overlay depth, plus the structured FPS + label debug overlay.
+Cook-Torrance GGX materials, procedural IBL, and shadow PCF on the textured path.
+
+```bash
+dub run --config=pbr
+```
+
+### Scene Editor
+
+Level editor built on `engine.editor` + `engine.devtools`: picking, TRS gizmos, hierarchy/inspector, lights and shadows, physics simulate, and `*.scene.json` / `*.asset.json` I/O.
 
 ```bash
 dub run --config=editor
 ```
 
+### Pong3D (Physics)
+
+Gameplay physics via Box3D — rigid bodies, contacts, and the high-level `engine.physics` API. See [docs/physics-quickstart.md](docs/physics-quickstart.md).
+
+```bash
+dub run --config=pong3d
+```
+
 ## Roadmap
 
-All initial roadmap phases are **complete**. The engine supports textured meshes, scene graphs, directional lighting, **shadow-map depth infrastructure** (PCF sampling not yet in the default lit path), audio, asset loading, debug tooling, and rigid-body physics via **Box3D** (`engine.physics`).
+Initial roadmap phases are **complete**, including PBR + IBL + shadow PCF, post-processing (bloom / ACES / FXAA), GC-safe storage + lint, scene editor UX v1, and rigid-body physics via **Box3D** (`engine.physics`).
 
 - [x] Phase 1 — Core stack (SDL3 + WGPU + ECS + math + clear screen)
 - [x] Phase 2 — Mesh rendering (vertex/index buffers, WGSL shaders, render pipeline)
@@ -272,29 +289,29 @@ All initial roadmap phases are **complete**. The engine supports textured meshes
 - [x] Phase 6 — Materials and textures (RGBA8 textures, samplers, TGA loader, textured pipeline)
 - [x] Phase 7 — Scene graph and transforms (parent-indexed hierarchy, one-pass world matrices)
 - [x] Phase 8 — 3D camera system (OrbitCamera, FlyCamera, FirstPersonCamera)
-- [x] Phase 9 — Shadow map infra (depth32Float + depth-only pipeline + light VP; PCF in default path → [docs/plan-pbr.md](docs/plan-pbr.md))
+- [x] Phase 9 — Shadow map infra (depth32Float + depth-only pipeline + light VP; PCF on textured path)
 - [x] Phase 10 — Asset pipeline (BMP + minimal glTF 2.0 mesh loader)
 - [x] Phase 11 — Audio (SDL3 audio streams, WAV loading, playback)
 - [x] Phase 12 — Editor tooling (immediate-mode 3D gizmos + debug overlay)
 - [x] Phase 13 — Physics MVP (Box3D: rigid bodies, sensors, raycast, contact events)
+- [x] Phase 14 — PBR + IBL + shadow PCF (`dub run --config=pbr`)
+- [x] Phase 15 — Post-processing (HDR scene RT, bloom, ACES, FXAA)
+- [x] Phase 16 — GC-safe adoption + lint (`Pod!T`, `Handle!T`, `StringId`, `FrameArena`)
+- [x] Phase 17 — Scene editor UX v1 (`dub run --config=editor`)
 
 Active plans and remaining work live under [`docs/`](docs/README.md). Overview: [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Next Horizons
 
-Suggested order (see [`docs/roadmap.md`](docs/roadmap.md)):
+Remaining work (see [`docs/roadmap.md`](docs/roadmap.md)):
 
 | # | Feature | Plan |
 |---:|:---|:---|
-| 1 | Physics API (done; mesh P5 optional) | [docs/physics-quickstart.md](docs/physics-quickstart.md) |
-| 2 | GC-safe adoption + lint (done; #9 deferred) | [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) |
-| 3 | PBR + shadow PCF + IBL | [docs/plan-pbr.md](docs/plan-pbr.md) |
-| 4 | Post-processing (bloom, tone map, FXAA) | [docs/plan-post-processing.md](docs/plan-post-processing.md) |
-| 5 | Skeletal animation + glTF skin | [docs/plan-animation.md](docs/plan-animation.md) |
-| 6 | Scene editor UX | [docs/plan-editor-ux.md](docs/plan-editor-ux.md) |
-| 7 | Hot reload (assets + data) | [docs/plan-scripting-hot-reload.md](docs/plan-scripting-hot-reload.md) |
-| 8 | Parallel ECS scheduling | [docs/plan-parallel-ecs.md](docs/plan-parallel-ecs.md) |
-| 9 | Networking | [docs/plan-networking.md](docs/plan-networking.md) |
+| 1 | Skeletal animation + glTF skin | [docs/plan-animation.md](docs/plan-animation.md) |
+| 2 | Terrain + water editor | [docs/plan-terrain-water.md](docs/plan-terrain-water.md) |
+| 3 | Hot reload (assets + data) | [docs/plan-scripting-hot-reload.md](docs/plan-scripting-hot-reload.md) |
+| 4 | Parallel ECS scheduling | [docs/plan-parallel-ecs.md](docs/plan-parallel-ecs.md) |
+| 5 | Networking | [docs/plan-networking.md](docs/plan-networking.md) |
 
 The native Jolt (`engine.jph`) port was **cancelled** in favor of Box3D and
 removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.md),
@@ -314,4 +331,4 @@ removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.
 
 ## License
 
-Proprietary — Copyright © 2022–2026, Leonardo Tada
+[MIT](LICENSE) — Copyright © 2022–2026, Leonardo Tada
