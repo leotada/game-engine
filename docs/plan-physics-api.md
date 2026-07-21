@@ -34,8 +34,9 @@ Demos: `pong3d`, `marble_run`, `test_physics_box3d` (smoke estendido).
 
 - Soft bodies / cloth
 - Multithread Box3D além do `workerCount` já exposto no world
-- Editor visual de colliders ([plan-editor-ux.md](plan-editor-ux.md))
-- **P5** triangle mesh / heightfield (lib tem API; wrapper D ainda não)
+- Editor visual de colliders — [plan-editor-ux.md](plan-editor-ux.md) ED-5a/5b
+  (desbloqueia P5 + hull genérico PHY-H como pré-req do editor)
+- Heightfield (P5 parcial; mesh triangle é o foco do editor v1)
 
 ## Fases
 
@@ -78,12 +79,17 @@ Demos: `pong3d`, `marble_run`, `test_physics_box3d` (smoke estendido).
 
 **DoD:** ✅
 
-### P5 — Mesh / terreno (adiado)
+### P5 — Mesh / terreno (adiado → desbloqueado pelo editor)
 
-- [ ] Triangle mesh estático a partir de `TexMesh` / glTF
-- [ ] Heightfield se houver caso de uso
+Pré-req de [plan-editor-ux.md](plan-editor-ux.md) ED-5b. Hull genérico
+(PHY-H) usa bindings já existentes; mesh precisa bindings novos.
 
-**DoD:** adiado — lib exporta `b3CreateMeshShape`; wrapper D futuro.
+- [ ] Triangle mesh **estático** a partir de `TexMesh` / glTF (`b3CreateMeshShape`)
+- [ ] Helpers hull genérico: `createStaticHull` / `createDynamicHull` (PHY-H)
+- [ ] API **não** expõe mesh dinâmico na v1 (policy do editor)
+- [ ] Heightfield se houver caso de uso (fora do editor v1)
+
+**DoD:** ball vs static mesh glTF; hull dinâmico smoke verde.
 
 ### P6 — Limpeza JPH
 

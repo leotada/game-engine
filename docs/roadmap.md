@@ -20,10 +20,11 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 | 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | **feito** (PBR-0–5) | Textured path: GGX + IBL + PCF; demo `pbr` |
 | 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | **feito** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
-| 6 | Editor de cena | [plan-editor-ux.md](plan-editor-ux.md) | média | Gizmos já existem; picking AABB; física opcional |
-| 7 | Hot reload (assets + dados) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | média | Iteração diária (editor/assets); antes de escala |
-| 8 | ECS paralelo | [plan-parallel-ecs.md](plan-parallel-ecs.md) | baixa | API serial estável; opt-in |
-| 9 | Networking | [plan-networking.md](plan-networking.md) | baixa | `engine.ser` + física estável |
+| 6 | Editor de cena / level design | [plan-editor-ux.md](plan-editor-ux.md) | média | Multi-luz c/ sombra (spot cortável); hull+mesh; `*.asset.json` + `*.scene.json` minificado |
+| 7 | Editor de terreno e água | [plan-terrain-water.md](plan-terrain-water.md) | média | Depois do editor de cena; heightfield (P5); brushes + water plane |
+| 8 | Hot reload (assets + dados) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | média | Iteração diária (editor/assets); antes de escala |
+| 9 | ECS paralelo | [plan-parallel-ecs.md](plan-parallel-ecs.md) | baixa | API serial estável; opt-in |
+| 10 | Networking | [plan-networking.md](plan-networking.md) | baixa | `engine.ser` + física estável |
 
 ### Notas de ordem
 
@@ -31,6 +32,8 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
   [`plan-post-processing.md`](plan-post-processing.md). Present continua SDR.
 - **Hot reload antes de ECS paralelo:** ganho de produtividade no dia a dia;
   paralelismo é escala, não desbloqueia conteúdo.
+- **Terreno/água (#7) depois do editor (#6):** reutiliza picking, assets,
+  save/load e gizmos; heightfield Box3D desbloqueia collider do terreno.
 - **GC-safe (#2) fechado:** `Pod!T[]` no storage, `World.strings`,
   `App.frameArena`, `dub run --config=lint`. Novos buffers devem
   nascer em `Pod!T` / `Handle!T` / `StringId`.

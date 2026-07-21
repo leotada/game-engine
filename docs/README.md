@@ -25,9 +25,10 @@ descrevem o que falta. Visão geral: [roadmap.md](roadmap.md).
 | [plan-post-processing.md](plan-post-processing.md) | pendente | Bloom, tone mapping, FXAA (#4) |
 | [plan-animation.md](plan-animation.md) | pendente | Skeletal animation + skin glTF (#5) |
 | [plan-editor-ux.md](plan-editor-ux.md) | pendente | Scene editor completo (#6) |
-| [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | pendente | Hot reload de assets + dados (#7) |
-| [plan-parallel-ecs.md](plan-parallel-ecs.md) | pendente | Scheduler paralelo de systems (#8) |
-| [plan-networking.md](plan-networking.md) | pendente | Primitivas multiplayer (#9) |
+| [plan-terrain-water.md](plan-terrain-water.md) | pendente | Editor de terreno + água (#7) |
+| [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | pendente | Hot reload de assets + dados (#8) |
+| [plan-parallel-ecs.md](plan-parallel-ecs.md) | pendente | Scheduler paralelo de systems (#9) |
+| [plan-networking.md](plan-networking.md) | pendente | Primitivas multiplayer (#10) |
 
 ## Histórico / cancelado
 
