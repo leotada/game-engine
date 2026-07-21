@@ -1,6 +1,10 @@
 # Plano: Editor UX (scene / level editor)
 
-> **Status:** pendente · Prioridade: média · Ver [roadmap.md](roadmap.md)
+> **Status:** entregue (v1) · Prioridade: média · Ver [roadmap.md](roadmap.md)
+>
+> **Entrega Stream J:** `dub run --config=editor` é o level editor (picking,
+> gizmos+snap, multi-select, undo/redo, hierarchy/inspector, lights+shadows,
+> physics Simulate/Esc, Ctrl+S/O/N scene I/O).
 
 ## Objetivo
 
@@ -46,18 +50,19 @@ Paths reais:
 
 - [`engine.devtools.gizmos`](../source/engine/devtools/gizmos.d) — linhas 3D overlay
 - [`engine.devtools.overlay`](../source/engine/devtools/overlay.d) — FPS + labels
-- [`source/demo/editor.d`](../source/demo/editor.d) — **não** é scene editor (fly-cam + cubos)
-- Config dub `editor` aponta para esse demo
+- [`engine.editor`](../source/engine/editor/) — ED-1…ED-8 (picking, selection,
+  gizmos, commands, hierarchy/inspector, lights, physics, scene I/O)
+- [`source/demo/editor.d`](../source/demo/editor.d) — **level editor** wired
+  (`dub run --config=editor`)
 
-| Área | API hoje | Gap |
+| Área | API hoje | Gap / backlog |
 |:---|:---|:---|
-| Scene graph | `Transform` / `SceneGraph` | — |
-| Render lit | 1× directional + IBL + 1 PCF shadow | N lights + **point shadow cubemap** (+ spot se mantido) |
-| Material | `Material` / `MaterialParams` | — |
-| Primitivas / glTF | `primitives`, `TexMesh`, `loadGltf*` | Formato asset unificado |
-| Física | box/sphere/capsule/cylinder | `create*Hull`, `createStaticMesh` (P5) |
-| Hull C API | `b3CreateHull` / `b3CreateHullShape` | helpers gameplay |
-| Mesh C API | `b3CreateMeshShape` (lib) | bindings D + wrapper |
+| Scene graph | `Transform` (full quat) / `SceneGraph` | — |
+| Render lit | multi-light UBO + dir/point/spot shadows | CSM, clustered, shadow cache |
+| Material | `Material` / `MaterialParams` + editor override | — |
+| Primitivas / glTF | `primitives`, `TexMesh`, `loadGltf*` + `*.asset.json` | — |
+| Física | box/sphere/… + hull + static mesh | VHACD / mesh dynamic |
+| Editor | config `editor` = level editor | PIE completo, file dialogs nativos |
 
 ## Fora de escopo
 
@@ -169,24 +174,24 @@ shadows (luz continua iluminando).
 
 ### GFX-L (pré-req engine)
 
-- [ ] **GFX-L1** — UBO multi-light + shader PBR soma dir/point/(spot)
-- [ ] **GFX-L2** — `Scene3DTextured.setLights` / frame lights
-- [ ] **GFX-L3a** — Point shadow: depth cubemap + sample no fragment; API create/update
-- [ ] **GFX-L3b** — Spot shadow (só se no escopo): depth 2D perspective
-- [ ] **GFX-L3c** — Manter directional PCF sem regressão
-- [ ] **GFX-L4** — Demo: sun + point lamp com sombra; spot se existir
-- [ ] **GFX-L5** — Budget casters + docs constantes
+- [x] **GFX-L1** — UBO multi-light + shader PBR soma dir/point/(spot)
+- [x] **GFX-L2** — `Scene3DTextured.setLights` / frame lights
+- [x] **GFX-L3a** — Point shadow: depth cubemap + sample no fragment; API create/update
+- [x] **GFX-L3b** — Spot shadow (só se no escopo): depth 2D perspective
+- [x] **GFX-L3c** — Manter directional PCF sem regressão
+- [x] **GFX-L4** — Demo: sun + point lamp com sombra; spot se existir
+- [x] **GFX-L5** — Budget casters + docs constantes
 
 **DoD GFX-L:** point light com sombra visível (objeto bloqueia outro);
 directional intacto. Spot: DoD separado ou “N/A se cortado”.
 
 ### ED-6 — editor de luzes
 
-- [ ] Spawn entidade Light (Transform + Light component)
-- [ ] Inspector: type, color, intensity, range/cones, `castShadows`, budget hint
-- [ ] Gizmos; IBL preset no painel Scene
-- [ ] Serializar no `.scene.json`
-- [ ] Se spot cortado: UI não oferece spot
+- [x] Spawn entidade Light (Transform + Light component)
+- [x] Inspector: type, color, intensity, range/cones, `castShadows`, budget hint
+- [x] Gizmos; IBL preset no painel Scene
+- [x] Serializar no `.scene.json`
+- [x] Se spot cortado: UI não oferece spot
 
 **DoD:** dir + point (com sombra) editáveis ao vivo; save/load; spot se shipado.
 
@@ -241,25 +246,25 @@ Falha de bake → mensagem + não grava.
 
 ### PHY-H / P5
 
-- [ ] **PHY-H1** — `createStaticHull` / `createDynamicHull` / `createKinematicHull`
-- [ ] **PHY-H2** — smoke hull dynamic + static
-- [ ] **P5a** — bindings mesh + `createStaticMesh`
-- [ ] **P5b** — smoke ball vs static mesh
-- [ ] Sem `createDynamicMesh` na API pública
+- [x] **PHY-H1** — `createStaticHull` / `createDynamicHull` / `createKinematicHull`
+- [x] **PHY-H2** — smoke hull dynamic + static
+- [x] **P5a** — bindings mesh + `createStaticMesh`
+- [x] **P5b** — smoke ball vs static mesh
+- [x] Sem `createDynamicMesh` na API pública
 
 ### ED-5a — primitivas
 
-- [ ] Enable, motion, dims sync, mass/restitution/friction/damping
-- [ ] Wireframe; Simulate / Esc restore
+- [x] Enable, motion, dims sync, mass/restitution/friction/damping
+- [x] Wireframe; Simulate / Esc restore
 
 **DoD:** sphere dynamic cai; Esc restaura.
 
 ### ED-5b — hull + mesh
 
-- [ ] Shape kinds + bake hull → **escreve asset** (não a cena)
-- [ ] triangleMesh static; override collision mesh
-- [ ] Cores gizmo: hull ciano, mesh magenta, AABB amarelo
-- [ ] Cena só guarda ref ao asset + motion/mass overrides locais se houver
+- [x] Shape kinds + bake hull → **escreve asset** (não a cena)
+- [x] triangleMesh static; override collision mesh
+- [x] Cores gizmo: hull ciano, mesh magenta, AABB amarelo
+- [x] Cena só guarda ref ao asset + motion/mass overrides locais se houver
 
 **DoD:**  
 1) asset static mesh collider; bola quica.  
@@ -320,14 +325,13 @@ Regras:
 
 ### AST-1 — fases asset
 
-- [ ] Schema + reader/writer minificado
-- [ ] Load asset → `TexMesh` + `Material` + opcional hull points / mesh collider
-- [ ] Save asset após bake hull / mudar collision source
-- [ ] Exemplo `assets/models/crate.asset.json` + golden test
-- [ ] Primitive assets (box etc.) geráveis pelo editor (Save As asset ou
-      só inline na entidade — **preferir** asset mesmo para primitivos
-      reutilizados; primitivos one-off podem ser `visual.kind` na entidade
-      sem asset — permitido)
+- [x] Schema + reader/writer minificado
+- [x] Load asset → `TexMesh` + `Material` + opcional hull points / mesh collider
+- [x] Save asset após bake hull / mudar collision source
+- [x] Exemplo `assets/models/crate.asset.json` + golden test
+- [ ] Primitive assets (box etc.) geráveis pelo editor (Save As asset) —
+  backlog leve; bake hull já grava no asset referenciado. Primitivos
+  one-off via `visual.kind` na entidade sem asset — permitido.
 
 **DoD:** round-trip asset com render + hull points; cena referencia e spawna.
 
@@ -419,19 +423,19 @@ Notas:
 
 ```text
 engine/assets/asset_file.d   // *.asset.json
-engine/scene/scene_file.d    // *.scene.json
-engine/scene/scene_load.d    // spawn world a partir da cena
+engine/scene/scene_file.d    // *.scene.json (formato; runtime-friendly)
+engine/editor/scene_load.d   // spawn EditorWorld a partir da cena
 ```
 
 ### ED-7
 
-- [ ] Scene + asset schemas v1
-- [ ] Reader/writer minificado + `strings` table
-- [ ] Quat only no disco; teste Euler UI → quat file
-- [ ] Migrations stub
-- [ ] Ctrl+S / Ctrl+O; New scene
-- [ ] Validação: light limits, mesh+dynamic, asset missing, shadow budget
-- [ ] Golden round-trip (minificado estável)
+- [x] Scene + asset schemas v1
+- [x] Reader/writer minificado + `strings` table
+- [x] Quat only no disco; teste Euler UI → quat file
+- [x] Migrations stub
+- [x] Ctrl+S / Ctrl+O; New scene
+- [x] Validação: light limits, mesh+dynamic, asset missing, shadow budget
+- [x] Golden round-trip (minificado estável)
 
 **DoD:** fechar processo e reabrir restaura cena + assets referenciados
 (incl. hull bake e point light com `castShadows`).
@@ -442,66 +446,67 @@ engine/scene/scene_load.d    // spawn world a partir da cena
 
 ### ED-1 — Picking
 
-- [ ] Ray vs AABB/mesh; highlight; opcional `castRayClosest`
+- [x] Ray vs AABB/mesh; highlight; opcional `castRayClosest`
 
 **DoD:** click seleciona cubo sem física.
 
 ### ED-2 — Transform + level tools
 
-- [ ] Translate/rotate/scale; local/world; snap; grid
-- [ ] Delete / Duplicate / Focus
-- [ ] Spawn primitivos + Light entity
-- [ ] Rotate gizmo/inspector em Euler na UI → quat interno
+- [x] Translate/rotate/scale; local/world; snap; grid
+- [x] Delete / Duplicate / Focus
+- [x] Spawn primitivos + Light entity
+- [x] Rotate gizmo/inspector em Euler na UI → quat interno
 
 **DoD:** spawn, move com snap, duplicar, apagar.
 
 ### ED-3 — Hierarquia + inspector
 
-- [ ] Tree; inspector POD; rename; parent se possível
+- [x] Tree; inspector POD; rename; parent se possível
 
 **DoD:** editar pos no inspector move o objeto.
 
 ### ED-4 — Material
 
-- [ ] baseColor, metallic, roughness, albedo path; presets
+- [x] baseColor, metallic, roughness, albedo path; presets
 
 **DoD:** slider roughness atualiza viewport.
 
 ### ED-5a — Física primitivas
 
-- [ ] Motion/dims/mass/…; Simulate/restore
+- [x] Motion/dims/mass/…; Simulate/restore
 
 **DoD:** sphere cai; Esc restaura.
 
 ### AST-1 — Asset file (pode ∥ ED-5a)
 
-- [ ] `*.asset.json` load/save; exemplo + teste
+- [x] `*.asset.json` load/save; exemplo + teste
 
 **DoD:** ver § Assets.
 
 ### ED-5b — Hull + mesh collider
 
-- [ ] Depende PHY-H, P5, AST-1
-- [ ] Bake hull → asset; mesh static; override collision mesh
+- [x] Depende PHY-H, P5, AST-1
+- [x] Bake hull → asset; mesh static; override collision mesh
 
 **DoD:** ver § Colliders.
 
 ### GFX-L → ED-6 — Lights + shadows
 
-- [ ] Dir + point (+ spot se couber) com sombra
-- [ ] Componente Light; UI entidade dedicada
+- [x] Dir + point (+ spot se couber) com sombra
+- [x] Componente Light; UI entidade dedicada
 
 **DoD:** ver § Luz.
 
 ### ED-7 — Scene file
 
-- [ ] `*.scene.json` minificado versionado + golden
+- [x] `*.scene.json` minificado versionado + golden
 
 **DoD:** ver § Persistência.
 
 ### ED-8 — Polish
 
-- [ ] Multi-select, undo/redo, align ground, copy attrs, PIE opcional
+- [x] Multi-select, undo/redo, align ground, copy attrs, PIE opcional
+  (Simulate cobre PIE físico mínimo)
 
 **DoD:** undo de move; multi-mover 3 boxes.
 

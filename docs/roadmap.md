@@ -20,7 +20,7 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 | 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | **feito** (PBR-0–5) | Textured path: GGX + IBL + PCF; demo `pbr` |
 | 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | **feito** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
-| 6 | Editor de cena / level design | [plan-editor-ux.md](plan-editor-ux.md) | média | Multi-luz c/ sombra (spot cortável); hull+mesh; `*.asset.json` + `*.scene.json` minificado |
+| 6 | Editor de cena / level design | [plan-editor-ux.md](plan-editor-ux.md) | **feito** (v1) | `dub run --config=editor`; multi-luz c/ sombra; hull+mesh; `*.asset.json` + `*.scene.json`; multi-select + undo |
 | 7 | Editor de terreno e água | [plan-terrain-water.md](plan-terrain-water.md) | média | Depois do editor de cena; heightfield (P5); brushes + water plane |
 | 8 | Hot reload (assets + dados) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | média | Iteração diária (editor/assets); antes de escala |
 | 9 | ECS paralelo | [plan-parallel-ecs.md](plan-parallel-ecs.md) | baixa | API serial estável; opt-in |
@@ -57,6 +57,10 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
   contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
 - Primitivas GC-safe: `Pod!T`, `Handle!T`, `StringId`, `FrameArena`,
   `@noGcStorage` + lint (`dub run --config=lint`) — ver [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
+- **Editor UX v1:** level editor (`dub run --config=editor`) — picking,
+  TRS gizmos+snap, multi-select, undo/redo, hierarchy/inspector, lights+
+  shadows, physics Simulate/Esc, `*.scene.json` / `*.asset.json` — ver
+  [plan-editor-ux.md](plan-editor-ux.md)
 
 ## Limpeza pendente (não-feature)
 
