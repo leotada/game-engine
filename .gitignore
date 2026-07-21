@@ -26,6 +26,7 @@ marble-run
 pong3d
 game-engine-gc-benchmark
 game-engine-lint
+game-engine-pbr
 
 # Reference C++ codebases (vendored, not part of build)
 ref/
