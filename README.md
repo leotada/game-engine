@@ -4,6 +4,8 @@ A commercial-grade 3D game engine built in **D**, designed to match the architec
 
 **WGPU + SDL3 | ECS with SoA Sparse Sets | `@safe` by Default | DIP1000 | MIT**
 
+![PBR demo — multi-light shadows, IBL, bloom, and FXAA](assets/screenshots/pbr-demo.png)
+
 ## Why D?
 
 D sits at the intersection of C++ performance and high-level ergonomics. This engine exploits what makes D uniquely powerful for games:
@@ -21,7 +23,7 @@ D sits at the intersection of C++ performance and high-level ergonomics. This en
 ```
 source/
 ├── bindings/              # C interop (manual extern(C) + ImportC)
-│   ├── sdl3.d             # SDL3 — window, events, input, Wayland, audio
+│   ├── sdl3.d             # SDL3 — window, events, input, audio
 │   ├── wgpu.d             # WGPU-native — GPU resources, render pipeline
 │   └── box3d/             # Box3D via ImportC (box3d_import.c + shim)
 ├── engine/
@@ -64,7 +66,7 @@ source/
 | **Zero-overhead abstractions** | Template systems resolved at compile time. RAII handles for GPU resources |
 | **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `isPod!T` / `Pod!T` — no GC pointers in engine storage |
 | **C interop that fits** | ImportC for Box3D headers; controlled `extern(C)` for SDL3/WGPU |
-| **Wayland-first** | SDL3 extracts `wl_display`/`wl_surface` for WGPU. Linux Wayland primary; X11 secondary |
+| **Cross-platform** | SDL3 + WGPU on Linux (Wayland primary, X11 secondary) and Windows |
 
 ### ECS — Bevy-Class Performance in D
 
@@ -88,7 +90,7 @@ world.set(player, Velocity(1, 0, 0));
 
 | Layer | Technology | Purpose |
 |:---|:---|:---|
-| Window | SDL3 | Cross-platform window, events, Wayland-native |
+| Window | SDL3 | Cross-platform window, events (Linux / Windows) |
 | GPU API | WGPU-native | Vulkan/Metal/DX12 via WebGPU abstraction |
 | Bindings | `extern(C)` | Direct C99 API for SDL3/WGPU — no bindbc |
 | Physics | Box3D + ImportC | Types from C headers; thin mangled D wrappers for calls |
@@ -148,7 +150,7 @@ void damageSystem(W)(ref W world) @nogc nothrow {
 - **SDL3**: `libSDL3.so` (system package or built from source)
 - **WGPU-native**: `libwgpu_native.a` in `libs/` (see below)
 - **Box3D**: `libbox3d` linked from `libs/`; headers under `vendor/box3d/include` (ImportC via `-P-Ivendor/box3d/include`)
-- **OS**: Linux with Wayland (primary); X11 secondary
+- **OS**: Linux (Wayland primary, X11 secondary) and Windows
 
 ## Building
 
