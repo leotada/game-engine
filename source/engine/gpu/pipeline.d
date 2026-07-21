@@ -10,7 +10,12 @@ import engine.core.log;
 
 struct Pipeline3D {
     WGPURenderPipeline  pipeline;
+    /// Primary layout: colored/cube = group0; textured = material group1.
     WGPUBindGroupLayout bindGroupLayout;
+    /// Textured pipeline only: frame+shadow @group(0). Null for colored pipelines.
+    WGPUBindGroupLayout frameBindGroupLayout;
+    /// Textured pipeline only: IBL @group(2). Null for colored pipelines.
+    WGPUBindGroupLayout iblBindGroupLayout;
     WGPUPipelineLayout  pipelineLayout;
     WGPUShaderModule    shaderModule;
 
@@ -20,6 +25,14 @@ struct Pipeline3D {
         if (pipeline !is null)        { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
         if (pipelineLayout !is null)  { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
         if (bindGroupLayout !is null) { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
+        if (frameBindGroupLayout !is null) {
+            wgpuBindGroupLayoutRelease(frameBindGroupLayout);
+            frameBindGroupLayout = null;
+        }
+        if (iblBindGroupLayout !is null) {
+            wgpuBindGroupLayoutRelease(iblBindGroupLayout);
+            iblBindGroupLayout = null;
+        }
         if (shaderModule !is null)    { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
     }
 }
@@ -340,10 +353,15 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
     return result;
 }
 
-/// Textured 3D instanced pipeline.
-///   Buffer 0 (per-vertex): position(float32x3) + normal(float32x3) + uv(float32x2), stride=32.
-///   Buffer 1 (per-instance): model matrix (4× float32x4) + tint float32x4, stride=80.
-///   Bind group 0: (0) uniform VP, (1) sampler, (2) albedo texture.
+/// Frame uniform size for textured PBR pipeline (viewProj + lightVP + lightDir/bias + cameraPos).
+enum FRAME_UNIFORMS_SIZE = 160;
+/// MaterialParams UBO size (baseColor + metallic/roughness/flags).
+enum MATERIAL_PARAMS_SIZE = 32;
+
+/// Textured 3D instanced PBR pipeline.
+///   Buffer 0 (per-vertex): position + normal + uv, stride=32.
+///   Buffer 1 (per-instance): model matrix + tint, stride=80.
+///   @group(0) Frame+shadow, @group(1) Material, @group(2) IBL.
 Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
     Pipeline3D result;
 
@@ -352,41 +370,91 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D shader module");
     }
 
-    // Bind group layout: uniform + sampler + texture
-    WGPUBindGroupLayoutEntry[3] bglEntries;
+    // --- Group 0: Frame + shadow ---
+    WGPUBindGroupLayoutEntry[3] frameEntries;
+    frameEntries[0].binding = 0;
+    frameEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
+    frameEntries[0].buffer.type = WGPUBufferBindingType.uniform;
+    frameEntries[0].buffer.minBindingSize = FRAME_UNIFORMS_SIZE;
 
-    bglEntries[0].binding = 0;
-    bglEntries[0].visibility = WGPUShaderStage.vertex;
-    bglEntries[0].buffer.type = WGPUBufferBindingType.uniform;
-    bglEntries[0].buffer.minBindingSize = 64;
+    frameEntries[1].binding = 1;
+    frameEntries[1].visibility = WGPUShaderStage.fragment;
+    frameEntries[1].sampler.type = WGPUSamplerBindingType.comparison;
 
-    bglEntries[1].binding = 1;
-    bglEntries[1].visibility = WGPUShaderStage.fragment;
-    bglEntries[1].sampler.type = WGPUSamplerBindingType.filtering;
+    frameEntries[2].binding = 2;
+    frameEntries[2].visibility = WGPUShaderStage.fragment;
+    frameEntries[2].texture.sampleType = WGPUTextureSampleType.depth;
+    frameEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
 
-    bglEntries[2].binding = 2;
-    bglEntries[2].visibility = WGPUShaderStage.fragment;
-    bglEntries[2].texture.sampleType = WGPUTextureSampleType.float_;
-    bglEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+    WGPUBindGroupLayoutDescriptor frameBglDesc;
+    frameBglDesc.entryCount = 3;
+    frameBglDesc.entries = frameEntries.ptr;
+    result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 
-    WGPUBindGroupLayoutDescriptor bglDesc;
-    bglDesc.entryCount = 3;
-    bglDesc.entries = bglEntries.ptr;
-    result.bindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &bglDesc);
+    // --- Group 1: Material ---
+    WGPUBindGroupLayoutEntry[7] matEntries;
+    matEntries[0].binding = 0;
+    matEntries[0].visibility = WGPUShaderStage.fragment;
+    matEntries[0].buffer.type = WGPUBufferBindingType.uniform;
+    matEntries[0].buffer.minBindingSize = MATERIAL_PARAMS_SIZE;
 
+    matEntries[1].binding = 1;
+    matEntries[1].visibility = WGPUShaderStage.fragment;
+    matEntries[1].sampler.type = WGPUSamplerBindingType.filtering;
+
+    foreach (i; 0 .. 5) {
+        matEntries[2 + i].binding = cast(uint)(2 + i);
+        matEntries[2 + i].visibility = WGPUShaderStage.fragment;
+        matEntries[2 + i].texture.sampleType = WGPUTextureSampleType.float_;
+        matEntries[2 + i].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+    }
+
+    WGPUBindGroupLayoutDescriptor matBglDesc;
+    matBglDesc.entryCount = 7;
+    matBglDesc.entries = matEntries.ptr;
+    result.bindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &matBglDesc);
+
+    // --- Group 2: IBL ---
+    WGPUBindGroupLayoutEntry[4] iblEntries;
+    iblEntries[0].binding = 0;
+    iblEntries[0].visibility = WGPUShaderStage.fragment;
+    iblEntries[0].texture.sampleType = WGPUTextureSampleType.float_;
+    iblEntries[0].texture.viewDimension = WGPUTextureViewDimension.cube;
+
+    iblEntries[1].binding = 1;
+    iblEntries[1].visibility = WGPUShaderStage.fragment;
+    iblEntries[1].texture.sampleType = WGPUTextureSampleType.float_;
+    iblEntries[1].texture.viewDimension = WGPUTextureViewDimension.cube;
+
+    iblEntries[2].binding = 2;
+    iblEntries[2].visibility = WGPUShaderStage.fragment;
+    iblEntries[2].texture.sampleType = WGPUTextureSampleType.float_;
+    iblEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+    iblEntries[3].binding = 3;
+    iblEntries[3].visibility = WGPUShaderStage.fragment;
+    iblEntries[3].sampler.type = WGPUSamplerBindingType.filtering;
+
+    WGPUBindGroupLayoutDescriptor iblBglDesc;
+    iblBglDesc.entryCount = 4;
+    iblBglDesc.entries = iblEntries.ptr;
+    result.iblBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &iblBglDesc);
+
+    WGPUBindGroupLayout[3] layouts = [
+        result.frameBindGroupLayout,
+        result.bindGroupLayout,
+        result.iblBindGroupLayout,
+    ];
     WGPUPipelineLayoutDescriptor plDesc;
-    plDesc.bindGroupLayoutCount = 1;
-    plDesc.bindGroupLayouts = &result.bindGroupLayout;
+    plDesc.bindGroupLayoutCount = 3;
+    plDesc.bindGroupLayouts = layouts.ptr;
     result.pipelineLayout = wgpuDeviceCreatePipelineLayout(device, &plDesc);
 
-    // Per-vertex: position + normal + uv
     WGPUVertexAttribute[3] vertexAttrs = [
         { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
         { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
         { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
     ];
-
-    // Per-instance: model (4 columns) + tint color
     WGPUVertexAttribute[5] instanceAttrs = [
         { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
         { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
@@ -394,7 +462,6 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
         { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
     ];
-
     WGPUVertexBufferLayout[2] bufferLayouts = [
         {
             arrayStride: 32,
@@ -442,6 +509,6 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D render pipeline");
     }
 
-    info("Textured 3D render pipeline created");
+    info("Textured 3D PBR pipeline created (frame + material + IBL)");
     return result;
 }

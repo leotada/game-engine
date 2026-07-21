@@ -42,6 +42,48 @@ struct TexMesh {
         return fromData(gpu, texQuadVertices[], texQuadIndices[]);
     }
 
+    /// UV sphere of radius 0.5 centered at origin (unit diameter).
+    /// `segments` = longitude subdivisions, `rings` = latitude subdivisions.
+    static TexMesh sphere(ref GpuContext gpu, uint segments = 32, uint rings = 16) {
+        import std.math : sin, cos, PI;
+        assert(segments >= 3 && rings >= 2);
+
+        immutable uint vertCount = (rings + 1) * (segments + 1);
+        auto verts = new TexVert[vertCount];
+        auto indices = new ushort[rings * segments * 6];
+
+        uint vi = 0;
+        foreach (y; 0 .. rings + 1) {
+            immutable v = cast(float) y / cast(float) rings;
+            immutable phi = v * PI;
+            immutable sy = cast(float) cos(phi);
+            immutable sr = cast(float) sin(phi);
+            foreach (x; 0 .. segments + 1) {
+                immutable u = cast(float) x / cast(float) segments;
+                immutable theta = u * 2.0f * PI;
+                immutable nx = sr * cast(float) cos(theta);
+                immutable nz = sr * cast(float) sin(theta);
+                verts[vi++] = TexVert([nx * 0.5f, sy * 0.5f, nz * 0.5f],
+                                      [nx, sy, nz], [u, 1.0f - v]);
+            }
+        }
+
+        uint ii = 0;
+        foreach (y; 0 .. rings) {
+            foreach (x; 0 .. segments) {
+                immutable ushort a = cast(ushort)(y * (segments + 1) + x);
+                immutable ushort b = cast(ushort)(a + segments + 1);
+                indices[ii++] = a;
+                indices[ii++] = cast(ushort)(a + 1);
+                indices[ii++] = b;
+                indices[ii++] = cast(ushort)(a + 1);
+                indices[ii++] = cast(ushort)(b + 1);
+                indices[ii++] = b;
+            }
+        }
+        return fromData(gpu, verts, indices);
+    }
+
     void destroy() nothrow @nogc {
         destroyBuffer(vertexBuffer);
         destroyBuffer(indexBuffer);

@@ -143,17 +143,51 @@ fn fs_text(in: TextVertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-/// 3D instanced shader with per-instance color + sampled albedo texture.
-/// Vertex buffer 0 (per-vertex): position(float32x3) + normal(float32x3) + uv(float32x2), stride=32.
-/// Vertex buffer 1 (per-instance): model mat4 (4× vec4) + tint vec4, stride=80.
-/// Bind group 0: binding 0 = uniform VP; binding 1 = sampler; binding 2 = albedo texture.
+/// 3D instanced PBR textured shader (metallic-roughness + PCF shadows + IBL).
+/// Vertex buffer 0: position + normal + uv (stride 32).
+/// Vertex buffer 1: model mat4 + tint (stride 80).
+/// @group(0) Frame: FrameUniforms, comparison sampler, depth texture.
+/// @group(1) Material: MaterialParams, sampler, albedo + optional maps.
+/// @group(2) IBL: irradiance cube, prefiltered specular, BRDF LUT, sampler.
 enum textured3dShaderSource = `
-struct Uniforms {
+struct FrameUniforms {
     viewProj: mat4x4<f32>,
+    lightViewProj: mat4x4<f32>,
+    lightDir: vec3<f32>,
+    shadowBias: f32,
+    cameraPos: vec3<f32>,
+    _pad0: f32,
 };
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var texSampler: sampler;
-@group(0) @binding(2) var albedo: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> frame: FrameUniforms;
+@group(0) @binding(1) var shadowSampler: sampler_comparison;
+@group(0) @binding(2) var shadowMap: texture_depth_2d;
+
+struct MaterialParams {
+    baseColorFactor: vec4<f32>,
+    metallic: f32,
+    roughness: f32,
+    flags: u32,
+    _pad1: f32,
+};
+@group(1) @binding(0) var<uniform> mat: MaterialParams;
+@group(1) @binding(1) var texSampler: sampler;
+@group(1) @binding(2) var albedoMap: texture_2d<f32>;
+@group(1) @binding(3) var mrMap: texture_2d<f32>;
+@group(1) @binding(4) var normalMap: texture_2d<f32>;
+@group(1) @binding(5) var occlusionMap: texture_2d<f32>;
+@group(1) @binding(6) var emissiveMap: texture_2d<f32>;
+
+@group(2) @binding(0) var irradianceMap: texture_cube<f32>;
+@group(2) @binding(1) var specularMap: texture_cube<f32>;
+@group(2) @binding(2) var brdfLut: texture_2d<f32>;
+@group(2) @binding(3) var iblSampler: sampler;
+
+const FLAG_MR: u32 = 1u;
+const FLAG_NORMAL: u32 = 2u;
+const FLAG_AO: u32 = 4u;
+const FLAG_EMISSIVE: u32 = 8u;
+const PI: f32 = 3.14159265359;
+const SPECULAR_MIPS: f32 = 4.0;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -168,32 +202,146 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) clipPos: vec4<f32>,
-    @location(0) worldNormal: vec3<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) tint: vec3<f32>,
+    @location(0) worldPos: vec3<f32>,
+    @location(1) worldNormal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) tint: vec3<f32>,
+    @location(4) worldTangent: vec3<f32>,
+    @location(5) worldBitangent: vec3<f32>,
 };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
-    let worldPos = model * vec4<f32>(in.position, 1.0);
+    let worldPos4 = model * vec4<f32>(in.position, 1.0);
     let normalMat = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
     var out: VertexOutput;
-    out.clipPos = u.viewProj * worldPos;
+    out.clipPos = frame.viewProj * worldPos4;
+    out.worldPos = worldPos4.xyz;
     out.worldNormal = normalize(normalMat * in.normal);
+    // Approximate TBN from normal (no vertex tangents yet).
+    var t = normalize(normalMat * vec3<f32>(1.0, 0.0, 0.0));
+    if (abs(dot(t, out.worldNormal)) > 0.9) {
+        t = normalize(normalMat * vec3<f32>(0.0, 0.0, 1.0));
+    }
+    out.worldTangent = normalize(t - out.worldNormal * dot(out.worldNormal, t));
+    out.worldBitangent = cross(out.worldNormal, out.worldTangent);
     out.uv = in.uv;
     out.tint = in.tint.rgb;
     return out;
 }
 
+fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let a2 = a * a;
+    let d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+fn geometrySchlickGGX(NdotX: f32, roughness: f32) -> f32 {
+    let r = roughness + 1.0;
+    let k = (r * r) / 8.0;
+    return NdotX / (NdotX * (1.0 - k) + k);
+}
+
+fn geometrySmith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    return F0 + (max(vec3<f32>(1.0 - roughness), F0) - F0)
+         * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+fn sampleShadowPCF(worldPos: vec3<f32>) -> f32 {
+    var shadowPos = frame.lightViewProj * vec4<f32>(worldPos, 1.0);
+    let ndc = shadowPos.xyz / shadowPos.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    let depth = ndc.z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth <= 0.0 || depth >= 1.0) {
+        return 1.0;
+    }
+    let texel = 1.0 / f32(textureDimensions(shadowMap).x);
+    var shadow = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel;
+            shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth - frame.shadowBias);
+        }
+    }
+    return shadow / 9.0;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let lightDir = normalize(vec3<f32>(0.3, 1.0, 0.5));
-    let ambient = 0.20;
-    let diffuse = max(dot(in.worldNormal, lightDir), 0.0);
-    let brightness = ambient + diffuse * 0.80;
-    let sampled = textureSample(albedo, texSampler, in.uv).rgb;
-    return vec4<f32>(sampled * in.tint * brightness, 1.0);
+    let albedoSample = textureSample(albedoMap, texSampler, in.uv);
+    var albedo = albedoSample.rgb * mat.baseColorFactor.rgb * in.tint;
+    var metallic = mat.metallic;
+    var roughness = mat.roughness;
+    if ((mat.flags & FLAG_MR) != 0u) {
+        let mr = textureSample(mrMap, texSampler, in.uv);
+        roughness = clamp(roughness * mr.g, 0.04, 1.0);
+        metallic = clamp(metallic * mr.b, 0.0, 1.0);
+    } else {
+        roughness = clamp(roughness, 0.04, 1.0);
+        metallic = clamp(metallic, 0.0, 1.0);
+    }
+
+    var N = normalize(in.worldNormal);
+    if ((mat.flags & FLAG_NORMAL) != 0u) {
+        let nSample = textureSample(normalMap, texSampler, in.uv).xyz * 2.0 - 1.0;
+        let TBN = mat3x3<f32>(normalize(in.worldTangent), normalize(in.worldBitangent), N);
+        N = normalize(TBN * nSample);
+    }
+
+    var ao = 1.0;
+    if ((mat.flags & FLAG_AO) != 0u) {
+        ao = textureSample(occlusionMap, texSampler, in.uv).r;
+    }
+
+    var emissive = vec3<f32>(0.0);
+    if ((mat.flags & FLAG_EMISSIVE) != 0u) {
+        emissive = textureSample(emissiveMap, texSampler, in.uv).rgb;
+    }
+
+    let V = normalize(frame.cameraPos - in.worldPos);
+    let L = normalize(frame.lightDir);
+    let H = normalize(V + L);
+    let NdotL = max(dot(N, L), 0.0);
+    let NdotV = max(dot(N, V), 0.001);
+    let NdotH = max(dot(N, H), 0.0);
+    let HdotV = max(dot(H, V), 0.0);
+
+    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let D = distributionGGX(NdotH, roughness);
+    let G = geometrySmith(NdotV, NdotL, roughness);
+    let F = fresnelSchlick(HdotV, F0);
+    let specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    let kS = F;
+    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+    let radiance = vec3<f32>(1.0, 0.98, 0.92) * 3.5;
+    let shadow = sampleShadowPCF(in.worldPos);
+    let direct = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+
+    // IBL
+    let F_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
+    let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metallic);
+    let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
+    let diffuseIbl = kD_ibl * irradiance * albedo;
+    let R = reflect(-V, N);
+    let mip = roughness * SPECULAR_MIPS;
+    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
+    let brdf = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, roughness)).rg;
+    let specularIbl = prefiltered * (F_ibl * brdf.x + brdf.y);
+    let ambient = (diffuseIbl + specularIbl) * ao;
+
+    var color = direct + ambient + emissive;
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(color, albedoSample.a * mat.baseColorFactor.a);
 }
 `;
 
