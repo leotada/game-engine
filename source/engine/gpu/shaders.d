@@ -143,24 +143,70 @@ fn fs_text(in: TextVertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-/// 3D instanced PBR textured shader (metallic-roughness + PCF shadows + IBL).
+/// 3D instanced PBR textured shader (metallic-roughness + multi-light + shadows + IBL).
 /// Vertex buffer 0: position + normal + uv (stride 32).
 /// Vertex buffer 1: model mat4 + tint (stride 80).
-/// @group(0) Frame: FrameUniforms, comparison sampler, depth texture.
+/// @group(0) Frame UBO + comparison sampler + dir/point/spot shadow maps.
 /// @group(1) Material: MaterialParams, sampler, albedo + optional maps.
 /// @group(2) IBL: irradiance cube, prefiltered specular, BRDF LUT, sampler.
+///
+/// Light budget (must match engine.scene.light): 1 dir + 8 point + 4 spot;
+/// shadow slots: 1 dir + 4 point cubes + 2 spot maps.
 enum textured3dShaderSource = `
+struct DirLight {
+    direction: vec3<f32>,
+    intensity: f32,
+    color: vec3<f32>,
+    castShadows: u32,
+    viewProj: mat4x4<f32>,
+};
+
+struct PointLight {
+    position: vec3<f32>,
+    range: f32,
+    color: vec3<f32>,
+    intensity: f32,
+    shadowSlot: i32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+struct SpotLight {
+    position: vec3<f32>,
+    range: f32,
+    direction: vec3<f32>,
+    intensity: f32,
+    color: vec3<f32>,
+    innerConeCos: f32,
+    outerConeCos: f32,
+    shadowSlot: i32,
+    _pad0: f32,
+    _pad1: f32,
+    viewProj: mat4x4<f32>,
+};
+
 struct FrameUniforms {
     viewProj: mat4x4<f32>,
-    lightViewProj: mat4x4<f32>,
-    lightDir: vec3<f32>,
-    shadowBias: f32,
     cameraPos: vec3<f32>,
-    _pad0: f32,
+    shadowBias: f32,
+    dirLight: DirLight,
+    pointCount: u32,
+    spotCount: u32,
+    dirEnabled: u32,
+    _padCounts: u32,
+    points: array<PointLight, 8>,
+    spots: array<SpotLight, 4>,
 };
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(0) @binding(1) var shadowSampler: sampler_comparison;
-@group(0) @binding(2) var shadowMap: texture_depth_2d;
+@group(0) @binding(2) var dirShadowMap: texture_depth_2d;
+@group(0) @binding(3) var pointShadow0: texture_depth_cube;
+@group(0) @binding(4) var pointShadow1: texture_depth_cube;
+@group(0) @binding(5) var pointShadow2: texture_depth_cube;
+@group(0) @binding(6) var pointShadow3: texture_depth_cube;
+@group(0) @binding(7) var spotShadow0: texture_depth_2d;
+@group(0) @binding(8) var spotShadow1: texture_depth_2d;
 
 struct MaterialParams {
     baseColorFactor: vec4<f32>,
@@ -188,6 +234,7 @@ const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
 const PI: f32 = 3.14159265359;
 const SPECULAR_MIPS: f32 = 4.0;
+const SHADOW_NEAR: f32 = 0.1;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -219,7 +266,6 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clipPos = frame.viewProj * worldPos4;
     out.worldPos = worldPos4.xyz;
     out.worldNormal = normalize(normalMat * in.normal);
-    // Approximate TBN from normal (no vertex tangents yet).
     var t = normalize(normalMat * vec3<f32>(1.0, 0.0, 0.0));
     if (abs(dot(t, out.worldNormal)) > 0.9) {
         t = normalize(normalMat * vec3<f32>(0.0, 0.0, 1.0));
@@ -257,31 +303,134 @@ fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3
          * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// Receiver bias: low when facing the light (keeps contact shadows attached),
-// higher at grazing angles (fights acne). Constant alone caused peter-panning.
-fn sampleShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
-    let L = normalize(frame.lightDir);
+fn evalBRDF(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, albedo: vec3<f32>,
+            metallic: f32, roughness: f32, radiance: vec3<f32>) -> vec3<f32> {
+    let NdotL = max(dot(N, L), 0.0);
+    if (NdotL <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let H = normalize(V + L);
+    let NdotV = max(dot(N, V), 0.001);
+    let NdotH = max(dot(N, H), 0.0);
+    let HdotV = max(dot(H, V), 0.0);
+    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let D = distributionGGX(NdotH, roughness);
+    let G = geometrySmith(NdotV, NdotL, roughness);
+    let F = fresnelSchlick(HdotV, F0);
+    let specular = min((D * G * F) / max(4.0 * NdotV * NdotL, 0.001), vec3<f32>(16.0));
+    let kS = F;
+    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+    return (kD * albedo / PI + specular) * radiance * NdotL;
+}
+
+fn rangeAttenuation(distance: f32, range: f32) -> f32 {
+    let x = clamp(1.0 - pow(distance / max(range, 0.001), 4.0), 0.0, 1.0);
+    return (x * x) / (distance * distance + 1.0);
+}
+
+fn sampleDirShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f32 {
     let NdotL = clamp(dot(normal, L), 0.0, 1.0);
     let bias = mix(frame.shadowBias * 5.0, frame.shadowBias, NdotL);
-    // Tiny normal offset only where acne is likely — avoids detaching contact.
     let samplePos = worldPos + normal * (frame.shadowBias * 8.0 * (1.0 - NdotL));
-
-    var shadowPos = frame.lightViewProj * vec4<f32>(samplePos, 1.0);
+    var shadowPos = frame.dirLight.viewProj * vec4<f32>(samplePos, 1.0);
     let ndc = shadowPos.xyz / shadowPos.w;
     let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
     let depth = ndc.z;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth <= 0.0 || depth >= 1.0) {
         return 1.0;
     }
-    let texel = 1.0 / f32(textureDimensions(shadowMap).x);
+    let texel = 1.0 / f32(textureDimensions(dirShadowMap).x);
     var shadow = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let offset = vec2<f32>(f32(x), f32(y)) * texel;
-            shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth - bias);
+            shadow += textureSampleCompare(dirShadowMap, shadowSampler, uv + offset, depth - bias);
         }
     }
     return shadow / 9.0;
+}
+
+fn cubeRefDepth(fragToLight: vec3<f32>, nearP: f32, farP: f32) -> f32 {
+    let m = max(max(abs(fragToLight.x), abs(fragToLight.y)), abs(fragToLight.z));
+    let d = max(m, nearP);
+    return farP * (d - nearP) / ((farP - nearP) * d);
+}
+
+fn sampleCubeCompare(tex: texture_depth_cube, dir: vec3<f32>, refDepth: f32) -> f32 {
+    return textureSampleCompare(tex, shadowSampler, dir, refDepth);
+}
+
+fn samplePointShadowPCF(slot: i32, lightPos: vec3<f32>, worldPos: vec3<f32>,
+                        normal: vec3<f32>, range: f32) -> f32 {
+    if (slot < 0) {
+        return 1.0;
+    }
+    let fragToLight = worldPos - lightPos;
+    let dist = length(fragToLight);
+    if (dist >= range) {
+        return 1.0;
+    }
+    let L = normalize(-fragToLight);
+    let NdotL = clamp(dot(normal, L), 0.0, 1.0);
+    let bias = mix(frame.shadowBias * 5.0, frame.shadowBias, NdotL);
+    let samplePos = worldPos + normal * (frame.shadowBias * 8.0 * (1.0 - NdotL));
+    let toLight = samplePos - lightPos;
+    let refDepth = cubeRefDepth(toLight, SHADOW_NEAR, range) - bias;
+    let dir = normalize(toLight);
+    // Soften with a few direction offsets (cubemap PCF).
+    let disk = 0.012;
+    var shadow = 0.0;
+    let offsets = array<vec3<f32>, 5>(
+        dir,
+        normalize(dir + vec3<f32>( disk, 0.0, 0.0)),
+        normalize(dir + vec3<f32>(-disk, 0.0, 0.0)),
+        normalize(dir + vec3<f32>(0.0,  disk, 0.0)),
+        normalize(dir + vec3<f32>(0.0, -disk, 0.0)),
+    );
+    for (var i = 0; i < 5; i++) {
+        switch (slot) {
+            case 0: { shadow += sampleCubeCompare(pointShadow0, offsets[i], refDepth); }
+            case 1: { shadow += sampleCubeCompare(pointShadow1, offsets[i], refDepth); }
+            case 2: { shadow += sampleCubeCompare(pointShadow2, offsets[i], refDepth); }
+            case 3: { shadow += sampleCubeCompare(pointShadow3, offsets[i], refDepth); }
+            default: { shadow += 1.0; }
+        }
+    }
+    return shadow / 5.0;
+}
+
+fn sampleSpotMapPCF(tex: texture_depth_2d, lightVP: mat4x4<f32>,
+                    worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f32 {
+    let NdotL = clamp(dot(normal, L), 0.0, 1.0);
+    let bias = mix(frame.shadowBias * 5.0, frame.shadowBias, NdotL);
+    let samplePos = worldPos + normal * (frame.shadowBias * 8.0 * (1.0 - NdotL));
+    var shadowPos = lightVP * vec4<f32>(samplePos, 1.0);
+    let ndc = shadowPos.xyz / shadowPos.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    let depth = ndc.z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth <= 0.0 || depth >= 1.0) {
+        return 1.0;
+    }
+    let texel = 1.0 / f32(textureDimensions(tex).x);
+    var shadow = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel;
+            shadow += textureSampleCompare(tex, shadowSampler, uv + offset, depth - bias);
+        }
+    }
+    return shadow / 9.0;
+}
+
+fn sampleSpotShadowPCF(slot: i32, lightVP: mat4x4<f32>, worldPos: vec3<f32>,
+                       normal: vec3<f32>, L: vec3<f32>) -> f32 {
+    if (slot < 0) {
+        return 1.0;
+    }
+    if (slot == 0) {
+        return sampleSpotMapPCF(spotShadow0, lightVP, worldPos, normal, L);
+    }
+    return sampleSpotMapPCF(spotShadow1, lightVP, worldPos, normal, L);
 }
 
 @fragment
@@ -317,25 +466,61 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let V = normalize(frame.cameraPos - in.worldPos);
-    let L = normalize(frame.lightDir);
-    let H = normalize(V + L);
-    let NdotL = max(dot(N, L), 0.0);
-    let NdotV = max(dot(N, V), 0.001);
-    let NdotH = max(dot(N, H), 0.0);
-    let HdotV = max(dot(H, V), 0.0);
+    var direct = vec3<f32>(0.0);
 
-    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
-    let D = distributionGGX(NdotH, roughness);
-    let G = geometrySmith(NdotV, NdotL, roughness);
-    let F = fresnelSchlick(HdotV, F0);
-    let specular = min((D * G * F) / max(4.0 * NdotV * NdotL, 0.001), vec3<f32>(16.0));
-    let kS = F;
-    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
-    let radiance = vec3<f32>(1.0, 0.98, 0.92) * 3.5;
-    let shadow = sampleShadowPCF(in.worldPos, N);
-    let direct = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+    // --- Directional ---
+    if (frame.dirEnabled != 0u) {
+        let L = normalize(frame.dirLight.direction);
+        let radiance = frame.dirLight.color * frame.dirLight.intensity;
+        var shadow = 1.0;
+        if (frame.dirLight.castShadows != 0u) {
+            shadow = sampleDirShadowPCF(in.worldPos, N, L);
+        }
+        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+    }
+
+    // --- Point lights ---
+    let pc = min(frame.pointCount, 8u);
+    for (var i = 0u; i < pc; i++) {
+        let pl = frame.points[i];
+        let toLight = pl.position - in.worldPos;
+        let dist = length(toLight);
+        if (dist >= pl.range) {
+            continue;
+        }
+        let L = toLight / dist;
+        let atten = rangeAttenuation(dist, pl.range);
+        let radiance = pl.color * pl.intensity * atten;
+        let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
+        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+    }
+
+    // --- Spot lights ---
+    let sc = min(frame.spotCount, 4u);
+    for (var i = 0u; i < sc; i++) {
+        let sl = frame.spots[i];
+        let toLight = sl.position - in.worldPos;
+        let dist = length(toLight);
+        if (dist >= sl.range) {
+            continue;
+        }
+        let L = toLight / dist;
+        // Cone: direction is light→scene, so compare against -L (scene→light flipped).
+        let theta = dot(normalize(-sl.direction), L);
+        let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
+        let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
+        if (cone <= 0.0) {
+            continue;
+        }
+        let atten = rangeAttenuation(dist, sl.range) * cone * cone;
+        let radiance = sl.color * sl.intensity * atten;
+        let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
+        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+    }
 
     // IBL
+    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let NdotV = max(dot(N, V), 0.001);
     let F_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
     let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metallic);
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;

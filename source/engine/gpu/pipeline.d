@@ -347,15 +347,18 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
     return result;
 }
 
-/// Frame uniform size for textured PBR pipeline (viewProj + lightVP + lightDir/bias + cameraPos).
-enum FRAME_UNIFORMS_SIZE = 160;
+/// Frame uniform size for textured PBR pipeline (multi-light UBO).
+/// Layout must match `textured3dShaderSource` FrameUniforms (1088 bytes):
+/// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts(16)
+/// + PointLight[8](384) + SpotLight[4](512).
+enum FRAME_UNIFORMS_SIZE = 1088;
 /// MaterialParams UBO size (baseColor + metallic/roughness/flags).
 enum MATERIAL_PARAMS_SIZE = 32;
 
 /// Textured 3D instanced PBR pipeline.
 ///   Buffer 0 (per-vertex): position + normal + uv, stride=32.
 ///   Buffer 1 (per-instance): model matrix + tint, stride=80.
-///   @group(0) Frame+shadow, @group(1) Material, @group(2) IBL.
+///   @group(0) Frame+shadows, @group(1) Material, @group(2) IBL.
 Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
     Pipeline3D result;
 
@@ -364,8 +367,8 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D shader module");
     }
 
-    // --- Group 0: Frame + shadow ---
-    WGPUBindGroupLayoutEntry[3] frameEntries;
+    // --- Group 0: Frame UBO + comparison sampler + dir/point/spot shadows ---
+    WGPUBindGroupLayoutEntry[9] frameEntries;
     frameEntries[0].binding = 0;
     frameEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
     frameEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -380,8 +383,22 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[2].texture.sampleType = WGPUTextureSampleType.depth;
     frameEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
 
+    foreach (i; 0 .. 4) {
+        frameEntries[3 + i].binding = cast(uint)(3 + i);
+        frameEntries[3 + i].visibility = WGPUShaderStage.fragment;
+        frameEntries[3 + i].texture.sampleType = WGPUTextureSampleType.depth;
+        frameEntries[3 + i].texture.viewDimension = WGPUTextureViewDimension.cube;
+    }
+
+    foreach (i; 0 .. 2) {
+        frameEntries[7 + i].binding = cast(uint)(7 + i);
+        frameEntries[7 + i].visibility = WGPUShaderStage.fragment;
+        frameEntries[7 + i].texture.sampleType = WGPUTextureSampleType.depth;
+        frameEntries[7 + i].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+    }
+
     WGPUBindGroupLayoutDescriptor frameBglDesc;
-    frameBglDesc.entryCount = 3;
+    frameBglDesc.entryCount = 9;
     frameBglDesc.entries = frameEntries.ptr;
     result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 
