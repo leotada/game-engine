@@ -126,6 +126,69 @@ private bool testShapesJointsCharacter() {
     return pass;
 }
 
+/// Convex hull points for a unit box centered at origin (half-extent 0.5).
+private immutable Vec3[8] boxHullPoints = [
+    Vec3(-0.5f, -0.5f, -0.5f),
+    Vec3( 0.5f, -0.5f, -0.5f),
+    Vec3( 0.5f,  0.5f, -0.5f),
+    Vec3(-0.5f,  0.5f, -0.5f),
+    Vec3(-0.5f, -0.5f,  0.5f),
+    Vec3( 0.5f, -0.5f,  0.5f),
+    Vec3( 0.5f,  0.5f,  0.5f),
+    Vec3(-0.5f,  0.5f,  0.5f),
+];
+
+/// Flat floor mesh in XZ (two triangles), local space y = 0.
+private immutable Vec3[4] meshFloorVerts = [
+    Vec3(-4.0f, 0.0f, -4.0f),
+    Vec3( 4.0f, 0.0f, -4.0f),
+    Vec3( 4.0f, 0.0f,  4.0f),
+    Vec3(-4.0f, 0.0f,  4.0f),
+];
+private immutable int[6] meshFloorIndices = [0, 2, 1, 0, 3, 2];
+
+private bool testHullAndMesh() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+
+    auto meshFloor = createStaticMesh(world, Vec3(0.0f, 0.0f, 0.0f), meshFloorVerts[], meshFloorIndices[], 40);
+    auto ball = createDynamicSphere(world, Vec3(0.0f, 5.0f, 0.0f), 0.5f, 1.0f, 41);
+
+    // Dynamic convex hull drops onto a static hull pedestal.
+    auto pedestal = createStaticHull(world, Vec3(6.0f, 0.5f, 0.0f), boxHullPoints[], 64, 42);
+    auto hullDyn = createDynamicHull(world, Vec3(6.0f, 4.0f, 0.0f), boxHullPoints[], 64, 1.0f, 43);
+
+    // Policy: dynamic triangle mesh must not be a public API.
+    static assert(!__traits(compiles, createDynamicMesh(world, Vec3.init, meshFloorVerts[], meshFloorIndices[])),
+        "createDynamicMesh must not be exposed (mesh colliders are static-only)");
+
+    foreach (_; 0 .. 240)
+        world.step(dt, 4);
+
+    bool pass = true;
+
+    if (!isBodyValid(meshFloor) || !isBodyValid(ball) || !isBodyValid(pedestal) || !isBodyValid(hullDyn)) {
+        writeln("[test-physics-box3d] FAIL: hull/mesh bodies invalid");
+        pass = false;
+    }
+
+    immutable ballPos = getPosition(ball);
+    if (fabs(ballPos.y - 0.5f) > 0.4f || fabs(ballPos.x) > 1.5f || fabs(ballPos.z) > 1.5f) {
+        writefln("[test-physics-box3d] FAIL: ball vs mesh rested at (%.3f, %.3f, %.3f)",
+            ballPos.x, ballPos.y, ballPos.z);
+        pass = false;
+    }
+
+    immutable hullPos = getPosition(hullDyn);
+    if (fabs(hullPos.y - 1.5f) > 0.5f || fabs(hullPos.x - 6.0f) > 1.5f) {
+        writefln("[test-physics-box3d] FAIL: dynamic hull rested at (%.3f, %.3f, %.3f)",
+            hullPos.x, hullPos.y, hullPos.z);
+        pass = false;
+    }
+
+    return pass;
+}
+
 int main() {
     enum float dt = 1.0f / 60.0f;
     enum int totalFrames = 240;
@@ -227,6 +290,9 @@ int main() {
     cast(void) ground;
 
     if (!testShapesJointsCharacter())
+        pass = false;
+
+    if (!testHullAndMesh())
         pass = false;
 
     if (pass) {

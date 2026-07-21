@@ -225,6 +225,91 @@ b3BodyId createGroundSlab(ref PhysicsWorld world,
     return createStaticBox(world, pos, extents, entityId, 1.0f);
 }
 
+/// Convex hull from point cloud. `points` are body-local. Hull geometry is cloned by Box3D.
+b3BodyId createStaticHull(ref PhysicsWorld world,
+                          Vec3 position,
+                          scope const(Vec3)[] points,
+                          int maxVertexCount = 64,
+                          EntityId entityId = noPhysicsEntity,
+                          float friction = 0.7f,
+                          float restitution = 0.0f,
+                          bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createHullBody(world, b3_staticBody, position, Quat.init, points, maxVertexCount, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
+}
+
+b3BodyId createDynamicHull(ref PhysicsWorld world,
+                           Vec3 position,
+                           scope const(Vec3)[] points,
+                           int maxVertexCount = 64,
+                           float density = 1.0f,
+                           EntityId entityId = noPhysicsEntity,
+                           float friction = 0.7f,
+                           float restitution = 0.0f,
+                           bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createHullBody(world, b3_dynamicBody, position, Quat.init, points, maxVertexCount, density,
+        entityId, friction, restitution, false, enableHitEvents);
+}
+
+b3BodyId createKinematicHull(ref PhysicsWorld world,
+                             Vec3 position,
+                             scope const(Vec3)[] points,
+                             int maxVertexCount = 64,
+                             EntityId entityId = noPhysicsEntity,
+                             float friction = 0.7f,
+                             float restitution = 0.0f,
+                             bool enableHitEvents = false) nothrow @nogc @trusted {
+    return createHullBody(world, b3_kinematicBody, position, Quat.init, points, maxVertexCount, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
+}
+
+/// Triangle mesh collider (static only). `indices` length must be `triangleCount * 3`.
+/// Triangles are single-sided — winding must face the colliding side (normals outward/up).
+/// Cooked mesh data is retained for the shape lifetime (Box3D does not clone it).
+/// Dynamic mesh is intentionally not exposed — Box3D only generates mesh contacts on static bodies.
+b3BodyId createStaticMesh(ref PhysicsWorld world,
+                          Vec3 position,
+                          scope const(Vec3)[] vertices,
+                          scope const(int)[] indices,
+                          EntityId entityId = noPhysicsEntity,
+                          float friction = 0.7f,
+                          float restitution = 0.0f,
+                          bool enableHitEvents = false,
+                          Vec3 scale = Vec3(1.0f, 1.0f, 1.0f)) nothrow @nogc @trusted {
+    if (vertices.length < 3 || indices.length < 3 || (indices.length % 3) != 0)
+        return b3BodyId.init;
+
+    b3BodyId bodyId = createBodyShell(world, b3_staticBody, position, Quat.init, entityId);
+
+    b3MeshDef meshDef;
+    meshDef.vertices = cast(b3Vec3*) vertices.ptr;
+    meshDef.indices = cast(int*) indices.ptr;
+    meshDef.materialIndices = null;
+    meshDef.weldTolerance = 0.0f;
+    meshDef.vertexCount = cast(int) vertices.length;
+    meshDef.triangleCount = cast(int)(indices.length / 3);
+    meshDef.weldVertices = false;
+    meshDef.useMedianSplit = false;
+    meshDef.identifyEdges = true;
+
+    b3MeshData* mesh = b3CreateMeshD(&meshDef, null, 0);
+    if (mesh is null) {
+        destroyBody(bodyId);
+        return b3BodyId.init;
+    }
+
+    // Retain mesh: b3CreateMeshShape holds a reference (not a clone).
+    retainCookedMesh(mesh);
+
+    b3ShapeDef shapeDef = defaultShapeDef(0.0f, entityId, friction, restitution, false, enableHitEvents);
+    immutable shapeId = b3CreateMeshShapeD(bodyId, &shapeDef, mesh, toB3Vec3(scale));
+    if (!b3Shape_IsValidD(shapeId)) {
+        destroyBody(bodyId);
+        return b3BodyId.init;
+    }
+    return bodyId;
+}
+
 void setLinearVelocity(const b3BodyId bodyId, Vec3 velocity) nothrow @nogc @trusted {
     b3Body_SetLinearVelocityD(bodyId, toB3Vec3(velocity));
 }
@@ -359,6 +444,47 @@ private b3BodyId createCylinderBody(ref PhysicsWorld world,
     b3CreateHullShapeD(bodyId, &shapeDef, hull);
     b3DestroyHullD(hull);
     return bodyId;
+}
+
+private b3BodyId createHullBody(ref PhysicsWorld world,
+                                b3BodyType type,
+                                Vec3 position,
+                                Quat rotation,
+                                scope const(Vec3)[] points,
+                                int maxVertexCount,
+                                float density,
+                                EntityId entityId,
+                                float friction,
+                                float restitution,
+                                bool sensor,
+                                bool enableHitEvents) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, type, position, rotation, entityId);
+    if (points.length < 3 || maxVertexCount < 3)
+        return bodyId;
+
+    immutable pointCount = cast(int) points.length;
+    immutable maxVerts = maxVertexCount < pointCount ? maxVertexCount : pointCount;
+    b3HullData* hull = b3CreateHullD(cast(const(b3Vec3)*) points.ptr, pointCount, maxVerts);
+    if (hull is null)
+        return bodyId;
+
+    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
+    b3CreateHullShapeD(bodyId, &shapeDef, hull);
+    b3DestroyHullD(hull);
+    return bodyId;
+}
+
+/// Process-lifetime retain for cooked triangle meshes referenced by shapes.
+private enum size_t MAX_RETAINED_MESHES = 256;
+private __gshared b3MeshData*[MAX_RETAINED_MESHES] retainedMeshes;
+private __gshared size_t retainedMeshCount;
+
+private void retainCookedMesh(b3MeshData* mesh) nothrow @nogc @trusted {
+    if (mesh is null)
+        return;
+    if (retainedMeshCount < MAX_RETAINED_MESHES)
+        retainedMeshes[retainedMeshCount++] = mesh;
+    // Overflow: still leave mesh alive (leak) so the shape stays valid.
 }
 
 private b3BodyId createBodyShell(ref PhysicsWorld world,

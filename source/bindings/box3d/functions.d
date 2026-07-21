@@ -54,6 +54,8 @@ pragma(mangle, "b3DefaultShapeDef") b3ShapeDef b3DefaultShapeDefD();
 pragma(mangle, "b3CreateSphereShape") b3ShapeId b3CreateSphereShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3Sphere)* sphere);
 pragma(mangle, "b3CreateCapsuleShape") b3ShapeId b3CreateCapsuleShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3Capsule)* capsule);
 pragma(mangle, "b3CreateHullShape") b3ShapeId b3CreateHullShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3HullData)* hull);
+/// Mesh is not cloned — `mesh` must remain valid for the shape lifetime. Contacts only on static bodies.
+pragma(mangle, "b3CreateMeshShape") b3ShapeId b3CreateMeshShapeD(b3BodyId bodyId, const(b3ShapeDef)* def, const(b3MeshData)* mesh, b3Vec3 scale);
 pragma(mangle, "b3Shape_IsValid") bool b3Shape_IsValidD(b3ShapeId id);
 pragma(mangle, "b3Shape_GetBody") b3BodyId b3Shape_GetBodyD(b3ShapeId shapeId);
 pragma(mangle, "b3Shape_SetRestitution") void b3Shape_SetRestitutionD(b3ShapeId shapeId, float restitution);
@@ -64,6 +66,8 @@ pragma(mangle, "b3MakeBoxHull") b3BoxHull b3MakeBoxHullD(float hx, float hy, flo
 pragma(mangle, "b3CreateCylinder") b3HullData* b3CreateCylinderD(float height, float radius, float yOffset, int sides);
 pragma(mangle, "b3CreateHull") b3HullData* b3CreateHullD(const(b3Vec3)* points, int pointCount, int maxVertexCount);
 pragma(mangle, "b3DestroyHull") void b3DestroyHullD(b3HullData* hull);
+pragma(mangle, "b3CreateMesh") b3MeshData* b3CreateMeshD(const(b3MeshDef)* def, int* degenerateTriangleIndices, int degenerateCapacity);
+pragma(mangle, "b3DestroyMesh") void b3DestroyMeshD(b3MeshData* mesh);
 pragma(mangle, "b3DefaultQueryFilter") b3QueryFilter b3DefaultQueryFilterD();
 
 pragma(mangle, "b3DefaultDistanceJointDef") b3DistanceJointDef b3DefaultDistanceJointDefD();
