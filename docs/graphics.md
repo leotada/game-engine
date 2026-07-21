@@ -17,15 +17,16 @@ A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/evento
 │  ├── Mesh       → vertex/index (pos+normal)           │
 │  ├── TexMesh    → vertex/index (pos+normal+uv)        │
 │  ├── Texture    → GPU texture + TGA loader            │
-│  ├── Material   → bind group (uniform + sampler + tex)│
+│  ├── Material   → PBR bind group (params + maps)      │
 │  ├── Color4     → RGBA float                          │
-│  └── primitives → cube, pyramid, diamond, quad        │
+│  └── primitives → cube, pyramid, diamond, quad, sphere│
 ├──────────────────────────────────────────────────────┤
 │  GPU Layer — wrappers WGPU low-level (engine/gpu/*)   │
 │  ├── App/Renderer → beginFrame/endFrame               │
-│  ├── Pipeline3D   → colored + textured instanced     │
+│  ├── Pipeline3D   → colored + textured PBR instanced │
 │  ├── PipelineText → alpha-blended bitmap text         │
 │  ├── ShadowMap    → depth32Float + depth-only pipeline│
+│  ├── IblEnvironment → cubemap + irradiance + LUT     │
 │  ├── TextRenderer → bitmap font atlas (8×8 CP437)    │
 │  ├── Buffers      → vertex, index, uniform, dynamic  │
 │  ├── Shaders      → embedded WGSL sources            │
@@ -33,11 +34,11 @@ A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/evento
 ├──────────────────────────────────────────────────────┤
 │  Assets + DevTools                                    │
 │  ├── assets/bmp.d   → 24/32-bpp BMP → Texture        │
-│  ├── assets/gltf.d  → glTF 2.0 mesh → TexMesh        │
+│  ├── assets/gltf.d  → glTF mesh + PBR materials      │
 │  ├── devtools/gizmos.d  → linhas 3D overlay         │
 │  └── devtools/overlay.d → FPS + label debug HUD      │
 ├──────────────────────────────────────────────────────┤
-│  Bindings (bindings/wgpu.d + bindings/sdl3.d)        │
+│  Bindings (bindings/wgpu.d + sdl3.d + box3d/)        │
 │  └── extern(C) nothrow @nogc — API C99 direta        │
 ├──────────────────────────────────────────────────────┤
 │  libwgpu_native.a          │  libSDL3.so              │
@@ -136,15 +137,18 @@ Pipeline para texto bitmap (FPS overlay):
 - **Font atlas** — 128×48 R8Unorm texture, 8×8 CP437 glyphs (ASCII 32-127)
 - **Shader** — WGSL com uniform screen size, sampler + texture binding
 
-### Pipeline3D Textured
+### Pipeline3D Textured (PBR)
 
-Variante do Pipeline3D que amostra uma textura albedo por material:
+Variante do Pipeline3D com metallic-roughness, PCF shadows e IBL:
 
 - **Vertex buffer 0** — geometria: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32)
-- **Vertex buffer 1** — instâncias: 4×`float32x4` model matrix columns (stride=64, step=instance)
-- **Bind group** — `@group(0)` VP uniform; `@group(1)` sampler + texture_2d (albedo)
-- **Depth/culling** — iguais ao Pipeline3D colorido
-- **Uso** — `Scene3DTextured` agrupa instâncias por `Material`, emitindo uma draw call por material
+- **Vertex buffer 1** — instâncias: 4×`float32x4` model + tint `float32x4` (stride=80)
+- **Bind groups:**
+  - `@group(0) Frame` — `FrameUniforms` (viewProj, lightViewProj, lightDir, shadowBias, cameraPos), comparison sampler, `texture_depth_2d`
+  - `@group(1) Material` — `MaterialParams` UBO, filtering sampler, albedo + MR/normal/occlusion/emissive (sempre bound; defaults 1×1)
+  - `@group(2) IBL` — irradiance cube, prefiltered specular (mips), BRDF LUT, sampler
+- **Fragment** — Cook-Torrance GGX + energy-conserving diffuse + IBL; **LDR clamp** até existir pós-process
+- **Uso** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo)`
 
 ### ShadowMap (depth-only pipeline)
 
@@ -152,8 +156,8 @@ Mapa de profundidade para sombras direcionais:
 
 - **Target** — textura 2D `depth32Float` (default 2048×2048)
 - **Pipeline** — pipeline dedicado sem fragment shader (depth-only write)
-- **VP da luz** — `directionalLightVP()` gera uma `Mat4` de projeção ortográfica + lookAt a partir da direção da luz e de uma bounding box do mundo
-- **Fluxo** — (1) render pass só de profundidade na shadow map, (2) render pass normal no swapchain usando a shadow map como textura extra para sample comparison
+- **VP da luz** — `directionalLightVP()` gera uma `Mat4` de projeção ortográfica + lookAt a partir da direção da luz e de uma bounding sphere do mundo
+- **Fluxo** — (1) `submitShadowPass` / depth pass na shadow map, (2) `Scene3DTextured.setLighting(lightDir, lightVP, shadow)` antes do color pass, (3) PCF 3×3 no fragment textured
 
 ## Benchmark
 
@@ -226,7 +230,10 @@ Vertex shader para quads de texto com coordenadas de tela. Fragment shader amost
 
 `engine/graphics/texture.d` encapsula criação de texturas RGBA8 em GPU, samplers configuráveis e carregamento de arquivos TGA sem compressão. Também expõe helpers procedurais (`checker`, `solid`) para testes.
 
-`engine/graphics/material.d` combina um sampler + textura + uniform buffer em um `WGPUBindGroup` pronto para uso com o pipeline texturizado. Materiais são o "atalho" que o `Scene3DTextured` usa para agrupar instâncias.
+`engine/graphics/material.d` cria um bind group `@group(1)` com `MaterialParams`
+(metallic/roughness/baseColor/flags) + sampler + albedo e maps opcionais.
+`Material.create(gpu, layout, sampler, albedo)` é o overload albedo-only
+(compatível com demos antigos). Maps ausentes usam texturas 1×1 default.
 
 ### Formatos de imagem suportados
 
@@ -234,7 +241,7 @@ Vertex shader para quads de texto com coordenadas de tela. Fragment shader amost
 |:---|:---|:---|
 | TGA (não comprimido) | `engine.graphics.texture` | 24/32-bpp, loader minimalista |
 | BMP (24/32-bpp, não comprimido) | `engine.assets.bmp` | Inverte verticalmente a ordem das linhas |
-| glTF 2.0 (mesh) | `engine.assets.gltf` | Apenas geometria — não carrega texturas/materiais/skin |
+| glTF 2.0 (mesh + PBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr`; sem skin/anim/`.glb` |
 
 ## SceneGraph
 
@@ -303,10 +310,13 @@ dub run --config=benchmark
 # Crystal Collector (gameplay)
 dub run --config=game
 
-# Solar system (scene graph + texturas)
+# Solar system (scene graph + texturas + sombras PCF)
 dub run --config=showcase
 
-# Editor tooling (gizmos + debug overlay)
+# PBR validation (5×2 spheres + IBL + glTF cube)
+dub run --config=pbr
+
+# Editor tooling (gizmos + debug overlay + shadows)
 dub run --config=editor
 
 # Release otimizado

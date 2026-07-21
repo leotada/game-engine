@@ -17,7 +17,8 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 |---:|:---|:---|:---|:---|
 | 1 | API física gameplay (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **feito** (P5 mesh adiado) | Base de gameplay; demos `pong3d`, etc. |
 | 2 | Fechar GC-safe (adoção + lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **feito** (#9 Handle API adiado) | Storage POD + lint |
-| 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | média | `ShadowMap` já existe; PBR-0 (PCF) não precisa de post |
+| 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | **feito** (PBR-0–5) | Textured path: GGX + IBL + PCF; demo `pbr` |
+
 | 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | média | Offscreen + tone map; habilita HDR/IBL sem clamp |
 | 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
 | 6 | Editor de cena | [plan-editor-ux.md](plan-editor-ux.md) | média | Gizmos já existem; picking AABB; física opcional |
@@ -39,10 +40,11 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 
 - Core: SDL3 + WGPU + ECS SoA + math
 - Render: meshes, instancing, depth de cena, luz direcional N·L, texto bitmap
-- **ShadowMap infra:** depth pass `depth32Float` + comparison sampler — **sem**
-  PCF / amostragem no pipeline textured padrão (demos não usam)
-- Scene: graph, câmeras (orbit/fly/fps), materials albedo
-- Assets: BMP + glTF mesh mínimo (sem materials PBR / skin / anim)
+- **ShadowMap infra:** depth pass `depth32Float` + comparison sampler +
+  PCF no pipeline textured (`Scene3DTextured.setLighting`)
+- Scene: graph, câmeras (orbit/fly/fps), materials PBR (metallic-roughness)
+- Assets: BMP + glTF mesh + `pbrMetallicRoughness` (`loadGltfPbr`)
+- **PBR + IBL:** Cook-Torrance GGX, procedural IBL, demo `dub run --config=pbr`
 - Audio: WAV via SDL3 streams
 - DevTools: gizmos 3D + overlay FPS/labels
 - Física gameplay: `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors,
