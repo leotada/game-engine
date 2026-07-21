@@ -13,12 +13,30 @@
 
 # Executables
 *.exe
+game-engine-demo
+game-engine-benchmark
+game-engine-benchmark2
+game-engine-editor
+game-engine-showcase
+game-engine-test-library
+game-engine-test-physics
+game-engine-test-physics-box3d
+crystal-collector
+marble-run
+pong3d
+game-engine-gc-benchmark
+game-engine-lint
+game-engine-pbr
+
+# Reference C++ codebases (vendored, not part of build)
+ref/
 
 # DUB
 .dub
 docs.json
 __dummy.html
-docs/
 
 # Code coverage
 *.lst
+game-engine-test-asset
+game-engine-test-scene
