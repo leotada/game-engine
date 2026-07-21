@@ -5,6 +5,7 @@ module engine.scene.graph;
 
 import engine.math.vec : Vec3;
 import engine.math.mat : Mat4;
+import engine.math.quat : Quat;
 import engine.core.pod : Pod;
 import engine.core.attrs : noGcStorage;
 
@@ -15,18 +16,18 @@ alias NodeId = uint;
 enum NodeId ROOT = 0;
 enum NodeId INVALID_NODE = uint.max;
 
-/// Local transform: translation + uniform Y rotation + non-uniform scale.
+/// Local transform: translation + full quaternion rotation + non-uniform scale.
 /// Components are POD — safe for the ECS and no GC indirections.
 @noGcStorage
 struct Transform {
-    Vec3  position = Vec3(0, 0, 0);
-    Vec3  scale    = Vec3(1, 1, 1);
-    float rotationY = 0;
+    Vec3 position = Vec3(0, 0, 0);
+    Vec3 scale    = Vec3(1, 1, 1);
+    Quat rotation = Quat.init;
 
-    /// Build the 4×4 local-to-parent matrix.
+    /// Build the 4×4 local-to-parent matrix: T * R * S.
     Mat4 localMatrix() const {
         return Mat4.translation(position.x, position.y, position.z)
-             * Mat4.rotationY(rotationY)
+             * rotation.toMat4()
              * Mat4.scaling(scale.x, scale.y, scale.z);
     }
 }

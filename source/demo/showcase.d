@@ -13,6 +13,7 @@ import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, Sampler, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, InstanceData;
 import engine.math.mat : Mat4;
+import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
@@ -107,13 +108,14 @@ void main() {
 
         if (app.input.keyPressed(Key.escape)) break;
 
-        graph.transform(sunNode).rotationY        = time * 0.3f;
-        graph.transform(earthOrbit).rotationY     = time * 0.8f;
-        graph.transform(earthNode).rotationY      = time * 1.5f;
-        graph.transform(earthMoonOrbit).rotationY = time * 2.5f;
-        graph.transform(marsOrbit).rotationY      = time * 0.5f;
-        graph.transform(marsNode).rotationY       = time * 1.2f;
-        graph.transform(marsMoonOrbit).rotationY  = time * 1.8f;
+        immutable up = Vec3(0, 1, 0);
+        graph.transform(sunNode).rotation        = Quat.fromAxisAngle(up, time * 0.3f);
+        graph.transform(earthOrbit).rotation     = Quat.fromAxisAngle(up, time * 0.8f);
+        graph.transform(earthNode).rotation      = Quat.fromAxisAngle(up, time * 1.5f);
+        graph.transform(earthMoonOrbit).rotation = Quat.fromAxisAngle(up, time * 2.5f);
+        graph.transform(marsOrbit).rotation      = Quat.fromAxisAngle(up, time * 0.5f);
+        graph.transform(marsNode).rotation       = Quat.fromAxisAngle(up, time * 1.2f);
+        graph.transform(marsMoonOrbit).rotation  = Quat.fromAxisAngle(up, time * 1.8f);
 
         immutable camR = 14.0f;
         camera.lookAt(

@@ -1,11 +1,14 @@
-// 
+/// Unit quaternion for 3D rotations.
 module engine.math.quat;
 
 import engine.math.vec;
 import engine.math.mat;
-import std.math : sqrt, sin, cos;
+import std.math : sqrt, sin, cos, asin, atan2, PI;
 
 pure nothrow @nogc @safe:
+
+private enum float DEG2RAD = PI / 180.0f;
+private enum float RAD2DEG = 180.0f / PI;
 
 struct Quat {
     float x = 0, y = 0, z = 0, w = 1;
@@ -18,6 +21,45 @@ struct Quat {
         immutable s = sin(half);
         immutable a = axis.normalized();
         return Quat(a.x * s, a.y * s, a.z * s, cos(half));
+    }
+
+    /// Intrinsic YXZ Euler angles in degrees: `deg` = (pitchX, yawY, rollZ).
+    /// Composition: `qY * qX * qZ` (yaw, then pitch, then roll in local space).
+    static Quat fromEulerYXZ(Vec3 deg) {
+        return fromAxisAngle(Vec3(0, 1, 0), deg.y * DEG2RAD)
+             * fromAxisAngle(Vec3(1, 0, 0), deg.x * DEG2RAD)
+             * fromAxisAngle(Vec3(0, 0, 1), deg.z * DEG2RAD);
+    }
+
+    /// Extract intrinsic YXZ Euler angles in degrees: (pitchX, yawY, rollZ).
+    Vec3 toEulerYXZ() const {
+        immutable q = normalized();
+        // From rotation matrix of unit quaternion (column-major).
+        immutable r12 = 2.0f * (q.y * q.z - q.w * q.x); // m[9]
+        immutable r02 = 2.0f * (q.x * q.z + q.w * q.y); // m[8]
+        immutable r22 = 1.0f - 2.0f * (q.x * q.x + q.y * q.y); // m[10]
+        immutable r10 = 2.0f * (q.x * q.y + q.w * q.z); // m[1]
+        immutable r11 = 1.0f - 2.0f * (q.x * q.x + q.z * q.z); // m[5]
+
+        float pitch, yaw, roll;
+        if (r12 > 0.99999f) {
+            // Gimbal lock: pitch ≈ -90°
+            pitch = -90.0f;
+            yaw   = atan2(-2.0f * (q.x * q.z - q.w * q.y),
+                           1.0f - 2.0f * (q.y * q.y + q.z * q.z)) * RAD2DEG;
+            roll  = 0;
+        } else if (r12 < -0.99999f) {
+            // Gimbal lock: pitch ≈ +90°
+            pitch = 90.0f;
+            yaw   = atan2(-2.0f * (q.x * q.z - q.w * q.y),
+                           1.0f - 2.0f * (q.y * q.y + q.z * q.z)) * RAD2DEG;
+            roll  = 0;
+        } else {
+            pitch = asin(-r12) * RAD2DEG;
+            yaw   = atan2(r02, r22) * RAD2DEG;
+            roll  = atan2(r10, r11) * RAD2DEG;
+        }
+        return Vec3(pitch, yaw, roll);
     }
 
     /// Hamilton product (this * rhs).
@@ -51,7 +93,7 @@ struct Quat {
     Quat conjugate() const { return Quat(-x, -y, -z, w); }
 
     /// Rotate a vector by this quaternion (assumes unit quaternion).
-    Vec3 rotate(Vec3 v) const {
+    Vec3 rotate(Vec3 v) const pure nothrow @nogc {
         // v' = q * (v, 0) * q^-1, expanded for unit q.
         immutable u = Vec3(x, y, z);
         immutable s = w;
