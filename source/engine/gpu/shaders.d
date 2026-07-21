@@ -320,7 +320,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let D = distributionGGX(NdotH, roughness);
     let G = geometrySmith(NdotV, NdotL, roughness);
     let F = fresnelSchlick(HdotV, F0);
-    let specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    let specular = min((D * G * F) / max(4.0 * NdotV * NdotL, 0.001), vec3<f32>(16.0));
     let kS = F;
     let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
     let radiance = vec3<f32>(1.0, 0.98, 0.92) * 3.5;
@@ -340,7 +340,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = (diffuseIbl + specularIbl) * ao;
 
     var color = direct + ambient + emissive;
-    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    color = max(color, vec3<f32>(0.0));
     return vec4<f32>(color, albedoSample.a * mat.baseColorFactor.a);
 }
 `;
@@ -405,5 +405,274 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
+}
+`;
+
+/// Fullscreen triangle (no vertex buffer). Shared by all post passes.
+enum fullscreenVsSource = `
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var out: VsOut;
+    let x = f32(i32(vi) / 2) * 4.0 - 1.0;
+    let y = f32(i32(vi) % 2) * 4.0 - 1.0;
+    out.pos = vec4<f32>(x, y, 0.0, 1.0);
+    out.uv = vec2<f32>(x, y) * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    return out;
+}
+`;
+
+/// Bloom threshold: soft knee + per-pixel RGB clamp (bloomClamp) to limit fireflies.
+enum bloomThresholdShaderSource = fullscreenVsSource ~ `
+struct Params {
+    threshold: f32,
+    knee: f32,
+    bloomClamp: f32,
+    _pad: f32,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var srcSamp: sampler;
+@group(0) @binding(2) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let c = textureSample(srcTex, srcSamp, uv).rgb;
+    let brightness = max(c.r, max(c.g, c.b));
+    let soft = brightness - p.threshold + p.knee;
+    let softClamped = clamp(soft, 0.0, 2.0 * p.knee);
+    let softKnee = (softClamped * softClamped) / (4.0 * p.knee + 1e-4);
+    let contribution = max(softKnee, brightness - p.threshold) / max(brightness, 1e-4);
+    var outRgb = c * contribution;
+    outRgb = min(outRgb, vec3<f32>(p.bloomClamp));
+    return vec4<f32>(outRgb, 1.0);
+}
+`;
+
+/// First bloom downsample: Karis luminance-weighted average (UE4 / COD style).
+/// Four 2×2 groups → each Karis-averaged → combine. Tames single-pixel HDR spikes.
+enum bloomDownsampleKarisShaderSource = fullscreenVsSource ~ `
+@group(0) @binding(0) var srcSamp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+
+fn luma(c: vec3<f32>) -> f32 {
+    return max(c.r, max(c.g, c.b));
+}
+
+fn karisGroup(c0: vec3<f32>, c1: vec3<f32>, c2: vec3<f32>, c3: vec3<f32>) -> vec3<f32> {
+    let w0 = 1.0 / (1.0 + luma(c0));
+    let w1 = 1.0 / (1.0 + luma(c1));
+    let w2 = 1.0 / (1.0 + luma(c2));
+    let w3 = 1.0 / (1.0 + luma(c3));
+    return (c0 * w0 + c1 * w1 + c2 * w2 + c3 * w3) / (w0 + w1 + w2 + w3);
+}
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let texSize = vec2<f32>(textureDimensions(srcTex));
+    let texel = 1.0 / texSize;
+    let x = texel.x;
+    let y = texel.y;
+
+    // 4×4 tap grid centered on uv (offsets ±0.5 and ±1.5 texels)
+    let s00 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-1.5*x, -1.5*y)).rgb;
+    let s10 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-0.5*x, -1.5*y)).rgb;
+    let s20 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.5*x, -1.5*y)).rgb;
+    let s30 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 1.5*x, -1.5*y)).rgb;
+
+    let s01 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-1.5*x, -0.5*y)).rgb;
+    let s11 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-0.5*x, -0.5*y)).rgb;
+    let s21 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.5*x, -0.5*y)).rgb;
+    let s31 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 1.5*x, -0.5*y)).rgb;
+
+    let s02 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-1.5*x,  0.5*y)).rgb;
+    let s12 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-0.5*x,  0.5*y)).rgb;
+    let s22 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.5*x,  0.5*y)).rgb;
+    let s32 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 1.5*x,  0.5*y)).rgb;
+
+    let s03 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-1.5*x,  1.5*y)).rgb;
+    let s13 = textureSample(srcTex, srcSamp, uv + vec2<f32>(-0.5*x,  1.5*y)).rgb;
+    let s23 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.5*x,  1.5*y)).rgb;
+    let s33 = textureSample(srcTex, srcSamp, uv + vec2<f32>( 1.5*x,  1.5*y)).rgb;
+
+    let g0 = karisGroup(s00, s10, s01, s11); // top-left
+    let g1 = karisGroup(s20, s30, s21, s31); // top-right
+    let g2 = karisGroup(s02, s12, s03, s13); // bottom-left
+    let g3 = karisGroup(s22, s32, s23, s33); // bottom-right
+
+    let result = (g0 + g1 + g2 + g3) * 0.25;
+    return vec4<f32>(result, 1.0);
+}
+`;
+
+/// Subsequent bloom downsamples: 13-tap dual-filter box (after Karis has tamed fireflies).
+enum bloomDownsampleShaderSource = fullscreenVsSource ~ `
+@group(0) @binding(0) var srcSamp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let texSize = vec2<f32>(textureDimensions(srcTex));
+    let texel = 1.0 / texSize;
+    let x = texel.x;
+    let y = texel.y;
+
+    let a = textureSample(srcTex, srcSamp, uv + vec2<f32>(-2.0*x,  2.0*y)).rgb;
+    let b = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.0,    2.0*y)).rgb;
+    let c = textureSample(srcTex, srcSamp, uv + vec2<f32>( 2.0*x,  2.0*y)).rgb;
+    let d = textureSample(srcTex, srcSamp, uv + vec2<f32>(-2.0*x,  0.0  )).rgb;
+    let e = textureSample(srcTex, srcSamp, uv).rgb;
+    let f = textureSample(srcTex, srcSamp, uv + vec2<f32>( 2.0*x,  0.0  )).rgb;
+    let g = textureSample(srcTex, srcSamp, uv + vec2<f32>(-2.0*x, -2.0*y)).rgb;
+    let h = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0.0,   -2.0*y)).rgb;
+    let i = textureSample(srcTex, srcSamp, uv + vec2<f32>( 2.0*x, -2.0*y)).rgb;
+    let j = textureSample(srcTex, srcSamp, uv + vec2<f32>(-x,  y)).rgb;
+    let k = textureSample(srcTex, srcSamp, uv + vec2<f32>( x,  y)).rgb;
+    let l = textureSample(srcTex, srcSamp, uv + vec2<f32>(-x, -y)).rgb;
+    let m = textureSample(srcTex, srcSamp, uv + vec2<f32>( x, -y)).rgb;
+
+    var result = e * 0.125;
+    result += (a + c + g + i) * 0.03125;
+    result += (b + d + f + h) * 0.0625;
+    result += (j + k + l + m) * 0.125;
+    return vec4<f32>(result, 1.0);
+}
+`;
+
+/// 9-tap upsample; optionally additive (blend state on pipeline).
+enum bloomUpsampleShaderSource = fullscreenVsSource ~ `
+@group(0) @binding(0) var srcSamp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let texSize = vec2<f32>(textureDimensions(srcTex));
+    let texel = 1.0 / texSize;
+    let x = texel.x;
+    let y = texel.y;
+
+    let a = textureSample(srcTex, srcSamp, uv + vec2<f32>(-x,  y)).rgb;
+    let b = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0,  y)).rgb;
+    let c = textureSample(srcTex, srcSamp, uv + vec2<f32>( x,  y)).rgb;
+    let d = textureSample(srcTex, srcSamp, uv + vec2<f32>(-x,  0)).rgb;
+    let e = textureSample(srcTex, srcSamp, uv).rgb;
+    let f = textureSample(srcTex, srcSamp, uv + vec2<f32>( x,  0)).rgb;
+    let g = textureSample(srcTex, srcSamp, uv + vec2<f32>(-x, -y)).rgb;
+    let h = textureSample(srcTex, srcSamp, uv + vec2<f32>( 0, -y)).rgb;
+    let i = textureSample(srcTex, srcSamp, uv + vec2<f32>( x, -y)).rgb;
+
+    var result = e * 4.0;
+    result += (b + d + f + h) * 2.0;
+    result += (a + c + g + i);
+    result *= 1.0 / 16.0;
+    return vec4<f32>(result, 1.0);
+}
+`;
+
+/// Tone map HDR (+ optional bloom) → LDR. Mode 0 = ACES Narkowicz, 1 = Reinhard.
+enum tonemapShaderSource = fullscreenVsSource ~ `
+struct Params {
+    exposure: f32,
+    bloomStrength: f32,
+    tonemapMode: f32,
+    _pad: f32,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var srcSamp: sampler;
+@group(0) @binding(2) var sceneTex: texture_2d<f32>;
+@group(0) @binding(3) var bloomTex: texture_2d<f32>;
+
+fn acesNarkowicz(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn reinhard(x: vec3<f32>) -> vec3<f32> {
+    return x / (x + vec3<f32>(1.0));
+}
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    var hdr = textureSample(sceneTex, srcSamp, uv).rgb;
+    let bloom = textureSample(bloomTex, srcSamp, uv).rgb;
+    hdr = hdr + bloom * p.bloomStrength;
+    hdr = hdr * p.exposure;
+    var ldr: vec3<f32>;
+    if (p.tonemapMode < 0.5) {
+        ldr = acesNarkowicz(hdr);
+    } else {
+        ldr = reinhard(hdr);
+    }
+    // Approximate linear → sRGB
+    ldr = pow(max(ldr, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    return vec4<f32>(ldr, 1.0);
+}
+`;
+
+/// FXAA 3.11-lite on LDR input.
+enum fxaaShaderSource = fullscreenVsSource ~ `
+@group(0) @binding(0) var srcSamp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+
+fn luma(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+}
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let texSize = vec2<f32>(textureDimensions(srcTex));
+    let texel = 1.0 / texSize;
+
+    let rgbM = textureSample(srcTex, srcSamp, uv).rgb;
+    let rgbNW = textureSample(srcTex, srcSamp, uv + vec2<f32>(-texel.x, -texel.y)).rgb;
+    let rgbNE = textureSample(srcTex, srcSamp, uv + vec2<f32>( texel.x, -texel.y)).rgb;
+    let rgbSW = textureSample(srcTex, srcSamp, uv + vec2<f32>(-texel.x,  texel.y)).rgb;
+    let rgbSE = textureSample(srcTex, srcSamp, uv + vec2<f32>( texel.x,  texel.y)).rgb;
+
+    let lumaM = luma(rgbM);
+    let lumaMin = min(lumaM, min(min(luma(rgbNW), luma(rgbNE)), min(luma(rgbSW), luma(rgbSE))));
+    let lumaMax = max(lumaM, max(max(luma(rgbNW), luma(rgbNE)), max(luma(rgbSW), luma(rgbSE))));
+    let range = lumaMax - lumaMin;
+    if (range < max(0.0312, lumaMax * 0.125)) {
+        return vec4<f32>(rgbM, 1.0);
+    }
+
+    let dir = vec2<f32>(
+        -((luma(rgbNW) + luma(rgbNE)) - (luma(rgbSW) + luma(rgbSE))),
+         ((luma(rgbNW) + luma(rgbSW)) - (luma(rgbNE) + luma(rgbSE))),
+    );
+    let dirReduce = max((luma(rgbNW) + luma(rgbNE) + luma(rgbSW) + luma(rgbSE)) * 0.03125, 0.0078125);
+    let rcpDir = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    var d = clamp(dir * rcpDir, vec2<f32>(-8.0), vec2<f32>(8.0)) * texel;
+
+    let rgbA = 0.5 * (
+        textureSample(srcTex, srcSamp, uv + d * (1.0 / 3.0 - 0.5)).rgb +
+        textureSample(srcTex, srcSamp, uv + d * (2.0 / 3.0 - 0.5)).rgb);
+    let rgbB = rgbA * 0.5 + 0.25 * (
+        textureSample(srcTex, srcSamp, uv + d * -0.5).rgb +
+        textureSample(srcTex, srcSamp, uv + d *  0.5).rgb);
+    let lumaB = luma(rgbB);
+    if (lumaB < lumaMin || lumaB > lumaMax) {
+        return vec4<f32>(rgbA, 1.0);
+    }
+    return vec4<f32>(rgbB, 1.0);
+}
+`;
+
+/// Simple copy / blit (used when FXAA is off to copy LDR → swapchain, or debug).
+enum blitShaderSource = fullscreenVsSource ~ `
+@group(0) @binding(0) var srcSamp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return textureSample(srcTex, srcSamp, uv);
 }
 `;

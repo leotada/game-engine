@@ -22,7 +22,8 @@ A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/evento
 │  └── primitives → cube, pyramid, diamond, quad, sphere│
 ├──────────────────────────────────────────────────────┤
 │  GPU Layer — wrappers WGPU low-level (engine/gpu/*)   │
-│  ├── App/Renderer → beginFrame/endFrame               │
+│  ├── App/Renderer → beginFrame / resolvePost / endFrame │
+│  ├── PostProcessor → bloom + ACES + FXAA                │
 │  ├── Pipeline3D   → colored + textured PBR instanced │
 │  ├── PipelineText → alpha-blended bitmap text         │
 │  ├── ShadowMap    → depth32Float + depth-only pipeline│
@@ -98,22 +99,17 @@ wgpuCreateInstance()
 ### Frame Loop
 
 ```
-1. wgpuSurfaceGetCurrentTexture()     ← acquire swapchain image
-2. wgpuTextureCreateView()            ← view para render attachment
-3. wgpuDeviceCreateCommandEncoder()   ← command buffer recording
-4. wgpuCommandEncoderBeginRenderPass()← color clear + depth clear (1.0)
-5.   wgpuRenderPassEncoderSetPipeline()  ← Pipeline3D (instanced)
-6.   wgpuRenderPassEncoderSetBindGroup() ← VP uniform buffer
-7.   wgpuRenderPassEncoderSetVertexBuffer(0) ← geometry (pos+normal)
-8.   wgpuRenderPassEncoderSetVertexBuffer(1) ← instance data (model mats)
-9.   wgpuRenderPassEncoderSetIndexBuffer()   ← triangle indices
-10.  wgpuRenderPassEncoderDrawIndexed()      ← instanced draw call
-11.  ... text overlay draw calls (PipelineText) ...
-12. wgpuRenderPassEncoderEnd()
-13. wgpuCommandEncoderFinish()         ← produce WGPUCommandBuffer
-14. wgpuQueueSubmit()                  ← send to GPU
-15. wgpuSurfacePresent()               ← display frame
+1. beginFrame → render pass HDR offscreen (rgba16float + depth24Plus)
+2.   Scene3D / Scene3DTextured / gizmos draw into HDR
+3. resolvePost → end HDR pass
+4.   bloom (threshold / downsample / upsample) se ligado
+5.   tone map ACES (+ exposure) → LDR
+6.   FXAA se ligado → swapchain
+7.   reopen present pass (load) for text/UI
+8. endFrame → submit + wgpuSurfacePresent()
 ```
+
+Shadow depth pass (opcional) continua como submit separado **antes** de `beginFrame`.
 
 ## Render Pipelines
 
@@ -147,8 +143,9 @@ Variante do Pipeline3D com metallic-roughness, PCF shadows e IBL:
   - `@group(0) Frame` — `FrameUniforms` (viewProj, lightViewProj, lightDir, shadowBias, cameraPos), comparison sampler, `texture_depth_2d`
   - `@group(1) Material` — `MaterialParams` UBO, filtering sampler, albedo + MR/normal/occlusion/emissive (sempre bound; defaults 1×1)
   - `@group(2) IBL` — irradiance cube, prefiltered specular (mips), BRDF LUT, sampler
-- **Fragment** — Cook-Torrance GGX + energy-conserving diffuse + IBL; **LDR clamp** até existir pós-process
+- **Fragment** — Cook-Torrance GGX + IBL (HDR); tone map no post (`resolvePost`)
 - **Uso** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo)`
+- **Color target** — `Renderer.sceneFormat()` = `rgba16float` (não o swapchain)
 
 ### ShadowMap (depth-only pipeline)
 

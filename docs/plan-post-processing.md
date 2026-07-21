@@ -1,104 +1,107 @@
 # Plano: Pós-processamento
 
-> **Status:** pendente · Prioridade: média · Ver [roadmap.md](roadmap.md)
+> **Status:** feito · Prioridade: média · Ver [roadmap.md](roadmap.md)
 
 ## Objetivo
 
 Pipeline de pós-processamento offscreen: render da cena para um color
-target intermediário, depois passes fullscreen (tone mapping, bloom, FXAA)
-antes do present na surface.
-
-Não depende de PBR. PBR pode usar HDR + tone map depois que PP-1–PP-3
-existirem; até lá, PBR pode clampar em LDR.
+target intermediário HDR (`rgba16float`), depois passes fullscreen
+(bloom, tone mapping ACES, FXAA) antes do present na surface SDR.
 
 ## Estado atual
 
 Paths reais:
 
 - [`source/engine/gpu/renderer.d`](../source/engine/gpu/renderer.d) —
-  `beginFrame` / `endFrame` desenham no swapchain; depth de cena
-  `depth24Plus`
-- [`source/engine/gpu/shadow.d`](../source/engine/gpu/shadow.d) —
-  offscreen `depth32Float` (sombra), sem color MRT
-- Sem texture HDR/LDR de cena, sem fullscreen triangle, sem post pipeline
+  `beginFrame` → HDR offscreen; `resolvePost` → bloom/tonemap/FXAA →
+  swapchain; `endFrame` present. Depth de cena `depth24Plus`
+- [`source/engine/gpu/post.d`](../source/engine/gpu/post.d) —
+  `PostProcessor` + `PostSettings` (exposure, bloom, fxaa, tonemapMode)
+- [`source/engine/gpu/shaders.d`](../source/engine/gpu/shaders.d) —
+  fullscreen triangle + threshold/downsample/upsample/tonemap/FXAA WGSL
+- PBR fragment: sem clamp LDR (`max(0)` only); tone map comprime para SDR
 
-Ordem de frame desejada depois deste plano:
+Ordem de frame:
 
 ```
-shadow depth pass (opcional) → scene color offscreen (+ depth)
-  → bloom (se ligado) → tone map → FXAA → present
+shadow depth pass (opcional) → scene color HDR offscreen (+ depth)
+  → bloom (se ligado) → tone map → FXAA → UI/text no swapchain → present
 ```
 
 ## Fora de escopo
 
 - SSR, SSAO, TAA
 - Editor de stack de efeitos ([plan-editor-ux.md](plan-editor-ux.md))
-- Exigir PBR antes de shippar post
+- HDR de monitor / swapchain HDR10
 
 ## Dependências
 
-- Nenhuma feature pendente. Reusa create texture / bind group patterns de
-  `shadow.d` e `pipeline.d`.
+- Nenhuma. Reusa patterns de `shadow.d` e `pipeline.d`.
 
 ## Fases
 
 ### PP-1 — Offscreen color + depth da cena
 
-- [ ] Texture de cor do tamanho da janela (`bgra8unorm` primeiro; `rgba16float` quando PBR/HDR precisar)
-- [ ] Resize junto com depth em `onResize`
-- [ ] Scene3D / Renderer renderizam no offscreen em vez do swapchain
+- [x] Texture de cor HDR do tamanho da janela (`rgba16float`)
+- [x] Resize junto com depth em `Renderer.resize`
+- [x] Scene3D / Scene3DTextured / gizmos renderizam no offscreen
+      (`Renderer.sceneFormat()`)
 
-**DoD:** cena idêntica visualmente, mas o color attachment não é mais a
-surface.
+**DoD:** color attachment da cena não é mais a surface.
 
-### PP-2 — Fullscreen pass base (blit)
+### PP-2 — Fullscreen pass base
 
-- [ ] Vertex shader fullscreen triangle (sem vertex buffer)
-- [ ] Pipeline + bind group: color input + sampler
-- [ ] Blit offscreen → surface
+- [x] Vertex shader fullscreen triangle (sem vertex buffer)
+- [x] `resolvePost`: fecha pass HDR, post, reabre pass UI no swapchain
 
-**DoD:** imagem final = blit 1:1 do offscreen (prova o caminho; sem
-efeitos).
+**DoD:** imagem final chega à surface via post path.
 
 ### PP-3 — Tone mapping
 
-- [ ] Uniform: exposure + modo (Reinhard; ACES aproximado depois)
-- [ ] Até PBR/HDR: aceitar input LDR e só aplicar exposure
+- [x] Uniform: exposure + modo (ACES Narkowicz default; Reinhard)
+- [x] Clamp PBR removido; HDR interno → SDR no tone map
 
-**DoD:** exposure runtime altera o brilho final sem outro efeito.
+**DoD:** exposure runtime altera o brilho (`+/-` no demo `pbr`).
 
 ### PP-4 — Bloom
 
-- [ ] Threshold + downsample + upsample
-- [ ] Mix com a imagem tone-mapped
-- [ ] Limitar mips / resolução em debug
+- [x] Threshold + downsample + upsample (dual-filter)
+- [x] Mix no tone map (`bloomStrength`)
+- [x] Toggle `PostSettings.bloom`
 
-**DoD:** bloom toggável; custo documentado no benchmark ou overlay.
+**DoD:** bloom toggável (`B` no demo `pbr`).
+
+Notas de qualidade (fireflies):
+- Threshold usa soft knee + `bloomClamp` (default 8) para limitar spikes HDR.
+- 1º downsample usa **Karis average**; mips seguintes usam box 13-tap.
+- Specular GGX directo no PBR é soft-clamped a 16.
+- Defaults: `threshold=1.2`, `knee=0.7`, `strength=0.12`, `bloomClamp=8`
+  (Karis + clamp evitam flicker; strength alto o bastante para ver o glow).
 
 ### PP-5 — FXAA
 
-- [ ] FXAA no **LDR final**, depois do tone map
-- [ ] Toggle runtime
+- [x] FXAA no LDR final, depois do tone map
+- [x] Toggle runtime
 
-**DoD:** arestas suavizam com FXAA on; off restaura o blit nítido.
+**DoD:** `F` no demo `pbr` liga/desliga FXAA.
 
 ### PP-6 — API gameplay
 
-- [ ] Flags / struct em `App` ou `Renderer`: `bloom`, `fxaa`, `exposure`
-- [ ] Demo ou flag no `showcase` / `benchmark`
+- [x] `PostSettings` em `Renderer` / `App.post`
+- [x] Demo `pbr` com keys; demais demos usam defaults + `resolvePost`
 
-**DoD:** um jogo liga efeitos sem tocar WGSL.
+**DoD:** jogo liga efeitos sem tocar WGSL.
 
 ## Critérios de aceite
 
-1. Cena renderiza via offscreen sem regressão visual grave.
+1. Cena renderiza via offscreen HDR sem regressão grave.
 2. Tone map + bloom + FXAA toggáveis.
 3. Frame path continua `@nogc` no core GPU.
-4. Resize de janela recria targets sem leak.
-5. Não requer [plan-pbr.md](plan-pbr.md).
+4. Resize de janela recria targets sem leak (`Renderer.resize`).
+5. Texto/UI desenha no pass present (após `resolvePost`).
 
 ## Referências
 
-- `source/engine/gpu/renderer.d`, `shadow.d`, `pipeline.d`
-- [plan-pbr.md](plan-pbr.md) — HDR/tone map é pré-requisito natural do PBR
+- `source/engine/gpu/renderer.d`, `post.d`, `shadow.d`, `pipeline.d`
+- [plan-pbr.md](plan-pbr.md) — HDR interno desbloqueia IBL sem clamp
 - [graphics.md](graphics.md)

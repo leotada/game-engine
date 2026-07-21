@@ -246,6 +246,8 @@ int main() {
 
         scene.end(frame);
 
+        app.resolvePost(frame);
+
         text.beginFrame();
         text.drawText(frame, format("Benchmark2 t=%.1fs / %.1fs", elapsed, BENCHMARK_SECONDS), 16, 16, 2);
         text.drawText(frame, fps.text(), 16, 40, 2);

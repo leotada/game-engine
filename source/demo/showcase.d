@@ -156,6 +156,8 @@ void main() {
 
         texScene.end(frame);
 
+        app.resolvePost(frame);
+
         import std.format : format;
         textRenderer.beginFrame();
         textRenderer.drawText(frame, "PBR path + PCF shadows", 20, 20, 2);

@@ -610,6 +610,8 @@ int main() {
         scene.end(frame);
         gizmos.render(frame);
 
+        app.resolvePost(frame);
+
         text.beginFrame();
         text.drawText(frame, fps.text(), 10, 10, 2);
         text.drawText(frame, format("%d   -   %d", scorePlayer, scoreAi), SCREEN_W / 2 - 70, 18, 4);

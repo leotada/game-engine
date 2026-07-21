@@ -18,8 +18,7 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 | 1 | API física gameplay (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **feito** (P5 mesh adiado) | Base de gameplay; demos `pong3d`, etc. |
 | 2 | Fechar GC-safe (adoção + lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **feito** (#9 Handle API adiado) | Storage POD + lint |
 | 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | **feito** (PBR-0–5) | Textured path: GGX + IBL + PCF; demo `pbr` |
-
-| 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | média | Offscreen + tone map; habilita HDR/IBL sem clamp |
+| 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | **feito** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
 | 6 | Editor de cena | [plan-editor-ux.md](plan-editor-ux.md) | média | Gizmos já existem; picking AABB; física opcional |
 | 7 | Hot reload (assets + dados) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | média | Iteração diária (editor/assets); antes de escala |
@@ -28,8 +27,8 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 
 ### Notas de ordem
 
-- **PBR antes de post:** PBR-0 (Lambert + PCF) usa só a depth map atual.
-  Tone map (post) é recomendado antes de IBL brilhante, não antes de sombra.
+- **PBR + post:** cena em `rgba16float`; bloom + ACES + FXAA em
+  [`plan-post-processing.md`](plan-post-processing.md). Present continua SDR.
 - **Hot reload antes de ECS paralelo:** ganho de produtividade no dia a dia;
   paralelismo é escala, não desbloqueia conteúdo.
 - **GC-safe (#2) fechado:** `Pod!T[]` no storage, `World.strings`,
@@ -45,6 +44,8 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
 - Scene: graph, câmeras (orbit/fly/fps), materials PBR (metallic-roughness)
 - Assets: BMP + glTF mesh + `pbrMetallicRoughness` (`loadGltfPbr`)
 - **PBR + IBL:** Cook-Torrance GGX, procedural IBL, demo `dub run --config=pbr`
+- **Post:** HDR scene RT (`rgba16float`), bloom, ACES tone map, FXAA;
+  `app.resolvePost(frame)` antes do HUD; `App.post` settings
 - Audio: WAV via SDL3 streams
 - DevTools: gizmos 3D + overlay FPS/labels
 - Física gameplay: `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors,

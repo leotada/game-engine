@@ -6,7 +6,7 @@ import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : Pipeline3D, createColoredPipeline3D;
-import engine.gpu.renderer : FrameContext;
+import engine.gpu.renderer : FrameContext, Renderer;
 import engine.graphics.types : InstanceData, Color4;
 import engine.graphics.mesh : Mesh;
 import engine.math.mat : Mat4;
@@ -43,7 +43,7 @@ struct Scene3D {
         auto device = gpu.getDevice();
 
         // Create colored 3D pipeline
-        s.pipeline = createColoredPipeline3D(device, gpu.getFormat());
+        s.pipeline = createColoredPipeline3D(device, Renderer.sceneFormat());
 
         // Uniform buffer for VP matrix (64 bytes = Mat4)
         s.uniformBuf = createUniformBuffer(device, 64);

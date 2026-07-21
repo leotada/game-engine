@@ -279,6 +279,8 @@ int main() {
 
         scene.end(frame);
 
+        app.resolvePost(frame);
+
         text.beginFrame();
         text.drawText(frame, fps.text(), 10, 10, 2);
         text.drawText(frame, "Marble Run - reach the green pad", SCREEN_W / 2 - 220, 10, 2);

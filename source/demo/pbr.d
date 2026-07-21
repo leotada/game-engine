@@ -106,6 +106,17 @@ void main() {
         time += dt;
         if (app.input.keyPressed(Key.escape)) break;
 
+        if (app.input.keyPressed(Key.equals) || app.input.keyPressed(Key.kpPlus))
+            app.post.exposure += 0.1f;
+        if (app.input.keyPressed(Key.minus) || app.input.keyPressed(Key.kpMinus)) {
+            app.post.exposure -= 0.1f;
+            if (app.post.exposure < 0.05f) app.post.exposure = 0.05f;
+        }
+        if (app.input.keyPressed(Key.b))
+            app.post.bloom = !app.post.bloom;
+        if (app.input.keyPressed(Key.f))
+            app.post.fxaa = !app.post.fxaa;
+
         immutable camR = 12.0f;
         camera.lookAt(
             Vec3(sin(time * 0.12f) * camR, 4.5f, cos(time * 0.12f) * camR),
@@ -171,11 +182,16 @@ void main() {
 
         scene.end(frame);
 
+        app.resolvePost(frame);
+
         import std.format : format;
         text.beginFrame();
         text.drawText(frame, "PBR: dielectric (top) / metal (bottom)  roughness 0 -> 1", 16, 16, 2);
-        text.drawText(frame, "IBL + PCF shadows + glTF cube", 16, 44, 2);
-        text.drawText(frame, format("FPS: %.0f", fps.fps), 16, 72, 2);
+        text.drawText(frame, format("IBL + bloom/FXAA  exp=%.2f  B=%s  F=%s",
+            app.post.exposure,
+            app.post.bloom ? "on" : "off",
+            app.post.fxaa ? "on" : "off"), 16, 44, 2);
+        text.drawText(frame, format("FPS: %.0f   +/- exposure  B bloom  F FXAA", fps.fps), 16, 72, 2);
 
         app.endFrame(frame);
     }

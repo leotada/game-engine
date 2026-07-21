@@ -132,6 +132,7 @@ enum WGPUTextureFormat : uint {
     rgba8Snorm      = 0x0000_0018,
     bgra8Unorm      = 0x0000_001B,
     bgra8UnormSrgb  = 0x0000_001C,
+    rgba16Float     = 0x0000_0028, // WGPUTextureFormat_RGBA16Float
     depth24Plus            = 0x0000_002E,
     depth24PlusStencil8    = 0x0000_002F,
     depth32Float           = 0x0000_0030,

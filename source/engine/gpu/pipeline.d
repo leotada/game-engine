@@ -328,12 +328,7 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
 
-    // Depth format must match the render pass, but disable depth write/test for text overlay
-    WGPUDepthStencilState depthState;
-    depthState.format = WGPUTextureFormat.depth24Plus;
-    depthState.depthWriteEnabled = WGPUOptionalBool.false_;
-    depthState.depthCompare = WGPUCompareFunction.always;
-
+    // No depth-stencil: text draws on the post-resolve present pass (swapchain only).
     WGPURenderPipelineDescriptor pipeDesc;
     pipeDesc.layout = result.pipelineLayout;
     pipeDesc.vertex.module_ = result.shaderModule;
@@ -341,7 +336,6 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
     pipeDesc.vertex.bufferCount = 1;
     pipeDesc.vertex.buffers = &bufLayout;
     pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
-    pipeDesc.depthStencil = &depthState;
     pipeDesc.fragment = &fragState;
 
     result.pipeline = wgpuDeviceCreateRenderPipeline(device, &pipeDesc);

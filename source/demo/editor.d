@@ -152,6 +152,8 @@ void main() {
             gizmos.render(frame);
         }
 
+        app.resolvePost(frame);
+
         if (overlayVisible) {
             overlay.beginFrame(dt);
             overlay.label("cam",    "pos=(", fly.position.x, ", ", fly.position.y, ", ", fly.position.z, ")");

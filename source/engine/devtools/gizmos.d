@@ -21,7 +21,7 @@ import engine.core.log;
 import engine.gpu.buffer   : createDynamicVertexBuffer, createUniformBuffer, destroyBuffer;
 import engine.gpu.context  : GpuContext;
 import engine.gpu.pipeline : Pipeline3D;
-import engine.gpu.renderer : FrameContext;
+import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shader   : createShaderModule;
 import engine.gpu.shaders  : gizmoLineShaderSource;
 import engine.graphics.types : Color4;
@@ -52,7 +52,7 @@ struct GizmoRenderer {
         GizmoRenderer g;
         g.device = gpu.getDevice();
         g.queue  = gpu.getQueue();
-        g.buildPipeline(gpu.getFormat());
+        g.buildPipeline(Renderer.sceneFormat());
         g.vertexBuf  = createDynamicVertexBuffer(g.device, MAX_VERTS * VERTEX_STRIDE);
         g.uniformBuf = createUniformBuffer(g.device, 64);
         g.buildBindGroup();

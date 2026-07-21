@@ -13,7 +13,7 @@ shadow map existente (PCF) no path lit.
 
 Paths reais:
 
-- Shader textured: **Cook-Torrance GGX + IBL + PCF** com LDR clamp
+- Shader textured: **Cook-Torrance GGX + IBL + PCF** (HDR, sem clamp)
   ([`source/engine/gpu/shaders.d`](../source/engine/gpu/shaders.d))
 - [`Material`](../source/engine/graphics/material.d) = `@group(1)` com
   `MaterialParams` UBO + sampler + albedo + maps opcionais (defaults 1×1)
@@ -25,9 +25,8 @@ Paths reais:
   `pbrMetallicRoughness` (factors + BMP/TGA maps); asset de exemplo em
   `assets/models/pbr_cube.gltf`
 
-Política de cor até o pós-process existir: **LDR clamp** no shader PBR.
-Quando [plan-post-processing.md](plan-post-processing.md) PP-1–PP-3
-entregar HDR + tone map, trocar o attachment de cena para `rgba16float`.
+Política de cor: cena em **`rgba16float`**; tone map ACES + bloom + FXAA em
+[plan-post-processing.md](plan-post-processing.md). Present SDR (`bgra8Unorm`).
 
 ## Fora de escopo
 
@@ -39,8 +38,8 @@ entregar HDR + tone map, trocar o attachment de cena para `rgba16float`.
 
 - **Pré-req interno deste plano:** fase PBR-0 (shadowed lit) usa
   `ShadowMap` já existente
-- **Recomendado:** tone map HDR de [plan-post-processing.md](plan-post-processing.md)
-  antes de IBL brilhante; sem isso, LDR clamp documentado
+- **Post:** [plan-post-processing.md](plan-post-processing.md) PP-1–6
+  entregue — HDR + tone map desbloqueiam IBL sem clamp
 
 ## Fases
 
@@ -99,7 +98,7 @@ sem pipeline manual.
 2. Shadow PCF no path lit padrão (não só infra depth).
 3. glTF PBR comum carrega sem setup manual de pipeline.
 4. Demos albedo/checker não quebram.
-5. Sem post: LDR clamp; com post HDR: tone map.
+5. Com post: HDR interno + tone map (ACES); present SDR.
 
 ## Referências
 

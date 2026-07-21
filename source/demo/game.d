@@ -312,6 +312,8 @@ void main() {
 
         scene.end(frame);
 
+        app.resolvePost(frame);
+
         // --- HUD ---
         textRenderer.beginFrame();
         textRenderer.drawText(frame, fps.text(), 10, 10, 2);

@@ -8,7 +8,7 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : Pipeline3D, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
-import engine.gpu.renderer : FrameContext;
+import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shadow : ShadowMap;
 import engine.graphics.types : InstanceData, Color4;
 import engine.graphics.texmesh : TexMesh;
@@ -67,7 +67,7 @@ struct Scene3DTextured {
         s.gpu = &gpu;
         auto device = gpu.getDevice();
 
-        s.pipeline = createTexturedPipeline3D(device, gpu.getFormat());
+        s.pipeline = createTexturedPipeline3D(device, Renderer.sceneFormat());
         s.frameUniformBuf = createUniformBuffer(device, FRAME_UNIFORMS_SIZE);
 
         // Default identity light VP + upward light.

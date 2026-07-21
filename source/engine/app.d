@@ -7,6 +7,7 @@ import engine.platform.window;
 import engine.platform.input;
 import engine.gpu.context;
 import engine.gpu.renderer;
+import engine.gpu.post : PostSettings;
 import engine.graphics.types : Color4;
 import engine.core.log;
 import engine.core.arena : FrameArena;
@@ -52,6 +53,11 @@ struct App {
     /// Per-frame scratch arena; reset at end of every frame.
     ref FrameArena arena() return nothrow @nogc { return frameArena; }
 
+    /// Post-processing settings (exposure, bloom, FXAA).
+    ref PostSettings post() return nothrow @nogc {
+        return renderer.postSettings();
+    }
+
     void pollEvents() nothrow @nogc @trusted {
         input.beginFrame();
         SDL_Event ev = void;
@@ -66,9 +72,13 @@ struct App {
         return renderer.beginFrame(clearColor);
     }
 
-    /// Convenience: accept a Color4 directly.
     FrameContext beginFrame(Color4 clearColor) nothrow @nogc {
         return renderer.beginFrame(clearColor);
+    }
+
+    /// Close the HDR scene pass, run post, reopen swapchain pass for UI/text.
+    void resolvePost(ref FrameContext frame) nothrow @nogc {
+        renderer.resolvePost(frame);
     }
 
     void endFrame(ref FrameContext frame) nothrow @nogc {
