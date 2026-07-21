@@ -1,4 +1,4 @@
-/// Editor / devtools demo — exercises Phase 12 (gizmos + debug overlay).
+/// Editor / devtools demo — exercises gizmos + debug overlay + PCF shadows.
 ///
 /// Controls:
 ///   WASD            — move the camera (horizontal)
@@ -16,11 +16,14 @@ import engine.app;
 import engine.core.log;
 import engine.devtools.gizmos  : GizmoRenderer;
 import engine.devtools.overlay : DebugOverlay;
+import engine.gpu.buffer;
+import engine.gpu.shadow;
 import engine.gpu.text         : TextRenderer, FpsCounter;
 import engine.graphics.material : Material;
 import engine.graphics.texmesh  : TexMesh;
 import engine.graphics.texture  : Texture, Sampler, TextureFilter, TextureWrap;
-import engine.graphics.types    : Color4;
+import engine.graphics.types    : Color4, InstanceData;
+import engine.math.mat          : Mat4;
 import engine.math.vec          : Vec3;
 import engine.platform.input    : Key;
 import engine.scene.camera      : Camera;
@@ -35,7 +38,6 @@ private enum H = 720;
 void main() {
     auto app = App.create("Engine Editor — Gizmos + Overlay", W, H);
 
-    // Scene renderer for a few reference cubes.
     auto scene  = Scene3DTextured.create(app.gpu);
     scope(exit) scene.destroy();
     auto mesh   = TexMesh.cube(app.gpu);
@@ -50,14 +52,25 @@ void main() {
     auto cubeTex   = Texture.checker(app.gpu, 64,  [200,100,80,255], [150,60,40,255]);
     scope(exit) cubeTex.destroy();
 
-    auto layout = scene.bindGroupLayout();
-    auto uniBuf = scene.sharedUniformBuffer();
-    auto groundMat = Material.create(app.gpu, layout, uniBuf, sampler, groundTex);
+    auto layout = scene.materialLayout();
+    auto groundMat = Material.create(app.gpu, layout, sampler, groundTex);
     scope(exit) groundMat.destroy();
-    auto cubeMat   = Material.create(app.gpu, layout, uniBuf, sampler, cubeTex);
+    auto cubeMat   = Material.create(app.gpu, layout, sampler, cubeTex);
     scope(exit) cubeMat.destroy();
 
-    // Devtools.
+    auto shadowMap = ShadowMap.create(app.gpu, 2048);
+    scope(exit) shadowMap.destroy();
+    auto shadowPipe = createShadowPipeline(app.gpu.getDevice());
+    scope(exit) shadowPipe.release();
+    auto lightBuf = createUniformBuffer(app.gpu.getDevice(), 64);
+    scope(exit) destroyBuffer(lightBuf);
+    auto lightBg = createUniformBindGroup(app.gpu.getDevice(), shadowPipe.bindGroupLayout, lightBuf, 64);
+    scope(exit) releaseBindGroup(lightBg);
+    auto shadowInstanceBuf = createDynamicVertexBuffer(app.gpu.getDevice(), 8 * InstanceData.sizeof);
+    scope(exit) destroyBuffer(shadowInstanceBuf);
+
+    immutable lightDir = Vec3(0.35f, 1.0f, 0.25f);
+
     auto gizmos  = GizmoRenderer.create(app.gpu);
     scope(exit) gizmos.destroy();
     auto text    = TextRenderer.create(app.gpu, W, H);
@@ -66,12 +79,10 @@ void main() {
     bool gizmosVisible  = true;
     bool overlayVisible = true;
 
-    // Camera + controller.
     auto camera = Camera.create(0.9f, W, H);
     camera.lookAt(Vec3(6, 5, 8), Vec3(0, 1, 0));
     auto fly = FlyCamera.create(Vec3(6, 5, 8));
 
-    // Capture the mouse so FPS-style look works without the cursor leaving the window.
     app.window.setRelativeMouseMode(true);
     scope(exit) app.window.setRelativeMouseMode(false);
 
@@ -80,7 +91,6 @@ void main() {
     auto fps = FpsCounter.create();
     float time = 0;
 
-    // A handful of demo cubes at known positions — targets for gizmo AABBs.
     struct Box { Vec3 pos; Vec3 size; Color4 tint; }
     Box[5] boxes = [
         Box(Vec3(-3, 1, 0),   Vec3(1, 2, 1), Color4(1.0f, 0.6f, 0.4f, 1)),
@@ -101,11 +111,24 @@ void main() {
 
         fly.update(app.input, dt, camera);
 
-        // ---- Render ---------------------------------------------------
+        immutable lightVP = directionalLightVP(lightDir, Vec3(0, 1, 0), 16.0f);
+
+        InstanceData[5] casters;
+        foreach (i, ref b; boxes) {
+            immutable float phase = time + cast(float) i * 0.7f;
+            auto model = Mat4.translation(b.pos.x, b.pos.y + sin(phase) * 0.25f, b.pos.z)
+                       * Mat4.rotationY(phase * 0.3f)
+                       * Mat4.scaling(b.size.x, b.size.y, b.size.z);
+            casters[i] = InstanceData(model.m, b.tint.toArray());
+        }
+        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[]);
+        submitShadowPass(app.gpu, shadowMap, shadowPipe, lightBg, lightBuf, lightVP,
+                         mesh, shadowInstanceBuf, 5);
+        scene.setLighting(lightDir, lightVP, shadowMap);
+
         auto frame = app.beginFrame(Color4(0.03f, 0.03f, 0.05f, 1));
         if (!frame.valid) continue;
 
-        // Scene (ground + animated cubes)
         scene.begin(camera);
         scene.draw(quad, groundMat,
                    Vec3(0, 0, 0), Vec3(40, 1, 40), Color4(0.8f, 0.8f, 0.9f, 1));
@@ -116,7 +139,6 @@ void main() {
         }
         scene.end(frame);
 
-        // Gizmos overlay
         if (gizmosVisible) {
             gizmos.begin(camera.viewProjection());
             gizmos.grid(20.0f, 20, Color4(0.25f, 0.25f, 0.30f, 1), 0.001f);
@@ -124,20 +146,19 @@ void main() {
             foreach (ref b; boxes) {
                 gizmos.box(b.pos, b.size, Color4(0.2f, 1.0f, 0.6f, 1));
             }
-            // A rotating ray from the origin showing current time vector.
             immutable rx = cast(float) cos(time);
             immutable rz = cast(float) sin(time);
             gizmos.ray(Vec3(0, 2, 0), Vec3(rx, 0, rz), 3.0f, Color4(1, 0.4f, 0.2f, 1));
             gizmos.render(frame);
         }
 
-        // Debug overlay (text)
         if (overlayVisible) {
             overlay.beginFrame(dt);
             overlay.label("cam",    "pos=(", fly.position.x, ", ", fly.position.y, ", ", fly.position.z, ")");
             overlay.label("yaw",    fly.yaw);
             overlay.label("pitch",  fly.pitch);
             overlay.label("boxes",  boxes.length);
+            overlay.label("shadow", "PCF ON");
             overlay.label("gizmos", gizmosVisible ? "ON" : "OFF");
             overlay.label("keys",   "WASD move, Space/Ctrl up/down, Shift sprint, G gizmos, F1 overlay, ESC quit");
             text.beginFrame();

@@ -1,22 +1,22 @@
-/// Showcase demo for Phase 6 (textures + materials) and Phase 7 (scene graph).
+/// Showcase demo for textures, materials, scene graph, and PBR shadows.
 /// Renders a small solar system: a textured "sun" cube with two orbiting planets,
-/// each with its own moon. All transforms come from the SceneGraph hierarchy.
+/// each with its own moon. Directional light casts a soft PCF shadow on the ground.
 module demo.showcase;
 
 import engine.app;
 import engine.core.log;
+import engine.gpu.buffer;
+import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material;
-import engine.graphics.mesh : Mesh;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, Sampler, TextureFilter, TextureWrap;
-import engine.graphics.types : Color4;
+import engine.graphics.types : Color4, InstanceData;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
 import engine.scene.graph : SceneGraph, NodeId, Transform, ROOT;
-import engine.scene.scene3d : Scene3D;
 import engine.scene.scene3d_textured : Scene3DTextured;
 
 import std.math : sin, cos;
@@ -29,7 +29,6 @@ private enum H = 720;
 void main() {
     auto app = App.create("Textures + SceneGraph Demo", W, H);
 
-    // --- Textured renderer + materials ---
     auto texScene = Scene3DTextured.create(app.gpu);
     scope(exit) texScene.destroy();
     auto cubeMesh = TexMesh.cube(app.gpu);
@@ -37,11 +36,9 @@ void main() {
     auto quadMesh = TexMesh.quad(app.gpu);
     scope(exit) quadMesh.destroy();
 
-    // Shared sampler used by every material.
     auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
     scope(exit) sampler.destroy();
 
-    // Three distinct textures built procedurally (no asset files needed).
     auto sunTex    = Texture.checker(app.gpu, 64, [255,220, 80,255], [255,140, 40,255]);
     scope(exit) sunTex.destroy();
     auto earthTex  = Texture.checker(app.gpu, 64, [ 80,170,255,255], [ 40,120,200,255]);
@@ -53,21 +50,33 @@ void main() {
     auto groundTex = Texture.checker(app.gpu, 256, [ 50, 50, 60,255], [ 30, 30, 40,255]);
     scope(exit) groundTex.destroy();
 
-    auto layout = texScene.bindGroupLayout();
-    auto uniBuf = texScene.sharedUniformBuffer();
+    auto layout = texScene.materialLayout();
 
-    auto sunMat   = Material.create(app.gpu, layout, uniBuf, sampler, sunTex);
+    auto sunMat   = Material.create(app.gpu, layout, sampler, sunTex);
     scope(exit) sunMat.destroy();
-    auto earthMat = Material.create(app.gpu, layout, uniBuf, sampler, earthTex);
+    auto earthMat = Material.create(app.gpu, layout, sampler, earthTex);
     scope(exit) earthMat.destroy();
-    auto marsMat  = Material.create(app.gpu, layout, uniBuf, sampler, marsTex);
+    auto marsMat  = Material.create(app.gpu, layout, sampler, marsTex);
     scope(exit) marsMat.destroy();
-    auto moonMat  = Material.create(app.gpu, layout, uniBuf, sampler, moonTex);
+    auto moonMat  = Material.create(app.gpu, layout, sampler, moonTex);
     scope(exit) moonMat.destroy();
-    auto groundMat = Material.create(app.gpu, layout, uniBuf, sampler, groundTex);
+    auto groundMat = Material.create(app.gpu, layout, sampler, groundTex);
     scope(exit) groundMat.destroy();
 
-    // --- Scene graph: sun → (earth → moon), (mars → moon) ---
+    // Shadow map + depth pipeline
+    auto shadowMap = ShadowMap.create(app.gpu, 2048);
+    scope(exit) shadowMap.destroy();
+    auto shadowPipe = createShadowPipeline(app.gpu.getDevice());
+    scope(exit) shadowPipe.release();
+    auto lightBuf = createUniformBuffer(app.gpu.getDevice(), 64);
+    scope(exit) destroyBuffer(lightBuf);
+    auto lightBg = createUniformBindGroup(app.gpu.getDevice(), shadowPipe.bindGroupLayout, lightBuf, 64);
+    scope(exit) releaseBindGroup(lightBg);
+    auto shadowInstanceBuf = createDynamicVertexBuffer(app.gpu.getDevice(), 16 * InstanceData.sizeof);
+    scope(exit) destroyBuffer(shadowInstanceBuf);
+
+    immutable lightDir = Vec3(0.4f, 1.0f, 0.3f);
+
     auto graph = SceneGraph.create();
 
     immutable sunNode     = graph.addChild(ROOT,     Transform(Vec3(0, 1.5f, 0), Vec3(1.2f, 1.2f, 1.2f)));
@@ -98,7 +107,6 @@ void main() {
 
         if (app.input.keyPressed(Key.escape)) break;
 
-        // --- Animate via graph transforms ---
         graph.transform(sunNode).rotationY        = time * 0.3f;
         graph.transform(earthOrbit).rotationY     = time * 0.8f;
         graph.transform(earthNode).rotationY      = time * 1.5f;
@@ -107,28 +115,39 @@ void main() {
         graph.transform(marsNode).rotationY       = time * 1.2f;
         graph.transform(marsMoonOrbit).rotationY  = time * 1.8f;
 
-        // Camera orbit
         immutable camR = 14.0f;
         camera.lookAt(
             Vec3(cos(time * 0.15f) * camR, 7, sin(time * 0.15f) * camR),
             Vec3(0, 1, 0),
         );
 
-        // Resolve world matrices for all nodes in one sweep.
         graph.updateWorld();
 
-        // --- Render ---
+        immutable lightVP = directionalLightVP(lightDir, Vec3(0, 1, 0), 18.0f);
+
+        // Shadow casters: sun + planets + moons
+        InstanceData[5] casters = [
+            InstanceData(graph.worldMatrix(sunNode).m, Color4.white.toArray()),
+            InstanceData(graph.worldMatrix(earthNode).m, Color4.white.toArray()),
+            InstanceData(graph.worldMatrix(earthMoon).m, Color4.white.toArray()),
+            InstanceData(graph.worldMatrix(marsNode).m, Color4.white.toArray()),
+            InstanceData(graph.worldMatrix(marsMoon).m, Color4.white.toArray()),
+        ];
+        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[]);
+        submitShadowPass(app.gpu, shadowMap, shadowPipe, lightBg, lightBuf, lightVP,
+                         cubeMesh, shadowInstanceBuf, 5);
+
+        texScene.setLighting(lightDir, lightVP, shadowMap);
+
         auto frame = app.beginFrame(Color4(0.02f, 0.02f, 0.06f, 1.0f));
         if (!frame.valid) continue;
 
         texScene.begin(camera);
 
-        // Ground plane
         texScene.draw(quadMesh, groundMat,
                       Vec3(0, 0, 0), Vec3(40, 1, 40),
                       Color4(0.8f, 0.8f, 0.9f, 1));
 
-        // Each body uses its world matrix from the graph.
         texScene.drawMatrix(cubeMesh, sunMat,   graph.worldMatrix(sunNode),   Color4(1.2f, 1.0f, 0.6f, 1));
         texScene.drawMatrix(cubeMesh, earthMat, graph.worldMatrix(earthNode), Color4.white);
         texScene.drawMatrix(cubeMesh, moonMat,  graph.worldMatrix(earthMoon), Color4.white);
@@ -137,11 +156,10 @@ void main() {
 
         texScene.end(frame);
 
-        // HUD
         import std.format : format;
         textRenderer.beginFrame();
-        textRenderer.drawText(frame, "Phase 6: Textures + Materials", 20, 20, 2);
-        textRenderer.drawText(frame, "Phase 7: Scene Graph Hierarchy", 20, 50, 2);
+        textRenderer.drawText(frame, "PBR path + PCF shadows", 20, 20, 2);
+        textRenderer.drawText(frame, "Scene Graph Hierarchy", 20, 50, 2);
         textRenderer.drawText(frame, format("FPS: %.0f  nodes: %d", fps.fps, graph.length),
                               20, 90, 2);
 
