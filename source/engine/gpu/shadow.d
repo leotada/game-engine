@@ -151,6 +151,11 @@ ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
     depthState.format            = WGPUTextureFormat.depth32Float;
     depthState.depthWriteEnabled = WGPUOptionalBool.true_;
     depthState.depthCompare      = WGPUCompareFunction.less;
+    // Caster-side slope bias fights acne so receiver bias can stay small
+    // (large constant receiver bias caused contact shadows to detach).
+    depthState.depthBias = 1;
+    depthState.depthBiasSlopeScale = 1.75f;
+    depthState.depthBiasClamp = 0.0f;
 
     WGPURenderPipelineDescriptor pd;
     pd.layout = r.pipelineLayout;
@@ -160,7 +165,9 @@ ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
     pd.vertex.buffers = bufferLayouts.ptr;
     pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
     pd.primitive.frontFace = WGPUFrontFace.ccw;
-    pd.primitive.cullMode = WGPUCullMode.front; // cull front for peter-panning mitigation
+    // Back-face cull: front faces sit at the lit silhouette → tighter contact.
+    // Slope depthBias above covers acne that front-cull used to hide.
+    pd.primitive.cullMode = WGPUCullMode.back;
     pd.depthStencil = &depthState;
     // No fragment state → depth-only.
 

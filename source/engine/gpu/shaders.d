@@ -257,8 +257,16 @@ fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3
          * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-fn sampleShadowPCF(worldPos: vec3<f32>) -> f32 {
-    var shadowPos = frame.lightViewProj * vec4<f32>(worldPos, 1.0);
+// Receiver bias: low when facing the light (keeps contact shadows attached),
+// higher at grazing angles (fights acne). Constant alone caused peter-panning.
+fn sampleShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let L = normalize(frame.lightDir);
+    let NdotL = clamp(dot(normal, L), 0.0, 1.0);
+    let bias = mix(frame.shadowBias * 5.0, frame.shadowBias, NdotL);
+    // Tiny normal offset only where acne is likely — avoids detaching contact.
+    let samplePos = worldPos + normal * (frame.shadowBias * 8.0 * (1.0 - NdotL));
+
+    var shadowPos = frame.lightViewProj * vec4<f32>(samplePos, 1.0);
     let ndc = shadowPos.xyz / shadowPos.w;
     let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
     let depth = ndc.z;
@@ -270,7 +278,7 @@ fn sampleShadowPCF(worldPos: vec3<f32>) -> f32 {
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let offset = vec2<f32>(f32(x), f32(y)) * texel;
-            shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth - frame.shadowBias);
+            shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth - bias);
         }
     }
     return shadow / 9.0;
@@ -324,7 +332,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let kS = F;
     let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
     let radiance = vec3<f32>(1.0, 0.98, 0.92) * 3.5;
-    let shadow = sampleShadowPCF(in.worldPos);
+    let shadow = sampleShadowPCF(in.worldPos, N);
     let direct = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 
     // IBL

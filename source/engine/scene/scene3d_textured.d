@@ -25,7 +25,7 @@ struct FrameUniforms {
     float[16] viewProj;
     float[16] lightViewProj;
     float[3] lightDir = [0.3f, 1.0f, 0.5f];
-    float shadowBias = 0.003f;
+    float shadowBias = 0.0004f; // base; shader scales up at grazing angles
     float[3] cameraPos = [0, 5, 10];
     float _pad = 0;
 }
@@ -74,7 +74,7 @@ struct Scene3DTextured {
         s.frameData.viewProj = Mat4.identity().m;
         s.frameData.lightViewProj = Mat4.identity().m;
         s.frameData.lightDir = [0.3f, 1.0f, 0.5f];
-        s.frameData.shadowBias = 0.003f;
+        s.frameData.shadowBias = 0.0004f;
 
         s.createDefaultShadow(device);
         s.rebuildFrameBindGroup();
@@ -101,7 +101,7 @@ struct Scene3DTextured {
 
     /// Update directional light + shadow map resources for the next draws.
     void setLighting(Vec3 lightDir, Mat4 lightVP, ref ShadowMap shadow,
-                     float bias = 0.003f) @trusted {
+                     float bias = 0.0004f) @trusted {
         immutable d = lightDir.normalized();
         frameData.lightDir = [d.x, d.y, d.z];
         frameData.lightViewProj = lightVP.m;
