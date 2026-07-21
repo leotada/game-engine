@@ -1,26 +1,30 @@
-/// Minimal glTF 2.0 loader — extracts the first mesh primitive's POSITION,
-/// NORMAL, and TEXCOORD_0 attributes, plus UNSIGNED_SHORT or UNSIGNED_INT
-/// indices, and uploads them as a `TexMesh`.
+/// Minimal glTF 2.0 loader — mesh geometry + optional pbrMetallicRoughness materials.
 ///
 /// Supported:
 ///   - .gltf JSON + external .bin buffer (same directory)
 ///   - Component types: 5123 (u16), 5125 (u32 → downcast to u16 if in range)
 ///   - Attribute types: VEC3 positions/normals, VEC2 uvs (float32)
+///   - Materials: pbrMetallicRoughness factors + baseColor / MR / normal /
+///     occlusion / emissive textures (BMP or TGA via engine loaders)
 ///
-/// NOT supported (out of scope for v1): .glb containers, embedded base64
-/// buffers, animations, skinning, multiple primitives, materials.
+/// NOT supported: .glb containers, embedded base64 buffers, animations,
+/// skinning, multiple primitives.
 module engine.assets.gltf;
 
 import std.conv : to;
 import std.exception : enforce;
-import std.file : read;
+import std.file : read, exists;
 import std.json;
-import std.path : dirName, buildPath;
+import std.path : dirName, buildPath, extension;
+import std.string : toLower;
 
 import engine.core.log;
 import engine.gpu.context : GpuContext;
+import engine.graphics.material : Material, MaterialParams, MaterialFlags;
 import engine.graphics.texmesh : TexMesh;
+import engine.graphics.texture : Texture, Sampler;
 import engine.graphics.types : TexVert;
+import bindings.wgpu : WGPUBindGroupLayout;
 
 @safe:
 
@@ -42,6 +46,207 @@ TexMesh loadGltfMesh(ref GpuContext gpu, string gltfPath) @trusted {
 struct GltfMesh {
     TexVert[] vertices;
     ushort[]  indices;
+}
+
+/// CPU-side PBR material description extracted from glTF.
+struct GltfMaterialDesc {
+    float[4] baseColorFactor = [1, 1, 1, 1];
+    float metallic = 1;
+    float roughness = 1;
+    string baseColorUri;       // relative to glTF, empty if none
+    string metallicRoughnessUri;
+    string normalUri;
+    string occlusionUri;
+    string emissiveUri;
+}
+
+/// Loaded GPU model: mesh + material (caller destroys both).
+struct GltfModel {
+    TexMesh mesh;
+    Material material;
+    Texture albedo;
+    Texture metallicRoughness;
+    Texture normal;
+    Texture occlusion;
+    Texture emissive;
+    bool hasAlbedo;
+    bool hasMR;
+    bool hasNormal;
+    bool hasOcclusion;
+    bool hasEmissive;
+
+    void destroy() {
+        material.destroy();
+        mesh.destroy();
+        if (hasAlbedo) albedo.destroy();
+        if (hasMR) metallicRoughness.destroy();
+        if (hasNormal) normal.destroy();
+        if (hasOcclusion) occlusion.destroy();
+        if (hasEmissive) emissive.destroy();
+    }
+}
+
+/// Load mesh + PBR material from a .gltf file.
+/// Creates GPU textures for referenced images (BMP/TGA). Missing maps fall back
+/// to MaterialDefaults via Material.create.
+GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
+                      WGPUBindGroupLayout materialLayout,
+                      ref Sampler sampler) @trusted {
+    import core.lifetime : move;
+
+    auto meshCpu = parseGltfMesh(gltfPath);
+    auto matDesc = parseGltfMaterial(gltfPath);
+    immutable baseDir = dirName(gltfPath);
+
+    GltfModel model;
+    model.mesh = TexMesh.fromData(gpu, meshCpu.vertices, meshCpu.indices);
+
+    MaterialParams params;
+    params.baseColorFactor = matDesc.baseColorFactor;
+    params.metallic = matDesc.metallic;
+    params.roughness = matDesc.roughness;
+    params.flags = MaterialFlags.none;
+
+    if (matDesc.baseColorUri.length) {
+        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.baseColorUri));
+        if (t.valid) {
+            model.albedo = move(t);
+            model.hasAlbedo = true;
+        }
+    }
+    if (!model.hasAlbedo) {
+        model.albedo = Texture.solid(gpu,
+            toU8(matDesc.baseColorFactor[0]),
+            toU8(matDesc.baseColorFactor[1]),
+            toU8(matDesc.baseColorFactor[2]),
+            toU8(matDesc.baseColorFactor[3]));
+        model.hasAlbedo = true;
+        params.baseColorFactor = [1, 1, 1, 1];
+    }
+
+    Texture* mrPtr = null;
+    Texture* nrmPtr = null;
+    Texture* aoPtr = null;
+    Texture* emPtr = null;
+
+    if (matDesc.metallicRoughnessUri.length) {
+        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.metallicRoughnessUri));
+        if (t.valid) {
+            model.metallicRoughness = move(t);
+            model.hasMR = true;
+            mrPtr = &model.metallicRoughness;
+            params.flags |= MaterialFlags.metallicRoughness;
+        }
+    }
+    if (matDesc.normalUri.length) {
+        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.normalUri));
+        if (t.valid) {
+            model.normal = move(t);
+            model.hasNormal = true;
+            nrmPtr = &model.normal;
+            params.flags |= MaterialFlags.normal;
+        }
+    }
+    if (matDesc.occlusionUri.length) {
+        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.occlusionUri));
+        if (t.valid) {
+            model.occlusion = move(t);
+            model.hasOcclusion = true;
+            aoPtr = &model.occlusion;
+            params.flags |= MaterialFlags.occlusion;
+        }
+    }
+    if (matDesc.emissiveUri.length) {
+        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.emissiveUri));
+        if (t.valid) {
+            model.emissive = move(t);
+            model.hasEmissive = true;
+            emPtr = &model.emissive;
+            params.flags |= MaterialFlags.emissive;
+        }
+    }
+
+    model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
+                                     params, mrPtr, nrmPtr, aoPtr, emPtr);
+
+    info("Loaded glTF PBR: ", gltfPath, " (",
+         meshCpu.vertices.length, " verts, metallic=", matDesc.metallic,
+         " roughness=", matDesc.roughness, ")");
+    return model;
+}
+
+/// Parse pbrMetallicRoughness from the first material (or defaults).
+GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
+    GltfMaterialDesc desc;
+    auto text = cast(string) read(gltfPath);
+    auto root = parseJSON(text);
+    if ("materials" !in root) return desc;
+    auto materials = root["materials"].array;
+    if (materials.length == 0) return desc;
+    auto mat = materials[0];
+
+    if ("pbrMetallicRoughness" in mat) {
+        auto pbr = mat["pbrMetallicRoughness"];
+        if ("baseColorFactor" in pbr) {
+            auto arr = pbr["baseColorFactor"].array;
+            foreach (i; 0 .. 4)
+                if (i < arr.length) desc.baseColorFactor[i] = jsonFloat(arr[i]);
+        }
+        if ("metallicFactor" in pbr)
+            desc.metallic = jsonFloat(pbr["metallicFactor"]);
+        if ("roughnessFactor" in pbr)
+            desc.roughness = jsonFloat(pbr["roughnessFactor"]);
+        if ("baseColorTexture" in pbr)
+            desc.baseColorUri = resolveTextureUri(root, cast(int) pbr["baseColorTexture"]["index"].integer);
+        if ("metallicRoughnessTexture" in pbr)
+            desc.metallicRoughnessUri = resolveTextureUri(root, cast(int) pbr["metallicRoughnessTexture"]["index"].integer);
+    }
+    if ("normalTexture" in mat)
+        desc.normalUri = resolveTextureUri(root, cast(int) mat["normalTexture"]["index"].integer);
+    if ("occlusionTexture" in mat)
+        desc.occlusionUri = resolveTextureUri(root, cast(int) mat["occlusionTexture"]["index"].integer);
+    if ("emissiveTexture" in mat)
+        desc.emissiveUri = resolveTextureUri(root, cast(int) mat["emissiveTexture"]["index"].integer);
+    return desc;
+}
+
+private float jsonFloat(ref JSONValue v) {
+    if (v.type == JSONType.float_) return cast(float) v.floating;
+    if (v.type == JSONType.integer) return cast(float) v.integer;
+    return 0;
+}
+
+private string resolveTextureUri(ref JSONValue root, int textureIndex) @trusted {
+    auto textures = root["textures"].array;
+    enforce(textureIndex >= 0 && textureIndex < textures.length, "glTF: texture index OOB");
+    immutable int source = cast(int) textures[textureIndex]["source"].integer;
+    auto images = root["images"].array;
+    enforce(source >= 0 && source < images.length, "glTF: image index OOB");
+    enforce("uri" in images[source], "glTF: image missing uri");
+    return images[source]["uri"].str;
+}
+
+private Texture loadImageTexture(ref GpuContext gpu, string path) {
+    if (!exists(path)) {
+        err("glTF image not found: ", path);
+        return Texture.init;
+    }
+    immutable ext = extension(path).toLower;
+    if (ext == ".tga") {
+        return Texture.fromTgaFile(gpu, path);
+    }
+    if (ext == ".bmp") {
+        import engine.assets.bmp : loadBmpTexture;
+        return loadBmpTexture(gpu, path);
+    }
+    err("glTF: unsupported image format (use .bmp or .tga): ", path);
+    return Texture.init;
+}
+
+private ubyte toU8(float v) pure nothrow @nogc {
+    if (v < 0) return 0;
+    if (v > 1) return 255;
+    return cast(ubyte)(v * 255.0f + 0.5f);
 }
 
 /// Parse a .gltf file and return its first primitive as CPU geometry.
@@ -67,20 +272,17 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
     auto bufferViews = root["bufferViews"].array;
     auto buffers     = root["buffers"].array;
 
-    // Load all buffers referenced by the accessors we touch.
     const(ubyte)[][] bufferData;
     bufferData.length = buffers.length;
     immutable baseDir = dirName(gltfPath);
     foreach (i, b; buffers) {
         enforce("uri" in b.object, "glTF: embedded base64 buffers not supported");
         immutable uri = b["uri"].str;
-        // Reject data: URIs explicitly.
         enforce(uri.length < 5 || uri[0 .. 5] != "data:",
                 "glTF: data: URIs not supported — use external .bin");
         bufferData[i] = cast(const(ubyte)[]) read(buildPath(baseDir, uri));
     }
 
-    // Helper: read a float VEC{N} accessor as a flat float slice.
     float[] readFloatVec(int accessorIndex, uint expectedComponents) @trusted {
         auto acc = accessors[accessorIndex];
         enforce(cast(uint) acc["componentType"].integer == CT_FLOAT,
@@ -103,7 +305,6 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         auto src = bufferData[bufIdx];
         enforce(totalOff + byteLen <= src.length, "glTF: accessor out of buffer bounds");
         auto dst = new float[count * comps];
-        // Copy via memcpy-equivalent; assumes little-endian host (x86_64).
         auto fSrc = cast(const(float)*) (src.ptr + totalOff);
         foreach (i; 0 .. count * comps) dst[i] = fSrc[i];
         return dst;
