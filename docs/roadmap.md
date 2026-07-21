@@ -34,6 +34,7 @@ infra de sombra, depois polish) → conteúdo animado → tooling de iteração
   paralelismo é escala, não desbloqueia conteúdo.
 - **Terreno/água (#7) depois do editor (#6):** reutiliza picking, assets,
   save/load e gizmos; heightfield Box3D desbloqueia collider do terreno.
+- **Evolução de Renderização (GFX):** v1 do editor shipa Forward com limite estrito de sombra (`MAX_POINT_SHADOW_CASTERS`). Evolução no backlog: **Static Shadow Caching** (reúso de cubemaps para luzes estáticas) e **Clustered Forward Rendering** (WGPU Compute) para escala de iluminação.
 - **GC-safe (#2) fechado:** `Pod!T[]` no storage, `World.strings`,
   `App.frameArena`, `dub run --config=lint`. Novos buffers devem
   nascer em `Pod!T` / `Handle!T` / `StringId`.

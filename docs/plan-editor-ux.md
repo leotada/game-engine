@@ -508,8 +508,10 @@ engine/scene/scene_load.d    // spawn world a partir da cena
 ### Backlog
 
 - Spot (se cortado da v1) + spot shadows
+- **Static Shadow Caching**: reuso de cubemaps para luzes e objetos estáticos (evita 6 passes por frame)
+- **Clustered Forward Rendering**: compute pass em WGPU para binning de luzes em 3D clusters (suporte a 100+ point lights)
+- Octahedral / Atlas Mapping de sombras pontuais
 - CSM / multi directional shadows
-- Point shadow budget maior / atlas
 - VHACD / mesh dynamic
 - Prefabs, PIE completo, joints UI, navmesh
 - Terreno / água — [plan-terrain-water.md](plan-terrain-water.md)
