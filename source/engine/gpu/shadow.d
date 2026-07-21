@@ -7,31 +7,30 @@
 ///   auto shadow = ShadowMap.create(gpu, 2048);
 ///   auto pipe   = createShadowPipeline(device);
 ///   auto lightBuf = createUniformBuffer(device, 64);
-///   auto lightBg  = createBindGroup(device, pipe.bindGroupLayout, lightBuf, 64);
+///   auto lightBg  = createUniformBindGroup(device, pipe.bindGroupLayout, lightBuf, 64);
 ///
 ///   // Each frame, BEFORE the main color pass:
-///   immutable lightVP = ShadowCamera.directional(
-///       Vec3(-1, -1, -0.3), Vec3(0,0,0), 20.0f);
-///   writeUniform(queue, lightBuf, lightVP.m);
+///   // direction = surface→light (same vector as N·L shading).
+///   immutable lightVP = directionalLightVP(
+///       Vec3(0.4, 1.0, 0.3), Vec3(0,0,0), 20.0f);
+///   updateBuffer(queue, lightBuf, lightVP.m[]);
 ///   auto shadowEnc = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 ///   auto shadowPass = beginShadowPass(shadowEnc, shadow);
 ///   // Bind pipeline + lightBg, then draw all shadow-casting meshes.
 ///   endShadowPass(shadowPass);
 ///
-///   // Then run the main color pass as usual, binding `shadow.view`
-///   // and `shadow.comparisonSampler` in a future shadowed material.
-///
-/// NOTE: full shadowed-material integration (PCF sampling in the fragment
-/// shader) is out of scope for v1 — this module provides the infrastructure
-/// and a working depth pass. Game code binds the resulting `shadow.view`
-/// into a custom pipeline if desired.
+///   // Then run the main color pass, calling Scene3DTextured.setLighting
+///   // with `shadow.depthView` and `shadow.comparisonSampler` via ShadowMap.
 module engine.gpu.shadow;
+
+import std.math : abs;
 
 import bindings.wgpu;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader  : createShaderModule;
 import engine.gpu.shaders : shadowDepthShaderSource;
+import engine.graphics.texmesh : TexMesh;
 import engine.math.mat    : Mat4;
 import engine.math.vec    : Vec3;
 
@@ -173,12 +172,16 @@ ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
 }
 
 /// Compute an orthographic light view-projection matrix for a directional
-/// light pointing along `direction` and framing a sphere of radius
-/// `sceneRadius` around `sceneCenter`.
+/// light. `direction` is the same vector used for shading (surface → light,
+/// i.e. the `L` in N·L). The light camera sits along that axis looking back
+/// at `sceneCenter`, framing a sphere of radius `sceneRadius`.
 Mat4 directionalLightVP(Vec3 direction, Vec3 sceneCenter, float sceneRadius) {
     immutable d = direction.normalized();
-    immutable eye = sceneCenter - d * (sceneRadius * 2.0f);
-    immutable view = Mat4.lookAt(eye, sceneCenter, Vec3(0, 1, 0));
+    // Place the light camera on the light side of the scene (toward +d).
+    immutable eye = sceneCenter + d * (sceneRadius * 2.0f);
+    // Avoid a degenerate lookAt when the light is nearly parallel to +Y.
+    immutable up = abs(d.y) > 0.9f ? Vec3(0, 0, 1) : Vec3(0, 1, 0);
+    immutable view = Mat4.lookAt(eye, sceneCenter, up);
     immutable proj = Mat4.ortho(-sceneRadius, sceneRadius,
                                 -sceneRadius, sceneRadius,
                                  0.1f, sceneRadius * 4.0f);
@@ -187,11 +190,13 @@ Mat4 directionalLightVP(Vec3 direction, Vec3 sceneCenter, float sceneRadius) {
 
 /// Begin a depth-only render pass writing into the shadow map.
 /// Returns the pass encoder — caller must `endShadowPass` after draws.
+/// Pass `clear=false` to accumulate casters across multiple submit/draw calls.
 WGPURenderPassEncoder beginShadowPass(WGPUCommandEncoder encoder,
-                                       ref ShadowMap shadow) @trusted {
+                                       ref ShadowMap shadow,
+                                       bool clear = true) @trusted {
     WGPURenderPassDepthStencilAttachment depthAtt;
     depthAtt.view            = shadow.depthView;
-    depthAtt.depthLoadOp     = WGPULoadOp.clear;
+    depthAtt.depthLoadOp     = clear ? WGPULoadOp.clear : WGPULoadOp.load;
     depthAtt.depthStoreOp    = WGPUStoreOp.store;
     depthAtt.depthClearValue = 1.0f;
 
@@ -207,4 +212,36 @@ WGPURenderPassEncoder beginShadowPass(WGPUCommandEncoder encoder,
 void endShadowPass(WGPURenderPassEncoder pass) @trusted nothrow @nogc {
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
+}
+
+/// Submit a depth-only shadow pass that draws `instanceCount` instances of `mesh`.
+/// Uses a temporary command encoder and submits immediately (before the color pass).
+/// Set `clear` to false when chaining multiple mesh draws into the same map.
+void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeline pipe,
+                      WGPUBindGroup lightBg, WGPUBuffer lightBuf, Mat4 lightVP,
+                      ref TexMesh mesh, WGPUBuffer instanceBuf, uint instanceCount,
+                      bool clear = true) @trusted {
+    import engine.gpu.buffer : updateBuffer;
+
+    updateBuffer(gpu.getQueue(), lightBuf, lightVP.m[]);
+
+    WGPUCommandEncoderDescriptor encDesc;
+    auto enc = wgpuDeviceCreateCommandEncoder(gpu.getDevice(), &encDesc);
+    auto pass = beginShadowPass(enc, shadow, clear);
+
+    wgpuRenderPassEncoderSetPipeline(pass, pipe.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indexBuffer, WGPUIndexFormat.uint16,
+                                        0, mesh.indexCount * ushort.sizeof);
+    wgpuRenderPassEncoderDrawIndexed(pass, mesh.indexCount, instanceCount, 0, 0, 0);
+
+    endShadowPass(pass);
+
+    WGPUCommandBufferDescriptor cbDesc;
+    auto cmd = wgpuCommandEncoderFinish(enc, &cbDesc);
+    wgpuCommandEncoderRelease(enc);
+    wgpuQueueSubmit(gpu.getQueue(), 1, &cmd);
+    wgpuCommandBufferRelease(cmd);
 }
