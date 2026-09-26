@@ -53,7 +53,8 @@ source/
     ├── showcase.d         # Solar system — scene graph + textured materials
     ├── pbr.d              # PBR + IBL + shadow PCF demo
     ├── editor.d           # Scene editor (gizmos, hierarchy, scene I/O)
-    └── pong3d.d           # Physics gameplay demo (Box3D)
+    ├── pong3d.d           # Physics gameplay demo (Box3D)
+    └── golf.d             # Par 3 — drag, Magnus lift, gusting wind
 ```
 
 ### Design Principles
@@ -176,6 +177,9 @@ dub build --config=editor
 # Build the physics gameplay demo
 dub build --config=pong3d
 
+# Build the par-3 golf demo
+dub build --config=golf
+
 # Build with optimizations (LDC2 recommended for production)
 dub build --config=demo --build=release
 
@@ -187,6 +191,7 @@ dub run --config=showcase
 dub run --config=pbr
 dub run --config=editor
 dub run --config=pong3d
+dub run --config=golf
 
 # Build as library (for embedding in other projects)
 dub build --config=library
@@ -277,6 +282,14 @@ Gameplay physics via Box3D — rigid bodies, contacts, and the high-level `engin
 
 ```bash
 dub run --config=pong3d
+```
+
+### Golf
+
+A one-hole par 3. The ball is a real golf ball (mass, size, quadratic drag, and Magnus lift from backspin). Wind is a height-sheared field with a drifting heading and gusts, so a full mid-loft shot that holds the green in still air slides off if you ignore the forecast. The aim arc uses the mean wind only.
+
+```bash
+dub run --config=golf
 ```
 
 ## Roadmap
