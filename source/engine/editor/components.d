@@ -3,7 +3,7 @@
 /// Typical editor world:
 /// ```
 /// alias EditorWorld = World!(
-///     Transform, Name, Parent, Visual, MaterialOverride, Light, PhysicsBody);
+///     Transform, Name, Parent, Visual, MaterialOverride, Light, PhysicsBody, Camera3D);
 /// ```
 module engine.editor.components;
 
@@ -15,6 +15,7 @@ import engine.ecs.world : World;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
+import engine.reflect.attrs : component, export_, range;
 import engine.scene.graph : Transform;
 import engine.scene.light : Light;
 
@@ -123,6 +124,18 @@ alias PhysicsBodyStub = PhysicsBody;
 static assert(isPod!Transform);
 static assert(isPod!Light);
 
+/// Game-view lens. Distinct from the GPU `engine.scene.camera.Camera`.
+@component
+struct Camera3D {
+    /// Non-zero marks the camera used by Game / Play.
+    @export_ uint current = 1;
+    @export_ @range(10, 120) float fovYDeg = 70;
+    @export_ float nearPlane = 0.1f;
+    @export_ float farPlane = 1000.0f;
+}
+
+static assert(isPod!Camera3D);
+
 /// Default editor ECS registry (ED-1…ED-5).
 alias EditorWorld = World!(
     Transform,
@@ -131,7 +144,8 @@ alias EditorWorld = World!(
     Visual,
     MaterialOverride,
     Light,
-    PhysicsBody
+    PhysicsBody,
+    Camera3D
 );
 
 /// True when shape is triangle mesh and motion is dynamic (forbidden).

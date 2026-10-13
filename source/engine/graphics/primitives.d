@@ -40,6 +40,22 @@ immutable ushort[36] cubeIndices = [
 ];
 
 // ---------------------------------------------------------------------------
+// Plane — 4 vertices, 6 indices (unit XZ quad, y = 0, normal +Y)
+// X and Z span [-0.5, 0.5]. Scale 1 is a 1 m square.
+// Winding matches the cube top face (CCW when viewed from +Y).
+// ---------------------------------------------------------------------------
+immutable Vert[4] planeVertices = [
+    Vert([-0.5, 0,  0.5], [0, 1, 0]),
+    Vert([ 0.5, 0,  0.5], [0, 1, 0]),
+    Vert([ 0.5, 0, -0.5], [0, 1, 0]),
+    Vert([-0.5, 0, -0.5], [0, 1, 0]),
+];
+
+immutable ushort[6] planeIndices = [
+    0, 1, 2,  2, 3, 0,
+];
+
+// ---------------------------------------------------------------------------
 // Pyramid — 16 vertices, 18 indices (4 triangular faces + square base)
 // Apex at y=+0.8, base at y=0, base radius ~0.5
 // ---------------------------------------------------------------------------

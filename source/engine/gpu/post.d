@@ -43,7 +43,8 @@ private struct TexRT {
 
 /// Fullscreen post pipelines and transient bloom / LDR targets.
 struct PostProcessor {
-    private GpuContext* ctx;
+    private WGPUDevice device;
+    private WGPUQueue  queue;
     private WGPUSampler linearSampler;
     private WGPUBuffer thresholdUBO;
     private WGPUBuffer tonemapUBO;
@@ -68,11 +69,12 @@ struct PostProcessor {
 
     static PostProcessor create(ref GpuContext gpu, WGPUTextureFormat surfFmt) @trusted {
         PostProcessor p;
-        p.ctx = &gpu;
+        p.device = gpu.getDevice();
+        p.queue = gpu.getQueue();
         p.surfaceFormat = surfFmt;
         p.settings = PostSettings.init;
         p.tonemapToSurfacePipe = null;
-        auto device = gpu.getDevice();
+        auto device = p.device;
 
         WGPUSamplerDescriptor sd;
         sd.addressModeU = WGPUAddressMode.clampToEdge;
@@ -120,7 +122,6 @@ struct PostProcessor {
     }
 
     private void rebuildPresentPipelines(WGPUTextureFormat surfFmt) @trusted {
-        auto device = ctx.getDevice();
         if (tonemapPipe !is null) { wgpuRenderPipelineRelease(tonemapPipe); tonemapPipe = null; }
         if (fxaaPipe !is null) { wgpuRenderPipelineRelease(fxaaPipe); fxaaPipe = null; }
         if (blitPipe !is null) { wgpuRenderPipelineRelease(blitPipe); blitPipe = null; }
@@ -134,7 +135,7 @@ struct PostProcessor {
     private void ensureTonemapSurfacePipe() nothrow @nogc @trusted {
         if (tonemapToSurfacePipe !is null) return;
         tonemapToSurfacePipe = makeFSPipeline(
-            ctx.getDevice(), tonemapPL, tonemapSM, surfaceFormat, false);
+            device, tonemapPL, tonemapSM, surfaceFormat, false);
     }
 
     void resize(uint w, uint h) nothrow @nogc @trusted {
@@ -181,7 +182,7 @@ struct PostProcessor {
                     settings.bloomClamp,
                     0,
                 ];
-                updateBuffer(ctx.getQueue(), thresholdUBO, params[]);
+                updateBuffer(queue, thresholdUBO, params[]);
                 auto bg = makeUBOTexBG(threshBGL, thresholdUBO, 16, hdrView);
                 scope(exit) wgpuBindGroupRelease(bg);
                 drawPass(encoder, bloomMips[0].view, threshPipe, bg, true);
@@ -216,7 +217,7 @@ struct PostProcessor {
             cast(float) settings.tonemapMode,
             0,
         ];
-        updateBuffer(ctx.getQueue(), tonemapUBO, tm[]);
+        updateBuffer(queue, tonemapUBO, tm[]);
 
         auto bloomView = bloomLevels > 0 ? bloomMips[0].view : hdrView;
         auto tmBG = makeTonemapBG(tonemapBGL, tonemapUBO, hdrView, bloomView);
@@ -275,7 +276,7 @@ struct PostProcessor {
         td.format = fmt;
         td.mipLevelCount = 1;
         td.sampleCount = 1;
-        rt.texture = wgpuDeviceCreateTexture(ctx.getDevice(), &td);
+        rt.texture = wgpuDeviceCreateTexture(device, &td);
         if (rt.texture is null) fatal("Post RT texture creation failed");
         WGPUTextureViewDescriptor vd;
         vd.format = fmt;
@@ -329,7 +330,7 @@ struct PostProcessor {
         e[2].binding = 2; e[2].textureView = tex;
         WGPUBindGroupDescriptor d;
         d.layout = layout; d.entryCount = 3; d.entries = e.ptr;
-        return wgpuDeviceCreateBindGroup(ctx.getDevice(), &d);
+        return wgpuDeviceCreateBindGroup(device, &d);
     }
 
     private WGPUBindGroup makeSampleBG(WGPUBindGroupLayout layout, WGPUTextureView tex) nothrow @nogc @trusted {
@@ -338,7 +339,7 @@ struct PostProcessor {
         e[1].binding = 1; e[1].textureView = tex;
         WGPUBindGroupDescriptor d;
         d.layout = layout; d.entryCount = 2; d.entries = e.ptr;
-        return wgpuDeviceCreateBindGroup(ctx.getDevice(), &d);
+        return wgpuDeviceCreateBindGroup(device, &d);
     }
 
     private WGPUBindGroup makeTonemapBG(WGPUBindGroupLayout layout, WGPUBuffer ubo,
@@ -350,7 +351,7 @@ struct PostProcessor {
         e[3].binding = 3; e[3].textureView = bloom;
         WGPUBindGroupDescriptor d;
         d.layout = layout; d.entryCount = 4; d.entries = e.ptr;
-        return wgpuDeviceCreateBindGroup(ctx.getDevice(), &d);
+        return wgpuDeviceCreateBindGroup(device, &d);
     }
 
     private static WGPUBindGroupLayout makeTexUBOBGL(WGPUDevice device, bool hasUbo) @trusted {

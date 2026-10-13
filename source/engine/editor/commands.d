@@ -4,7 +4,7 @@ module engine.editor.commands;
 import engine.core.log : warn;
 import engine.core.strings : StringId, StringTable;
 import engine.editor.components :
-    MaterialOverride, Name, Parent, PhysicsBody, Visual, VisualKind,
+    Camera3D, MaterialOverride, Name, Parent, PhysicsBody, Visual, VisualKind,
     defaultHalfExtents, noParent, worldPosition;
 import engine.editor.light_panel :
     canSpawnAnyLight, canSpawnLightType, defaultLightForSpawn;
@@ -35,12 +35,14 @@ struct EntitySnapshot {
     MaterialOverride material = MaterialOverride.init;
     Light light = Light.init;
     PhysicsBody physics = PhysicsBody.init;
+    Camera3D camera = Camera3D.init;
     bool hasVisual;
     bool hasMaterial;
     bool hasLight;
     bool hasPhysics;
     bool hasParent;
     bool hasName;
+    bool hasCamera;
 }
 
 EntitySnapshot captureEntity(W)(ref W world, EntityId id) nothrow @nogc {
@@ -55,6 +57,7 @@ EntitySnapshot captureEntity(W)(ref W world, EntityId id) nothrow @nogc {
         s.hasMaterial = true;
     }
     if (world.has!Light(id)) { s.light = world.get!Light(id); s.hasLight = true; }
+    if (world.has!Camera3D(id)) { s.camera = world.get!Camera3D(id); s.hasCamera = true; }
     if (world.has!PhysicsBody(id)) {
         s.physics = world.get!PhysicsBody(id);
         s.hasPhysics = true;
@@ -62,7 +65,7 @@ EntitySnapshot captureEntity(W)(ref W world, EntityId id) nothrow @nogc {
     return s;
 }
 
-void applySnapshotTo(W)(ref W world, EntityId id, ref const EntitySnapshot s) nothrow {
+void applySnapshotTo(W)(ref W world, EntityId id, ref const EntitySnapshot s) {
     Transform t = s.transform;
     world.set(id, t);
     if (s.hasName) {
@@ -84,6 +87,10 @@ void applySnapshotTo(W)(ref W world, EntityId id, ref const EntitySnapshot s) no
     if (s.hasLight) {
         Light l = s.light;
         world.set(id, l);
+    }
+    if (s.hasCamera) {
+        Camera3D cam = s.camera;
+        world.set(id, cam);
     }
     if (s.hasPhysics) {
         PhysicsBody phy = s.physics;
@@ -135,7 +142,7 @@ struct CommandStack {
     bool canUndo() const nothrow @nogc { return cursor > 0; }
     bool canRedo() const nothrow @nogc { return cursor < count; }
 
-    bool undo(W)(ref W world, ref Selection sel) nothrow {
+    bool undo(W)(ref W world, ref Selection sel) {
         if (!canUndo()) return false;
         cursor--;
         auto e = entries[cursor];
@@ -174,7 +181,7 @@ struct CommandStack {
         return true;
     }
 
-    bool redo(W)(ref W world, ref Selection sel) nothrow {
+    bool redo(W)(ref W world, ref Selection sel) {
         if (!canRedo()) return false;
         auto e = entries[cursor];
         final switch (e.kind) {
@@ -566,4 +573,95 @@ StringId defaultLightName(ref StringTable strings) {
     ta.position.y = 3;
     world.set(a, ta);
     assert(alignSelectedToGround(world, stack, sel) >= 1);
+}
+
+@safe unittest {
+    import engine.editor.components : EditorWorld;
+
+    EditorWorld world;
+    CommandStack stack;
+    Selection sel;
+
+    auto id = world.spawn();
+    world.set(id, Transform.init);
+    Camera3D cam;
+    cam.current = 1;
+    cam.fovYDeg = 42;
+    cam.nearPlane = 0.25f;
+    cam.farPlane = 250;
+    world.set(id, cam);
+
+    auto snap = captureEntity(world, id);
+    assert(snap.hasCamera);
+    assert(snap.camera.current == 1);
+    assert(snap.camera.fovYDeg == 42);
+    assert(snap.camera.nearPlane == 0.25f);
+    assert(snap.camera.farPlane == 250);
+
+    auto other = world.spawn();
+    applySnapshotTo(world, other, snap);
+    assert(world.has!Camera3D(other));
+    assert(world.get!Camera3D(other).fovYDeg == 42);
+    assert(world.get!Camera3D(other).farPlane == 250);
+
+    auto dup = duplicateEntity(world, stack, sel, id);
+    assert(dup != noSelection);
+    assert(world.has!Camera3D(dup));
+    assert(world.get!Camera3D(dup).current == 1);
+    assert(world.get!Camera3D(dup).fovYDeg == 42);
+    assert(world.get!Camera3D(dup).nearPlane == 0.25f);
+
+    assert(deleteEntity(world, stack, sel, dup));
+    assert(!world.alive(dup));
+    assert(stack.undo(world, sel));
+    immutable restored = sel.primary;
+    assert(restored != noSelection);
+    assert(world.alive(restored));
+    assert(world.has!Camera3D(restored));
+    assert(world.get!Camera3D(restored).current == 1);
+    assert(world.get!Camera3D(restored).fovYDeg == 42);
+    assert(world.get!Camera3D(restored).nearPlane == 0.25f);
+    assert(world.get!Camera3D(restored).farPlane == 250);
+
+    auto plain = world.spawn();
+    world.set(plain, Transform.init);
+    assert(!captureEntity(world, plain).hasCamera);
+}
+
+@safe unittest {
+    import engine.editor.components : EditorWorld;
+    import engine.editor.gizmo_tool : GizmoMode, GizmoSpace, GizmoTool;
+    import engine.math.ray : Ray;
+
+    EditorWorld world;
+    CommandStack stack;
+    Selection sel;
+
+    auto id = world.spawn();
+    Transform t = Transform.init;
+    world.set(id, t);
+    sel.select(id);
+
+    GizmoTool gizmo;
+    gizmo.mode = GizmoMode.translate;
+    gizmo.space = GizmoSpace.world;
+    gizmo.snapEnabled = false;
+
+    Ray press = Ray(Vec3(0.5f, 2, 0), Vec3(0, -1, 0));
+    gizmo.update(world, sel, press, true, true, false);
+    assert(gizmo.dragging);
+
+    Ray drag = Ray(Vec3(1.5f, 2, 0), Vec3(0, -1, 0));
+    gizmo.update(world, sel, drag, false, true, false);
+    assert(world.get!Transform(id).position.x > 0.5f);
+
+    gizmo.update(world, sel, drag, false, false, true);
+    assert(gizmo.dragJustEnded);
+    recordGizmoDrag(stack, world,
+        gizmo.dragIds[0 .. gizmo.dragCount],
+        gizmo.dragStarts[0 .. gizmo.dragCount]);
+    assert(stack.canUndo());
+    immutable movedX = world.get!Transform(id).position.x;
+    assert(stack.undo(world, sel));
+    assert(world.get!Transform(id).position.x < movedX);
 }

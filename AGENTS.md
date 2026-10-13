@@ -181,46 +181,48 @@ source/
 │   ├── devtools/       # In-engine developer tooling
 │   │   ├── gizmos.d    # Immediate-mode 3D line primitives (lineList, overlay depth)
 │   │   └── overlay.d   # Structured FPS + label overlay atop TextRenderer
-│   ├── ecs/            # Sparse-set ComponentStore, World template
+│   ├── ecs/            # Sparse-set ComponentStore, World template, SceneWorld
 │   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text, shadow
-│   │   ├── buffer.d    # Vertex, index, uniform, dynamic buffer helpers
-│   │   ├── context.d   # WGPU lifecycle (instance→adapter→device→surface)
-│   │   ├── pipeline.d  # Pipeline3D (instanced 3D, colored, textured) and PipelineText
-│   │   ├── renderer.d  # Frame management (beginFrame/endFrame, depth buffer)
-│   │   ├── shader.d    # WGSL shader module creation
-│   │   ├── shaders.d   # Embedded WGSL sources (cube3D, colored3D, textured3D, text2D, shadowDepth)
-│   │   ├── shadow.d    # ShadowMap + depth-only pipeline + directional light VP helper
-│   │   └── text.d      # Bitmap font atlas (8×8 CP437), TextRenderer, FpsCounter
 │   ├── graphics/       # High-level mesh, texture, material types
-│   │   ├── mesh.d      # Mesh (position+normal)
-│   │   ├── texmesh.d   # TexMesh (position+normal+uv), textured cube/quad primitives
-│   │   ├── texture.d   # GPU Texture, Sampler, TGA loader, procedural checker/solid
-│   │   ├── material.d  # Bind-group wrapper (uniform + sampler + albedo)
-│   │   ├── primitives.d# Untextured primitive meshes
-│   │   └── types.d     # Vert, TexVert, InstanceData, Color4
+│   ├── hotreload/      # Inotify file watcher, build runner, dynamic module loader, state migration
 │   ├── math/           # Vec2/3/4, Mat4 (perspective, ortho, lookAt, transforms)
-│   └── platform/       # SDL3 window wrapper, input state
-│   └── scene/          # Camera, controllers, graph, batched 3D renderers
-│       ├── camera.d
-│       ├── controllers.d     # OrbitCamera, FlyCamera, FirstPersonCamera
-│       ├── graph.d           # SceneGraph (Transform hierarchy, parent→child)
-│       ├── scene3d.d         # Batched instanced renderer (colored)
-│       └── scene3d_textured.d# Batched instanced renderer (textured + materials)
+│   ├── platform/       # SDL3 window wrapper, input state
+│   ├── project/        # project.json, AssetDatabase (128-bit GUIDs + .meta sidecars)
+│   ├── reflect/        # Compile-time reflection, UDAs (@component, @export_), TypeRegistry, serialize
+│   ├── scene/          # Camera, controllers, scene graph, scene_file v2, prefab.d
+│   ├── script/         # ScriptContext, module_entry.d, scripting API
+│   └── ui/             # Retained-mode UI: tree, flexbox, SDF font atlas, widgets, docking system
+├── editor/             # Visual editor application (Unity/Godot style)
+│   ├── main.d          # Editor entrypoint
+│   ├── editor_app.d    # Main loop, dock, top menus, play toolbar
+│   ├── play_mode.d     # Non-destructive Play/Pause/Step mode
+│   ├── build_export.d  # Standalone player export pipeline
+│   ├── shortcuts.d     # Shortcuts and keyboard bindings
+│   └── panels/         # Hierarchy, Inspector, Scene View, Game View, Console, Project
+├── tools/
+│   ├── lint.d          # GC-safe storage lint
+│   └── player/         # Standalone player entrypoint (player_main.d)
 └── demo/               # Executable demos
     ├── main.d          # Clear-screen demo
     ├── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
     ├── game.d          # Crystal Collector gameplay demo
-    └── showcase.d      # Solar system (scene graph + textured materials)
+    ├── showcase.d      # Solar system (scene graph + textured materials)
+    └── ui_gallery.d    # Retained UI widgets and docking gallery
 ```
 
 ## Build Commands
 
 ```bash
+dub build --config=editor            # Visual Game Engine Editor (Unity/Godot style)
+dub run --config=editor              # Run Visual Game Engine Editor
+dub run --config=editor -- --headless-frames=600 --assert-no-gc # Assert zero GC allocations in editor loop
+dub build --config=player            # Build standalone game player
+dub run --config=player -- --headless-frames=600 --assert-no-gc # Assert zero GC allocations in player loop
+dub run --config=ui-gallery          # UI widget & docking testbed
+dub run --config=lint                # Run GC-safe storage lint
+dub test --config=library            # Run all unit tests
 dub build --config=demo              # Debug build (clear-screen demo)
 dub build --config=benchmark         # Debug build (3D benchmark)
-dub build --config=demo --build=release  # Release build
-dub run --config=demo                # Build and run demo
-dub run --config=benchmark           # Build and run benchmark
 dub build --config=library           # Build as static library
 ```
 

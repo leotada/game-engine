@@ -56,8 +56,8 @@ struct SceneLoadOptions {
 
 /// Replace `world` contents with entities from `scene`.
 /// Applies `settings` into `lightSettings` (IBL preset).
-SceneLoadResult loadSceneIntoWorld(
-    ref EditorWorld world,
+SceneLoadResult loadSceneIntoWorld(W)(
+    ref W world,
     ref SceneFile scene,
     ref SceneLightSettings lightSettings,
     SceneLoadOptions opts = SceneLoadOptions.init
@@ -74,7 +74,11 @@ SceneLoadResult loadSceneIntoWorld(
         enforce(false, msg);
     }
 
-    world = EditorWorld.init;
+    static if (__traits(hasMember, W, "clearEntities")) {
+        world.clearEntities();
+    } else {
+        world = W.init;
+    }
 
     lightSettings = SceneLightSettings.init;
     lightSettings.iblPreset = iblPresetFromString(scene.settings.iblPreset);
@@ -121,6 +125,20 @@ SceneLoadResult loadSceneIntoWorld(
         if (e.hasLight) {
             world.set(id, lightFromData(e.light));
         }
+
+        static if (__traits(hasMember, W, "types") && __traits(hasMember, W, "rawAdd")) {
+            import engine.reflect.serialize : deserializeComponent;
+            import engine.reflect.descriptor : invalidComponentTypeId;
+            foreach (ref comp; e.customComponents) {
+                auto tid = world.types.find(comp.typeName, world.strings);
+                if (tid != invalidComponentTypeId) {
+                    auto defs = world.types.getDefaults(tid);
+                    world.rawAdd(tid, id, defs);
+                    auto slice = world.rawGet(tid, id);
+                    deserializeComponent(world.types, tid, comp.data, slice, world.strings);
+                }
+            }
+        }
     }
 
     // Second pass: parent links (file id 0 = none).
@@ -147,8 +165,8 @@ float[3] loadSceneGravity(const ref SceneFile scene) pure nothrow @nogc {
 // ---------------------------------------------------------------------------
 
 /// Capture the editor world into a `SceneFile` (dense 1-based entity ids).
-SceneFile worldToSceneFile(
-    ref EditorWorld world,
+SceneFile worldToSceneFile(W)(
+    ref W world,
     const ref SceneLightSettings lightSettings,
     float[3] gravity = [0, -9.81f, 0],
     SceneMeta meta = SceneMeta.init,
@@ -250,6 +268,27 @@ SceneFile worldToSceneFile(
         if (world.has!Light(id)) {
             e.hasLight = true;
             e.light = lightToData(world.get!Light(id));
+        }
+
+        static if (__traits(hasMember, W, "types") && __traits(hasMember, W, "getComponentTypes")) {
+            import engine.reflect.serialize : serializeComponent;
+            import engine.reflect.descriptor : ComponentTypeId;
+            import engine.scene.scene_file : SceneComponentData;
+            ComponentTypeId[] ctypes;
+            world.getComponentTypes(id, ctypes);
+            foreach (tid; ctypes) {
+                auto tdesc = world.types.getType(tid);
+                string qname = world.strings.get(tdesc.qualifiedName).idup;
+                if (qname == "Transform" || qname == "Name" || qname == "Parent" ||
+                    qname == "Visual" || qname == "MaterialOverride" || qname == "PhysicsBody" || qname == "Light")
+                    continue;
+
+                auto bytes = (cast() world).rawGet(tid, id);
+                if (bytes !is null) {
+                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings);
+                    e.customComponents ~= SceneComponentData(qname, cjson);
+                }
+            }
         }
 
         scene.entities ~= e;
@@ -613,4 +652,67 @@ private string toStringy(uint v) {
         }
     }
     assert(foundMesh && foundLight);
+}
+
+@safe unittest {
+    import engine.ecs.scene_world : SceneWorld;
+
+    static struct Rotator {
+        float speed = 90.0f;
+        Vec3 axis = Vec3(0, 1, 0);
+    }
+
+    SceneWorld world;
+    auto e1 = world.spawn();
+    world.set(e1, Transform(Vec3(1, 2, 3), Vec3(1, 1, 1), Quat.identity()));
+    world.set(e1, Rotator(120.0f, Vec3(1, 0, 0)));
+
+    SceneLightSettings lights;
+    auto scene = worldToSceneFile(world, lights);
+    assert(scene.entities.length == 1);
+    assert(scene.entities[0].customComponents.length == 1);
+    assert(scene.entities[0].customComponents[0].typeName == "Rotator");
+
+    // Round-trip into new SceneWorld
+    SceneWorld world2;
+    world2.ensureRegistered!Rotator();
+    SceneLightSettings lights2;
+    auto res = loadSceneIntoWorld(world2, scene, lights2);
+    assert(world2.entityCount == 1);
+    assert(world2.has!Transform(0));
+    assert(world2.has!Rotator(0));
+    assert(world2.get!Rotator(0).speed == 120.0f);
+    assert(world2.get!Rotator(0).axis == Vec3(1, 0, 0));
+}
+
+@safe unittest {
+    import engine.ecs.scene_world : SceneWorld;
+    import engine.editor.components : Camera3D;
+
+    SceneWorld world;
+    world.ensureRegistered!Camera3D();
+    auto e1 = world.spawn();
+    world.set(e1, Transform(Vec3(0, 1.6f, 8), Vec3(1, 1, 1), Quat.identity()));
+    Camera3D cam;
+    cam.current = 1;
+    cam.fovYDeg = 55;
+    cam.nearPlane = 0.25f;
+    cam.farPlane = 400;
+    world.set(e1, cam);
+
+    SceneLightSettings lights;
+    auto scene = worldToSceneFile(world, lights);
+    assert(scene.entities.length == 1);
+    assert(scene.entities[0].customComponents.length == 1);
+    assert(scene.entities[0].customComponents[0].typeName == "Camera3D");
+
+    SceneWorld world2;
+    world2.ensureRegistered!Camera3D();
+    SceneLightSettings lights2;
+    cast(void) loadSceneIntoWorld(world2, scene, lights2);
+    assert(world2.has!Camera3D(0));
+    assert(world2.get!Camera3D(0).current == 1);
+    assert(world2.get!Camera3D(0).fovYDeg == 55);
+    assert(world2.get!Camera3D(0).nearPlane == 0.25f);
+    assert(world2.get!Camera3D(0).farPlane == 400);
 }

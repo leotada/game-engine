@@ -121,6 +121,7 @@ struct GpuContext {
     uint height() const nothrow @nogc { return surfH; }
 
     void destroy() @trusted {
+        if (instance is null && device is null) return;
         if (surface !is null)  { wgpuSurfaceUnconfigure(surface); wgpuSurfaceRelease(surface); surface = null; }
         if (queue !is null)    { wgpuQueueRelease(queue); queue = null; }
         if (device !is null)   { wgpuDeviceDestroy(device); wgpuDeviceRelease(device); device = null; }

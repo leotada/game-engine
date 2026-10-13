@@ -85,7 +85,8 @@ struct Scene3DTextured {
     private WGPUBindGroup iblBindGroup;
     private IblEnvironment ownedIbl;
     private bool ownsIbl = true;
-    private GpuContext* gpu;
+    private WGPUDevice device;
+    private WGPUQueue queue;
 
     // Default 1×1 depth resources so the pipeline is valid before setLights.
     private WGPUTexture defaultShadow2dTex;
@@ -113,8 +114,9 @@ struct Scene3DTextured {
 
     static Scene3DTextured create(ref GpuContext gpu) @trusted {
         Scene3DTextured s;
-        s.gpu = &gpu;
-        auto device = gpu.getDevice();
+        s.device = gpu.getDevice();
+        s.queue = gpu.getQueue();
+        auto device = s.device;
 
         s.pipeline = createTexturedPipeline3D(device, Renderer.sceneFormat());
         s.frameUniformBuf = createUniformBuffer(device, FRAME_UNIFORMS_SIZE);
@@ -292,7 +294,7 @@ struct Scene3DTextured {
     void begin(ref const Camera camera) @trusted {
         frameData.viewProj = camera.viewProjection().m;
         frameData.cameraPos = [camera.position.x, camera.position.y, camera.position.z];
-        updateBuffer(gpu.getQueue(), frameUniformBuf, (&frameData)[0 .. 1]);
+        updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
 
         batchCount = 0;
         foreach (ref b; batches) {
@@ -318,7 +320,6 @@ struct Scene3DTextured {
 
     void end(ref FrameContext frame) {
         if (!frame.valid) return;
-        auto queue = gpu.getQueue();
 
         frame.setPipeline(pipeline.pipeline);
         frame.setBindGroup(0, frameBindGroup);
@@ -445,7 +446,7 @@ struct Scene3DTextured {
         WGPUCommandBufferDescriptor cbDesc;
         auto cmd = wgpuCommandEncoderFinish(enc, &cbDesc);
         wgpuCommandEncoderRelease(enc);
-        wgpuQueueSubmit(gpu.getQueue(), 1, &cmd);
+        wgpuQueueSubmit(queue, 1, &cmd);
         wgpuCommandBufferRelease(cmd);
     }
 
@@ -486,7 +487,7 @@ struct Scene3DTextured {
         desc.layout = pipeline.frameBindGroupLayout;
         desc.entryCount = 9;
         desc.entries = entries.ptr;
-        frameBindGroup = wgpuDeviceCreateBindGroup(gpu.getDevice(), &desc);
+        frameBindGroup = wgpuDeviceCreateBindGroup(device, &desc);
         if (frameBindGroup is null) fatal("Failed to create frame bind group");
     }
 

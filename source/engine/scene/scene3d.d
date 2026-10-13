@@ -2,7 +2,7 @@
 /// Manages pipeline, uniform buffer, and per-mesh instance batches internally.
 module engine.scene.scene3d;
 
-import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat;
+import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat, WGPUQueue;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : Pipeline3D, createColoredPipeline3D;
@@ -19,7 +19,7 @@ struct Scene3D {
     private Pipeline3D pipeline;
     private WGPUBuffer uniformBuf;
     private WGPUBindGroup vpBindGroup;
-    private GpuContext* gpu;
+    private WGPUQueue queue;
 
     // Per-mesh batch tracking — up to 16 different meshes per frame
     private enum MAX_MESH_KINDS = 16;
@@ -38,7 +38,7 @@ struct Scene3D {
 
     static Scene3D create(ref GpuContext gpu) @trusted {
         Scene3D s;
-        s.gpu = &gpu;
+        s.queue = gpu.getQueue();
 
         auto device = gpu.getDevice();
 
@@ -63,7 +63,7 @@ struct Scene3D {
     void begin(ref const Camera camera) {
         // Upload VP matrix
         immutable vp = camera.viewProjection();
-        updateBuffer(gpu.getQueue(), uniformBuf, vp.m[]);
+        updateBuffer(queue, uniformBuf, vp.m[]);
 
         // Clear all batches
         batchCount = 0;
@@ -92,8 +92,6 @@ struct Scene3D {
     /// Upload instance data and issue all draw calls.
     void end(ref FrameContext frame) {
         if (!frame.valid) return;
-
-        auto queue = gpu.getQueue();
 
         frame.setPipeline(pipeline.pipeline);
         frame.setBindGroup(0, vpBindGroup);

@@ -35,6 +35,10 @@ struct Mesh {
         return fromData(gpu, sphereVertices[], sphereIndices[]);
     }
 
+    static Mesh plane(ref GpuContext gpu) {
+        return fromData(gpu, planeVertices[], planeIndices[]);
+    }
+
     /// Create a mesh from custom vertex/index data.
     static Mesh fromData(ref GpuContext gpu, const(Vert)[] verts, const(ushort)[] indices) {
         auto device = gpu.getDevice();

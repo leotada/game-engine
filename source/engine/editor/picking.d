@@ -212,3 +212,23 @@ void drawSelectionHighlights(W)(ref W world, ref const Selection sel, ref GizmoR
     assert(box.min.x > 0.9f && box.min.x < 1.1f);
     assert(box.max.x > 2.9f && box.max.x < 3.1f);
 }
+
+@safe unittest {
+    import engine.editor.components : EditorWorld, Visual, VisualKind;
+    import engine.scene.graph : Transform;
+
+    EditorWorld world;
+    auto id = world.spawn();
+    world.set(id, Transform.init);
+    Visual vis;
+    vis.kind = VisualKind.plane;
+    vis.localHalfExtents = Vec3(0.5f, 0.01f, 0.5f);
+    world.set(id, vis);
+
+    auto hit = pickClosestAabb(world, Ray(Vec3(0, 5, 0), Vec3(0, -1, 0)));
+    assert(hit.hit);
+    assert(hit.entity == id);
+
+    auto miss = pickClosestAabb(world, Ray(Vec3(0, 5, 0), Vec3(1, 0, 0)));
+    assert(!miss.hit);
+}

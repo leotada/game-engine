@@ -5,7 +5,7 @@
     "copyright": "Copyright © 2022-2026, Leonardo Tada",
     "license": "MIT",
 
-    "sourcePaths": ["source/engine", "source/bindings", "source/demo"],
+    "sourcePaths": ["source/engine", "source/bindings"],
     "importPaths": ["source", "source/bindings/box3d"],
 
     "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-Ivendor/box3d/include"],
@@ -59,8 +59,16 @@
             "name": "editor",
             "targetType": "executable",
             "targetName": "game-engine-editor",
-            "mainSourceFile": "source/demo/editor.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/_legacy/*"]
+            "mainSourceFile": "source/editor/main.d",
+            "sourcePaths": ["source/engine", "source/bindings", "source/editor"]
+        },
+        {
+            "name": "player",
+            "targetType": "executable",
+            "targetName": "game-engine-player",
+            "mainSourceFile": "tools/player/player_main.d",
+            "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
+            "importPaths": ["source", "source/bindings/box3d", "tools/player"]
         },
         {
             "name": "pbr",
@@ -144,6 +152,7 @@
             "sourcePaths": ["tools"],
             "importPaths": ["tools"],
             "excludedSourceFiles": [
+                "tools/spikes/*",
                 "source/demo/*",
                 "source/demo/golf.d", "source/demo/_legacy/*",
                 "source/engine/*",
@@ -213,6 +222,20 @@
             ],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
+        },
+        {
+            "name": "ui-gallery",
+            "targetType": "executable",
+            "targetName": "game-engine-ui-gallery",
+            "mainSourceFile": "source/demo/ui_gallery.d"
+        },
+        {
+            "name": "ecs-bench",
+            "targetType": "executable",
+            "targetName": "game-engine-ecs-bench",
+            "mainSourceFile": "tools/benchmarks/ecs_benchmark.d",
+            "sourcePaths": ["source/engine", "source/bindings", "tools/benchmarks"],
+            "importPaths": ["source", "source/bindings/box3d", "tools/benchmarks"]
         }
     ]
 }
