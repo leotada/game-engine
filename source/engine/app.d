@@ -60,12 +60,36 @@ struct App {
 
     void pollEvents() nothrow @nogc @trusted {
         input.beginFrame();
+        pumpEvents();
+    }
+
+    /// Drain the OS queue without starting a new input frame.
+    /// Call this immediately before a blocking swapchain acquire so a click
+    /// is not left unread on the Wayland socket while wgpu waits.
+    void pumpEvents() nothrow @nogc @trusted {
         SDL_Event ev = void;
         while (SDL_PollEvent(&ev))
             input.processEvent(ev);
 
         if (input.quitRequested())
             _running = false;
+    }
+
+    /// Reconfigure the swapchain and scene targets at the current size.
+    /// Used when acquire returns timeout / outdated / lost.
+    void recoverSurface() @trusted {
+        gpu.resize(window.width(), window.height());
+        renderer.resize(window.width(), window.height());
+    }
+
+    /// Track the window's drawable size: reconfigure the swapchain and the
+    /// HDR/post targets when it changes. Returns true if a resize happened.
+    bool handleResize() @trusted {
+        if (!window.refreshSize()) return false;
+        gpu.resize(window.width(), window.height());
+        renderer.resize(window.width(), window.height());
+        info("Window resized to ", window.width(), "x", window.height());
+        return true;
     }
 
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
@@ -87,6 +111,7 @@ struct App {
     }
 
     void destroy() {
+        if (!window.valid()) return;
         renderer.destroy();
         gpu.destroy();
         window.destroy();

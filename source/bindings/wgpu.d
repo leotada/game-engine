@@ -960,8 +960,9 @@ void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder encoder, WGPUBuff
 void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder encoder, uint groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const(uint)* dynamicOffsets);
 void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder encoder, uint vertexCount, uint instanceCount, uint firstVertex, uint firstInstance);
 void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder encoder, uint indexCount, uint instanceCount, uint firstIndex, int baseVertex, uint firstInstance);
+void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder encoder, uint x, uint y, uint width, uint height);
+void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder encoder, float x, float y, float width, float height, float minDepth, float maxDepth);
 void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder);
-void wgpuRenderPassEncoderAddRef(WGPURenderPassEncoder encoder);
 void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder encoder);
 
 // Buffer

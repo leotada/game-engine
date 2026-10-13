@@ -13,6 +13,10 @@ struct Window {
     @disable this(this);
 
     static Window create(const(char)* title, uint width, uint height) @trusted {
+        // SDL captures the pointer on every button press and, on KWin/Wayland,
+        // that capture does a wl_display round-trip. Nested with the wgpu
+        // present wait, the round-trip stalls the frame for a few seconds.
+        SDL_SetHint("SDL_MOUSE_AUTO_CAPTURE", "0");
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
             err("SDL_Init failed");
             assert(false);
@@ -29,6 +33,16 @@ struct Window {
     bool valid() const @trusted { return handle !is null; }
     uint width()  const { return w; }
     uint height() const { return h; }
+
+    /// Re-read the drawable size (in pixels) from SDL. Returns true when it changed.
+    bool refreshSize() @trusted {
+        int pw = 0, ph = 0;
+        if (!SDL_GetWindowSizeInPixels(handle, &pw, &ph) || pw <= 0 || ph <= 0) return false;
+        if (cast(uint) pw == w && cast(uint) ph == h) return false;
+        w = cast(uint) pw;
+        h = cast(uint) ph;
+        return true;
+    }
 
     /// Lock the cursor to the window and switch to relative-motion mode
     /// (useful for FPS-style camera controllers). Pass `false` to release.

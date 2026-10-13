@@ -14,7 +14,9 @@ struct Color {
 }
 
 struct Renderer {
-    private GpuContext* ctx;
+    private WGPUDevice   device;
+    private WGPUQueue    queue;
+    private WGPUSurface  surface;
     private WGPUTexture  depthTexture;
     private WGPUTextureView depthView;
     private WGPUTexture  hdrTexture;
@@ -27,7 +29,9 @@ struct Renderer {
 
     static Renderer create(return ref GpuContext gpuCtx) @trusted {
         Renderer r;
-        r.ctx = &gpuCtx;
+        r.device = gpuCtx.getDevice();
+        r.queue = gpuCtx.getQueue();
+        r.surface = gpuCtx.getSurface();
         r.post = PostProcessor.create(gpuCtx, gpuCtx.getFormat());
         r.postOwned = true;
         r.createSceneTargets(gpuCtx.width(), gpuCtx.height());
@@ -56,7 +60,7 @@ struct Renderer {
             desc.dimension = WGPUTextureDimension.dim2D;
             desc.size      = WGPUExtent3D(w, h, 1);
             desc.format    = WGPUTextureFormat.depth24Plus;
-            depthTexture = wgpuDeviceCreateTexture(ctx.getDevice(), &desc);
+            depthTexture = wgpuDeviceCreateTexture(device, &desc);
             WGPUTextureViewDescriptor viewDesc;
             viewDesc.format    = WGPUTextureFormat.depth24Plus;
             viewDesc.dimension = WGPUTextureViewDimension.dim2D;
@@ -70,7 +74,7 @@ struct Renderer {
             desc.dimension = WGPUTextureDimension.dim2D;
             desc.size      = WGPUExtent3D(w, h, 1);
             desc.format    = SCENE_COLOR_FORMAT;
-            hdrTexture = wgpuDeviceCreateTexture(ctx.getDevice(), &desc);
+            hdrTexture = wgpuDeviceCreateTexture(device, &desc);
             if (hdrTexture is null) fatal("HDR scene texture creation failed");
             WGPUTextureViewDescriptor viewDesc;
             viewDesc.format    = SCENE_COLOR_FORMAT;
@@ -99,7 +103,7 @@ struct Renderer {
 
     private FrameContext beginFrameImpl(double cr, double cg, double cb, double ca) nothrow @nogc @trusted {
         WGPUCommandEncoderDescriptor encDesc;
-        auto encoder = wgpuDeviceCreateCommandEncoder(ctx.getDevice(), &encDesc);
+        auto encoder = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 
         WGPURenderPassColorAttachment colorAtt;
         colorAtt.view       = hdrView;
@@ -140,11 +144,16 @@ struct Renderer {
 
         // Acquire swapchain
         WGPUSurfaceTexture surfTex;
-        wgpuSurfaceGetCurrentTexture(ctx.getSurface(), &surfTex);
+        wgpuSurfaceGetCurrentTexture(surface, &surfTex);
+        frame.acquireStatus = surfTex.status;
         if (surfTex.status != WGPUSurfaceGetCurrentTextureStatus.successOptimal &&
             surfTex.status != WGPUSurfaceGetCurrentTextureStatus.successSuboptimal)
         {
-            // Still finish encoder empty-ish — mark invalid
+            // Swapchain not available this frame (outdated / timeout / lost):
+            // drop the recorded work instead of leaking the encoder + texture.
+            if (surfTex.texture !is null) wgpuTextureRelease(surfTex.texture);
+            wgpuCommandEncoderRelease(frame.encoder);
+            frame.encoder = null;
             frame.valid = false;
             return;
         }
@@ -187,10 +196,10 @@ struct Renderer {
         auto cmdBuf = wgpuCommandEncoderFinish(frame.encoder, &cbDesc);
         wgpuCommandEncoderRelease(frame.encoder);
 
-        wgpuQueueSubmit(ctx.getQueue(), 1, &cmdBuf);
+        wgpuQueueSubmit(queue, 1, &cmdBuf);
         wgpuCommandBufferRelease(cmdBuf);
 
-        wgpuSurfacePresent(ctx.getSurface());
+        wgpuSurfacePresent(surface);
 
         if (frame.view !is null) wgpuTextureViewRelease(frame.view);
         if (frame.texture !is null) wgpuTextureRelease(frame.texture);
@@ -218,6 +227,28 @@ struct FrameContext {
     WGPURenderPassEncoder  pass;
     bool                   valid = false;
     bool                   postResolved = false;
+    WGPUSurfaceGetCurrentTextureStatus acquireStatus;
+
+    /// True when the swapchain wait failed and the surface should be reconfigured.
+    bool acquireNeedsRecover() const nothrow @nogc pure {
+        return acquireStatus == WGPUSurfaceGetCurrentTextureStatus.timeout
+            || acquireStatus == WGPUSurfaceGetCurrentTextureStatus.outdated
+            || acquireStatus == WGPUSurfaceGetCurrentTextureStatus.lost;
+    }
+
+    /// Restrict subsequent draws of the current pass to a pixel rectangle
+    /// (viewport transform + scissor). Used to render a 3D scene into a UI panel.
+    void setViewport(float x, float y, float w, float h, uint targetW, uint targetH) nothrow @nogc @trusted {
+        if (w < 1 || h < 1) return;
+        wgpuRenderPassEncoderSetViewport(pass, x, y, w, h, 0.0f, 1.0f);
+        immutable uint sx = x < 0 ? 0 : cast(uint) x;
+        immutable uint sy = y < 0 ? 0 : cast(uint) y;
+        uint sw = cast(uint) w;
+        uint sh = cast(uint) h;
+        if (sx + sw > targetW) sw = targetW > sx ? targetW - sx : 1;
+        if (sy + sh > targetH) sh = targetH > sy ? targetH - sy : 1;
+        wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
+    }
 
     void setPipeline(WGPURenderPipeline pipeline) nothrow @nogc @trusted {
         wgpuRenderPassEncoderSetPipeline(pass, pipeline);

@@ -70,6 +70,12 @@ enum : uint {
     SDL_EVENT_MOUSE_BUTTON_DOWN      = 0x401,
     SDL_EVENT_MOUSE_BUTTON_UP        = 0x402,
     SDL_EVENT_MOUSE_WHEEL            = 0x403,
+
+    // Drop events
+    SDL_EVENT_DROP_FILE              = 0x1000,
+    SDL_EVENT_DROP_TEXT              = 0x1001,
+    SDL_EVENT_DROP_BEGIN             = 0x1002,
+    SDL_EVENT_DROP_COMPLETE          = 0x1003,
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +140,11 @@ enum SDL_Scancode : uint {
     SCANCODE_F10    = 67,
     SCANCODE_F11    = 68,
     SCANCODE_F12    = 69,
+    SCANCODE_HOME   = 74,
+    SCANCODE_PAGEUP = 75,
+    SCANCODE_DELETE = 76,
+    SCANCODE_END    = 77,
+    SCANCODE_PAGEDOWN = 78,
     SCANCODE_RIGHT  = 79,
     SCANCODE_LEFT   = 80,
     SCANCODE_DOWN   = 81,
@@ -143,6 +154,9 @@ enum SDL_Scancode : uint {
     SCANCODE_LCTRL  = 224,
     SCANCODE_LSHIFT = 225,
     SCANCODE_LALT   = 226,
+    SCANCODE_RCTRL  = 228,
+    SCANCODE_RSHIFT = 229,
+    SCANCODE_RALT   = 230,
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +220,29 @@ struct SDL_WindowEvent {
     int data2;
 }
 
+struct SDL_TextInputEvent {
+    uint type;
+    uint reserved;
+    ulong timestamp;
+    SDL_WindowID windowID;
+    const(char)* text;
+}
+
+struct SDL_DropEvent {
+    uint type;
+    uint reserved;
+    ulong timestamp;
+    SDL_WindowID windowID;
+    float x;
+    float y;
+    const(char)* source;
+    const(char)* data;
+}
+
+struct SDL_Rect {
+    int x, y, w, h;
+}
+
 union SDL_Event {
     uint type;
     SDL_KeyboardEvent key;
@@ -213,6 +250,8 @@ union SDL_Event {
     SDL_MouseButtonEvent button;
     SDL_MouseWheelEvent wheel;
     SDL_WindowEvent window;
+    SDL_TextInputEvent text;
+    SDL_DropEvent drop;
     ubyte[128] padding;
 }
 
@@ -245,15 +284,54 @@ void SDL_SetWindowTitle(SDL_Window* window, const(char)* title);
 void* SDL_GetPointerProperty(SDL_PropertiesID props, const(char)* name, void* default_value);
 long SDL_GetNumberProperty(SDL_PropertiesID props, const(char)* name, long default_value);
 
-// Mouse
+// Mouse & Cursor
+alias SDL_Cursor = void;
+
+enum SDL_SystemCursor : uint {
+    SDL_SYSTEM_CURSOR_DEFAULT = 0,
+    SDL_SYSTEM_CURSOR_TEXT,
+    SDL_SYSTEM_CURSOR_WAIT,
+    SDL_SYSTEM_CURSOR_CROSSHAIR,
+    SDL_SYSTEM_CURSOR_PROGRESS,
+    SDL_SYSTEM_CURSOR_NWSE_RESIZE,
+    SDL_SYSTEM_CURSOR_NESW_RESIZE,
+    SDL_SYSTEM_CURSOR_EW_RESIZE,
+    SDL_SYSTEM_CURSOR_NS_RESIZE,
+    SDL_SYSTEM_CURSOR_MOVE,
+    SDL_SYSTEM_CURSOR_NOT_ALLOWED,
+    SDL_SYSTEM_CURSOR_POINTER,
+    SDL_SYSTEM_CURSOR_NW_RESIZE,
+    SDL_SYSTEM_CURSOR_N_RESIZE,
+    SDL_SYSTEM_CURSOR_NE_RESIZE,
+    SDL_SYSTEM_CURSOR_E_RESIZE,
+    SDL_SYSTEM_CURSOR_SE_RESIZE,
+    SDL_SYSTEM_CURSOR_S_RESIZE,
+    SDL_SYSTEM_CURSOR_SW_RESIZE,
+    SDL_SYSTEM_CURSOR_W_RESIZE,
+    SDL_SYSTEM_CURSOR_COUNT
+}
+
 bool SDL_SetWindowRelativeMouseMode(SDL_Window* window, bool enabled);
 bool SDL_GetWindowRelativeMouseMode(SDL_Window* window);
 bool SDL_HideCursor();
 bool SDL_ShowCursor();
 bool SDL_WarpMouseInWindow(SDL_Window* window, float x, float y);
+SDL_Cursor* SDL_CreateSystemCursor(SDL_SystemCursor id);
+bool SDL_SetCursor(SDL_Cursor* cursor);
+void SDL_DestroyCursor(SDL_Cursor* cursor);
+
+// Text input & Clipboard
+bool SDL_StartTextInput(SDL_Window* window);
+bool SDL_StopTextInput(SDL_Window* window);
+bool SDL_SetTextInputArea(SDL_Window* window, const(SDL_Rect)* rect, int cursor);
+const(char)* SDL_GetClipboardText();
+bool SDL_SetClipboardText(const(char)* text);
+bool SDL_HasClipboardText();
+float SDL_GetWindowDisplayScale(SDL_Window* window);
 
 // Events
 bool SDL_PollEvent(SDL_Event* event);
+bool SDL_SetHint(const(char)* name, const(char)* value);
 
 // Timer
 ulong SDL_GetPerformanceCounter();
