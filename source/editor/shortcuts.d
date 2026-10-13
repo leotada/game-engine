@@ -21,6 +21,7 @@ enum EditorAction : ubyte {
     gizmoTranslate,
     gizmoRotate,
     gizmoScale,
+    renameEntity,
 }
 
 /// Detect triggered editor action from current input state.
@@ -51,6 +52,7 @@ EditorAction pollShortcuts(in InputState input, bool textFieldFocused = false) n
     if (ctrl && input.keyPressed(Key.d)) return EditorAction.duplicate;
     if (input.keyPressed(Key.delete_)) return EditorAction.deleteSelection;
     if (input.keyPressed(Key.f)) return EditorAction.focusCamera;
+    if (input.keyPressed(Key.f2)) return EditorAction.renameEntity;
 
     // Gizmo modes (when not navigating with RMB)
     if (!input.mouseDown(MouseButton.right)) {

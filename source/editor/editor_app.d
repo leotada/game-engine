@@ -145,6 +145,11 @@ struct EditorApp {
     uint nameLen = 0;
     EntityId nameBound = noSelection;
     bool nameDirty = false;
+    EntityId hierarchyRename = noSelection;
+    EntityId lastHierarchyClick = noSelection;
+    float uiClock = 0;
+    float lastHierarchyClickAt = -1;
+    bool focusRenameField = false;
 
     bool draggingValue = false;
     uint dragSlot = 0;
@@ -208,6 +213,7 @@ struct EditorApp {
     }
 
     void update(ref InputState input, float dt, float screenW, float screenH) {
+        uiClock += dt;
         immutable bool typing = focusIsText();
         EditorAction action;
         static if (__traits(compiles, pollShortcuts(input, true)))
@@ -231,6 +237,8 @@ struct EditorApp {
                 pointerPressTag = tag;
                 if (nameDirty && tag != nameFieldTag)
                     commitName();
+                if (hierarchyRename != noSelection && tag != nameFieldTag)
+                    hierarchyRename = noSelection;
                 if ((tag & 0xFF00_0000) == dragTagBase)
                     beginValueDrag(tag & 0xFF);
             } else if (ev.kind == UiEventKind.textChange && tag == nameFieldTag) {
@@ -265,6 +273,11 @@ struct EditorApp {
         measureTextNodes(ui, ui.root, font);
         computeLayout(ui, ui.root, screenW, screenH);
         inputCtx.applyState(ui);
+        if (focusRenameField && ui.isValid(hierarchyPanel.renameField)) {
+            inputCtx.focusedNode = hierarchyPanel.renameField;
+            ui.get(hierarchyPanel.renameField).focused = true;
+            focusRenameField = false;
+        }
 
         if (activeViewportNode.isValid() && ui.isValid(activeViewportNode)) {
             const vn = &ui.get(activeViewportNode);
@@ -350,6 +363,8 @@ struct EditorApp {
             if (app.input.keyPressed(Key.escape)) {
                 if (playMode.isPlaying() || playMode.isPaused())
                     stopPlay();
+                else if (focusIsText() || hierarchyRename != noSelection || nameDirty)
+                    cancelRename();
                 else
                     break;
             }
@@ -553,6 +568,7 @@ struct EditorApp {
 
         if (tabIs(activeTitle, "Cena", "Hierarchy")) {
             hierarchyPanel.buildUi(world, selection, world.strings, ui, contentNode, theme,
+                hierarchyRename, nameBuf[0 .. nameLen],
                 (scope const(char)[] kind) @safe { spawnByName(kind); });
         } else if (tabIs(activeTitle, "Inspetor", "Inspector")) {
             immutable bool useEuler = draggingValue && dragEntity == selection.primary
@@ -752,8 +768,15 @@ struct EditorApp {
             setMeshKind(VisualKind.plane);
         } else if ((tag & 0xFF00_0000) == 0xB000_0000) {
             EntityId id = tag & 0x0FFF_FFFF;
-            if (world.alive(id))
-                selectEntity(id);
+            if (world.alive(id)) {
+                if (id == lastHierarchyClick && uiClock - lastHierarchyClickAt < 0.45f
+                        && playMode.isEditing())
+                    beginRename(id);
+                else
+                    selectEntity(id);
+                lastHierarchyClick = id;
+                lastHierarchyClickAt = uiClock;
+            }
         }
     }
 
@@ -788,6 +811,10 @@ struct EditorApp {
                 break;
             case EditorAction.focusCamera:
                 focusSelection();
+                break;
+            case EditorAction.renameEntity:
+                if (!selection.empty() && world.alive(selection.primary))
+                    beginRename(selection.primary);
                 break;
             case EditorAction.togglePlay:
                 if (playMode.isEditing())
@@ -1378,7 +1405,31 @@ struct EditorApp {
         }
         world.set(nameBound, Name(world.strings.intern(text)));
         nameDirty = false;
+        hierarchyRename = noSelection;
         sceneDirty = true;
+    }
+
+    private void beginRename(EntityId id) {
+        if (!playMode.isEditing() || !world.alive(id))
+            return;
+        selectEntity(id);
+        loadNameFrom(id);
+        nameBound = id;
+        nameDirty = false;
+        hierarchyRename = id;
+        focusRenameField = true;
+        showPanel("Cena");
+    }
+
+    private void cancelRename() {
+        nameDirty = false;
+        hierarchyRename = noSelection;
+        focusRenameField = false;
+        if (nameBound != noSelection && world.alive(nameBound))
+            loadNameFrom(nameBound);
+        else if (!selection.empty() && world.alive(selection.primary))
+            loadNameFrom(selection.primary);
+        inputCtx.focusedNode = UiNodeId.init;
     }
 
     private void beginValueDrag(uint slot) {

@@ -1,6 +1,7 @@
 /// Hierarchy panel displaying the scene's entity graph and spawn controls.
 module editor.panels.hierarchy;
 
+import editor.panels.inspector : nameFieldTag;
 import engine.core.strings : StringTable;
 import engine.ecs.store : EntityId;
 import engine.editor.components : Camera3D, Name, Parent, Visual, VisualKind, noParent;
@@ -12,7 +13,9 @@ import engine.ui;
 @safe:
 
 struct HierarchyPanel {
-    /// Build the Hierarchy panel UI.
+    UiNodeId renameField;
+
+    /// Build the Hierarchy panel UI. `renamingId` shows a text field on that row.
     void buildUi(W)(
         ref W world,
         ref Selection selection,
@@ -20,8 +23,11 @@ struct HierarchyPanel {
         ref UiTree tree,
         UiNodeId parent,
         in UiTheme theme,
+        EntityId renamingId,
+        scope const(char)[] renameText,
         scope void delegate(scope const(char)[] primitiveType) @safe onSpawnPrimitive
     ) {
+        renameField = UiNodeId.init;
         // Container
         UiStyle panelStyle;
         panelStyle.direction = UiFlexDirection.column;
@@ -81,9 +87,26 @@ struct HierarchyPanel {
                 copyLabel(nameBuf, n, fallbackLabel(world, e));
 
             bool isSelected = selection.isSelected(e);
-            UiNodeId row = treeItem(tree, listContainer, nameBuf[0 .. n], depth, false, false, isSelected, theme);
-            // High prefix so tag 0 is never entity 0. Do not use 0xB1000000.
-            tree.get(row).customTag = 0xB000_0000 | (e & 0x0FFF_FFFF);
+            if (renamingId == e) {
+                UiStyle rowStyle;
+                rowStyle.direction = UiFlexDirection.row;
+                rowStyle.alignItems = UiAlign.center;
+                rowStyle.height = 22.0f;
+                rowStyle.heightMode = UiSizeMode.fixed;
+                rowStyle.widthMode = UiSizeMode.fill;
+                rowStyle.backgroundColor = theme.colors.accent;
+                rowStyle.padding = [1.0f, 4.0f, 1.0f, 4.0f + depth * 16.0f];
+                UiNodeId row = tree.createNode(listContainer, rowStyle);
+                UiNodeId field = textField(tree, row, renameText, theme, 160.0f);
+                tree.get(field).style.height = 18.0f;
+                tree.get(field).style.heightMode = UiSizeMode.fixed;
+                tree.get(field).customTag = nameFieldTag;
+                renameField = field;
+            } else {
+                UiNodeId row = treeItem(tree, listContainer, nameBuf[0 .. n], depth, false, false, isSelected, theme);
+                // High prefix so tag 0 is never entity 0. Do not use 0xB1000000.
+                tree.get(row).customTag = 0xB000_0000 | (e & 0x0FFF_FFFF);
+            }
         }
     }
 }
