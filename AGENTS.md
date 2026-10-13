@@ -143,6 +143,14 @@ void aiSystem(ref World w, ref FrameArena tmp, float dt) {
 - `fmt()` wraps `sformat` — never allocates on the GC heap.
 - **Rule:** Prefer `FrameArena` over `format()` / `new` for any string or scratch buffer used inside a single frame.
 
+#### Collector choice — steadygc
+
+`vendor/symgc` (steadygc, a druntime plug-in collector) is selected in `game`, `golf` and `gc-benchmark` on Linux x86-64
+through `mixin UseSteadyGC;` (`engine.core.gc`). `--DRT-gcopt=gc:conservative` switches the same binary back to druntime's
+GC. It helps with multi-GB live heaps and did not help the engine's own `gc_benchmark` — numbers and method in
+[docs/steadygc-evaluation.md](docs/steadygc-evaluation.md). With it active, do not call `GC.collect()` or wrap levels in
+`GC.disable()` inside the frame loop; the `FrameGcScheduler` approach does not apply.
+
 ### Why this matters — measured numbers
 
 Benchmark: 1200 frames, 4096 NPCs, same logical workload, `precise:1` GC.
@@ -177,7 +185,8 @@ source/
    │   ├── pod.d       # isPod!T / Pod!T — compile-time POD enforcement for engine storage
    │   ├── handle.d    # Handle!T — typed generational handle (replaces class refs)
    │   ├── strings.d   # StringId + StringTable — interned strings for engine storage
-   │   └── arena.d     # FrameArena — per-frame bump allocator, reset in endFrame()
+   │   ├── arena.d     # FrameArena — per-frame bump allocator, reset in endFrame()
+   │   └── gc.d        # UseSteadyGC mixin — selects the steadygc collector (vendor/symgc) per executable
 │   ├── devtools/       # In-engine developer tooling
 │   │   ├── gizmos.d    # Immediate-mode 3D line primitives (lineList, overlay depth)
 │   │   └── overlay.d   # Structured FPS + label overlay atop TextRenderer

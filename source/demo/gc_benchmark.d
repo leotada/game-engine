@@ -50,13 +50,17 @@ import engine.core.handle  : Handle;
 import engine.core.strings : StringId, StringTable;
 import engine.core.arena   : FrameArena;
 import engine.core.attrs   : noGcStorage;
+import engine.core.gc : UseSteadyGC;
 
 @safe:
 
+// Selects the steadygc collector when built with version SteadyGC (see engine.core.gc).
+mixin UseSteadyGC;
+
 // ---------------------------------------------------------------------------
 // Approach C reference: frame-budgeted GC scheduler.
-// Kept inline in the benchmark for now; promote to source/engine/core/gc.d
-// if and when the engine adopts it.
+// Kept inline in the benchmark for now; promote to its own engine module
+// (not engine/core/gc.d, which selects the collector) if the engine adopts it.
 // ---------------------------------------------------------------------------
 
 struct FrameGcScheduler

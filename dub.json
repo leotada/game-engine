@@ -13,6 +13,8 @@
 
     "sourceFiles": ["source/bindings/box3d/box3d_import.c"],
     "libs": ["SDL3", "wgpu_native", "box3d", "m"],
+
+    "versions-linux-x86_64": ["SteadyGC"],
     "lflags-linux": ["-L./libs"],
 
     "configurations": [
@@ -43,6 +45,7 @@
         },
         {
             "name": "game",
+            "dependencies": { "symgc": { "path": "vendor/symgc" } },
             "targetType": "executable",
             "targetName": "crystal-collector",
             "mainSourceFile": "source/demo/game.d",
@@ -99,6 +102,7 @@
         },
         {
             "name": "gc-benchmark",
+            "dependencies": { "symgc": { "path": "vendor/symgc" } },
             "targetType": "executable",
             "targetName": "game-engine-gc-benchmark",
             "mainSourceFile": "source/demo/gc_benchmark.d",
@@ -125,6 +129,7 @@
         },
         {
             "name": "golf",
+            "dependencies": { "symgc": { "path": "vendor/symgc" } },
             "targetType": "executable",
             "targetName": "golf",
             "mainSourceFile": "source/demo/golf.d",

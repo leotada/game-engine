@@ -19,6 +19,7 @@ import bindings.wgpu;
 import engine.app : App;
 import engine.audio : AudioClip, AudioEngine;
 import engine.core.log : info, warn;
+import engine.core.gc : UseSteadyGC;
 import engine.devtools.gizmos : GizmoRenderer;
 import engine.ecs.store : EntityId;
 import engine.gpu.buffer :
@@ -48,6 +49,9 @@ import engine.scene.light :
 import engine.scene.scene3d_textured : Scene3DTextured;
 
 @safe:
+
+// Selects the steadygc collector when built with version SteadyGC (see engine.core.gc).
+mixin UseSteadyGC;
 
 // ---------------------------------------------------------------------------
 // Simulation & Aerodynamic Constants

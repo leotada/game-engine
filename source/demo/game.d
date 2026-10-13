@@ -10,6 +10,7 @@ import bindings.box3d : b3BodyId, b3ShapeId;
 import bindings.wgpu : WGPUPresentMode;
 import engine.app : App;
 import engine.core.log;
+import engine.core.gc : UseSteadyGC;
 import engine.ecs.store : EntityId;
 import engine.gpu.text : FpsCounter, TextRenderer;
 import engine.graphics.mesh : Mesh;
@@ -23,6 +24,9 @@ import engine.scene.camera : Camera;
 import engine.scene.scene3d : Scene3D;
 
 @safe:
+
+// Selects the steadygc collector when built with version SteadyGC (see engine.core.gc).
+mixin UseSteadyGC;
 
 private enum SCREEN_W = 1280;
 private enum SCREEN_H = 720;
