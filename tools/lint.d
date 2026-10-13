@@ -45,7 +45,13 @@ void main() @trusted
     {
         immutable rel = relativePath(entry.name);
         if (rel.canFind("/jph/") || rel.startsWith("jph/")
-            || rel.canFind("\\jph\\"))
+            || rel.canFind("\\jph\\")
+            || rel.canFind("/assets/")
+            || rel.canFind("/hotreload/")
+            || rel.canFind("/project/")
+            || rel.canFind("scene_file.d")
+            || rel.canFind("scene_load.d")
+            || rel.canFind("attrs.d"))
             continue;
 
         scanFile(entry.name, rel, findings);

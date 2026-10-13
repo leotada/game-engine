@@ -71,6 +71,12 @@ struct World(Components...) if (Components.length > 0 && allSatisfy!(isValidComp
         return _stores[idx].has(id);
     }
 
+    ref ComponentStore!C store(C)() nothrow @nogc @trusted {
+        enum idx = indexOf!(C, Components);
+        static assert(idx != -1, "Component type not registered in World");
+        return _stores[idx];
+    }
+
     /// Query entities that have ALL specified component types.
     /// Returns a Voldemort range yielding EntityId values.
     auto query(QueryComponents...)() nothrow @nogc @trusted {
@@ -82,44 +88,45 @@ struct World(Components...) if (Components.length > 0 && allSatisfy!(isValidComp
 
         struct Range {
             Stores* stores;
-            bool[]* alive;
-            size_t current;
-            size_t maxId;
+            const(EntityId)[] entities;
+            size_t idx;
 
-            bool empty() const nothrow @nogc { return current >= maxId; }
+            bool empty() const nothrow @nogc { return idx >= entities.length; }
 
             EntityId front() nothrow @nogc @trusted {
-                return cast(EntityId) current;
+                return entities[idx];
             }
 
             void popFront() nothrow @nogc {
-                current++;
+                idx++;
                 advance();
             }
 
             private void advance() nothrow @nogc @trusted {
-                while (current < maxId) {
-                    if (current < (*alive).length && (*alive)[current] && hasAll())
+                while (idx < entities.length) {
+                    if (hasRemaining(entities[idx]))
                         return;
-                    current++;
+                    idx++;
                 }
             }
 
-            private bool hasAll() nothrow @nogc @trusted {
-                static foreach (QC; QueryComponents) {{
-                    enum idx = indexOf!(QC, Components);
-                    if (!(*stores)[idx].has(cast(EntityId) current))
-                        return false;
+            private bool hasRemaining(EntityId e) nothrow @nogc @trusted {
+                static foreach (i, QC; QueryComponents) {{
+                    static if (i > 0) {
+                        enum cIdx = indexOf!(QC, Components);
+                        if (!(*stores)[cIdx].has(e))
+                            return false;
+                    }
                 }}
                 return true;
             }
         }
 
+        enum leaderIdx = indexOf!(QueryComponents[0], Components);
         Range r;
         r.stores = &_stores;
-        r.alive = &_alive;
-        r.maxId = _alive.length;
-        r.current = 0;
+        r.entities = _stores[leaderIdx].entities();
+        r.idx = 0;
         r.advance();
         return r;
     }

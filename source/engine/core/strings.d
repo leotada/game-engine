@@ -79,9 +79,19 @@ struct StringTable
         return StringId(id);
     }
 
+    /// Look up a string without interning it if not present. Returns StringId(0) if absent.
+    StringId lookup(scope const(char)[] s) const @trusted
+    {
+        if (s.length == 0) return StringId(0);
+        string key = (() @trusted => cast(string) s)();
+        if (auto p = key in index)
+            return StringId(*p);
+        return StringId(0);
+    }
+
     /// Retrieve the character data for a `StringId`.
     /// Returns an empty slice for `StringId(0)`.
-    const(char)[] get(StringId sid) const @trusted
+    const(char)[] get(StringId sid) const @nogc nothrow pure @trusted
     {
         if (sid.id == 0 || sid.id >= offsets.length) return null;
         immutable lo = offsets[sid.id - 1];

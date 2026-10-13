@@ -91,6 +91,11 @@ struct SceneLightData {
     bool castShadows = false;
 }
 
+struct SceneComponentData {
+    string typeName;
+    JSONValue data;
+}
+
 struct SceneEntityData {
     uint id;
     bool hasName;
@@ -105,6 +110,8 @@ struct SceneEntityData {
     ScenePhysicsData physics;
     bool hasLight;
     SceneLightData light;
+    /// Arbitrary / script components for SceneWorld and v2 scene files.
+    SceneComponentData[] customComponents;
 }
 
 /// Parsed `*.scene.json` (game-engine.scene v1).
@@ -554,7 +561,7 @@ private SceneEntityData[] parseEntities(ref JSONValue v) {
 private SceneEntityData parseEntity(ref JSONValue v) {
     enforce(v.type == JSONType.object, "entities[] must be object");
     requireOnlyKeys(v, [
-        "id", "name", "parent", "transform", "visual", "material", "physics", "light"
+        "id", "name", "parent", "transform", "visual", "material", "physics", "light", "components"
     ], "entities[]");
 
     enforce("id" in v, "entities[] missing 'id'");
@@ -585,6 +592,14 @@ private SceneEntityData parseEntity(ref JSONValue v) {
     if ("light" in v) {
         e.hasLight = true;
         e.light = parseLight(v["light"]);
+    }
+    if ("components" in v) {
+        auto cVal = v["components"];
+        if (cVal.type == JSONType.object) {
+            foreach (typeName, compVal; jsonObject(cVal)) {
+                e.customComponents ~= SceneComponentData(typeName, compVal);
+            }
+        }
     }
     return e;
 }
@@ -800,6 +815,16 @@ private void writeEntity(ref Appender!string app, const ref SceneEntityData e) {
         app.put(e.light.castShadows ? "true" : "false");
         app.put('}');
     }
+    if (e.customComponents.length > 0) {
+        app.put(`,"components":{`);
+        foreach (i, ref const comp; e.customComponents) {
+            if (i > 0) app.put(',');
+            writeJsonString(app, comp.typeName);
+            app.put(':');
+            app.put(comp.data.toJSON());
+        }
+        app.put('}');
+    }
     app.put('}');
 }
 
@@ -898,6 +923,10 @@ private string[] jsonObjectKeys(ref JSONValue obj) @trusted {
 
 private JSONValue[] jsonArray(ref JSONValue v) @trusted {
     return v.array;
+}
+
+private JSONValue[string] jsonObject(ref JSONValue v) @trusted {
+    return v.object;
 }
 
 private int jsonInt(ref JSONValue v, string ctx) {
