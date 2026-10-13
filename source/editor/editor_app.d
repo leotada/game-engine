@@ -1212,9 +1212,9 @@ struct EditorApp {
         if (!selection.empty() && world.alive(selection.primary) && world.has!Transform(selection.primary)) {
             immutable origin = worldPosition(world, selection.primary);
             immutable dist = (flyCam.position - origin).length();
-            gizmoTool.pickRadius = dist * 0.02f;
-            if (gizmoTool.pickRadius < 0.08f)
-                gizmoTool.pickRadius = 0.08f;
+            gizmoTool.pickRadius = dist * 0.05f;
+            if (gizmoTool.pickRadius < 0.22f)
+                gizmoTool.pickRadius = 0.22f;
         }
 
         auto ray = screenToWorldRay(localX, localY, vpW, vpH, camera.viewProjection());

@@ -129,10 +129,14 @@ struct GizmoTool {
 
         final switch (mode) {
             case GizmoMode.translate:
+                drawAxis(gizmos, origin, ax, Color4(1, 0.2f, 0.2f, 1), activeAxis == GizmoAxis.x, true);
+                drawAxis(gizmos, origin, ay, Color4(0.2f, 1, 0.2f, 1), activeAxis == GizmoAxis.y, true);
+                drawAxis(gizmos, origin, az, Color4(0.25f, 0.45f, 1, 1), activeAxis == GizmoAxis.z, true);
+                break;
             case GizmoMode.scale:
-                drawAxis(gizmos, origin, ax, Color4(1, 0.2f, 0.2f, 1), activeAxis == GizmoAxis.x);
-                drawAxis(gizmos, origin, ay, Color4(0.2f, 1, 0.2f, 1), activeAxis == GizmoAxis.y);
-                drawAxis(gizmos, origin, az, Color4(0.25f, 0.45f, 1, 1), activeAxis == GizmoAxis.z);
+                drawAxis(gizmos, origin, ax, Color4(1, 0.2f, 0.2f, 1), activeAxis == GizmoAxis.x, false);
+                drawAxis(gizmos, origin, ay, Color4(0.2f, 1, 0.2f, 1), activeAxis == GizmoAxis.y, false);
+                drawAxis(gizmos, origin, az, Color4(0.25f, 0.45f, 1, 1), activeAxis == GizmoAxis.z, false);
                 break;
             case GizmoMode.rotate:
                 drawRotationRing(gizmos, origin, ax, Color4(1, 0.2f, 0.2f, 1), activeAxis == GizmoAxis.x);
@@ -170,10 +174,19 @@ struct GizmoTool {
 
         if (!dragging) {
             activeAxis = GizmoAxis.none;
-            float bestDist = pickRadius;
-            tryPickAxis(mouseRay, origin, ax, GizmoAxis.x, bestDist);
-            tryPickAxis(mouseRay, origin, ay, GizmoAxis.y, bestDist);
-            tryPickAxis(mouseRay, origin, az, GizmoAxis.z, bestDist);
+            float bestDist = float.max;
+            if (mode == GizmoMode.rotate) {
+                tryPickRing(mouseRay, origin, ax, GizmoAxis.x, bestDist);
+                tryPickRing(mouseRay, origin, ay, GizmoAxis.y, bestDist);
+                tryPickRing(mouseRay, origin, az, GizmoAxis.z, bestDist);
+            } else {
+                tryPickAxis(mouseRay, origin, ax, GizmoAxis.x, bestDist);
+                tryPickAxis(mouseRay, origin, ay, GizmoAxis.y, bestDist);
+                tryPickAxis(mouseRay, origin, az, GizmoAxis.z, bestDist);
+                tryPickTip(mouseRay, origin, ax, GizmoAxis.x, bestDist);
+                tryPickTip(mouseRay, origin, ay, GizmoAxis.y, bestDist);
+                tryPickTip(mouseRay, origin, az, GizmoAxis.z, bestDist);
+            }
 
             if (mousePressed && activeAxis != GizmoAxis.none) {
                 dragging = true;
@@ -303,8 +316,31 @@ private:
         float tRay = 0, tSeg = 0;
         immutable d = closestRayAxis(ray, origin, axisDir, tRay, tSeg);
         if (tSeg < 0 || tSeg > axisLength) return;
-        if (d < bestDist) {
-            bestDist = d;
+        considerPick(d, pickRadius, axis, bestDist);
+    }
+
+    /// The arrow head is a fatter target than the shaft.
+    void tryPickTip(Ray ray, Vec3 origin, Vec3 axisDir, GizmoAxis axis, ref float bestDist) {
+        immutable tip = origin + axisDir.normalized() * axisLength;
+        considerPick(rayPointDistance(ray, tip), pickRadius * 2.4f, axis, bestDist);
+    }
+
+    void tryPickRing(Ray ray, Vec3 origin, Vec3 axis, GizmoAxis which, ref float bestDist) {
+        Vec3 u, v;
+        perpendicularBasis(axis, u, v);
+        immutable r = axisLength;
+        immutable limit = pickRadius * 1.75f;
+        enum segs = 24;
+        foreach (i; 0 .. segs) {
+            immutable ang = (2.0f * PI * cast(float) i) / cast(float) segs;
+            immutable p = origin + u * (r * cos(ang)) + v * (r * sin(ang));
+            considerPick(rayPointDistance(ray, p), limit, which, bestDist);
+        }
+    }
+
+    void considerPick(float dist, float limit, GizmoAxis axis, ref float bestDist) {
+        if (dist <= limit && dist < bestDist) {
+            bestDist = dist;
             activeAxis = axis;
         }
     }
@@ -318,10 +354,36 @@ private:
         }
     }
 
-    void drawAxis(ref GizmoRenderer gizmos, Vec3 origin, Vec3 dir, Color4 c, bool hot) {
+    void drawAxis(ref GizmoRenderer gizmos, Vec3 origin, Vec3 dir, Color4 c, bool hot, bool arrow) {
         immutable col = hot ? Color4(1, 1, 0.2f, 1) : c;
         immutable len = hot ? axisLength * 1.1f : axisLength;
-        gizmos.line(origin, origin + dir * len, col);
+        immutable n = dir.normalized();
+        immutable tip = origin + n * len;
+        immutable head = len * 0.22f;
+        immutable shaftEnd = tip - n * head;
+        gizmos.line(origin, shaftEnd, col);
+        if (arrow)
+            drawArrowHead(gizmos, shaftEnd, tip, n, head * 0.45f, col);
+        else
+            drawTipBox(gizmos, tip, head * 0.55f, col);
+    }
+
+    void drawArrowHead(ref GizmoRenderer gizmos, Vec3 base, Vec3 tip, Vec3 dir, float radius, Color4 col) {
+        Vec3 u, v;
+        perpendicularBasis(dir, u, v);
+        enum segs = 8;
+        Vec3 prev = base + u * radius;
+        foreach (i; 1 .. segs + 1) {
+            immutable ang = (2.0f * PI * cast(float) i) / cast(float) segs;
+            immutable p = base + u * (radius * cos(ang)) + v * (radius * sin(ang));
+            gizmos.line(prev, p, col);
+            gizmos.line(p, tip, col);
+            prev = p;
+        }
+    }
+
+    void drawTipBox(ref GizmoRenderer gizmos, Vec3 center, float half, Color4 col) {
+        gizmos.box(center, Vec3(half * 2, half * 2, half * 2), col);
     }
 
     void drawRotationRing(ref GizmoRenderer gizmos, Vec3 origin, Vec3 axis, Color4 c, bool hot) {
@@ -353,4 +415,49 @@ private:
     immutable d = closestRayAxis(ray, Vec3(0, 0, 0), Vec3(1, 0, 0), tRay, tSeg);
     assert(d < 0.01f);
     assert(abs(tSeg) < 0.01f);
+}
+
+private void perpendicularBasis(Vec3 dir, out Vec3 u, out Vec3 v) pure nothrow @nogc {
+    immutable n = dir.normalized();
+    immutable helper = abs(n.y) < 0.9f ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+    u = n.cross(helper).normalized();
+    v = n.cross(u).normalized();
+}
+
+private float rayPointDistance(Ray ray, Vec3 point) pure nothrow @nogc {
+    immutable w = point - ray.origin;
+    immutable denom = ray.direction.dot(ray.direction);
+    if (denom < 1e-8f)
+        return w.length();
+    immutable t = w.dot(ray.direction) / denom;
+    if (t < 0)
+        return w.length();
+    return (point - (ray.origin + ray.direction * t)).length();
+}
+
+@safe unittest {
+    import engine.editor.components : EditorWorld;
+
+    EditorWorld world;
+    auto id = world.spawn();
+    world.set(id, Transform.init);
+    Selection sel;
+    sel.select(id);
+
+    GizmoTool gizmo;
+    gizmo.mode = GizmoMode.translate;
+    gizmo.pickRadius = 0.15f;
+    gizmo.axisLength = 1.25f;
+    // Beside the tip: farther than the shaft radius, inside the arrow-head grab.
+    Ray nearTip = Ray(Vec3(1.25f, 2, 0.25f), Vec3(0, -1, 0));
+    assert(gizmo.update(world, sel, nearTip, true, true, false));
+    assert(gizmo.dragging);
+
+    GizmoTool miss;
+    miss.mode = GizmoMode.translate;
+    miss.pickRadius = 0.15f;
+    miss.axisLength = 1.25f;
+    Ray far = Ray(Vec3(1.25f, 2, 0.8f), Vec3(0, -1, 0));
+    assert(!miss.update(world, sel, far, true, true, false));
+    assert(!miss.dragging);
 }
