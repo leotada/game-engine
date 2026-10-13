@@ -8,11 +8,11 @@
     "sourcePaths": ["source/engine", "source/bindings", "source/demo"],
     "importPaths": ["source", "source/bindings/box3d"],
 
-    "dflags-dmd": ["-preview=dip1000", "-P-std=c17", "-P-Ivendor/box3d/include"],
+    "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-Ivendor/box3d/include"],
     "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-Ivendor/box3d/include"],
 
     "sourceFiles": ["source/bindings/box3d/box3d_import.c"],
-    "libs": ["SDL3", "wgpu_native", "box3d", "m"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "stb", "m"],
     "lflags-linux": ["-L./libs"],
 
     "configurations": [
