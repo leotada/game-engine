@@ -1,197 +1,200 @@
-# Arquitetura Gráfica
+# Graphics Architecture
 
-A engine usa **WGPU-native** como abstração GPU e **SDL3** para janelas/eventos, rodando nativamente em Wayland no Linux.
+The engine uses **WGPU-native** as its GPU abstraction and **SDL3** for windowing/input, running natively on Linux Wayland (with transparent X11 fallback), Windows, Android, and macOS/iOS.
 
-## Modelo em 3 Camadas (inspirado no Godot)
+## 3-Layer Model (Godot-Inspired)
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  Scene Layer — API de jogo (engine/scene/*)           │
-│  ├── Scene3D          → batched instanced (colorido)  │
-│  ├── Scene3DTextured  → batched instanced (texturas)  │
-│  ├── SceneGraph       → hierarquia Transform          │
-│  ├── Camera           → projeção perspectiva          │
+│  Scene Layer — Gameplay API (engine/scene/*)         │
+│  ├── Scene3D          → batched instanced (colored)  │
+│  ├── Scene3DTextured  → batched instanced (textures) │
+│  ├── SceneGraph       → Transform hierarchy          │
+│  ├── Camera           → perspective projection       │
 │  └── Controllers      → Orbit / Fly / FirstPerson    │
 ├──────────────────────────────────────────────────────┤
-│  Graphics Layer — recursos gráficos (engine/graphics/*)│
-│  ├── Mesh       → vertex/index (pos+normal)           │
-│  ├── TexMesh    → vertex/index (pos+normal+uv)        │
-│  ├── Texture    → GPU texture + TGA loader            │
-│  ├── Material   → PBR bind group (params + maps)      │
-│  ├── Color4     → RGBA float                          │
-│  └── primitives → cube, pyramid, diamond, quad, sphere│
+│  Graphics Layer — Graphic assets (engine/graphics/*) │
+│  ├── Mesh       → vertex/index (pos+normal)          │
+│  ├── TexMesh    → vertex/index (pos+normal+uv)       │
+│  ├── Texture    → GPU texture + TGA loader           │
+│  ├── Material   → PBR bind group (params + maps)     │
+│  ├── Color4     → RGBA float                         │
+│  └── primitives → cube, pyramid, diamond, quad, etc. │
 ├──────────────────────────────────────────────────────┤
-│  GPU Layer — wrappers WGPU low-level (engine/gpu/*)   │
-│  ├── App/Renderer → beginFrame / resolvePost / endFrame │
-│  ├── PostProcessor → bloom + ACES + FXAA                │
+│  GPU Layer — Low-level WGPU wrappers (engine/gpu/*)  │
+│  ├── App/Renderer → beginFrame / resolvePost / end   │
+│  ├── PostProcessor → bloom + ACES + FXAA             │
 │  ├── Pipeline3D   → colored + textured PBR instanced │
-│  ├── PipelineText → alpha-blended bitmap text         │
-│  ├── ShadowMap    → depth32Float + depth-only pipeline│
-│  ├── IblEnvironment → cubemap + irradiance + LUT     │
-│  ├── TextRenderer → bitmap font atlas (8×8 CP437)    │
+│  ├── PipelineText → alpha-blended bitmap text        │
+│  ├── ShadowMap    → depth32Float + depth-only pass   │
+│  ├── IblEnvironment → cubemap + irradiance + LUT    │
+│  ├── TextRenderer → bitmap font atlas (8×8 CP437)   │
 │  ├── Buffers      → vertex, index, uniform, dynamic  │
-│  ├── Shaders      → embedded WGSL sources            │
-│  └── GpuContext   → Instance→Adapter→Device→Queue    │
+│  ├── Shaders      → modular WGSL sources + preprocessor│
+│  └── GpuContext   → Instance→Adapter→Device→Queue   │
 ├──────────────────────────────────────────────────────┤
-│  Assets + DevTools                                    │
+│  Assets + DevTools                                   │
 │  ├── assets/bmp.d   → 24/32-bpp BMP → Texture        │
-│  ├── assets/gltf.d  → glTF mesh + PBR materials      │
-│  ├── devtools/gizmos.d  → linhas 3D overlay         │
-│  └── devtools/overlay.d → FPS + label debug HUD      │
+│  ├── assets/gltf.d  → glTF mesh + PBR materials     │
+│  ├── devtools/gizmos.d  → 3D line overlay primitives │
+│  └── devtools/overlay.d → FPS + structured HUD       │
 ├──────────────────────────────────────────────────────┤
 │  Bindings (bindings/wgpu.d + sdl3.d + box3d/)        │
-│  └── extern(C) nothrow @nogc — API C99 direta        │
+│  └── extern(C) nothrow @nogc — direct C99 ABI        │
 ├──────────────────────────────────────────────────────┤
-│  libwgpu_native.a          │  libSDL3.so              │
-│  (Vulkan/Metal/DX12)       │  (Wayland/X11 + áudio)  │
+│  libwgpu_native.a          │  libSDL3.so             │
+│  (Vulkan/Metal/DX12)       │  (Wayland/X11 + audio)  │
 └──────────────────────────────────────────────────────┘
 ```
 
-### Quando usar cada camada
+### When to Use Each Layer
 
-| Quero... | Usar |
+| Goal | Target API |
 |:---|:---|
-| Desenhar objetos 3D coloridos | `Scene3D` + `Mesh` + `Camera` |
-| Desenhar objetos 3D com texturas | `Scene3DTextured` + `TexMesh` + `Material` |
-| Hierarquia de transforms (planetas, luas, juntas) | `SceneGraph` |
-| Câmera orbital / voo livre / FPS | `engine.scene.controllers` |
-| Sombras direcionais | `ShadowMap` + pipeline texturizado |
-| Carregar BMP / glTF do disco | `engine.assets.bmp`, `engine.assets.gltf` |
-| Tocar WAV / efeitos sonoros | `engine.audio.engine` |
-| Texto HUD | `TextRenderer` |
-| Debug: linhas 3D, grid, eixos | `engine.devtools.gizmos` |
-| Debug: FPS + labels estruturados | `engine.devtools.overlay` |
-| Criar formas personalizadas | `Mesh.fromData` + `Vert` |
-| Pipeline/shader customizado | `engine.gpu.pipeline`, `engine.gpu.shader` |
-| Controle direto de buffers | `engine.gpu.buffer` |
-| Chamadas WGPU brutas | `bindings.wgpu` |
+| Draw colored 3D meshes | `Scene3D` + `Mesh` + `Camera` |
+| Draw textured 3D meshes | `Scene3DTextured` + `TexMesh` + `Material` |
+| Transform hierarchy (solar systems, joints, attachments) | `SceneGraph` |
+| Orbital / Fly / First-person camera control | `engine.scene.controllers` |
+| Directional shadows | `ShadowMap` + textured pipeline |
+| Load BMP / glTF from disk | `engine.assets.bmp`, `engine.assets.gltf` |
+| Play WAV sound effects | `engine.audio.engine` |
+| Debug HUD / bitmap text | `TextRenderer` |
+| Debug lines, grids, axes | `engine.devtools.gizmos` |
+| Debug FPS + structured labels | `engine.devtools.overlay` |
+| Custom procedural shapes | `Mesh.fromData` + `Vert` |
+| Custom pipeline / shader | `engine.gpu.pipeline`, `engine.gpu.shader` |
+| Direct GPU buffer control | `engine.gpu.buffer` |
+| Raw WGPU API calls | `bindings.wgpu` |
 
 ## WGPU-native
 
-Backend GPU baseado na spec WebGPU, implementado em Rust pelo projeto [wgpu](https://github.com/gfx-rs/wgpu-native). Vantagens sobre bgfx ou OpenGL direto:
+GPU backend based on the WebGPU specification, implemented in Rust by the [wgpu-native](https://github.com/gfx-rs/wgpu-native) project. Advantages over bgfx or direct OpenGL:
 
-- **Vulkan, Metal e DX12** via uma API unificada e moderna
-- **Validação rigorosa** em debug — erros claros em vez de estado GL silencioso
-- **API declarativa** — descriptors explícitos para pipelines, buffers, texturas
-- **Suporte a compute shaders** nativo (futuro: simulações GPU)
+- **Vulkan, Metal, and DX12** via a unified, modern interface.
+- **Strict validation** in debug builds — clear errors instead of silent GL state corruption.
+- **Declarative API** — explicit descriptors for pipelines, buffers, and textures.
+- **Native compute shader support** (for future GPU simulation systems).
 
-### Integração
+### Integration
 
-Assim como o bgfx anterior, usamos **bindings manuais `extern(C)`** em vez de pacotes bindbc. Razões:
+We maintain **manual `extern(C)` bindings** rather than third-party bindbc packages for three reasons:
 
-1. Controle total sobre quais funções/structs incluir
-2. Sem dependência de pacotes dub de terceiros que podem ficar desatualizados
-3. Zero overhead de wrapper — chamadas diretas para a ABI C
+1. Full control over included functions and structs.
+2. No external dub package dependencies that could fall out of sync with webgpu.h.
+3. Zero wrapper overhead — direct calls into the C ABI.
 
-As bindings estão em `source/bindings/wgpu.d`, baseadas no `webgpu.h` oficial do repositório webgpu-native/webgpu-headers.
+Bindings are located in `source/bindings/wgpu.d`, based directly on official `webgpu.h` headers.
 
-### Lifecycle GPU
+### GPU Lifecycle & Multiplatform Surfaces
 
 ```
 wgpuCreateInstance()
-  └─→ wgpuInstanceCreateSurface()     ← Wayland wl_display + wl_surface
-  └─→ wgpuInstanceRequestAdapter()    ← compatível com surface, high-perf
+  └─→ wgpuInstanceCreateSurface()     ← NativeSurfaceInfo (Wayland / fallback X11, Win32, Android, Metal)
+  └─→ wgpuInstanceRequestAdapter()    ← compatible with surface, high-performance
         └─→ wgpuAdapterRequestDevice()
               └─→ wgpuDeviceGetQueue()
-              └─→ wgpuSurfaceConfigure()  ← formato BGRA8, FIFO present
+              └─→ wgpuSurfaceGetCapabilities() ← dynamic format (BGRA8/RGBA8) and present mode (mailbox/fifo)
+              └─→ wgpuSurfaceConfigure()       ← safe, negotiated configuration
 ```
+
+For detailed multiplatform architecture, see [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
 
 ### Frame Loop
 
 ```
-1. beginFrame → render pass HDR offscreen (rgba16float + depth24Plus)
-2.   Scene3D / Scene3DTextured / gizmos draw into HDR
+1. beginFrame → offscreen HDR render pass (rgba16float + depth24Plus)
+2.   Scene3D / Scene3DTextured / gizmos draw into HDR target
 3. resolvePost → end HDR pass
-4.   bloom (threshold / downsample / upsample) se ligado
+4.   bloom pass (threshold / downsample / upsample) when enabled
 5.   tone map ACES (+ exposure) → LDR
-6.   FXAA se ligado → swapchain
-7.   reopen present pass (load) for text/UI
-8. endFrame → submit + wgpuSurfacePresent()
+6.   FXAA pass when enabled → swapchain
+7.   reopen present pass (load-op) for text/UI overlay
+8. endFrame → submit command buffer + wgpuSurfacePresent()
 ```
 
-Shadow depth pass (opcional) continua como submit separado **antes** de `beginFrame`.
+The optional shadow depth pass runs as a separate submit **before** `beginFrame`.
 
 ## Render Pipelines
 
 ### Pipeline3D
 
-Pipeline para geometria 3D com instanced rendering:
+Pipeline for colored 3D geometry with instanced rendering:
 
-- **Vertex buffer 0** — geometria: `float32x3 position + float32x3 normal` (stride=24)
-- **Vertex buffer 1** — instâncias: `4×float32x4` model matrix columns (stride=64, step=instance)
+- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal` (stride=24)
+- **Vertex buffer 1** — instances: `4×float32x4` model matrix columns (stride=64, step=instance)
 - **Depth** — depth24Plus, depthWriteEnabled, depthCompare=less
 - **Primitive** — triangleList, CCW front face, back-face culling
-- **Shader** — WGSL com transformação VP × model e iluminação direcional N·L
+- **Shader** — WGSL with VP × model transformation and directional N·L lighting
 
 ### PipelineText
 
-Pipeline para texto bitmap (FPS overlay):
+Pipeline for bitmap text (FPS overlay, debug text):
 
 - **Vertex buffer** — `float32x2 position + float32x2 texcoord` (stride=16)
 - **Blend** — srcAlpha / oneMinusSrcAlpha (alpha blending)
 - **Depth** — depth24Plus, depthWrite=false, depthCompare=always (overlay)
 - **Font atlas** — 128×48 R8Unorm texture, 8×8 CP437 glyphs (ASCII 32-127)
-- **Shader** — WGSL com uniform screen size, sampler + texture binding
+- **Shader** — WGSL with screen size uniform, sampler + texture binding
 
 ### Pipeline3D Textured (PBR)
 
-Variante do Pipeline3D com metallic-roughness, PCF shadows e IBL:
+Variant of Pipeline3D with metallic-roughness PBR, PCF shadows, and IBL:
 
-- **Vertex buffer 0** — geometria: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32)
-- **Vertex buffer 1** — instâncias: 4×`float32x4` model + tint `float32x4` (stride=80)
+- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32)
+- **Vertex buffer 1** — instances: 4×`float32x4` model + tint `float32x4` (stride=80)
 - **Bind groups:**
   - `@group(0) Frame` — `FrameUniforms` (viewProj, lightViewProj, lightDir, shadowBias, cameraPos), comparison sampler, `texture_depth_2d`
-  - `@group(1) Material` — `MaterialParams` UBO, filtering sampler, albedo + MR/normal/occlusion/emissive (sempre bound; defaults 1×1)
-  - `@group(2) IBL` — irradiance cube, prefiltered specular (mips), BRDF LUT, sampler
-- **Fragment** — Cook-Torrance GGX + IBL (HDR); tone map no post (`resolvePost`)
-- **Uso** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo)`
-- **Color target** — `Renderer.sceneFormat()` = `rgba16float` (não o swapchain)
+  - `@group(1) Material` — `MaterialParams` UBO, filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
+  - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), BRDF LUT, sampler
+- **Fragment** — Cook-Torrance GGX + IBL (HDR output); tone mapping in `resolvePost`
+- **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo)`
+- **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain)
 
-### ShadowMap (depth-only pipeline)
+### ShadowMap (Depth-Only Pipeline)
 
-Mapa de profundidade para sombras direcionais:
+Depth map for directional shadows:
 
-- **Target** — textura 2D `depth32Float` (default 2048×2048)
-- **Pipeline** — pipeline dedicado sem fragment shader (depth-only write)
-- **VP da luz** — `directionalLightVP()` gera uma `Mat4` de projeção ortográfica + lookAt a partir da direção da luz e de uma bounding sphere do mundo
-- **Fluxo** — (1) `submitShadowPass` / depth pass na shadow map, (2) `Scene3DTextured.setLighting(lightDir, lightVP, shadow)` antes do color pass, (3) PCF 3×3 no fragment textured
+- **Target** — 2D texture `depth32Float` (default 2048×2048)
+- **Pipeline** — dedicated depth-only pipeline with no fragment stage
+- **Light VP** — `directionalLightVP()` computes an orthographic + lookAt `Mat4` from light direction and scene bounding sphere
+- **Workflow** — (1) `submitShadowPass` / depth render into shadow map, (2) `Scene3DTextured.setLighting(lightDir, lightVP, shadow)` before color pass, (3) PCF 3×3 sampling in textured fragment shader
 
 ## Benchmark
 
-O benchmark 3D demonstra o pipeline completo com 1000 cubos girando:
+The 3D benchmark demonstrates the instanced pipeline with 1,000 spinning cubes:
 
-- **1000 cubos** em grid 10×10×10, espaçamento 1.5
-- **Instanced rendering** — uma draw call para todos os cubos
-- **~1800 FPS** (Linux/Vulkan, mailbox present mode, sem vsync)
-- **FPS overlay** — texto bitmap atualizado a cada frame
-- **Câmera perspectiva** — FOV 45°, lookAt, near=0.1, far=200.0
+- **1,000 cubes** arranged in a 10×10×10 grid, spacing 1.5
+- **Instanced rendering** — one draw call for all cubes
+- **~1800 FPS** (Linux/Vulkan, mailbox present mode, vsync disabled)
+- **FPS overlay** — bitmap text updated every frame
+- **Perspective camera** — FOV 45°, lookAt, near=0.1, far=200.0
 
 ## SDL3
 
-SDL3 é usado exclusivamente para:
+SDL3 is used strictly for:
 
-- **Janela** — `SDL_CreateWindow()` com suporte nativo Wayland
-- **Eventos** — teclado, mouse, quit, window close
-- **Propriedades Wayland** — `SDL_GetWindowProperties()` extrai `wl_display` e `wl_surface` para criar a surface WGPU
+- **Windowing** — `SDL_CreateWindow()` with native Wayland support
+- **Events** — keyboard, mouse, window close, quit
+- **Native properties** — `SDL_GetWindowProperties()` extracts platform handles (`wl_display`, `wl_surface`, Win32 HWND, Android window, or Metal layer)
 
-Não usamos o renderer SDL nem SDL_gpu. O SDL é uma camada fina de plataforma; toda renderização passa pelo WGPU.
+We do not use SDL_Renderer or SDL_gpu. SDL acts as a thin platform layer; all rendering flows through WGPU.
 
-### Bindings SDL3
+### SDL3 Bindings
 
-Em `source/bindings/sdl3.d` — subset da API necessário para Phase 1:
+In `source/bindings/sdl3.d`:
 
-- Init/Quit, Window, Events, Properties, Timer
-- `SDL_Scancode` com valores USB HID
-- `SDL_Event` union (128 bytes, compatível com SDL3)
-- Strings de propriedade para Wayland (`SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER`, etc.)
+- Init/Quit, Window, Events, Properties, Timer, Metal
+- `SDL_Scancode` with USB HID values
+- `SDL_Event` union (128 bytes, SDL3 compatible)
+- Property strings for Wayland, X11, Win32, Android, and Metal
 
 ## Shaders
 
-A engine usa **WGSL** (WebGPU Shading Language), compilados diretamente pelo WGPU runtime. Os shader sources estão embutidos em `engine/gpu/shaders.d`.
+The engine uses **WGSL** (WebGPU Shading Language), compiled directly by the WGPU runtime. Shaders are organized in `assets/shaders/` with an include preprocessor, compile-time CTFE embedding, and transactional runtime hot-reloading.
 
-### cube3dShaderSource
+### cube3d.wgsl
 
-Vertex shader que transforma posições com VP × model matrix (instanced) e passa normal para o fragment. Fragment shader faz iluminação direcional N·L:
+Vertex shader transforming positions by VP × model matrix (instanced) and passing normals to fragment shader. Fragment shader computes directional N·L lighting:
 
 ```wgsl
 @group(0) @binding(0) var<uniform> vp: mat4x4f;
@@ -213,9 +216,9 @@ fn vs_main(
 }
 ```
 
-### text2dShaderSource
+### text2d.wgsl
 
-Vertex shader para quads de texto com coordenadas de tela. Fragment shader amostra atlas R8Unorm e aplica cor:
+Vertex shader for text quads in screen space. Fragment shader samples R8Unorm atlas and applies color:
 
 ```wgsl
 @group(0) @binding(0) var<uniform> screenSize: vec2f;
@@ -223,69 +226,66 @@ Vertex shader para quads de texto com coordenadas de tela. Fragment shader amost
 @group(0) @binding(2) var fontTexture: texture_2d<f32>;
 ```
 
-## Texturas e Materiais
+## Textures and Materials
 
-`engine/graphics/texture.d` encapsula criação de texturas RGBA8 em GPU, samplers configuráveis e carregamento de arquivos TGA sem compressão. Também expõe helpers procedurais (`checker`, `solid`) para testes.
+`engine/graphics/texture.d` encapsulates GPU RGBA8 texture creation, configurable samplers, and uncompressed TGA loading. It also provides procedural helpers (`checker`, `solid`) for testing.
 
-`engine/graphics/material.d` cria um bind group `@group(1)` com `MaterialParams`
-(metallic/roughness/baseColor/flags) + sampler + albedo e maps opcionais.
-`Material.create(gpu, layout, sampler, albedo)` é o overload albedo-only
-(compatível com demos antigos). Maps ausentes usam texturas 1×1 default.
+`engine/graphics/material.d` creates a `@group(1)` bind group with `MaterialParams` (metallic/roughness/baseColor/flags) + sampler + albedo and optional maps. Missing maps use default 1×1 textures.
 
-### Formatos de imagem suportados
+### Supported Image Formats
 
-| Formato | Módulo | Observações |
+| Format | Module | Notes |
 |:---|:---|:---|
-| TGA (não comprimido) | `engine.graphics.texture` | 24/32-bpp, loader minimalista |
-| BMP (24/32-bpp, não comprimido) | `engine.assets.bmp` | Inverte verticalmente a ordem das linhas |
-| glTF 2.0 (mesh + PBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr`; sem skin/anim/`.glb` |
+| TGA (uncompressed) | `engine.graphics.texture` | 24/32-bpp, minimal loader |
+| BMP (24/32-bpp, uncompressed) | `engine.assets.bmp` | Flips row order vertically |
+| glTF 2.0 (mesh + PBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr`; skinning/anim/`.glb` deferred |
 
 ## SceneGraph
 
-Hierarquia de transforms para objetos compostos (planetas e luas, corpo + membros, câmera em cockpit, etc.).
+Transform hierarchy for composite objects (solar systems, body + limbs, cockpit camera, etc.).
 
-- **Nós** são índices (`uint`) em arrays paralelos — `parent[]`, `local[]`, `world[]`
-- **Uma única passada** propaga `world = parent.world × local` em ordem topológica
-- **Sem ponteiros** — sem GC pressure, cache-friendly, compatível com `@nogc`
-- Útil combinado com `Scene3DTextured.drawMatrix(mesh, world, material)`
+- **Nodes** are indices (`uint`) into parallel arrays — `parent[]`, `local[]`, `world[]`
+- **Single pass** propagates `world = parent.world × local` in topological order
+- **No pointers** — zero GC pressure, cache-friendly, strictly `@nogc` compatible
+- Useful with `Scene3DTextured.drawMatrix(mesh, world, material)`
 
-## Controllers de Câmera
+## Camera Controllers
 
-`engine/scene/controllers.d` oferece três controladores prontos para uso:
+`engine/scene/controllers.d` provides three ready-to-use controllers:
 
-| Controller | Entrada | Uso típico |
+| Controller | Input | Typical Use |
 |:---|:---|:---|
 | `OrbitCamera` | mouse drag + scroll | editor, model viewer, RTS |
-| `FlyCamera` | WASD + mouse look | debug, showcase |
-| `FirstPersonCamera` | WASD + mouse look + gravidade opcional | gameplay FPS |
+| `FlyCamera` | WASD + mouse look | debug, showcase, editor viewport |
+| `FirstPersonCamera` | WASD + mouse look + optional gravity | FPS gameplay |
 
-Todos atualizam a `Camera` interna via `lookAt` — são controllers, não câmeras em si.
+All controllers update the internal `Camera` via `lookAt` — they are controllers, not cameras themselves.
 
-## Áudio
+## Audio
 
-`engine/audio/engine.d` expõe uma API simples sobre SDL3 audio streams:
+`engine/audio/engine.d` provides a simple API built on SDL3 audio streams:
 
-- **`AudioEngine.create()`** — inicializa o subsistema de áudio SDL3
-- **`AudioClip.loadWav(path)`** — decodifica um WAV em memória (PCM)
-- **`engine.play(clip)`** — toca o clip sem bloquear; múltiplas instâncias se sobrepõem
+- **`AudioEngine.create()`** — initializes the SDL3 audio subsystem
+- **`AudioClip.loadWav(path)`** — decodes a WAV file into memory (PCM)
+- **`engine.play(clip)`** — plays the clip non-blockingly; multiple instances overlap cleanly
 
-Áudio é orientado a gameplay — não roda dentro do frame loop gráfico nem exige `@nogc`.
+Audio is designed for gameplay systems — it runs outside the graphics frame loop and does not require `@nogc`.
 
 ## DevTools
 
-Ferramentas de depuração e tooling de editor, em `engine/devtools/`:
+Debugging tools and editor components in `engine/devtools/`:
 
-- **`Gizmos`** — primitivas imediatas em 3D (linha, eixos XYZ, grid, bounding box). Usa topology `lineList` com depth overlay para aparecerem sempre sobre a cena. API `begin/end` por frame, sem alocações no hot path.
-- **`DebugOverlay`** — overlay estruturado de FPS + labels arbitrários, renderizado sobre o `TextRenderer`. Ideal para posição da câmera, contadores, flags de estado.
+- **`Gizmos`** — immediate-mode 3D primitives (lines, XYZ axes, grid, bounding box). Uses `lineList` topology with depth overlay so lines remain visible over the scene. `begin/end` per frame, zero allocations on hot paths.
+- **`DebugOverlay`** — structured FPS counter and arbitrary labels rendered via `TextRenderer`. Ideal for camera positions, frame counters, and runtime state flags.
 
-## Estrutura de Bibliotecas
+## Library Structure
 
 ```
 libs/
-└── libwgpu_native.a    # WGPU-native (Vulkan backend no Linux)
+└── libwgpu_native.a    # WGPU-native (Vulkan backend on Linux)
 ```
 
-Instalação:
+Installation:
 
 ```bash
 curl -sL https://github.com/gfx-rs/wgpu-native/releases/latest/download/wgpu-linux-x86_64-release.zip \
@@ -297,26 +297,26 @@ cp /tmp/wgpu/lib/libwgpu_native.a libs/
 ## Build
 
 ```bash
-# Demo com clear screen
+# Clear screen demo
 dub build --config=demo
 
-# Benchmark 3D (1000 cubos + FPS)
+# 3D benchmark (1000 cubes + FPS)
 dub build --config=benchmark
 dub run --config=benchmark
 
 # Crystal Collector (gameplay)
 dub run --config=game
 
-# Solar system (scene graph + texturas + sombras PCF)
+# Solar system (scene graph + textures + PCF shadows)
 dub run --config=showcase
 
 # PBR validation (5×2 spheres + IBL + glTF cube)
 dub run --config=pbr
 
-# Editor tooling (gizmos + debug overlay + shadows)
+# Visual editor (gizmos + debug overlay + shadows + docking)
 dub run --config=editor
 
-# Release otimizado
+# Optimized release builds
 dub build --config=demo --build=release
 dub build --config=benchmark --build=release
 ```

@@ -1,85 +1,77 @@
-# Plano: Networking
+# Plan: Networking
 
-> **Status:** pendente · Prioridade: baixa · Ver [roadmap.md](roadmap.md)
+> **Status:** pending · Priority: low · See [roadmap.md](roadmap.md)
 
-## Objetivo
+## Objective
 
-Primitivas client/server para multiplayer autoritativo: transporte,
-serialização POD, tick sync e replicação de entidades — mínimo para
-2–8 jogadores em LAN.
+Authoritative client/server multiplayer primitives: transport, POD serialization, tick synchronization, and entity state replication — minimum baseline for 2–8 players over LAN.
 
-## Estado atual
+## Current State
 
-- Engine single-player; **não existe** `engine.net` nem sockets na API
-- Componentes já são POD — bom para snapshot/delta
-- Física Box3D não é determinística cross-platform por default → v1 =
-  servidor autoritativo + interpolation, **não** lockstep
+- The engine is single-player; `engine.net` and sockets do not exist in the public API.
+- ECS components are already POD — excellent for binary snapshotting and delta compression.
+- Box3D physics is not cross-platform deterministic by default → v1 targets **authoritative server + client-side interpolation**, not lockstep simulation.
 
-## Fora de escopo
+## Out of Scope
 
-- Matchmaking, relay cloud, anti-cheat avançado
-- Replay completo / demo recording (pode reutilizar `engine.ser` depois)
-- P2P sem host
-- Reliability elaborada (janela grande, NACK streams) — v1 só acks
-  seletivos para spawn/despawn/eventos críticos
+- Matchmaking services, cloud relay servers, advanced anti-cheat
+- Complete game replay / demo recording
+- Peer-to-peer (P2P) mesh architectures
+- Complex reliability protocols (large sliding windows, NACK streams) — v1 uses selective ACKs for entity spawn, despawn, and critical game events
 
-## Dependências
+## Dependencies
 
-- Física estável o bastante para o demo escolhido
-  ([plan-physics-api.md](plan-physics-api.md))
-- Módulo compartilhado futuro **`engine.ser`** (byte writer para `isPod!T`)
-  — mesmo núcleo útil para save de cena no
-  [plan-editor-ux.md](plan-editor-ux.md); este plano **não** implementa
-  `engine.ser` sozinho além do necessário para NET-2
+- Stable physics simulation for the chosen demo ([plan-physics-api.md](plan-physics-api.md))
+- Binary byte serializer for `isPod!T` types
 
-## Fases
+## Phases
 
-### NET-1 — Transporte
+### NET-1 — Low-Level Transport
 
-- [ ] UDP via sockets POSIX `extern(C)` (sem bindbc)
-- [ ] Wrapper `@trusted` mínimo em `engine.net.transport`
-- [ ] Ack seletivo opcional só para mensagens críticas
+- [ ] UDP via POSIX `extern(C)` sockets (no third-party dependencies)
+- [ ] Minimal `@trusted` wrapper in `engine.net.transport`
+- [ ] Non-blocking I/O with selective ACK headers for critical messages
 
-**DoD:** dois processos trocam datagramas em localhost.
+**DoD:** Two separate local processes exchange UDP datagrams over localhost.
 
-### NET-2 — Serialização
+### NET-2 — POD Serialization
 
-- [ ] Bit/byte writer para structs `isPod!T` (embrião de `engine.ser`)
-- [ ] EntityId + generation, Vec3/Quat compactados
-- [ ] Sem `string` na wire — `StringId` ou IDs de protocolo
+- [ ] Bit/byte stream writer for `isPod!T` structs
+- [ ] Compact serialization for `EntityId`, `Vec3`, and `Quat`
+- [ ] Zero `string` types on the wire — protocol IDs or fixed buffers only
 
-**DoD:** round-trip de um componente POD em buffer sem GC.
+**DoD:** Round-trip serialization of a POD component buffer with zero GC allocations.
 
-### NET-3 — Tick model
+### NET-3 — Fixed Tick Model
 
-- [ ] Server tick fixo (30 ou 60 Hz) separado do render
-- [ ] Client: input buffer + interpolation
-- [ ] Documentar clock vs physics substeps
+- [ ] Fixed server simulation tick rate (30 or 60 Hz) decoupled from display refresh
+- [ ] Client input queue buffer + snapshot interpolation
+- [ ] Documented clock synchronization vs physics substeps
 
-**DoD:** cliente interpola posição de um body remoto sem stutter óbvio em LAN.
+**DoD:** Client smoothly interpolates the position of a remote physics body without stuttering over a local network.
 
-### NET-4 — Replicação
+### NET-4 — Entity Replication
 
-- [ ] Sets always-replicate de componentes
-- [ ] Spawn/despawn messages
-- [ ] Ownership (quem manda input do pawn)
+- [ ] Replication sets for active gameplay components
+- [ ] Entity spawn and despawn protocol packets
+- [ ] Authority and ownership tracking (assigning client input to pawns)
 
-**DoD:** spawn remoto aparece e some nos dois lados.
+**DoD:** Remotely spawned entity appears, updates, and despawns consistently on both host and client.
 
-### NET-5 — Demo
+### NET-5 — Multiplayer Demo
 
-- [ ] Mini jogo 2 jogadores (variante de `pong3d` ou arena)
-- [ ] Host+client processos separados
+- [ ] 2-player mini-game (e.g. 3D Pong or arena combat)
+- [ ] Standalone dedicated host and client binaries
 
-**DoD:** partida curta jogável em LAN.
+**DoD:** A playable 2-player match runs smoothly over LAN.
 
-## Critérios de aceite
+## Acceptance Criteria
 
-1. Dois processos sincronizam entidades a ≥30 Hz estável em LAN.
-2. Payloads são POD (sem GC pointers na wire).
-3. Single-player continua zero-cost (networking opt-in).
+1. Two processes synchronize replicated entities at ≥ 30 Hz stably over LAN.
+2. Network payloads are strictly POD without GC pointers.
+3. Single-player performance remains completely unaffected (networking is 100% opt-in).
 
-## Referências
+## References
 
-- [plan-physics-api.md](plan-physics-api.md), [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
-- `source/demo/pong3d.d` como candidato a vertical slice
+- [plan-physics-api.md](plan-physics-api.md)
+- [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)

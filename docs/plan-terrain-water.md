@@ -1,67 +1,65 @@
-# Plano: Editor de terreno e água
+# Plan: Terrain and Water Editor
 
-> **Status:** pendente · Prioridade: baixa–média · Ver [roadmap.md](roadmap.md)
+> **Status:** pending · Priority: low–medium · See [roadmap.md](roadmap.md)
 
-## Objetivo
+## Objective
 
-Ferramentas de level design para **heightfield / terrain** e **água**
-(lago/oceano simples), integradas ao editor de cena
-([plan-editor-ux.md](plan-editor-ux.md)) — brush de altura, material/splat
-básico, collider heightfield, superfície de água com material e nível.
+Level design tools for **heightfield terrain** and **water surfaces** (simple lakes and oceans), integrated into the scene editor ([plan-editor-ux.md](plan-editor-ux.md)) — height brushes, basic texture splatting, Box3D heightfield colliders, and water plane rendering with adjustable water level.
 
-Não é um world builder AAA (sem rivérios procedurais, sem fluid sim completa).
+This is a focused level authoring tool, not a sprawling AAA procedural world generator (no hydraulic erosion simulation, no full SPH fluids).
 
-## Dependências
+## Dependencies
 
-- Editor de cena v1 (picking, gizmos, save/load, assets) — [plan-editor-ux.md](plan-editor-ux.md)
-- Física: heightfield Box3D (extensão de P5) — [plan-physics-api.md](plan-physics-api.md)
-- Multi-luz + sombra úteis para preview — GFX-L no plano do editor
+- Visual scene editor v1 (picking, gizmos, save/load, asset DB) — [plan-editor-ux.md](plan-editor-ux.md)
+- Physics: Box3D heightfield colliders (extension of P5) — [plan-physics-api.md](plan-physics-api.md)
+- Multi-light + shadows for viewport preview
 
-## Escopo sugerido (v1)
+## Scope (v1)
 
-### Terreno
+### Terrain
 
-- [ ] Heightmap (grid) como asset (`*.asset.json` kind `terrain` ou arquivo dedicado)
-- [ ] Mesh GPU a partir do heightmap + LOD simples (opcional na v1: sem LOD)
-- [ ] Brush: raise / lower / smooth / flatten (raio + strength)
-- [ ] Textura / splat até N layers (começar com 1 albedo + tiling)
-- [ ] Collider `heightfield` static sync com o heightmap
-- [ ] Serializar no asset; cena referencia o terreno como entidade
+- [ ] Heightmap grid stored as an asset (`*.asset.json` with `terrain` kind or dedicated height data file)
+- [ ] GPU grid mesh generated from heightmap + optional distance LOD
+- [ ] Sculpting brushes: raise / lower / smooth / flatten (radius + strength parameters)
+- [ ] Texture splatting for 1–4 surface layers (albedo + tiling scale)
+- [ ] Static Box3D `heightfield` collider synchronized with the sculpted heightmap
+- [ ] Serialized in the asset; scene references the terrain entity
 
-### Água
+### Water
 
-- [ ] Plano / grid de água com nível Y e bounds XZ
-- [ ] Material água (cor, roughness alto, opacity/alpha ou refraction simples)
-- [ ] Movimento leve (UV scroll ou vertex wave barato) — sem simulação SPH
-- [ ] (Opcional) stencil/depth para “abaixo d’água” tint
-- [ ] Entidade `Water` na cena; gizmo de nível
+- [ ] Water plane / grid mesh with adjustable Y elevation and XZ bounds
+- [ ] Water material (tint color, roughness, alpha transparency or basic screen refraction)
+- [ ] Subtle surface motion (UV scrolling normal maps or low-cost vertex displacement waves)
+- [ ] Optional depth/stencil underwater absorption tint
+- [ ] `Water` entity in scene with elevation gizmo handle
 
-## Fora de escopo (v1)
+## Out of Scope (v1)
 
-- Erosão / rivers / hydraulic erosion
-- Ocean FFT / Gerstner completo
-- Caustics, shore foam avançado, underwater volume lighting
-- Voxel terrain / CSG
-- Streaming de tiles de mundo aberto
+- Hydraulic / thermal erosion simulation, procedural river splines
+- Full FFT ocean simulation with Gerstner wave spectrums
+- Real-time caustics, dynamic shoreline foam simulation, underwater volumetric fog
+- Voxel terrain / CSG geometry
+- Open-world streaming terrain tiles
 
-## Fases (rascunho)
+## Draft Phases
 
-| Fase | Conteúdo |
+| Phase | Deliverable |
 |:---|:---|
-| TW-1 | Heightmap asset + mesh render + load/save |
-| TW-2 | Brushes no editor + undo de stroke |
-| TW-3 | Heightfield collider Box3D |
-| TW-4 | Water plane + material + entidade cena |
-| TW-5 | Polish: splat 2–4 layers, wave UV, golden scene |
+| TW-1 | Heightmap asset format + GPU mesh generator + load/save pipeline |
+| TW-2 | Editor sculpting brushes + brush stroke undo/redo |
+| TW-3 | Box3D heightfield collider generation and synchronization |
+| TW-4 | Water plane mesh + water shader material + scene entity |
+| TW-5 | Polish: 2–4 layer texture splatting, wave animation, golden test scene |
 
-## Critérios de aceite
+## Acceptance Criteria
 
-1. Pintar terreno no editor, salvar, reabrir com o mesmo relief.
-2. Character/bola colide com o heightfield.
-3. Colocar água com nível editável e ver na viewport.
-4. Cena de exemplo `assets/scenes/terrain_water.scene.json`.
+1. Sculpting terrain in the editor, saving, and reopening reproduces the exact surface relief.
+2. Character controller and physics bodies collide accurately with the heightfield.
+3. Placing a water plane allows editing its level and seeing live updates in the viewport.
+4. Reference scene available in `assets/scenes/terrain_water.scene.json`.
 
-## Referências
+## References
 
-- [plan-editor-ux.md](plan-editor-ux.md), [plan-physics-api.md](plan-physics-api.md) (P5/heightfield)
-- [plan-pbr.md](plan-pbr.md), `source/engine/gpu/shaders.d`
+- [plan-editor-ux.md](plan-editor-ux.md)
+- [plan-physics-api.md](plan-physics-api.md)
+- [plan-pbr.md](plan-pbr.md)

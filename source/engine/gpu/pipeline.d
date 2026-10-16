@@ -523,3 +523,207 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     info("Textured 3D PBR pipeline created (frame + material + IBL)");
     return result;
 }
+
+/// Transactional hot-reload for colored 3D pipeline: keeps old pipeline if new shader fails.
+bool reloadColoredPipeline3D(ref Pipeline3D pipe, WGPUDevice device, WGPUTextureFormat surfaceFormat, scope const(char)[] newWgsl) nothrow @nogc @trusted {
+    if (pipe.pipelineLayout is null || device is null) return false;
+    auto newModule = createShaderModule(device, newWgsl, "reload_colored_3d");
+    if (newModule is null) return false;
+
+    WGPUVertexAttribute[2] vertexAttrs = [
+        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+    ];
+    WGPUVertexAttribute[5] instanceAttrs = [
+        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 2 },
+        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 3 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 4 },
+        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 5 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 6 },
+    ];
+    WGPUVertexBufferLayout[2] bufferLayouts = [
+        {
+            arrayStride: 24,
+            stepMode: WGPUVertexStepMode.vertex,
+            attributeCount: 2,
+            attributes: vertexAttrs.ptr,
+        },
+        {
+            arrayStride: 80,
+            stepMode: WGPUVertexStepMode.instance_,
+            attributeCount: 5,
+            attributes: instanceAttrs.ptr,
+        },
+    ];
+
+    WGPUColorTargetState colorTarget;
+    colorTarget.format = surfaceFormat;
+    colorTarget.writeMask = WGPUColorWriteMask.all;
+
+    WGPUFragmentState fragState;
+    fragState.module_ = newModule;
+    fragState.entryPoint = wgpuStringView("fs_main");
+    fragState.targetCount = 1;
+    fragState.targets = &colorTarget;
+
+    WGPUDepthStencilState depthState;
+    depthState.format = WGPUTextureFormat.depth24Plus;
+    depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+    depthState.depthCompare = WGPUCompareFunction.less;
+
+    WGPURenderPipelineDescriptor pipeDesc;
+    pipeDesc.layout = pipe.pipelineLayout;
+    pipeDesc.vertex.module_ = newModule;
+    pipeDesc.vertex.entryPoint = wgpuStringView("vs_main");
+    pipeDesc.vertex.bufferCount = 2;
+    pipeDesc.vertex.buffers = bufferLayouts.ptr;
+    pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+    pipeDesc.primitive.frontFace = WGPUFrontFace.ccw;
+    pipeDesc.primitive.cullMode = WGPUCullMode.back;
+    pipeDesc.depthStencil = &depthState;
+    pipeDesc.fragment = &fragState;
+
+    auto newPipeline = wgpuDeviceCreateRenderPipeline(device, &pipeDesc);
+    if (newPipeline is null) {
+        wgpuShaderModuleRelease(newModule);
+        return false;
+    }
+
+    if (pipe.pipeline !is null) wgpuRenderPipelineRelease(pipe.pipeline);
+    if (pipe.shaderModule !is null) wgpuShaderModuleRelease(pipe.shaderModule);
+    pipe.pipeline = newPipeline;
+    pipe.shaderModule = newModule;
+    return true;
+}
+
+/// Transactional hot-reload for textured 3D PBR pipeline: keeps old pipeline if new shader fails.
+bool reloadTexturedPipeline3D(ref Pipeline3D pipe, WGPUDevice device, WGPUTextureFormat surfaceFormat, scope const(char)[] newWgsl) nothrow @nogc @trusted {
+    if (pipe.pipelineLayout is null || device is null) return false;
+    auto newModule = createShaderModule(device, newWgsl, "reload_textured_3d");
+    if (newModule is null) return false;
+
+    WGPUVertexAttribute[3] vertexAttrs = [
+        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+        { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+    ];
+    WGPUVertexAttribute[5] instanceAttrs = [
+        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
+        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
+        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
+    ];
+    WGPUVertexBufferLayout[2] bufferLayouts = [
+        {
+            arrayStride: 32,
+            stepMode: WGPUVertexStepMode.vertex,
+            attributeCount: 3,
+            attributes: vertexAttrs.ptr,
+        },
+        {
+            arrayStride: 80,
+            stepMode: WGPUVertexStepMode.instance_,
+            attributeCount: 5,
+            attributes: instanceAttrs.ptr,
+        },
+    ];
+
+    WGPUColorTargetState colorTarget;
+    colorTarget.format = surfaceFormat;
+    colorTarget.writeMask = WGPUColorWriteMask.all;
+
+    WGPUFragmentState fragState;
+    fragState.module_ = newModule;
+    fragState.entryPoint = wgpuStringView("fs_main");
+    fragState.targetCount = 1;
+    fragState.targets = &colorTarget;
+
+    WGPUDepthStencilState depthState;
+    depthState.format = WGPUTextureFormat.depth24Plus;
+    depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+    depthState.depthCompare = WGPUCompareFunction.less;
+
+    WGPURenderPipelineDescriptor pipeDesc;
+    pipeDesc.layout = pipe.pipelineLayout;
+    pipeDesc.vertex.module_ = newModule;
+    pipeDesc.vertex.entryPoint = wgpuStringView("vs_main");
+    pipeDesc.vertex.bufferCount = 2;
+    pipeDesc.vertex.buffers = bufferLayouts.ptr;
+    pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+    pipeDesc.primitive.frontFace = WGPUFrontFace.ccw;
+    pipeDesc.primitive.cullMode = WGPUCullMode.back;
+    pipeDesc.depthStencil = &depthState;
+    pipeDesc.fragment = &fragState;
+
+    auto newPipeline = wgpuDeviceCreateRenderPipeline(device, &pipeDesc);
+    if (newPipeline is null) {
+        wgpuShaderModuleRelease(newModule);
+        return false;
+    }
+
+    if (pipe.pipeline !is null) wgpuRenderPipelineRelease(pipe.pipeline);
+    if (pipe.shaderModule !is null) wgpuShaderModuleRelease(pipe.shaderModule);
+    pipe.pipeline = newPipeline;
+    pipe.shaderModule = newModule;
+    return true;
+}
+
+/// Transactional hot-reload for 2D text pipeline: keeps old pipeline if new shader fails.
+bool reloadPipelineText(ref PipelineText pipe, WGPUDevice device, WGPUTextureFormat surfaceFormat, scope const(char)[] newWgsl) nothrow @nogc @trusted {
+    if (pipe.pipelineLayout is null || device is null) return false;
+    auto newModule = createShaderModule(device, newWgsl, "reload_text");
+    if (newModule is null) return false;
+
+    WGPUVertexAttribute[2] attrs = [
+        { format: WGPUVertexFormat.float32x2, offset: 0, shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x2, offset: 8, shaderLocation: 1 },
+    ];
+
+    WGPUVertexBufferLayout bufLayout;
+    bufLayout.arrayStride = 16;
+    bufLayout.stepMode = WGPUVertexStepMode.vertex;
+    bufLayout.attributeCount = 2;
+    bufLayout.attributes = attrs.ptr;
+
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.zero;
+
+    WGPUColorTargetState colorTarget;
+    colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
+    colorTarget.writeMask = WGPUColorWriteMask.all;
+
+    WGPUFragmentState fragState;
+    fragState.module_ = newModule;
+    fragState.entryPoint = wgpuStringView("fs_text");
+    fragState.targetCount = 1;
+    fragState.targets = &colorTarget;
+
+    WGPURenderPipelineDescriptor pipeDesc;
+    pipeDesc.layout = pipe.pipelineLayout;
+    pipeDesc.vertex.module_ = newModule;
+    pipeDesc.vertex.entryPoint = wgpuStringView("vs_text");
+    pipeDesc.vertex.bufferCount = 1;
+    pipeDesc.vertex.buffers = &bufLayout;
+    pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+    pipeDesc.fragment = &fragState;
+
+    auto newPipeline = wgpuDeviceCreateRenderPipeline(device, &pipeDesc);
+    if (newPipeline is null) {
+        wgpuShaderModuleRelease(newModule);
+        return false;
+    }
+
+    if (pipe.pipeline !is null) wgpuRenderPipelineRelease(pipe.pipeline);
+    if (pipe.shaderModule !is null) wgpuShaderModuleRelease(pipe.shaderModule);
+    pipe.pipeline = newPipeline;
+    pipe.shaderModule = newModule;
+    return true;
+}
+

@@ -238,4 +238,59 @@ struct GizmoRenderer {
         bgd.entries    = &entry;
         bindGroup = wgpuDeviceCreateBindGroup(device, &bgd);
     }
+
+    /// Safely hot-reload the gizmo shader without interrupting frame rendering.
+    bool reloadShader(scope const(char)[] newWgsl) @trusted nothrow @nogc {
+        if (pipe.pipelineLayout is null || device is null) return false;
+        auto newModule = createShaderModule(device, newWgsl, "reload_gizmo");
+        if (newModule is null) return false;
+
+        WGPUVertexAttribute[2] attrs = [
+            { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+            { format: WGPUVertexFormat.float32x4, offset: 12, shaderLocation: 1 },
+        ];
+        WGPUVertexBufferLayout layout;
+        layout.arrayStride    = VERTEX_STRIDE;
+        layout.stepMode       = WGPUVertexStepMode.vertex;
+        layout.attributeCount = 2;
+        layout.attributes     = attrs.ptr;
+
+        WGPUColorTargetState ct;
+        ct.format = Renderer.sceneFormat();
+        ct.writeMask = WGPUColorWriteMask.all;
+
+        WGPUFragmentState fs;
+        fs.module_     = newModule;
+        fs.entryPoint  = wgpuStringView("fs_main");
+        fs.targetCount = 1;
+        fs.targets     = &ct;
+
+        WGPUDepthStencilState depthState;
+        depthState.format            = WGPUTextureFormat.depth24Plus;
+        depthState.depthWriteEnabled = WGPUOptionalBool.false_;
+        depthState.depthCompare      = WGPUCompareFunction.always;
+
+        WGPURenderPipelineDescriptor pd;
+        pd.layout = pipe.pipelineLayout;
+        pd.vertex.module_     = newModule;
+        pd.vertex.entryPoint  = wgpuStringView("vs_main");
+        pd.vertex.bufferCount = 1;
+        pd.vertex.buffers     = &layout;
+        pd.primitive.topology = WGPUPrimitiveTopology.lineList;
+        pd.primitive.cullMode = WGPUCullMode.none;
+        pd.depthStencil = &depthState;
+        pd.fragment     = &fs;
+
+        auto newPipeline = wgpuDeviceCreateRenderPipeline(device, &pd);
+        if (newPipeline is null) {
+            wgpuShaderModuleRelease(newModule);
+            return false;
+        }
+
+        if (pipe.pipeline !is null) wgpuRenderPipelineRelease(pipe.pipeline);
+        if (pipe.shaderModule !is null) wgpuShaderModuleRelease(pipe.shaderModule);
+        pipe.pipeline = newPipeline;
+        pipe.shaderModule = newModule;
+        return true;
+    }
 }

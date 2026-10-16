@@ -7,6 +7,7 @@
 
     "sourcePaths": ["source/engine", "source/bindings"],
     "importPaths": ["source", "source/bindings/box3d"],
+    "stringImportPaths": ["assets/shaders"],
 
     "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-Ivendor/box3d/include"],
     "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-Ivendor/box3d/include"],

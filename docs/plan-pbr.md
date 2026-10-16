@@ -1,107 +1,91 @@
-# Plano: PBR (metallic / roughness + IBL)
+# Plan: PBR (Metallic / Roughness + IBL)
 
-> **Status:** feito · Prioridade: média · Ver [roadmap.md](roadmap.md)
+> **Status:** completed · Priority: medium · See [roadmap.md](roadmap.md)
 
-## Objetivo
+## Objective
 
-Estender o shading atual (Lambert N·L + albedo) para metallic-roughness
-(glTF) com IBL (irradiance + prefiltered specular + BRDF LUT), mantendo
-instancing e a API `Material` / `Scene3DTextured`. Inclui amostragem da
-shadow map existente (PCF) no path lit.
+Extend the initial shading model (Lambert N·L + albedo) to full metallic-roughness (glTF 2.0 specification) with Image-Based Lighting (irradiance + prefiltered specular + BRDF LUT), preserving instancing and the `Material` / `Scene3DTextured` API. Includes sampling the existing shadow map (PCF) in the lit fragment path.
 
-## Estado atual
+## Current State
 
-Paths reais:
+Repository paths:
 
-- Shader textured: **Cook-Torrance GGX + IBL + PCF** (HDR, sem clamp)
-  ([`source/engine/gpu/shaders.d`](../source/engine/gpu/shaders.d))
-- [`Material`](../source/engine/graphics/material.d) = `@group(1)` com
-  `MaterialParams` UBO + sampler + albedo + maps opcionais (defaults 1×1)
-- [`ShadowMap`](../source/engine/gpu/shadow.d) = depth pass + comparison
-  sampler; amostrado no path texturizado via `Scene3DTextured.setLighting`
-- [`IblEnvironment`](../source/engine/gpu/ibl.d) = cubemap procedural +
-  irradiance + specular mips + BRDF LUT (`@group(2)`)
-- [`assets/gltf.d`](../source/engine/assets/gltf.d) = mesh +
-  `pbrMetallicRoughness` (factors + BMP/TGA maps); asset de exemplo em
-  `assets/models/pbr_cube.gltf`
+- Textured shader: **Cook-Torrance GGX + IBL + PCF** (HDR output, no clamp) ([`source/engine/gpu/shaders.d`](../source/engine/gpu/shaders.d) and `assets/shaders/textured3d_pbr.wgsl`)
+- [`Material`](../source/engine/graphics/material.d) = `@group(1)` bind group with `MaterialParams` UBO + sampler + albedo + optional maps (bound with default 1×1 textures)
+- [`ShadowMap`](../source/engine/gpu/shadow.d) = depth pass + comparison sampler; sampled in the textured path via `Scene3DTextured.setLighting`
+- [`IblEnvironment`](../source/engine/gpu/ibl.d) = procedural cubemap + irradiance + specular mips + BRDF LUT (`@group(2)`)
+- [`assets/gltf.d`](../source/engine/assets/gltf.d) = mesh + `pbrMetallicRoughness` (factors + BMP/TGA maps); example asset in `assets/models/pbr_cube.gltf`
 
-Política de cor: cena em **`rgba16float`**; tone map ACES + bloom + FXAA em
-[plan-post-processing.md](plan-post-processing.md). Present SDR (`bgra8Unorm`).
+Color pipeline: Scene renders offscreen in **`rgba16float`**; tone mapping ACES + bloom + FXAA in [plan-post-processing.md](plan-post-processing.md). Present format is SDR (`bgra8Unorm` / `rgba8Unorm`).
 
-## Fora de escopo
+## Out of Scope
 
-- Clearcoat / sheen / transmission (extensions glTF avançadas)
-- Area lights / probe volumes dinâmicos (v1 = IBL estático + 1 directional)
-- Soft shadows elaborados além de PCF 3×3
+- Clearcoat / sheen / transmission (advanced glTF extensions)
+- Dynamic area lights / real-time probe volumes (v1 = static IBL + directional/point/spot lights)
+- Soft shadows beyond 3×3 PCF filtering
 
-## Dependências
+## Dependencies
 
-- **Pré-req interno deste plano:** fase PBR-0 (shadowed lit) usa
-  `ShadowMap` já existente
-- **Post:** [plan-post-processing.md](plan-post-processing.md) PP-1–6
-  entregue — HDR + tone map desbloqueiam IBL sem clamp
+- **Pre-requisite:** Phase PBR-0 (shadowed lit) utilizes `ShadowMap`
+- **Post-Processing:** [plan-post-processing.md](plan-post-processing.md) PP-1–6 delivered — HDR + ACES tone mapping unlock unclamped IBL reflections
 
-## Fases
+## Phases
 
-### PBR-0 — Shadowed lit (Lambert + PCF)
+### PBR-0 — Shadowed Lit (Lambert + PCF)
 
-- [x] Sample `shadow.depthView` + comparison sampler no fragment textured
-- [x] Bind light VP + shadow resources no frame bind group (`setLighting`)
-- [x] Demo mínimo (showcase/editor + `pbr`) usando `ShadowMap.create(gpu, resolution)`
+- [x] Sample `shadow.depthView` + comparison sampler in textured fragment shader
+- [x] Bind light VP + shadow resources in frame bind group (`setLighting`)
+- [x] Minimal demo using `ShadowMap.create(gpu, resolution)`
 
-**DoD:** sombra visível no path padrão; API =
-`ShadowMap.create(gpu, resolution)` + `beginShadowPass` /
-`endShadowPass` / `directionalLightVP` (não métodos inventados no guide antigo).
+**DoD:** Visible shadows in the standard pipeline; API = `ShadowMap.create(gpu, resolution)` + `beginShadowPass` / `endShadowPass` / `directionalLightVP`.
 
-### PBR-1 — Modelo de material
+### PBR-1 — Material Model
 
 - [x] Uniform: `metallic`, `roughness`, `baseColorFactor`, flags
-- [x] Texturas opcionais: metallicRoughness, normal, occlusion, emissive
-- [x] Path “albedo-only / colored” permanece para demos atuais
+- [x] Optional textures: metallicRoughness, normal, occlusion, emissive
+- [x] Backward-compatible "albedo-only" path for simple demos
 
-**DoD:** material sem maps extras renderiza igual ao path atual (+ sombra).
+**DoD:** Material without extra texture maps renders identically to previous baseline (+ shadows).
 
-### PBR-2 — Shader BRDF
+### PBR-2 — BRDF Shader Implementation
 
-- [x] WGSL: Cook-Torrance GGX + diffuse energy-conserving
-- [x] Validar com esferas metal/dielectric (roughness 0 → 1)
+- [x] WGSL: Cook-Torrance GGX + energy-conserving diffuse
+- [x] Validate using metal/dielectric sphere grid (roughness 0 → 1)
 
-**DoD:** referência visual: grade 5×2 de esferas (metal/dielectric ×
-roughness) em demo ou screenshot doc.
+**DoD:** 5×2 sphere grid (metal/dielectric × roughness) validated in the `pbr` demo.
 
-### PBR-3 — IBL
+### PBR-3 — Image-Based Lighting (IBL)
 
-- [x] Procedural sky → cubemap (sem HDR externo obrigatório)
-- [x] Precompute irradiance + specular mips + BRDF LUT no startup
-- [x] Bind groups: environment + LUT (`@group(2)`)
+- [x] Procedural sky → cubemap generation (no mandatory external HDR files)
+- [x] Precompute irradiance + specular mips + BRDF LUT at startup
+- [x] Bind groups: environment cubemap + LUT (`@group(2)`)
 
-**DoD:** esfera metal rough=0 reflete o environment de forma estável.
+**DoD:** Smooth metallic sphere (roughness=0) mirrors the procedural environment stably.
 
-### PBR-4 — glTF materials
+### PBR-4 — glTF Materials Loader
 
-- [x] Estender `assets/gltf.d` para `pbrMetallicRoughness` + textures
-- [x] Fallback quando o asset não tiver maps
+- [x] Extend `assets/gltf.d` to parse `pbrMetallicRoughness` + textures
+- [x] Graceful fallback when assets lack specific texture channels
 
-**DoD:** 1 asset glTF PBR versionado ou documentado sob `assets/` carrega
-sem pipeline manual.
+**DoD:** glTF PBR model under `assets/` loads with full textures automatically.
 
-### PBR-5 — Integração scene
+### PBR-5 — Scene Integration & Demo
 
-- [x] `Scene3DTextured` / Material API atualizada (`setLighting`, `setEnvironment`)
-- [x] Demo `pbr`: esferas PBR-2 + 1 modelo glTF + sombra + IBL
+- [x] Updated `Scene3DTextured` / Material API (`setLighting`, `setEnvironment`)
+- [x] `pbr` demo: PBR-2 spheres + glTF model + shadows + IBL
 
-**DoD:** `dub run --config=pbr` e `dub run --config=showcase` OK; `editor` OK.
+**DoD:** `dub run --config=pbr`, `dub run --config=showcase`, and `editor` run cleanly.
 
-## Critérios de aceite
+## Acceptance Criteria
 
-1. Metallic-roughness renderiza com e sem IBL.
-2. Shadow PCF no path lit padrão (não só infra depth).
-3. glTF PBR comum carrega sem setup manual de pipeline.
-4. Demos albedo/checker não quebram.
-5. Com post: HDR interno + tone map (ACES); present SDR.
+1. Metallic-roughness shading renders accurately with and without IBL.
+2. PCF shadow filtering in the standard lit path.
+3. Standard glTF PBR assets load without manual pipeline adjustments.
+4. Existing albedo/checker demos remain 100% backward-compatible.
+5. Post-processing integration: internal HDR scene + ACES tone mapping to SDR swapchain.
 
-## Referências
+## References
 
-- `source/engine/gpu/shaders.d`, `graphics/material.d`, `assets/gltf.d`,
-  `gpu/shadow.d`, `gpu/ibl.d`
-- [graphics.md](graphics.md), [plan-post-processing.md](plan-post-processing.md)
+- `source/engine/gpu/shaders.d`, `graphics/material.d`, `assets/gltf.d`, `gpu/shadow.d`, `gpu/ibl.d`
+- [graphics.md](graphics.md)
+- [plan-post-processing.md](plan-post-processing.md)

@@ -27,6 +27,12 @@ pong3d
 game-engine-gc-benchmark
 game-engine-lint
 game-engine-pbr
+game-engine-player
+game-engine-ui-gallery
+game-engine-ecs-bench
+
+# Engine workspace / build cache
+.engine/
 
 # Reference C++ codebases (vendored, not part of build)
 ref/
@@ -40,3 +46,4 @@ __dummy.html
 *.lst
 game-engine-test-asset
 game-engine-test-scene
+tools/spikes/s1_hotreload/host

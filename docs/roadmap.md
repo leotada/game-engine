@@ -1,67 +1,51 @@
-# Roadmap — o que falta
+# Roadmap — Work Backlog
 
-Visão consolidada do trabalho restante. O roadmap inicial (fases 1–12 do
-README) está **completo**. Física rígida gameplay via **Box3D**
-(`engine.physics`) — ver [physics-quickstart.md](physics-quickstart.md).
+Consolidated overview of remaining engine work. The initial roadmap (phases 1–12 of the README) is **complete**. Gameplay rigid body physics is powered by **Box3D** (`engine.physics`) — see [physics-quickstart.md](physics-quickstart.md).
 
-O porte nativo Jolt (`engine.jph`) foi **cancelado** e removido — ver
-[jph-port-plan.md](jph-port-plan.md).
+The native Jolt port (`engine.jph`) was **cancelled** and removed — see [jph-port-plan.md](jph-port-plan.md).
 
-## Prioridade sugerida
+## Suggested Priority
 
-Ordem por **desbloqueio**: jogabilidade → higiene GC → visual (fechar
-infra de sombra, depois polish) → conteúdo animado → tooling de iteração
-→ escala.
+Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphics & shaders (shadow infrastructure, modular shaders, hot-reload) → animated content → iteration tooling → scale.
 
-| # | Feature | Doc | Prioridade | Dependências / por quê nesta posição |
+| # | Feature | Document | Priority | Dependencies / Rationale |
 |---:|:---|:---|:---|:---|
-| 1 | API física gameplay (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **feito** (P5 mesh adiado) | Base de gameplay; demos `pong3d`, etc. |
-| 2 | Fechar GC-safe (adoção + lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **feito** (#9 Handle API adiado) | Storage POD + lint |
-| 3 | PBR + amostragem de sombra | [plan-pbr.md](plan-pbr.md) | **feito** (PBR-0–5) | Textured path: GGX + IBL + PCF; demo `pbr` |
-| 4 | Pós-processamento | [plan-post-processing.md](plan-post-processing.md) | **feito** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
-| 5 | Animação skeletal | [plan-animation.md](plan-animation.md) | média | glTF loader; poses em storage engine = `isPod` |
-| 6 | Editor de cena / level design | [plan-editor-ux.md](plan-editor-ux.md) | **feito** (v1) | `dub run --config=editor`; multi-luz c/ sombra; hull+mesh; `*.asset.json` + `*.scene.json`; multi-select + undo |
-| 7 | Editor de terreno e água | [plan-terrain-water.md](plan-terrain-water.md) | média | Depois do editor de cena; heightfield (P5); brushes + water plane |
-| 8 | Hot reload (assets + dados) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | média | Iteração diária (editor/assets); antes de escala |
-| 9 | ECS paralelo | [plan-parallel-ecs.md](plan-parallel-ecs.md) | baixa | API serial estável; opt-in |
-| 10 | Networking | [plan-networking.md](plan-networking.md) | baixa | `engine.ser` + física estável |
+| 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (P5 mesh deferred) | Gameplay foundation; `pong3d` demo, etc. |
+| 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
+| 3 | PBR + shadow sampling | [plan-pbr.md](plan-pbr.md) | **Done** (PBR-0–5) | Textured path: GGX + IBL + PCF; `pbr` demo |
+| 4 | Post-processing | [plan-post-processing.md](plan-post-processing.md) | **Done** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
+| 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
+| 6 | Scene editor / level design | [plan-editor-ux.md](plan-editor-ux.md) | **Done** (v1) | `dub run --config=editor`; multi-light with shadows; hull+mesh; asset DB; multi-select + undo |
+| 7 | Terrain and water editor | [plan-terrain-water.md](plan-terrain-water.md) | Medium | After scene editor; heightfield (P5); brushes + water plane |
+| 8 | Hot reload (assets + data + shaders) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) · [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Medium (Shaders Done) | Day-to-day iteration; shader hot-reload complete |
+| 9 | Parallel ECS | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Low | Stable serial API; opt-in scheduler |
+| 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 
-### Notas de ordem
+### Ordering Notes
 
-- **PBR + post:** cena em `rgba16float`; bloom + ACES + FXAA em
-  [`plan-post-processing.md`](plan-post-processing.md). Present continua SDR.
-- **Hot reload antes de ECS paralelo:** ganho de produtividade no dia a dia;
-  paralelismo é escala, não desbloqueia conteúdo.
-- **Terreno/água (#7) depois do editor (#6):** reutiliza picking, assets,
-  save/load e gizmos; heightfield Box3D desbloqueia collider do terreno.
-- **Evolução de Renderização (GFX):** v1 do editor shipa Forward com limite estrito de sombra (`MAX_POINT_SHADOW_CASTERS`). Evolução no backlog: **Static Shadow Caching** (reúso de cubemaps para luzes estáticas) e **Clustered Forward Rendering** (WGPU Compute) para escala de iluminação.
-- **GC-safe (#2) fechado:** `Pod!T[]` no storage, `World.strings`,
-  `App.frameArena`, `dub run --config=lint`. Novos buffers devem
-  nascer em `Pod!T` / `Handle!T` / `StringId`.
+- **PBR + Post:** Scene renders into `rgba16float`; bloom + ACES + FXAA detailed in [`plan-post-processing.md`](plan-post-processing.md). Swapchain presentation remains SDR.
+- **Hot-Reload before Parallel ECS:** Day-to-day productivity boost; parallelism addresses scaling, but does not unblock gameplay content creation.
+- **Terrain/Water (#7) after Scene Editor (#6):** Reuses picking, asset database, serialization, and gizmos; Box3D heightfield unblocks terrain collision.
+- **Rendering Evolution (GFX Backlog):** Editor v1 ships Forward rendering with shadow caster limits (`MAX_POINT_SHADOW_CASTERS`). Future evolution: **Static Shadow Caching** (cubemap reuse for static lights) and **Clustered Forward Rendering** (WGPU Compute) for light scaling.
+- **GC-Safe (#2) Completed:** `Pod!T[]` engine storage, `World.strings`, `App.frameArena`, `dub run --config=lint`. All new buffers must use `Pod!T` / `Handle!T` / `StringId`.
 
-## Já entregue (não reabrir)
+## Already Delivered (Do Not Reopen)
 
-- Core: SDL3 + WGPU + ECS SoA + math
-- Render: meshes, instancing, depth de cena, luz direcional N·L, texto bitmap
-- **ShadowMap infra:** depth pass `depth32Float` + comparison sampler +
-  PCF no pipeline textured (`Scene3DTextured.setLighting`)
-- Scene: graph, câmeras (orbit/fly/fps), materials PBR (metallic-roughness)
-- Assets: BMP + glTF mesh + `pbrMetallicRoughness` (`loadGltfPbr`)
-- **PBR + IBL:** Cook-Torrance GGX, procedural IBL, demo `dub run --config=pbr`
-- **Post:** HDR scene RT (`rgba16float`), bloom, ACES tone map, FXAA;
-  `app.resolvePost(frame)` antes do HUD; `App.post` settings
-- Audio: WAV via SDL3 streams
-- DevTools: gizmos 3D + overlay FPS/labels
-- Física gameplay: `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors,
-  raycast + overlap, joints (distance/revolute/weld), character controller,
-  contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
-- Primitivas GC-safe: `Pod!T`, `Handle!T`, `StringId`, `FrameArena`,
-  `@noGcStorage` + lint (`dub run --config=lint`) — ver [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
-- **Editor UX v1:** level editor (`dub run --config=editor`) — picking,
-  TRS gizmos+snap, multi-select, undo/redo, hierarchy/inspector, lights+
-  shadows, physics Simulate/Esc, `*.scene.json` / `*.asset.json` — ver
-  [plan-editor-ux.md](plan-editor-ux.md)
+- **Core:** SDL3 + WGPU + ECS SoA + vector/matrix math
+- **Multiplatform Surface:** Linux (Wayland primary, X11 fallback for standalone), Windows (HWND), Android (ANativeWindow), macOS/iOS (Metal layer) + dynamic swapchain capabilities
+- **Rendering:** Meshes, instancing, scene depth, directional N·L lighting, bitmap text
+- **ShadowMap Infrastructure:** `depth32Float` depth pass + comparison sampler + PCF filtering in textured pipeline (`Scene3DTextured.setLighting`)
+- **Modular Shaders & Hot-Reload:** WGSL include preprocessor (`#include`, `#define`, `#ifdef`), CTFE compile-time embedding, transactional non-destructive hot-reloading
+- **Scene:** SceneGraph, camera controllers (orbit/fly/fps), PBR materials (metallic-roughness)
+- **Assets:** BMP + glTF mesh + `pbrMetallicRoughness` (`loadGltfPbr`)
+- **PBR + IBL:** Cook-Torrance GGX, procedural IBL, `dub run --config=pbr` demo
+- **Post-Processing:** HDR scene RT (`rgba16float`), bloom (Karis average downsample + tent upsample), ACES tone mapping, FXAA; `app.resolvePost(frame)` before UI
+- **Audio:** WAV playback via SDL3 audio streams
+- **DevTools:** 3D gizmos + FPS/label debug overlay
+- **Gameplay Physics:** `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors, raycasts + overlaps, joints (distance/revolute/weld), character controller, contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
+- **GC-Safe Primitives:** `Pod!T`, `Handle!T`, `StringId`, `FrameArena`, static lint (`dub run --config=lint`) — see [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
+- **Editor UX v1:** Full level editor (`dub run --config=editor`) — raycast picking, TRS gizmos + snapping, multi-selection, undo/redo stack, hierarchy/inspector panels, lighting + shadows, play/pause physics simulation, `*.scene.json` and `*.asset.json` pipelines — see [plan-editor-ux.md](plan-editor-ux.md)
 
-## Limpeza pendente (não-feature)
+## Pending Maintenance (Non-Feature)
 
-- Mesh collider estático (plan-physics-api P5) — opcional, quando houver caso de uso
+- Static mesh collider (plan-physics-api P5) — optional, when required by specific game use cases

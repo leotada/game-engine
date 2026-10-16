@@ -48,6 +48,11 @@ struct Renderer {
         return SCENE_COLOR_FORMAT;
     }
 
+    /// Forward shader hot-reloading to the PostProcessor.
+    bool reloadPostShader(scope const(char)[] shaderName, scope const(char)[] newWgsl) nothrow @nogc {
+        return post.reloadShader(shaderName, newWgsl);
+    }
+
     private void createSceneTargets(uint w, uint h) nothrow @nogc @trusted {
         releaseSceneTargets();
         rtW = w;

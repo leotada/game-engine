@@ -55,6 +55,7 @@ struct UiBatchRenderer {
     private WGPUBuffer indexBuffer;
     private WGPUBuffer uniformBuffer;
     private WGPUSampler sampler;
+    private WGPUTextureFormat surfaceFormat;
 
     // Font atlas texture resources
     private WGPUTexture fontTexture;
@@ -86,9 +87,10 @@ struct UiBatchRenderer {
     private ScissorRect curClip;
 
     /// Initialize the UI batch renderer with GPU pipeline and buffers.
-    void init(WGPUDevice dev, WGPUQueue q, WGPUTextureFormat surfaceFormat, ref Font font) @trusted {
+    void init(WGPUDevice dev, WGPUQueue q, WGPUTextureFormat surfFormat, ref Font font) @trusted {
         device = dev;
         queue = q;
+        surfaceFormat = surfFormat;
 
         vertices.length = MAX_VERTICES;
         indices.length = MAX_INDICES;
@@ -528,6 +530,69 @@ struct UiBatchRenderer {
         indexCount = 0;
         segmentCount = 0;
         segmentStart = 0;
+    }
+
+    /// Safely hot-reload the 2D UI shader without interrupting UI interactions.
+    bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc @trusted {
+        if (pipelineLayout is null || device is null) return false;
+        auto newModule = createShaderModule(device, newWgsl, "reload_ui2d");
+        if (newModule is null) return false;
+
+        WGPUVertexAttribute[7] attrs = [
+            { format: WGPUVertexFormat.float32x2, offset: 0,  shaderLocation: 0 },
+            { format: WGPUVertexFormat.float32x2, offset: 8,  shaderLocation: 1 },
+            { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 2 },
+            { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 3 },
+            { format: WGPUVertexFormat.float32x2, offset: 48, shaderLocation: 4 },
+            { format: WGPUVertexFormat.float32x4, offset: 56, shaderLocation: 5 },
+            { format: WGPUVertexFormat.float32,   offset: 72, shaderLocation: 6 },
+        ];
+
+        WGPUVertexBufferLayout bufLayout;
+        bufLayout.arrayStride = UiVertex.sizeof;
+        bufLayout.stepMode = WGPUVertexStepMode.vertex;
+        bufLayout.attributeCount = 7;
+        bufLayout.attributes = attrs.ptr;
+
+        WGPUBlendState blendState;
+        blendState.color.operation = WGPUBlendOperation.add;
+        blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+        blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+        blendState.alpha.operation = WGPUBlendOperation.add;
+        blendState.alpha.srcFactor = WGPUBlendFactor.one;
+        blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
+        WGPUColorTargetState colorTarget;
+        colorTarget.format = surfaceFormat;
+        colorTarget.blend = &blendState;
+        colorTarget.writeMask = WGPUColorWriteMask.all;
+
+        WGPUFragmentState fragState;
+        fragState.module_ = newModule;
+        fragState.entryPoint = wgpuStringView("fs_ui");
+        fragState.targetCount = 1;
+        fragState.targets = &colorTarget;
+
+        WGPURenderPipelineDescriptor pipeDesc;
+        pipeDesc.layout = pipelineLayout;
+        pipeDesc.vertex.module_ = newModule;
+        pipeDesc.vertex.entryPoint = wgpuStringView("vs_ui");
+        pipeDesc.vertex.bufferCount = 1;
+        pipeDesc.vertex.buffers = &bufLayout;
+        pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+        pipeDesc.fragment = &fragState;
+
+        auto newPipeline = wgpuDeviceCreateRenderPipeline(device, &pipeDesc);
+        if (newPipeline is null) {
+            wgpuShaderModuleRelease(newModule);
+            return false;
+        }
+
+        if (pipeline !is null) wgpuRenderPipelineRelease(pipeline);
+        if (shaderModule !is null) wgpuShaderModuleRelease(shaderModule);
+        pipeline = newPipeline;
+        shaderModule = newModule;
+        return true;
     }
 
     /// Cleanup GPU resources.

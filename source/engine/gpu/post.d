@@ -419,7 +419,76 @@ struct PostProcessor {
         return wgpuDeviceCreatePipelineLayout(device, &d);
     }
 
-    private static WGPURenderPipeline makeFSPipeline(
+    /// Transactional shader reload for post-processing shaders.
+    bool reloadShader(scope const(char)[] shaderName, scope const(char)[] newWgsl) nothrow @nogc @trusted {
+        if (device is null) return false;
+        auto newModule = createShaderModule(device, newWgsl, "reload_post");
+        if (newModule is null) return false;
+
+        void relPipe(ref WGPURenderPipeline p) {
+            if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
+        }
+        void relSM(ref WGPUShaderModule m) {
+            if (m !is null) { wgpuShaderModuleRelease(m); m = null; }
+        }
+
+        if (shaderName == "bloom_threshold" || shaderName == "post_bloom_threshold") {
+            auto pipe = tryMakeFSPipeline(device, threshPL, newModule, SCENE_COLOR_FORMAT, false);
+            if (pipe is null) { relSM(newModule); return false; }
+            relPipe(threshPipe); relSM(threshSM);
+            threshPipe = pipe; threshSM = newModule;
+            return true;
+        } else if (shaderName == "bloom_down_karis" || shaderName == "post_bloom_down_karis") {
+            auto pipe = tryMakeFSPipeline(device, samplePL, newModule, SCENE_COLOR_FORMAT, false);
+            if (pipe is null) { relSM(newModule); return false; }
+            relPipe(downKarisPipe); relSM(downKarisSM);
+            downKarisPipe = pipe; downKarisSM = newModule;
+            return true;
+        } else if (shaderName == "bloom_down" || shaderName == "post_bloom_down") {
+            auto pipe = tryMakeFSPipeline(device, samplePL, newModule, SCENE_COLOR_FORMAT, false);
+            if (pipe is null) { relSM(newModule); return false; }
+            relPipe(downPipe); relSM(downSM);
+            downPipe = pipe; downSM = newModule;
+            return true;
+        } else if (shaderName == "bloom_up" || shaderName == "post_bloom_up") {
+            auto pipe = tryMakeFSPipeline(device, samplePL, newModule, SCENE_COLOR_FORMAT, false);
+            auto pipeAdd = tryMakeFSPipeline(device, samplePL, newModule, SCENE_COLOR_FORMAT, true);
+            if (pipe is null || pipeAdd is null) {
+                relPipe(pipe); relPipe(pipeAdd); relSM(newModule);
+                return false;
+            }
+            relPipe(upPipe); relPipe(upAddPipe); relSM(upSM);
+            upPipe = pipe; upAddPipe = pipeAdd; upSM = newModule;
+            return true;
+        } else if (shaderName == "tonemap" || shaderName == "post_tonemap") {
+            auto pipe = tryMakeFSPipeline(device, tonemapPL, newModule, WGPUTextureFormat.rgba8Unorm, false);
+            auto pipeSurf = tryMakeFSPipeline(device, tonemapPL, newModule, surfaceFormat, false);
+            if (pipe is null || pipeSurf is null) {
+                relPipe(pipe); relPipe(pipeSurf); relSM(newModule);
+                return false;
+            }
+            relPipe(tonemapPipe); relPipe(tonemapToSurfacePipe); relSM(tonemapSM);
+            tonemapPipe = pipe; tonemapToSurfacePipe = pipeSurf; tonemapSM = newModule;
+            return true;
+        } else if (shaderName == "fxaa" || shaderName == "post_fxaa") {
+            auto pipe = tryMakeFSPipeline(device, samplePL, newModule, surfaceFormat, false);
+            if (pipe is null) { relSM(newModule); return false; }
+            relPipe(fxaaPipe); relSM(fxaaSM);
+            fxaaPipe = pipe; fxaaSM = newModule;
+            return true;
+        } else if (shaderName == "blit" || shaderName == "post_blit") {
+            auto pipe = tryMakeFSPipeline(device, samplePL, newModule, surfaceFormat, false);
+            if (pipe is null) { relSM(newModule); return false; }
+            relPipe(blitPipe); relSM(blitSM);
+            blitPipe = pipe; blitSM = newModule;
+            return true;
+        }
+
+        relSM(newModule);
+        return false;
+    }
+
+    private static WGPURenderPipeline tryMakeFSPipeline(
         WGPUDevice device, WGPUPipelineLayout pl, WGPUShaderModule sm,
         WGPUTextureFormat colorFmt, bool additive) nothrow @nogc @trusted {
 
@@ -452,7 +521,13 @@ struct PostProcessor {
         desc.multisample.count = 1;
         desc.multisample.mask = ~0u;
 
-        auto pipe = wgpuDeviceCreateRenderPipeline(device, &desc);
+        return wgpuDeviceCreateRenderPipeline(device, &desc);
+    }
+
+    private static WGPURenderPipeline makeFSPipeline(
+        WGPUDevice device, WGPUPipelineLayout pl, WGPUShaderModule sm,
+        WGPUTextureFormat colorFmt, bool additive) nothrow @nogc @trusted {
+        auto pipe = tryMakeFSPipeline(device, pl, sm, colorFmt, additive);
         if (pipe is null) fatal("Failed to create post pipeline");
         return pipe;
     }

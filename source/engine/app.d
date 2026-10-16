@@ -35,8 +35,7 @@ struct App {
         app.window   = Window.create(toStringz(title), width, height);
         GpuContext.create(
             app.gpu,
-            app.window.waylandDisplay(),
-            app.window.waylandSurface(),
+            app.window.nativeSurface(),
             width, height,
             presentMode,
         );

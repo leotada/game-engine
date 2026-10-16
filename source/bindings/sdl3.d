@@ -262,6 +262,9 @@ enum string SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER = "SDL.window.wayland.displa
 enum string SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER = "SDL.window.wayland.surface";
 enum string SDL_PROP_WINDOW_X11_DISPLAY_POINTER     = "SDL.window.x11.display";
 enum string SDL_PROP_WINDOW_X11_WINDOW_NUMBER       = "SDL.window.x11.window";
+enum string SDL_PROP_WINDOW_WIN32_HWND_POINTER      = "SDL.window.win32.hwnd";
+enum string SDL_PROP_WINDOW_WIN32_HINSTANCE_POINTER = "SDL.window.win32.hinstance";
+enum string SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER  = "SDL.window.android.window";
 
 // ---------------------------------------------------------------------------
 // Functions
@@ -279,6 +282,13 @@ SDL_PropertiesID SDL_GetWindowProperties(SDL_Window* window);
 bool SDL_GetWindowSize(SDL_Window* window, int* w, int* h);
 bool SDL_GetWindowSizeInPixels(SDL_Window* window, int* w, int* h);
 void SDL_SetWindowTitle(SDL_Window* window, const(char)* title);
+const(char)* SDL_GetCurrentVideoDriver();
+
+// Metal
+alias SDL_MetalView = void*;
+SDL_MetalView SDL_Metal_CreateView(SDL_Window* window);
+void SDL_Metal_DestroyView(SDL_MetalView view);
+void* SDL_Metal_GetLayer(SDL_MetalView view);
 
 // Properties
 void* SDL_GetPointerProperty(SDL_PropertiesID props, const(char)* name, void* default_value);

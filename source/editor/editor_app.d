@@ -33,6 +33,7 @@ import engine.graphics.mesh : Mesh;
 import engine.graphics.types : Color4;
 import engine.hotreload.build_runner : Diagnostic;
 import engine.hotreload.reload : HotReloadManager;
+import engine.hotreload.shader_reload : ShaderHotReloader;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.ray : screenToWorldRay;
@@ -132,6 +133,7 @@ struct EditorApp {
     SceneLightSettings lightSettings;
     PhysicsWorld physics;
     HotReloadManager hotReload;
+    ShaderHotReloader shaderReloader;
     PlayMode playMode;
     AssetDatabase assetDb;
     ProjectPanel projectPanel;
@@ -191,6 +193,7 @@ struct EditorApp {
             planeMesh = Mesh.plane(app.gpu);
             gizmos = GizmoRenderer.create(app.gpu);
             gpuSceneReady = true;
+            shaderReloader.init("assets/shaders");
         }
 
         dock.initDefaultLayout(1280.0f, 768.0f);
@@ -264,6 +267,9 @@ struct EditorApp {
         if (hotReload.enabled && !isHeadless) {
             Diagnostic[] diags;
             hotReload.pollAndReload(world, world.types, world.strings, dt, diags);
+        }
+        if (!isHeadless) {
+            shaderReloader.pollAndReload(&scene, null, &gizmos, &uiRenderer, &app.renderer, dt);
         }
 
         if (!isHeadless && activeView == ActiveView.viewport && !flyCamActive)
@@ -407,6 +413,7 @@ struct EditorApp {
         info("Frames presented: ", framesPresented, ", skipped (no swapchain image): ", framesSkipped);
         if (playMode.isPlaying() || playMode.isPaused())
             playMode.stop(world, physics, world.strings, lightSettings, hotReload);
+        shaderReloader.shutdown();
         hotReload.shutdown(world);
         if (gpuSceneReady) {
             gizmos.destroy();

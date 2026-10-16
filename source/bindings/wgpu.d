@@ -499,6 +499,22 @@ struct WGPUSurfaceSourceXlibWindow {
     ulong window;
 }
 
+struct WGPUSurfaceSourceWindowsHWND {
+    WGPUChainedStruct chain;
+    void* hinstance;
+    void* hwnd;
+}
+
+struct WGPUSurfaceSourceAndroidNativeWindow {
+    WGPUChainedStruct chain;
+    void* window;
+}
+
+struct WGPUSurfaceSourceMetalLayer {
+    WGPUChainedStruct chain;
+    void* layer;
+}
+
 struct WGPURequestAdapterOptions {
     WGPUChainedStruct* nextInChain;
     WGPUFeatureLevel featureLevel = WGPUFeatureLevel.undefined;

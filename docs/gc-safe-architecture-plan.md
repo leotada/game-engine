@@ -1,11 +1,7 @@
 # GC-Safe Architecture Plan
 
-> **Status:** concluído (item 9 adiado) · Prioridade: alta · Ver [roadmap.md](roadmap.md)
+> **Status:** completed (item 9 deferred) · Priority: high · See [roadmap.md](roadmap.md)
 >
-> Cabeçalho e checklist em português. O corpo abaixo (§1–§8) permanece em
-> inglês (histórico da pesquisa); use o checklist como fonte de verdade
-> do progresso.
-
 > **Goal.** Allow high-level D code with the GC in game scripts while making
 > the worst-case GC pauses (the ones measured in
 > [docs/incremental-gc-research.md](incremental-gc-research.md) §7.5,
@@ -15,30 +11,30 @@
 This document is the implementation plan that follows from the GC research
 report. Read that report first for the empirical motivation.
 
-## Progress checklist (fonte de verdade)
+## Progress Checklist (Source of Truth)
 
-| # | Item | Status | Notas |
+| # | Item | Status | Notes |
 |---:|:---|:---|:---|
-| 1 | Módulos `Pod!T` / `isPod!T` | feito | `engine.core.pod`. `ComponentStore` e `SceneGraph` usam `Pod!T[]`. |
-| 2 | `Handle!T` | feito | `engine.core.handle` — uso real no `gc_benchmark`; API pública além de `EntityId` adiada (#9). |
-| 3 | `StringId` + `StringTable` | feito | `World.strings` owns a `StringTable`. |
-| 4 | `FrameArena` (módulo) | feito | `engine.core.arena`. |
-| 5 | Sem `string` long-lived em `engine/` | feito | Auditoria ok (exceto `jph/` cancelado); lint impede regressão. |
-| 6 | `FrameArena` em `App` / `endFrame()` + overlay | feito | `App.frameArena` 4 MB, `reset()` em `endFrame()`; overlay usa buffers fixos + `sformat`. |
-| 7 | `tools/lint.d` (`dub run --config=lint`) | feito | `attrs.d` / `@noGcStorage`; config `lint` no `dub.json`. |
-| 8 | Path POD no `gc_benchmark` | feito | Default CLI = `--worst-safe`; `--worst` permanece como foil. |
-| 9 | `Handle!T` além de `EntityId` na API pública | adiado | Só quando jogos precisarem de refs tipadas além de entidades. |
+| 1 | Modules `Pod!T` / `isPod!T` | Done | `engine.core.pod`. `ComponentStore` and `SceneGraph` use `Pod!T[]`. |
+| 2 | `Handle!T` | Done | `engine.core.handle` — production use in `gc_benchmark`; public API beyond `EntityId` deferred (#9). |
+| 3 | `StringId` + `StringTable` | Done | `World.strings` owns a `StringTable`. |
+| 4 | `FrameArena` (module) | Done | `engine.core.arena`. |
+| 5 | No long-lived `string` in `engine/` | Done | Audit complete; static lint prevents regressions. |
+| 6 | `FrameArena` in `App` / `endFrame()` + overlay | Done | `App.frameArena` 4 MB, `reset()` in `endFrame()`; overlay uses fixed buffers + `sformat`. |
+| 7 | `tools/lint.d` (`dub run --config=lint`) | Done | `@noGcStorage` enforcement; `lint` configuration in `dub.json`. |
+| 8 | POD path in `gc_benchmark` | Done | Default CLI = `--worst-safe`; `--worst` remains as comparative baseline. |
+| 9 | `Handle!T` beyond `EntityId` in public API | Deferred | Only when games explicitly require typed references beyond entities. |
 
-Mapeamento checklist ↔ rollout §5:
+Checklist ↔ §5 Rollout Mapping:
 
 | Checklist | §5 Rollout |
 |---:|:---|
-| 1 | Step 1 (feito, incl. `Pod!T[]`) |
+| 1 | Step 1 (Done, including `Pod!T[]`) |
 | 3 + 5 | Step 2 |
 | 4 + 6 | Step 3 |
 | 7 | Step 4 |
 | 8 | Step 5 |
-| 9 | Step 6 (deferred) |
+| 9 | Step 6 (Deferred) |
 
 ---
 

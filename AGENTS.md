@@ -45,6 +45,10 @@ This is a commercial-grade 3D game engine written in **D**, targeting Bevy Engin
 - No classes in engine code. Structs only. `@disable this(this)` for move-only types.
 - Logging via `engine.core.log` — `info()`, `warn()`, `err()`, `fatal()`. Fatal calls `abort()`.
 
+### Documentation & Language
+
+- **All documentation must be written in English.** This applies to all files in `docs/`, architecture documents, roadmaps, implementation plans, code comments, docstrings, and commit messages. Never write documentation or plans in Portuguese or any other language. All existing and future documentation must be maintained in English.
+
 ### Performance Principles
 
 - **Cache locality first** — contiguous arrays (`T[]`), sparse-set iteration over dense storage.

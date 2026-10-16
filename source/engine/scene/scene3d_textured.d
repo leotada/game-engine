@@ -158,6 +158,12 @@ struct Scene3DTextured {
     /// IBL layout (@group(2)) — for custom environment construction.
     auto iblLayout() nothrow @nogc { return pipeline.iblBindGroupLayout; }
 
+    /// Safely hot-reload the textured 3D PBR pipeline without reallocating bind groups.
+    bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
+        import engine.gpu.pipeline : reloadTexturedPipeline3D;
+        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl);
+    }
+
     /// Update multi-light UBO + bind shadow maps for the next draws.
     ///
     /// `dirShadow` may be null (uses a fully-lit placeholder).

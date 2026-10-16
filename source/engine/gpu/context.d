@@ -3,6 +3,7 @@
 module engine.gpu.context;
 
 import bindings.wgpu;
+import engine.platform.window : NativeSurfaceInfo, NativeSurfaceBackend;
 import engine.core.log;
 
 @safe:
@@ -19,10 +20,8 @@ struct GpuContext {
 
     @disable this(this);
 
-    /// Initialize the full WGPU stack with a Wayland surface.
-    /// Takes a ref to avoid returning a temporary whose destructor would free the
-    /// WGPU handles before the caller can use them (post-blit double-free).
-    static void create(ref GpuContext ctx, void* wlDisplay, void* wlSurface,
+    /// Initialize the full WGPU stack with a multiplatform native surface.
+    static void create(ref GpuContext ctx, NativeSurfaceInfo surfInfo,
                        uint width, uint height,
                        WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
 
@@ -34,20 +33,60 @@ struct GpuContext {
         }
         info("WGPU instance created");
 
-        // 2. Surface (Wayland)
+        // 2. Surface (Wayland / X11 fallback / Win32 / Android / Metal)
         WGPUSurfaceSourceWaylandSurface waylandSource;
-        waylandSource.chain.sType = WGPUSType.surfaceSourceWaylandSurface;
-        waylandSource.chain.next  = null;
-        waylandSource.display     = wlDisplay;
-        waylandSource.surface     = wlSurface;
+        WGPUSurfaceSourceXlibWindow x11Source;
+        WGPUSurfaceSourceWindowsHWND win32Source;
+        WGPUSurfaceSourceAndroidNativeWindow androidSource;
+        WGPUSurfaceSourceMetalLayer metalSource;
+        WGPUChainedStruct* chainPtr = null;
+
+        final switch (surfInfo.backend) {
+            case NativeSurfaceBackend.wayland:
+                waylandSource.chain.sType = WGPUSType.surfaceSourceWaylandSurface;
+                waylandSource.chain.next  = null;
+                waylandSource.display     = surfInfo.displayOrInstance;
+                waylandSource.surface     = surfInfo.windowOrSurface;
+                chainPtr = cast(WGPUChainedStruct*) &waylandSource;
+                break;
+            case NativeSurfaceBackend.x11:
+                x11Source.chain.sType = WGPUSType.surfaceSourceXlibWindow;
+                x11Source.chain.next  = null;
+                x11Source.display     = surfInfo.displayOrInstance;
+                x11Source.window      = surfInfo.x11Window;
+                chainPtr = cast(WGPUChainedStruct*) &x11Source;
+                break;
+            case NativeSurfaceBackend.win32:
+                win32Source.chain.sType = WGPUSType.surfaceSourceWindowsHWND;
+                win32Source.chain.next  = null;
+                win32Source.hinstance   = surfInfo.displayOrInstance;
+                win32Source.hwnd        = surfInfo.windowOrSurface;
+                chainPtr = cast(WGPUChainedStruct*) &win32Source;
+                break;
+            case NativeSurfaceBackend.android:
+                androidSource.chain.sType = WGPUSType.surfaceSourceAndroidNativeWindow;
+                androidSource.chain.next  = null;
+                androidSource.window      = surfInfo.windowOrSurface;
+                chainPtr = cast(WGPUChainedStruct*) &androidSource;
+                break;
+            case NativeSurfaceBackend.metal:
+                metalSource.chain.sType = WGPUSType.surfaceSourceMetalLayer;
+                metalSource.chain.next  = null;
+                metalSource.layer       = surfInfo.windowOrSurface;
+                chainPtr = cast(WGPUChainedStruct*) &metalSource;
+                break;
+            case NativeSurfaceBackend.none:
+                fatal("Cannot create WGPU surface: no native surface provided");
+                break;
+        }
 
         WGPUSurfaceDescriptor surfDesc;
-        surfDesc.nextInChain = cast(WGPUChainedStruct*) &waylandSource;
+        surfDesc.nextInChain = chainPtr;
         ctx.surface = wgpuInstanceCreateSurface(ctx.instance, &surfDesc);
         if (ctx.surface is null) {
             fatal("wgpuInstanceCreateSurface failed");
         }
-        info("WGPU surface created");
+        info("WGPU surface created (backend=", cast(int) surfInfo.backend, ")");
 
         // 3. Adapter (synchronous via processEvents)
         WGPURequestAdapterOptions adapterOpts;
@@ -85,14 +124,60 @@ struct GpuContext {
         // 5. Queue
         ctx.queue = wgpuDeviceGetQueue(ctx.device);
 
-        // 6. Configure surface
-        ctx.surfaceFormat = WGPUTextureFormat.bgra8Unorm;
-        ctx.presentModeVal = presentMode;
+        // 6. Negotiate surface format and present mode dynamically
+        WGPUTextureFormat chosenFormat = WGPUTextureFormat.bgra8Unorm;
+        WGPUPresentMode chosenPresent = presentMode;
+
+        WGPUSurfaceCapabilities caps;
+        if (wgpuSurfaceGetCapabilities(ctx.surface, ctx.adapter, &caps) == WGPUStatus.success) {
+            scope (exit) wgpuSurfaceCapabilitiesFreeMembers(caps);
+
+            bool hasBgra = false;
+            bool hasRgba = false;
+            foreach (i; 0 .. caps.formatCount) {
+                if (caps.formats[i] == WGPUTextureFormat.bgra8Unorm) hasBgra = true;
+                if (caps.formats[i] == WGPUTextureFormat.rgba8Unorm) hasRgba = true;
+            }
+
+            if (hasBgra) {
+                chosenFormat = WGPUTextureFormat.bgra8Unorm;
+            } else if (hasRgba) {
+                chosenFormat = WGPUTextureFormat.rgba8Unorm;
+            } else if (caps.formatCount > 0) {
+                chosenFormat = caps.formats[0];
+            }
+
+            bool presentSupported = false;
+            foreach (i; 0 .. caps.presentModeCount) {
+                if (caps.presentModes[i] == presentMode) {
+                    presentSupported = true;
+                    break;
+                }
+            }
+            if (!presentSupported && caps.presentModeCount > 0) {
+                chosenPresent = WGPUPresentMode.fifo;
+            }
+        }
+
+        ctx.surfaceFormat = chosenFormat;
+        ctx.presentModeVal = chosenPresent;
         ctx.surfW = width;
         ctx.surfH = height;
         ctx.configureSurface();
 
-        info("GPU context fully initialized");
+        info("GPU context fully initialized (format=", cast(uint) ctx.surfaceFormat, ")");
+    }
+
+    /// Legacy overload for Wayland display + surface pointers.
+    static void create(ref GpuContext ctx, void* wlDisplay, void* wlSurface,
+                       uint width, uint height,
+                       WGPUPresentMode presentMode = WGPUPresentMode.fifo) @trusted {
+        import engine.platform.window : NativeSurfaceInfo, NativeSurfaceBackend;
+        NativeSurfaceInfo info;
+        info.backend = NativeSurfaceBackend.wayland;
+        info.displayOrInstance = wlDisplay;
+        info.windowOrSurface   = wlSurface;
+        create(ctx, info, width, height, presentMode);
     }
 
     private void configureSurface() @trusted {

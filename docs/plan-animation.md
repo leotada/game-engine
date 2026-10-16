@@ -1,89 +1,82 @@
-# Plano: Animação skeletal
+# Plan: Skeletal Animation
 
-> **Status:** pendente · Prioridade: média · Ver [roadmap.md](roadmap.md)
+> **Status:** pending · Priority: medium · See [roadmap.md](roadmap.md)
 
-## Objetivo
+## Objective
 
-Skinning GPU a partir de glTF: joints, weights, inverse bind matrices,
-clips e amostragem por tempo — suficiente para personagens e props
-animados.
+GPU skinning loaded from glTF files: joints, weights, inverse bind matrices, animation clips, and time sampling — sufficient for animated characters and props.
 
-API escolhida: **componentes ECS POD** (`SkeletonPose`, `AnimationPlayer`),
-não uma classe `AnimatedModel`.
+Chosen API design: **POD ECS components** (`SkeletonPose`, `AnimationPlayer`), not a heavy `AnimatedModel` class.
 
-## Estado atual
+## Current State
 
-Paths reais:
+Real repository paths:
 
-- [`assets/gltf.d`](../source/engine/assets/gltf.d) — mesh estático → `TexMesh`;
-  sem `JOINTS_0` / `WEIGHTS_0`, sem `skin`, sem `animations`, sem `.glb`
-- Sem pipeline de vertex skinning
-- [`scene/graph.d`](../source/engine/scene/graph.d) — hierarquia de transforms;
-  **não** é skeleton
+- [`assets/gltf.d`](../source/engine/assets/gltf.d) — static mesh → `TexMesh`; no `JOINTS_0` / `WEIGHTS_0`, no `skin`, no `animations`, no `.glb`
+- No vertex skinning pipeline
+- [`scene/graph.d`](../source/engine/scene/graph.d) — transform hierarchy; **not** a bone skeleton
 
-## Fora de escopo
+## Out of Scope
 
-- Morph targets / blend shapes (fase posterior)
-- Retargeting entre skeletons
-- Ragdoll físico — **bloqueado** em joints Box3D
-  ([plan-physics-api.md](plan-physics-api.md) P3); não faz parte deste plano
+- Morph targets / blend shapes (future phase)
+- Skeleton retargeting
+- Physics ragdolls — depends on Box3D joints ([plan-physics-api.md](plan-physics-api.md) P3); outside the scope of this plan
 
-## Dependências
+## Dependencies
 
-- glTF loader atual (estender)
-- [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) — poses/clips
-  em storage engine devem ser `isPod`
+- Existing glTF loader (to be extended)
+- [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) — poses and clips stored in engine storage must pass `isPod!T`
 
-## Fases
+## Phases
 
-### AN-1 — Dados POD
+### AN-1 — POD Data Structures
 
-- [ ] `Skeleton` / joints por índice (sem class refs)
-- [ ] `Skin` — IBM + joint indices
-- [ ] `AnimationClip` — keyframes em buffers contíguos
-- [ ] `StringId` para nomes de joints/clips
-- [ ] Componentes: `SkeletonPose`, `AnimationPlayer`
+- [ ] `Skeleton` / joints indexed by integer ID (no heap class references)
+- [ ] `Skin` — inverse bind matrices (IBM) + joint index arrays
+- [ ] `AnimationClip` — keyframes in contiguous arrays
+- [ ] `StringId` for joint and clip names
+- [ ] Components: `SkeletonPose`, `AnimationPlayer`
 
-**DoD:** tipos compilam com `isPod` / `Pod!T` onde vivem no ECS.
+**DoD:** Types compile with `isPod` / `Pod!T` where stored within the ECS.
 
-### AN-2 — Loader glTF
+### AN-2 — glTF Loader Extensions
 
-- [ ] Parse skins + accessors JOINTS/WEIGHTS
-- [ ] Parse animations (LINEAR; CUBICSPLINE depois se necessário)
-- [ ] Asset de teste documentado (path sob `assets/` ou URL fixa no doc)
+- [ ] Parse `skins` + accessors for `JOINTS_0` / `WEIGHTS_0`
+- [ ] Parse `animations` (LINEAR interpolation; CUBICSPLINE later if needed)
+- [ ] Documented test asset under `assets/models/`
 
-**DoD:** load de 1 glTF skinned popula `Skin` + clips sem render ainda.
+**DoD:** Loading 1 skinned glTF file populates `Skin` + clips without rendering yet.
 
-### AN-3 — Avaliação de pose
+### AN-3 — Pose Evaluation
 
-- [ ] Sample clip(s) → local transforms → world matrices do skeleton
-- [ ] Blend de 2 clips (lerp/slerp) mínimo
-- [ ] `@nogc` no hot path; scratch via `FrameArena` se precisar
+- [ ] Sample clip(s) → local joint transforms → skeleton world matrices
+- [ ] Minimum 2-clip blend (linear interpolation / spherical quaternion slerp)
+- [ ] Strictly `@nogc` on hot evaluation path; transient scratch allocations via `FrameArena`
 
-**DoD:** matrizes de bone mudam com o tempo em unittest/demo headless.
+**DoD:** Bone matrices update over time in a headless unit test or benchmark.
 
-### AN-4 — Skinning GPU
+### AN-4 — GPU Skinning Pipeline
 
-- [ ] Vertex shader com UBO/storage de bone matrices
-- [ ] Pipeline dedicado ou flag no textured pipeline
-- [ ] Limite de bones documentado
+- [ ] Vertex shader with UBO/storage buffer of bone matrices
+- [ ] Dedicated skinning pipeline or feature permutation in textured pipeline
+- [ ] Documented maximum active bone limit (e.g. 64 or 128 joints)
 
-**DoD:** mesh skinned renderiza na pose amostrada.
+**DoD:** Skinned mesh renders on screen following the sampled pose.
 
-### AN-5 — Demo
+### AN-5 — Demo & ECS Systems
 
-- [ ] Systems que atualizam `AnimationPlayer` / `SkeletonPose`
-- [ ] Demo: personagem idle/walk ou prop animado
+- [ ] Gameplay systems updating `AnimationPlayer` / `SkeletonPose`
+- [ ] Executable demo: animated idle/walk character or prop
 
-**DoD:** `dub run` de uma config mostra animação looping.
+**DoD:** Running `dub run --config=anim` displays a looping skinned animation.
 
-## Critérios de aceite
+## Acceptance Criteria
 
-1. Modelo glTF com skin reproduz a animação de referência.
-2. Pose evaluation + upload de bones no frame path `@nogc`.
-3. Componentes de animação são POD no ECS.
+1. Skinned glTF model reproduces the reference animation correctly.
+2. Pose evaluation and bone buffer uploads in the frame path are `@nogc`.
+3. All animation components stored in ECS are strictly POD.
 
-## Referências
+## References
 
 - `source/engine/assets/gltf.d`, `graphics/texmesh.d`, `scene/graph.d`
 - [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)

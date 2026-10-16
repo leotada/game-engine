@@ -1,69 +1,73 @@
-# Plano: Hot reload (assets + dados)
+# Plan: Hot-Reload (Assets + Data + Shaders)
 
-> **Status:** pendente · Prioridade: média · Ver [roadmap.md](roadmap.md)
+> **Status:** in progress · Priority: medium · See [roadmap.md](roadmap.md)
 
-## Objetivo
+## Objective
 
-Iterar conteúdo sem restart do processo: recarregar texturas/meshes/WAV e
-tunables de dados durante o desenvolvimento.
+Iterate on content without restarting the process: reload textures/meshes/WAVs, data tunables, and shaders during development.
 
-**v1 = assets + dados apenas.** Reload de código D (shared `.so`) e
-embed de Lua/Wren ficam **fora de escopo**.
+## Current State
 
-## Estado atual
+- **WGSL Shaders**: Fully implemented modular system with include preprocessor (`#include`, `#define`, `#ifdef`), CTFE compile-time embedding, and **transactional runtime hot-reload** via `ShaderHotReloader` (`source/engine/hotreload/shader_reload.d`). See [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
+- Gameplay in D within the same binary (`dub run --config=…`) or via dynamic modules using `HotReloadManager`.
+- Disk assets (BMP/glTF/WAV) are load-once without an active file watcher.
 
-- Gameplay em D no mesmo binário (`dub run --config=…`)
-- Assets BMP/glTF/WAV são load-once; sem watcher
-- Sem VM, sem `dlopen` de systems
+## Out of Scope (v1)
 
-## Fora de escopo (v1)
+- Hot-reload of low-level GPU core bindings (`bindings/wgpu.d`, `bindings/sdl3.d`)
+- Embedded scripting language VMs (Lua, Wren, etc.)
+- Play-in-editor engine core rebuilds
 
-- Shared library + `dlopen` de systems de gameplay
-- Linguagem de scripting embutida (Lua/Wren/etc.)
-- Reload do core GPU/bindings
-- Play-in-editor (ver [plan-editor-ux.md](plan-editor-ux.md) backlog)
+## Dependencies
 
-## Dependências
+- GPU handles / `StringId` for safe resource swapping
+- Reload UX surfaced in the Editor console and overlay
 
-- Handles GPU / `StringId` para swap seguro de recursos
-- UX de “reload” pode aparecer no overlay ou no editor depois
+## Phases
 
-## Fases
+### HR-0 — Shader Hot-Reload (Completed)
 
-### HR-1 — Hot reload de assets
+- [x] File watcher (inotify) for `assets/shaders/`
+- [x] Preprocessor supporting `#include`, `#define`, `#ifdef`, `#ifndef`
+- [x] Transactional pipeline compilation that preserves existing bind group layouts and keeps the active pipeline upon syntax/validation errors
+- [x] Integration with Editor app loop
 
-- [ ] Watcher de arquivos (inotify) para texturas / glTF / WAV
-- [ ] Reimport + swap de GPU resources / handles
-- [ ] Ownership: loaders em `engine.assets`; upload em `engine.gpu` /
-  `engine.graphics` — documentar quem libera o recurso antigo
-- [ ] Log claro em falha de parse (mantém asset anterior)
+**DoD:** Editing any `.wgsl` file updates the rendering in real time without crashing or interrupting frames.
 
-**DoD:** editar um BMP/TGA em disco atualiza a textura sem fechar o jogo.
+### HR-1 — Asset Hot-Reload (Textures, Meshes, Audio)
 
-### HR-2 — Dados de jogo
+- [ ] Filesystem watcher for textures / glTF / WAV
+- [ ] Re-import + swap of GPU resources and handles
+- [ ] Explicit ownership: loaders in `engine.assets`; upload in `engine.gpu` / `engine.graphics` — document cleanup of replaced resources
+- [ ] Clear diagnostic logs on parse failure (retaining the previous asset)
 
-- [ ] Formato simples (JSON ou TOML) para tunables: speeds, HP, spawns
-- [ ] Reload aplica em componentes vivos via `StringId` keys
-- [ ] Strings temporárias de debug via `FrameArena`
+**DoD:** Editing a BMP/TGA on disk refreshes the texture in-engine without restarting.
 
-**DoD:** mudar um float no arquivo de dados altera comportamento no próximo
-reload (tecla ou debounce do watcher).
+### HR-2 — Game Data Tunables
 
-### HR-3 — DX
+- [ ] Simple data format (JSON or TOML) for tunables: speeds, HP, spawn intervals
+- [ ] Hot-reload applies to alive components via `StringId` keys
+- [ ] Transient debug strings allocated via `FrameArena`
 
-- [ ] Comando / tecla “reload all”
-- [ ] Overlay mostra último reload / erros
-- [ ] Nota curta no game-development-guide
+**DoD:** Changing a float in a data file alters gameplay behavior on the next reload tick.
 
-**DoD:** um atalho recarrega assets+dados observados.
+### HR-3 — Developer Experience (DX)
 
-## Critérios de aceite
+- [ ] "Reload All" command and shortcut in the editor
+- [ ] Debug overlay / console displays last reload timestamp and diagnostics
+- [ ] Section in the game development guide
 
-1. Mudar uma textura em disco reflete no jogo sem restart (HR-1).
-2. Mudar um tunable em arquivo de dados aplica em runtime (HR-2).
-3. Nenhum path de hot-reload de código D ou VM na v1.
+**DoD:** A keyboard shortcut refreshes all observed assets and data files.
 
-## Referências
+## Acceptance Criteria
 
+1. Modifying a texture on disk updates the scene without restart (HR-1).
+2. Changing a tunable in a data file updates runtime values immediately (HR-2).
+3. Shader hot-reload remains strictly transactional and non-destructive (HR-0).
+
+## References
+
+- `source/engine/hotreload/shader_reload.d`
 - `source/engine/assets/`, `devtools/overlay.d`, `core/strings.d`
+- [multiplatform-and-shaders.md](multiplatform-and-shaders.md)
 - [plan-editor-ux.md](plan-editor-ux.md)

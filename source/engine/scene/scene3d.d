@@ -2,7 +2,7 @@
 /// Manages pipeline, uniform buffer, and per-mesh instance batches internally.
 module engine.scene.scene3d;
 
-import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat, WGPUQueue;
+import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat, WGPUQueue, WGPUDevice;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : Pipeline3D, createColoredPipeline3D;
@@ -20,6 +20,7 @@ struct Scene3D {
     private WGPUBuffer uniformBuf;
     private WGPUBindGroup vpBindGroup;
     private WGPUQueue queue;
+    private WGPUDevice device;
 
     // Per-mesh batch tracking — up to 16 different meshes per frame
     private enum MAX_MESH_KINDS = 16;
@@ -39,8 +40,9 @@ struct Scene3D {
     static Scene3D create(ref GpuContext gpu) @trusted {
         Scene3D s;
         s.queue = gpu.getQueue();
+        s.device = gpu.getDevice();
 
-        auto device = gpu.getDevice();
+        auto device = s.device;
 
         // Create colored 3D pipeline
         s.pipeline = createColoredPipeline3D(device, Renderer.sceneFormat());
@@ -109,6 +111,12 @@ struct Scene3D {
                                  b.mesh.indexCount * ushort.sizeof);
             frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
         }
+    }
+
+    /// Safely hot-reload the 3D pipeline without interrupting running frame draws.
+    bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
+        import engine.gpu.pipeline : reloadColoredPipeline3D;
+        return reloadColoredPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl);
     }
 
     void destroy() nothrow @nogc {

@@ -81,6 +81,7 @@ struct ExportPipeline {
                 "#!/bin/bash\n" ~
                 "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n" ~
                 "export LD_LIBRARY_PATH=\"$DIR/libs:$LD_LIBRARY_PATH\"\n" ~
+                "export SDL_VIDEODRIVER=\"${SDL_VIDEODRIVER:-wayland,x11}\"\n" ~
                 "\"$DIR/game-player\" --scene=\"" ~ opts.startScene ~ "\" \"$@\"\n";
 
             string launcherPath = buildPath(opts.outputDir, "run.sh");
