@@ -14,6 +14,7 @@ import engine.reflect.descriptor : LifecycleMask;
 import engine.hotreload.reload : HotReloadManager;
 import engine.platform.input : InputState;
 import engine.core.log : info, warn;
+import engine.core.gc : gcDefragment;
 
 @safe:
 
@@ -139,6 +140,7 @@ struct PlayMode {
 
         state = PlayState.editing;
         playTime = 0.0;
+        gcDefragment();
         info("PlayMode: returned to edit mode");
     }
 

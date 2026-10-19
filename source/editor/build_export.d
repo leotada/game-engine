@@ -82,6 +82,8 @@ struct ExportPipeline {
                 "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n" ~
                 "export LD_LIBRARY_PATH=\"$DIR/libs:$LD_LIBRARY_PATH\"\n" ~
                 "export SDL_VIDEODRIVER=\"${SDL_VIDEODRIVER:-wayland,x11}\"\n" ~
+                "export SYMGC_HEAP_RESERVE_GIB=\"${SYMGC_HEAP_RESERVE_GIB:-256}\"\n" ~
+                "export SYMGC_CONCURRENT=\"${SYMGC_CONCURRENT:-1}\"\n" ~
                 "\"$DIR/game-player\" --scene=\"" ~ opts.startScene ~ "\" \"$@\"\n";
 
             string launcherPath = buildPath(opts.outputDir, "run.sh");

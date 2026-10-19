@@ -1,0 +1,69 @@
+{
+	"authors": [
+		"Steven Schveighoffer",
+		"Amaury Sachet"
+	],
+	"copyright": "Copyright © 2025, Steven Schveighoffer, Amaury Sachet",
+	"description": "SDC Garbage collector, ported to dmd",
+	"license": "MIT",
+	"name": "symgc",
+	"libs-windows-dmd": [
+		"synchronization"
+	],
+	"configurations" : [
+		{
+			"name": "standard",
+			"targetType": "library",
+			"versions": [
+				"Symgc_druntime_hooks"
+			]
+		},
+		{
+			"name": "legacy",
+			"targetType": "library",
+			"versions" : [
+				"Symgc_pthread_hook",
+				"Symgc_druntime_hooks"
+			]
+		},
+		{
+			"name": "pthread",
+			"targetType": "library",
+			"versions" : [
+				"Symgc_pthread_hook"
+			]
+		},
+		{
+			"name": "integration",
+			"targetType": "library",
+			"versions-linux" : [
+				"Symgc_pthread_hook"
+			],
+			"versions-windows" : [
+				"Symgc_druntime_hooks"
+			]
+		},
+		{
+			"name": "windowsdebug",
+			"targetType" : "executable",
+			"versions" : [
+				"Symgc_druntime_hooks",
+				"Symgc_test_main"
+			]
+		}
+	],
+	"buildTypes" : {
+		"unittest-x" : {
+			"buildOptions": ["unittests", "releaseMode", "optimize", "inline"],
+			"versions" : [
+				"Symgc_testing"
+			]
+		},
+		"unittest" : {
+			"buildOptions": ["unittests", "debugMode", "debugInfo"],
+			"versions" : [
+				"Symgc_testing"
+			]
+		}
+	}
+}

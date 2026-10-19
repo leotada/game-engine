@@ -11,6 +11,8 @@ import engine.gpu.post : PostSettings;
 import engine.graphics.types : Color4;
 import engine.core.log;
 import engine.core.arena : FrameArena;
+import engine.core.gc : gcStepFrameSlack, gcDefragment;
+import core.time : usecs;
 
 @safe:
 
@@ -67,8 +69,12 @@ struct App {
     /// is not left unread on the Wayland socket while wgpu waits.
     void pumpEvents() nothrow @nogc @trusted {
         SDL_Event ev = void;
-        while (SDL_PollEvent(&ev))
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_LOW_MEMORY || ev.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+                gcDefragment();
+            }
             input.processEvent(ev);
+        }
 
         if (input.quitRequested())
             _running = false;
@@ -107,6 +113,7 @@ struct App {
     void endFrame(ref FrameContext frame) nothrow @nogc {
         renderer.endFrame(frame);
         frameArena.reset();
+        gcStepFrameSlack(250.usecs);
     }
 
     void destroy() {

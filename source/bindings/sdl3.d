@@ -43,6 +43,12 @@ enum : uint {
 // ---------------------------------------------------------------------------
 enum : uint {
     SDL_EVENT_QUIT                   = 0x100,
+    SDL_EVENT_TERMINATING            = 0x101,
+    SDL_EVENT_LOW_MEMORY             = 0x102,
+    SDL_EVENT_WILL_ENTER_BACKGROUND  = 0x103,
+    SDL_EVENT_DID_ENTER_BACKGROUND   = 0x104,
+    SDL_EVENT_WILL_ENTER_FOREGROUND  = 0x105,
+    SDL_EVENT_DID_ENTER_FOREGROUND   = 0x106,
 
     // Window events
     SDL_EVENT_WINDOW_SHOWN           = 0x202,

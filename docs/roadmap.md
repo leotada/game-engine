@@ -12,6 +12,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 |---:|:---|:---|:---|:---|
 | 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (P5 mesh deferred) | Gameplay foundation; `pong3d` demo, etc. |
 | 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
+| 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **In Progress** | Compiler card-marking across Linux/Win/Android/macOS/iOS |
 | 3 | PBR + shadow sampling | [plan-pbr.md](plan-pbr.md) | **Done** (PBR-0–5) | Textured path: GGX + IBL + PCF; `pbr` demo |
 | 4 | Post-processing | [plan-post-processing.md](plan-post-processing.md) | **Done** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
@@ -23,6 +24,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 
 ### Ordering Notes
 
+- **steadygc (#2b):** Direct compiler card barrier (`-version=Symgc_cards`) and custom runtime integration across all 5 engine target platforms; pairs with engine's `Pod!T` DOD storage (`BlkAttr.NO_SCAN`) for sub-millisecond GC pauses.
 - **PBR + Post:** Scene renders into `rgba16float`; bloom + ACES + FXAA detailed in [`plan-post-processing.md`](plan-post-processing.md). Swapchain presentation remains SDR.
 - **Hot-Reload before Parallel ECS:** Day-to-day productivity boost; parallelism addresses scaling, but does not unblock gameplay content creation.
 - **Terrain/Water (#7) after Scene Editor (#6):** Reuses picking, asset database, serialization, and gizmos; Box3D heightfield unblocks terrain collision.

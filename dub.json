@@ -13,7 +13,7 @@
     "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-Ivendor/box3d/include"],
 
     "sourceFiles": ["source/bindings/box3d/box3d_import.c"],
-    "libs": ["SDL3", "wgpu_native", "box3d", "stb", "m"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "stb", "m", "symgc-cards"],
     "lflags-linux": ["-L./libs"],
 
     "configurations": [

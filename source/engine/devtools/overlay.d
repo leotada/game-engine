@@ -90,6 +90,18 @@ struct DebugOverlay {
         lineCount++;
     }
 
+    /// Add steadygc GC stats line (pause duration, max pause, cycles, card window).
+    void addGcStats() {
+        import engine.core.gc : gcTotalTimes, gcCardWindowBytes;
+        const t = gcTotalTimes();
+        const windowGiB = gcCardWindowBytes() >> 30;
+        const double pauseMs = cast(double) t.pauseNs / 1_000_000.0;
+        const double maxPauseMs = cast(double) t.maxPauseNs / 1_000_000.0;
+        const double workMs = cast(double) t.workNs / 1_000_000.0;
+
+        label("GC", "pause ", pauseMs, "ms (max ", maxPauseMs, "ms) | work ", workMs, "ms | cycles ", t.cycleCount, " | cards ", windowGiB, "GiB");
+    }
+
     /// Insert a section header line (no "name:" prefix). Renders as
     /// "-- title --" to visually group following labels.
     void section(scope const(char)[] title) nothrow @nogc {

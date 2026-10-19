@@ -88,6 +88,16 @@ private void scanFile(string path, string rel, ref Finding[] findings) @trusted
         immutable ln = i + 1;
         immutable trimmed = line.strip;
 
+        // Forbid direct GC control calls in engine outside engine/core/gc.d
+        if (!rel.canFind("engine/core/gc.d") && !rel.canFind("engine\\core\\gc.d"))
+        {
+            if (trimmed.canFind("GC.collect(") || trimmed.canFind("GC.disable(") || trimmed.canFind("GC.enable("))
+            {
+                findings ~= Finding(rel, ln,
+                    "direct GC control call (GC.collect/disable/enable) is forbidden in engine - use engine.core.gc (gcDefragment / gcStepFrameSlack)");
+            }
+        }
+
         immutable prevAbs = absoluteDepth;
         foreach (c; line)
         {

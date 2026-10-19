@@ -1,0 +1,321 @@
+// we have to put this in the core.thread package to access thread package internals
+module core.thread.symthread;
+
+import core.thread.osthread;
+import core.thread.threadbase;
+import core.thread.types;
+import d.gc.types;
+import symgc.gcobj : druntimeCallsThreadHooks;
+
+private {
+	import core.internal.traits : externDFunc;
+	alias DruntimeScanDg = void delegate(void* pstart, void* pend) nothrow;
+	alias rt_tlsgc_scan =
+	    externDFunc!("rt.tlsgc.scan", void function(void*, scope DruntimeScanDg) nothrow);
+	// TODO: wish this was package...
+	alias core_thread_osthread_suspend =
+		externDFunc!("core.thread.osthread.suspend", bool function(Thread) nothrow @nogc);
+	alias core_thread_osthread_resume =
+		externDFunc!("core.thread.osthread.resume", void function(ThreadBase) nothrow @nogc);
+}
+
+private Thread toThread(return scope ThreadBase t) @trusted nothrow @nogc pure
+{
+	return cast(Thread) cast(void*) t;
+}
+
+struct ThreadIterator
+{
+	this(Thread start)
+	{
+		self = Thread.getThis;
+		tn = start;
+		popFront();
+	}
+
+	Thread t;
+	Thread tn;
+	Thread self;
+	bool empty() => t is null;
+	Thread front() => t;
+	void popFront()
+	{
+		t = tn;
+		while (t !is null) {
+
+			if(t is self)
+			{
+				t = t.next.toThread;
+				continue;
+			}
+
+			if (!t.isRunning())
+			{
+				auto nextThread = t.next.toThread;
+				Thread.remove(t);
+				t = nextThread;
+				continue;
+			}
+
+			this.tn = t.next.toThread;
+			return;
+		}
+
+		// here if t is now null.
+		this.tn = null;
+	}
+}
+
+bool suspendDruntimeThreads(bool alwaysSignal, ref uint suspended) {
+	import d.gc.tcache;
+	import d.gc.tstate;
+
+	suspended = 0;
+	bool retry = false;
+
+	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
+	{
+		auto tc = cast(ThreadCache*) t.tlsGCData();
+
+		if (tc is null) {
+			// A druntime without thread hooks (see symgc.gcobj): a thread that is on the list
+			// but has not run its thread-local constructors yet. It attaches under the list's
+			// lock, which the stop holds, so it cannot be half registered, and it has not
+			// touched the collector. It is left running. With the hooks this cannot happen.
+			static if (druntimeCallsThreadHooks)
+				assert(0, "tlsGCData was not set for this thread!");
+			else
+				continue;
+		}
+		version (Posix)
+		{
+			// determine if this thread is suspended or should be suspended.
+			auto ss = tc.suspendState;
+
+			if (ss == SuspendState.Detached)
+				continue;
+
+			suspended += ss == SuspendState.Suspended;
+			retry |= ss != SuspendState.Suspended;
+
+			if (ss != SuspendState.None)
+				continue;
+
+			tc.sendSuspendSignal();
+			// use druntime suspension calls.
+			core_thread_osthread_suspend(t);
+		}
+		else version(Windows)
+		{
+			// use the same states to make the code consistent.
+			auto ss = tc.suspendState;
+			if (ss == SuspendState.Detached)
+				continue;
+
+			tc.sendSuspendSignal();
+
+			if (core_thread_osthread_suspend(t)) {
+				if (tc.onSuspendSignal()) {
+					tc.markSuspended();
+					tc.checkLockWaiting();
+					++suspended;
+					continue;
+				}
+
+				// delayed, resume the thread, and increment the delayed thread count.
+				// IMPORTANT: We must FIRST resume the thread, as it may hold
+				// the lock that we need to increment the delayed count.
+				core_thread_osthread_resume(t);
+				import d.gc.thread : delayedThreadInc;
+				delayedThreadInc();
+
+				retry = true;
+			}
+		}
+		else static assert(false);
+	}
+
+	version(Windows) if (retry) {
+		// in this case, retry means some threads were delayed. need to wait for them,
+		// we are not going to return until all threads are suspended.
+		retry = false;
+		// wait for all delayed threads to be ready for suspension
+		import d.gc.thread : waitForDelayedThreads;
+		waitForDelayedThreads();
+		foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
+		{
+			auto tc = cast(ThreadCache*) t.tlsGCData();
+			assert (tc !is null); // not possible at this point.
+			if (tc.suspendState != SuspendState.Suspended) {
+				if (!core_thread_osthread_suspend(t)) {
+					assert(0, "could not suspend thread");
+				}
+				tc.markSuspended();
+				tc.checkLockWaiting();
+				++suspended;
+			}
+		}
+
+	}
+
+	// suspend all the threads that are not us, but also record that we suspended "ourself"
+	suspendDepth = suspended + 1;
+	return retry;
+}
+
+void scanWorldPausedData(ScanDg scan) {
+	// scan all data that is NOT part of our thread's current stack. A GC
+	// thread that is not a druntime thread has none.
+	auto self = Thread.getThis();
+	auto myStackBottom = self is null ? null : self.m_curr.bstack;
+
+	void*[2][8] detachedStacks = void;
+	size_t numDetached = 0;
+	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread)) {
+		import d.gc.tcache : ThreadCache;
+		import d.gc.tstate : SuspendState;
+		auto tc = cast(ThreadCache*) t.tlsGCData();
+		if (tc !is null && tc.suspendState == SuspendState.Detached && numDetached < 8) {
+			auto b = t.m_curr.bstack;
+			auto top = t.m_curr.tstack;
+			if (b !is null) {
+				detachedStacks[numDetached][0] = top < b ? top : b;
+				detachedStacks[numDetached][1] = top < b ? b : top;
+				numDetached++;
+			}
+		}
+	}
+
+	void scanItem(ScanType type, void* pbot, void* ptop) nothrow {
+		import d.gc.range;
+		auto r = makeRange(pbot, ptop);
+		if (type == ScanType.stack) {
+			if (myStackBottom !is null && myStackBottom >= r.ptr &&
+					myStackBottom <= r.ptr + r.length)
+				// my stack range, no need to scan right now, this will be scanned later
+				return;
+			foreach(i; 0 .. numDetached) {
+				if (r.ptr >= detachedStacks[i][0] && r.ptr <= detachedStacks[i][1])
+					return; // Skip stack of detached/RT audio thread
+			}
+		}
+		// TODO: ignore my thread's TLS data as well.
+		// TODO: shouldn't need this cast
+		alias NoThrowScanDg = void delegate(const(void*)[] range) nothrow;
+		(cast(NoThrowScanDg)scan)(r);
+	}
+
+	// An unpatched druntime reads the caller's thread object in
+	// thread_scanAllType without checking it for null, and the collector's own
+	// thread is not a druntime thread. While it scans, it poses as a
+	// placeholder whose m_lock is set, which tells druntime to leave the
+	// caller's stack bookkeeping alone.
+	auto posing = self is null;
+	if (posing)
+		ThreadBase.setThis(scanPlaceholder());
+	scope(exit) if (posing)
+		ThreadBase.setThis(null);
+
+	thread_scanAllType(&scanItem);
+}
+
+private Thread scanPlaceholder() nothrow
+{
+	align(16) static __gshared ubyte[__traits(classInstanceSize, Thread)] store;
+	static __gshared bool ready;
+
+	auto t = cast(Thread) cast(void*) store.ptr;
+	if (!ready) {
+		// Only ever called with the world stopped, from the collector's thread.
+		auto init = cast(const(ubyte)[]) typeid(Thread).initializer;
+		store[0 .. init.length] = init[];
+		t.m_lock = true;
+		ready = true;
+	}
+
+	return t;
+}
+
+bool resumeDruntimeThreads(ref uint suspended) {
+	import d.gc.tcache;
+	import d.gc.tstate;
+
+	suspended = 0;
+	bool retry = false;
+
+	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
+	{
+		auto tc = cast(ThreadCache*) t.tlsGCData();
+
+		if (tc is null) {
+			// if the threadcache is null, this means we didn't suspend it. skip it.
+			continue;
+		}
+
+		auto ss = tc.suspendState;
+		if (ss == SuspendState.Detached)
+			continue;
+
+		version(Posix) {
+			suspended += ss == SuspendState.Suspended;
+			retry |= ss != SuspendState.Probation;
+
+			if (ss != SuspendState.Suspended)
+				continue;
+
+			tc.sendResumeSignal();
+		} else version(Windows) {
+			// Since there is no signal processing on the target thread, we need to
+			// do the step that sets the state properly from here.
+			if (ss != SuspendState.Suspended)
+				continue;
+
+			tc.resolveLockWaiting();
+			tc.sendResumeSignal();
+			tc.onResumeSignal();
+		}
+		else static assert(false);
+		core_thread_osthread_resume(t);
+	}
+
+	// update the suspended count
+	suspendDepth = suspended;
+	return retry;
+}
+
+void clearDruntimeThreadProbation() {
+	import d.gc.tcache;
+	import d.gc.tstate;
+
+	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
+	{
+		auto tc = cast(ThreadCache*) t.tlsGCData();
+
+		if (tc is null) {
+			// if the threadcache is null, this means we didn't suspend it. skip it.
+			continue;
+		}
+
+		auto ss = tc.suspendState;
+
+		if (ss != SuspendState.Probation)
+			continue;
+
+		tc.clearProbationState();
+	}
+}
+
+size_t getTotalCachedAllocations() {
+	import d.gc.tcache;
+	size_t totalCached = 0;
+	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
+	{
+		auto tc = cast(ThreadCache*) t.tlsGCData();
+		if (tc is null) {
+			continue;
+		}
+
+		totalCached += tc.totalCachedAllocationSize();
+	}
+	return totalCached;
+}
