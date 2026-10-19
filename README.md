@@ -15,6 +15,7 @@ D sits at the intersection of C++ performance and high-level ergonomics. This en
 - **DIP1000 scope semantics** — stack-allocated references with compile-time lifetime tracking
 - **No mandatory GC in hot paths** — struct-based DOD keeps the GC idle during frame execution. Engine core enforces `@nogc` on the entire frame loop while gameplay systems are free to use the GC for convenience
 - **GC-safe storage primitives** — `Pod!T`, `Handle!T`, `StringId`, and `FrameArena` keep engine memory free of GC-traced indirections without giving up gameplay ergonomics
+- **Optional sub-millisecond custom GC (`steadygc` / `symgc`)** — vendored under [`vendor/symgc/`](vendor/symgc/) ([`leotada/symgc`](https://github.com/leotada/symgc/tree/main)), a concurrent, mostly non-blocking garbage collector with compiler-assisted 512-byte card-marking write barriers (`-preview=gcbarrier` in DMD / `-gc-card-marking` in LDC) delivering **0.09–0.13 ms p99 pauses** across Linux, Windows, Android, macOS, and iOS while remaining 100% compatible with stock `druntime`
 - **ImportC** — Box3D types and structs come straight from C headers (`box3d_import.c` → `public import box3d_import`); thin `pragma(mangle)` wrappers bridge D linkage where needed
 - **Direct C interop** — thin manual `extern(C)` bindings for SDL3 and WGPU-native (no bindbc) where we want full control of the GPU/window stack
 
@@ -35,9 +36,10 @@ source/
 │   │   ├── handle.d       # Handle!T — generational typed refs (gameplay→engine)
 │   │   ├── strings.d      # StringId + StringTable — interned strings
 │   │   ├── arena.d        # FrameArena — per-frame bump allocator
+│   │   ├── gc.d           # Optional steadygc telemetry, slack stepping & defrag
 │   │   ├── log.d          # Logging (trace/info/warn/err/fatal)
 │   │   └── resource.d     # RAII GPU Handle(T, releaseFn) — move-only resources
-│   ├── devtools/          # Immediate-mode gizmos + FPS/label overlay
+│   ├── devtools/          # Immediate-mode gizmos + FPS/label/GC overlay
 │   ├── ecs/               # Sparse-set ComponentStore + World!(Components...)
 │   ├── editor/            # Scene editor UX (picking, gizmos, inspector, I/O)
 │   ├── gpu/               # WGPU context, pipelines, shadows, IBL, post, text
@@ -46,6 +48,10 @@ source/
 │   ├── physics/           # Box3D gameplay API (bodies, queries, joints, character)
 │   ├── platform/          # SDL3 window + per-frame input
 │   └── scene/             # Camera, controllers, graph, Scene3D (+ textured)
+├── vendor/
+│   ├── box3d/             # Box3D physics engine C headers
+│   ├── stb/               # Single-header C image/font helpers
+│   └── symgc/             # steadygc — optional concurrent card-marking GC
 └── demo/
     ├── main.d             # Minimal clear-screen demo
     ├── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
@@ -65,9 +71,9 @@ source/
 | **`@safe` by default** | Every module is `@safe:` at top level. C interop wrapped in `@trusted` with minimal surface |
 | **Data-Oriented Design** | Components are POD structs in contiguous arrays. Entities are `uint` IDs |
 | **Zero-overhead abstractions** | Template systems resolved at compile time. RAII handles for GPU resources |
-| **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `isPod!T` / `Pod!T` — no GC pointers in engine storage |
+| **GC discipline** | GC forbidden in engine frame loop (`@nogc`). Allowed in gameplay systems. Components enforce `isPod!T` / `Pod!T` — no GC pointers in engine storage. Optionally pairs with `steadygc` (`symgc`) for sub-millisecond concurrent collection |
 | **C interop that fits** | ImportC for Box3D headers; controlled `extern(C)` for SDL3/WGPU |
-| **Cross-platform** | SDL3 + WGPU on Linux (Wayland primary, X11 secondary) and Windows |
+| **Cross-platform** | SDL3 + WGPU + multiplatform card-marking GC across Linux, Windows, Android, macOS, and iOS |
 
 ### ECS — Bevy-Class Performance in D
 
@@ -144,6 +150,30 @@ void damageSystem(W)(ref W world) @nogc nothrow {
     foreach (id; killBuf[0 .. killCount]) world.destroy(id);
 }
 ```
+
+#### Optional Custom GC: `steadygc` (`symgc`) + Compiler Card-Marking
+
+Even with POD component storage, large open-world gameplay scripts that heavily allocate class graphs, strings, or closures on multiple threads can eventually trigger stop-the-world pauses under the stock `druntime` collector. To eliminate GC stalls altogether while keeping D's full productivity, the engine ships with **`steadygc`** ([`leotada/symgc`](https://github.com/leotada/symgc/tree/main), vendored in [`vendor/symgc/`](vendor/symgc/)) as an **optional, plug-in concurrent collector**:
+
+- **Attach optionally at link or runtime:** Built into `libs/libsymgc-cards.a` via [`tools/build_symgc.sh`](tools/build_symgc.sh). Because `steadygc` registers into `druntime`'s collector registry (`gc:sdcq`), the engine runs out-of-the-box on any standard D compiler with the stock GC, or activates `steadygc` when launched with `--DRT-gcopt=gc:sdcq` (or compiled with our custom card-barrier DMD `-preview=gcbarrier` / LDC `-gc-card-marking` toolchains).
+- **100% Multiplatform Card-Barrier Design (`-version=Symgc_cards`):** Instead of relying on Linux-only kernel page-table traps (`userfaultfd` / `PAGEMAP_SCAN`), write tracking uses a range-checked 512-byte user-space card table covering a reserved pointer-region address window (`256 GiB` on 64-bit desktop, `16 GiB` on Android/iOS). This works identically across **Linux (`x86_64`, `aarch64`), Windows (`x64`), Android (`arm64`), macOS (`Intel` / `Apple Silicon`), and iOS (`arm64`)**.
+- **0.0 ns Barrier Overhead on ECS & POD Data:** `steadygc` separates its heap into `gPointerRegionAllocator` (inside the card window) and `gDataRegionAllocator` (`BlkAttr.NO_SCAN`, outside the card window). Because `ComponentStore!T` (`Pod!T[]`), `SceneGraph`, and `FrameArena` are pointer-free and compiler barriers only emit on pointer stores, hot ECS mutations execute **zero** card barriers and touch **zero** card-table bytes.
+- **0.09–0.13 ms p99 STW Pauses:** Concurrent marking + background sweeping with 512-byte card granularity (8× finer than 4 KiB OS pages) keeps worst-case remark pauses well under **0.25 ms** across 1–8 mutator threads.
+- **Engine-Level Hooks ([`source/engine/core/gc.d`](source/engine/core/gc.d)):**
+  - `gcStepFrameSlack(Duration)` — called automatically in `App.endFrame()` to advance incremental sweeping during pre-vsync slack time.
+  - `gcDefragment()` — triggered automatically on `PlayMode.stop()`, scene transitions, and mobile `SDL_EVENT_LOW_MEMORY` / `SDL_EVENT_WILL_ENTER_BACKGROUND` events to drain quarantine and return physical pages to the OS.
+  - `gcExcludeCurrentThread()` / `ScopedGcExcludedThread` — exempts real-time audio callbacks and pure-`@nogc` worker threads from stop-the-world handshakes.
+  - `gcTotalTimes()` / `DebugOverlay.addGcStats()` — zero-allocation 6-counter hardware telemetry (`pauseNs`, `workNs`, `maxPauseNs`, `slowAllocWaitNs`, `cycleCount`) with automatic fallback to `GC.profileStats()` when running on the stock D GC.
+
+```bash
+# Build (or rebuild) the optional steadygc static archive for the current target
+./tools/build_symgc.sh
+
+# Run any engine target with stock D GC (default) or opt into steadygc at runtime:
+./game-engine-editor --DRT-gcopt=gc:sdcq
+```
+
+Full architectural specification: [docs/symgc-multiplatform-integration.md](docs/symgc-multiplatform-integration.md).
 
 ## Requirements
 
@@ -313,6 +343,7 @@ Initial roadmap phases are **complete**, including PBR + IBL + shadow PCF, post-
 - [x] Phase 15 — Post-processing (HDR scene RT, bloom, ACES, FXAA)
 - [x] Phase 16 — GC-safe adoption + lint (`Pod!T`, `Handle!T`, `StringId`, `FrameArena`)
 - [x] Phase 17 — Scene editor UX v1 (`dub run --config=editor`)
+- [x] Phase 18 — Optional `steadygc` (`symgc`) multiplatform card-marking GC (`engine.core.gc`, `vendor/symgc`)
 
 Active plans and remaining work live under [`docs/`](docs/README.md). Overview: [`docs/roadmap.md`](docs/roadmap.md).
 
@@ -343,6 +374,7 @@ removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.
 - [docs/why-this-is-fast.md](docs/why-this-is-fast.md) — Data-Oriented Design explained for programmers from other languages
 - [docs/incremental-gc-research.md](docs/incremental-gc-research.md) — GC pause research and measurements
 - [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) — POD / Handle / StringId / FrameArena plan
+- [docs/symgc-multiplatform-integration.md](docs/symgc-multiplatform-integration.md) — Optional `steadygc` (`symgc`) multiplatform card-marking GC architecture
 
 ## License
 
