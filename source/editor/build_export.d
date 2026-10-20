@@ -16,6 +16,7 @@ struct BuildExportOptions {
     string[] includedScenes;
     bool release = false;
     string compiler = "dmd";
+    bool useCardBarrier = false; // default false for stock DMD, opt-in for custom DMD/LDC
 }
 
 struct ExportPipeline {
@@ -55,8 +56,16 @@ struct ExportPipeline {
             }
 
             // 4. Build standalone player
-            string dubCmd = format("dub build --config=player --compiler=%s %s",
-                opts.compiler, opts.release ? "--build=release" : "");
+            string extraFlags = "";
+            if (opts.useCardBarrier) {
+                if (opts.compiler == "ldc2" || opts.compiler == "ldc") {
+                    extraFlags = ` --dflags="-gc-card-marking -d-version=Symgc_cards -d-version=Symgc_druntime_hooks"`;
+                } else if (opts.compiler == "dmd") {
+                    extraFlags = ` --dflags="-preview=gcbarrier -version=Symgc_cards -version=Symgc_druntime_hooks"`;
+                }
+            }
+            string dubCmd = format("dub build --config=player --compiler=%s %s%s",
+                opts.compiler, opts.release ? "--build=release" : "", extraFlags);
             info("Export: compiling standalone player (%s)...", dubCmd);
             auto res = executeShell(dubCmd);
             outLog ~= res.output;

@@ -17,8 +17,24 @@ import std.string : toStringz, fromStringz;
 
 import bindings.sdl3;
 import engine.core.log;
+import engine.core.gc : gcExcludeCurrentThread, gcIncludeCurrentThread, gcIsThreadExcluded;
 
 @safe:
+
+/// Exclude the calling audio or real-time streaming thread from GC STW pause handshakes.
+void excludeAudioThreadFromGc() nothrow @nogc {
+    gcExcludeCurrentThread();
+}
+
+/// Re-include the calling audio thread in GC STW pause handshakes.
+void includeAudioThreadInGc() nothrow @nogc {
+    gcIncludeCurrentThread();
+}
+
+/// Check if the calling thread is currently excluded from GC pauses.
+bool isAudioThreadExcludedFromGc() nothrow @nogc {
+    return gcIsThreadExcluded();
+}
 
 /// Raw PCM audio clip loaded from a WAV file. Owns SDL-allocated memory
 /// that must be freed via `destroy()`.
@@ -131,4 +147,10 @@ struct AudioEngine {
         }
         _ready = false;
     }
+}
+
+unittest {
+    // Verify thread exclusion calls are safe no-ops or active depending on runtime
+    excludeAudioThreadFromGc();
+    includeAudioThreadInGc();
 }

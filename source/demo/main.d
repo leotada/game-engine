@@ -4,6 +4,9 @@ module demo.main;
 
 import engine;
 
+/// Default runtime options: activate steadygc concurrent collector when linked
+extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+
 void main() {
     auto app = App.create("Game Engine Demo", 1280, 720);
     scope(exit) app.destroy();

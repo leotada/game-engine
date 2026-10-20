@@ -4,6 +4,9 @@ module editor.main;
 import std.conv : to;
 import editor.editor_app;
 
+/// Default runtime options: activate steadygc concurrent collector when linked
+extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+
 void main(string[] args) {
     bool headless = false;
     uint headlessFrames = 0;

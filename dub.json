@@ -34,6 +34,16 @@
             "dflags-release-gdc": ["-O3", "-march=native"]
         },
         {
+            "name": "benchmark-symgc",
+            "targetType": "executable",
+            "targetName": "game-engine-benchmark-symgc",
+            "mainSourceFile": "source/demo/benchmark.d",
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/_legacy/*"],
+            "versions": ["Symgc_cards", "Symgc_druntime_hooks"],
+            "dflags-dmd": ["-preview=gcbarrier"],
+            "dflags-ldc": ["-gc-card-marking"]
+        },
+        {
             "name": "benchmark2",
             "targetType": "executable",
             "targetName": "game-engine-benchmark2",
@@ -70,6 +80,17 @@
             "mainSourceFile": "tools/player/player_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
             "importPaths": ["source", "source/bindings/box3d", "tools/player"]
+        },
+        {
+            "name": "player-symgc",
+            "targetType": "executable",
+            "targetName": "game-engine-player-symgc",
+            "mainSourceFile": "tools/player/player_main.d",
+            "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
+            "importPaths": ["source", "source/bindings/box3d", "tools/player"],
+            "versions": ["Symgc_cards", "Symgc_druntime_hooks"],
+            "dflags-dmd": ["-preview=gcbarrier"],
+            "dflags-ldc": ["-gc-card-marking"]
         },
         {
             "name": "pbr",

@@ -68,10 +68,10 @@ bool gcIsSteadyGcActive() nothrow @nogc {
  * No-op if running on stock druntime GC.
  */
 void gcStepFrameSlack(Duration slack) nothrow @nogc {
-    if (!gcIsSteadyGcActive() || slack <= Duration.zero) return;
+    if (!gcIsSteadyGcActive() || slack < 250.usecs) return;
     const ulong hns = cast(ulong) slack.total!"hnsecs";
-    // Bound the slack slice to 250us (2_500 hnsecs) .. 2000us (20_000 hnsecs)
-    const ulong boundedHns = hns > 20_000 ? 20_000 : (hns < 2_500 ? 2_500 : hns);
+    // Bound the slack slice up to 2000us (20_000 hnsecs)
+    const ulong boundedHns = hns > 20_000 ? 20_000 : hns;
     () @trusted {
         __sd_gc_step(boundedHns);
     }();
@@ -125,7 +125,7 @@ bool gcIsThreadExcluded() nothrow @nogc {
  * that bulk-writes pointers into GC-managed memory.
  * Safe even before steadygc initializes (becomes a branch-predicted no-op).
  */
-void gcBarrierRange(const(void)* dst, size_t size) nothrow @nogc {
+void gcBarrierRange(scope const(void)* dst, size_t size) nothrow @nogc {
     if (dst is null || size == 0) return;
     () @trusted {
         __sd_gc_card_range(dst, size);
@@ -230,4 +230,30 @@ struct ScopedGcExcludedThread {
     ~this() nothrow @nogc {
         gcIncludeCurrentThread();
     }
+}
+
+unittest {
+    // Basic API test: safe to call even without active steadygc
+    gcStepFrameSlack(Duration.zero);
+    gcStepFrameSlack(100.usecs); // below threshold, no-op
+    gcStepFrameSlack(500.usecs);
+    gcStepFrameSlack(50_000.usecs); // capped to 20_000 hnsecs
+
+    // Defragment safe no-op on stock GC
+    const defragged = gcDefragment();
+    assert(defragged >= 0);
+
+    // Thread exclusion guard
+    {
+        auto guard = ScopedGcExcludedThread.enter();
+        // Excluded
+    }
+
+    // Barrier range test
+    int[16] dummy;
+    gcBarrierRange(dummy.ptr, dummy.sizeof);
+
+    // Telemetry test
+    SteadyGcTimes t = gcTotalTimes();
+    GcFrameDelta delta = gcComputeFrameDelta(t);
 }

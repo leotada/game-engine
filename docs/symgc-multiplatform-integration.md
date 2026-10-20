@@ -77,25 +77,28 @@ Because these types satisfy `isPod!T` (`!hasIndirections!T`), they are allocated
 `symgc` is vendored directly under `vendor/symgc` and built with `-version=Symgc_cards -version=Symgc_druntime_hooks`. The Linux-only `userfaultfd` tracking in `d/gc/dirty.d` is disabled.
 
 ### Level 2: Build & Toolchain Configuration
-- **DMD Flags:** `-preview=dip1000 -preview=gcbarrier -version=Symgc_cards -version=Symgc_druntime_cards -version=Symgc_druntime_hooks`
-- **LDC Flags:** `-preview=dip1000 -gc-card-marking -d-version=Symgc_cards -d-version=Symgc_druntime_hooks`
-- **Host Linkage:** Linked with `-L--export-dynamic` (POSIX) or `/EXPORT` (Windows) so `__sd_gc_card_lo`, `__sd_gc_card_n`, and `__sd_gc_card_base` are exported to dynamic script modules.
+- **Default Runtime Activation:** `extern(C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];` embedded across entrypoints (`editor`, `player`, `demo`), activating SteadyGC by default while allowing manual override via `--DRT-gcopt=...` or `DRT_GCOPT`.
+- **DUB Configurations:** Dedicated configurations `player-symgc` and `benchmark-symgc` with compiler card-marking enabled:
+  - **DMD Flags:** `-preview=gcbarrier` (for custom DMD)
+  - **LDC Flags:** `-gc-card-marking` (for custom LDC)
+  - **Version constants:** `"versions": ["Symgc_cards", "Symgc_druntime_hooks"]`
+- **Host Linkage:** Linked with `-L./libs -lsymgc-cards` and `-L--export-dynamic` (POSIX) or `/EXPORT` (Windows) so `__sd_gc_card_lo`, `__sd_gc_card_n`, and `__sd_gc_card_base` are exported to dynamic script modules.
 
 ### Level 3: Runtime Interface (`source/engine/core/gc.d`)
 The engine wraps runtime telemetry and GC control in `@safe nothrow @nogc` functions:
-- `gcStepFrameSlack(Duration slack)`: Steps incremental sweeping during pre-vsync idle time.
+- `gcStepFrameSlack(Duration slack)`: Steps incremental sweeping during pre-vsync idle time (bounded up to 2 ms).
 - `gcDefragment()`: Drains quarantine and decommits free pages during scene changes or low-memory signals.
 - `gcExcludeCurrentThread()` / `gcIncludeCurrentThread()`: Excludes dedicated real-time threads (audio mixer, worker threads) from STW handshakes.
-- `gcBarrierRange(const(void)* dst, size_t size)`: Explicit card marking for C/FFI memory copies.
+- `gcBarrierRange(scope const(void)* dst, size_t size)`: Explicit card marking for C/FFI memory copies.
 - `gcTotalTimes()` / `gcThreadTimes()`: Real-time telemetry query returning pause times, cycle counts, and work duration.
 
 ### Level 4: Frame Loop & App Lifecycle (`source/engine/app.d`)
-- In `App.endFrame()`, remaining frame slack is calculated and passed to `gcStepFrameSlack()`.
+- In `App.endFrame()`, true elapsed frame time is measured against `_targetFrameBudget` (`setTargetFps(60)` / `setTargetFps(120)`). When `slack > 500.usecs`, remaining idle time (minus a 250 µs presentation safety margin) is passed to `gcStepFrameSlack()`. If a frame is running over budget, GC stepping is skipped.
 - On `SDL_EVENT_LOW_MEMORY` and `SDL_EVENT_WILL_ENTER_BACKGROUND`, `gcDefragment()` is triggered.
 - `App` enforces zero GC allocations on the core engine frame loop when running with `--assert-no-gc`.
 
 ### Level 5: Audio Engine & Physics Workers
-- `AudioEngine` runs an SDL3 audio callback thread excluded from GC STW cycles via `gcExcludeCurrentThread()`.
+- `AudioEngine` provides `excludeAudioThreadFromGc()` and `includeAudioThreadInGc()` wrapping `gcExcludeCurrentThread()` to guarantee the audio callback / playback thread is 100% immune to GC STW pauses.
 - Box3D and WGPU driver threads are unmanaged C threads and remain invisible to GC tracking.
 - Parallel ECS task threads utilize lock-free per-thread caches in `steadygc`.
 

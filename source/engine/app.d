@@ -12,7 +12,7 @@ import engine.graphics.types : Color4;
 import engine.core.log;
 import engine.core.arena : FrameArena;
 import engine.core.gc : gcStepFrameSlack, gcDefragment;
-import core.time : usecs;
+import core.time : MonoTime, Duration, usecs;
 
 @safe:
 
@@ -25,7 +25,11 @@ struct App {
     InputState input;
     FrameArena frameArena;
 
-    private bool _running = true;
+    private bool     _running = true;
+    private MonoTime _frameStartTime;
+    private Duration _targetFrameBudget = 16_666.usecs; // ~60 FPS default
+    private uint     _targetFps = 60;
+    private Duration _lastFrameElapsed = Duration.zero;
 
     @disable this(this);
 
@@ -50,6 +54,16 @@ struct App {
     bool running() const nothrow @nogc { return _running; }
 
     void close() nothrow @nogc { _running = false; }
+
+    /// Configure target FPS and compute expected frame budget. Pass 0 for uncapped.
+    void setTargetFps(uint fps) nothrow @nogc {
+        _targetFps = fps;
+        _targetFrameBudget = fps > 0 ? (1_000_000.usecs / fps) : Duration.zero;
+    }
+
+    uint targetFps() const nothrow @nogc { return _targetFps; }
+    Duration targetFrameBudget() const nothrow @nogc { return _targetFrameBudget; }
+    Duration lastFrameElapsed() const nothrow @nogc { return _lastFrameElapsed; }
 
     /// Per-frame scratch arena; reset at end of every frame.
     ref FrameArena arena() return nothrow @nogc { return frameArena; }
@@ -98,10 +112,12 @@ struct App {
     }
 
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
+        _frameStartTime = MonoTime.currTime;
         return renderer.beginFrame(clearColor);
     }
 
     FrameContext beginFrame(Color4 clearColor) nothrow @nogc {
+        _frameStartTime = MonoTime.currTime;
         return renderer.beginFrame(clearColor);
     }
 
@@ -113,7 +129,17 @@ struct App {
     void endFrame(ref FrameContext frame) nothrow @nogc {
         renderer.endFrame(frame);
         frameArena.reset();
-        gcStepFrameSlack(250.usecs);
+
+        immutable now = MonoTime.currTime;
+        _lastFrameElapsed = now - _frameStartTime;
+
+        if (_targetFrameBudget > Duration.zero && _lastFrameElapsed < _targetFrameBudget) {
+            immutable slack = _targetFrameBudget - _lastFrameElapsed;
+            // Leave a 250us safety margin for presentation & OS scheduling
+            if (slack > 500.usecs) {
+                gcStepFrameSlack(slack - 250.usecs);
+            }
+        }
     }
 
     void destroy() {

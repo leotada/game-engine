@@ -16,6 +16,9 @@ import engine.platform.input : Key, InputState;
 import engine.graphics.types : Color4;
 import engine.core.log : info, warn, err;
 
+/// Default runtime options: activate steadygc concurrent collector when linked
+extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+
 @safe:
 
 void main(string[] args) {
