@@ -166,11 +166,15 @@ Even with POD component storage, large open-world gameplay scripts that heavily 
   - `gcTotalTimes()` / `DebugOverlay.addGcStats()` — zero-allocation 6-counter hardware telemetry (`pauseNs`, `workNs`, `maxPauseNs`, `slowAllocWaitNs`, `cycleCount`) with automatic fallback to `GC.profileStats()` when running on the stock D GC.
 
 ```bash
-# Build (or rebuild) the optional steadygc static archive for the current target
-./tools/build_symgc.sh
+# Tier 1: Run with stock D GC (Default, standard stock DMD/LDC compiler, zero custom tools)
+dub run --config=player
 
-# Run any engine target with stock D GC (default) or opt into steadygc at runtime:
-./game-engine-editor --DRT-gcopt=gc:sdcq
+# Tier 2: Opt into steadygc at runtime (Standard stock DMD/LDC compiler)
+dub run --config=player -- --DRT-gcopt=gc:sdcq
+
+# Tier 3: Full compiler card-barrier acceleration (Custom DMD -preview=gcbarrier or LDC -gc-card-marking)
+dub build --config=player-symgc
+dub build --config=benchmark-symgc
 ```
 
 Full architectural specification: [docs/symgc-multiplatform-integration.md](docs/symgc-multiplatform-integration.md).

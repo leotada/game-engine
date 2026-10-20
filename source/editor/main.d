@@ -4,8 +4,10 @@ module editor.main;
 import std.conv : to;
 import editor.editor_app;
 
-/// Default runtime options: activate steadygc concurrent collector when linked
-extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+version (Symgc_cards) {
+    /// Default runtime options when built with Symgc configurations: activate steadygc concurrent collector
+    extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+}
 
 void main(string[] args) {
     bool headless = false;

@@ -4,8 +4,10 @@ module demo.main;
 
 import engine;
 
-/// Default runtime options: activate steadygc concurrent collector when linked
-extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+version (Symgc_cards) {
+    /// Default runtime options when built with Symgc configurations: activate steadygc concurrent collector
+    extern (C) __gshared string[] rt_options = ["gcopt=gc:sdcq"];
+}
 
 void main() {
     auto app = App.create("Game Engine Demo", 1280, 720);

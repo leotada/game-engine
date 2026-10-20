@@ -1,6 +1,30 @@
 # Multiplatform Integration of `steadygc` (`symgc`)
 
-This document defines the complete architecture and integration of [`leotada/symgc`](file:///home/leonardo/Projetos/game-engine/ref/symgc/README.md) (`steadygc`), the custom **DMD** compiler (`-preview=gcbarrier`), and the custom **LDC** compiler (`-gc-card-marking`) into the D 3D game engine.
+This document defines the architecture, multiplatform runtime hooks, and compiler integration of [`leotada/symgc`](file:///home/leonardo/Projetos/game-engine/ref/symgc/README.md) (`steadygc`) in the D 3D game engine.
+
+---
+
+## 0. Zero Compiler Lock-in: The 3-Tier Execution Model
+
+> [!IMPORTANT]
+> **Does the Game Engine require a custom compiler?**
+> **No.** The game engine compiles, tests, and runs out-of-the-box with **standard stock DMD (`/usr/bin/dmd`)** and **standard stock LDC (`ldc2`)** from `dlang.org`.
+>
+> Neither a custom compiler nor the custom GC is mandatory. The architecture is strictly structured into **three operational tiers**, ensuring 100% standard D toolchain compatibility while unlocking ultra-low latency for developers who opt in:
+
+| Tier | Compiler | GC Collector | Write Barrier Tracking | Pause Latency (p99) | How to Build & Run |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Tier 1: Stock Default** | **Standard Official DMD / LDC** | Standard `druntime` GC (Conservative / Precise) | None (STW mark-sweep) | 1.9 ms – 7.3 ms | `dub build`<br>`dub run --config=player` |
+| **Tier 2: Plug-in Collector** | **Standard Official DMD / LDC** | `steadygc` (`symgc`) via linked static lib | Background sweep + OS synchronizations | 1.1 ms – 1.3 ms | `dub build`<br>`dub run --config=player -- --DRT-gcopt=gc:sdcq` |
+| **Tier 3: Full Compiler Acceleration** | **Custom DMD** (`-preview=gcbarrier`) / **Custom LDC** (`-gc-card-marking`) | `steadygc` (`symgc`) | 512-byte compiler-lowered card marking | **0.09 ms – 0.13 ms** | `dub build --config=player-symgc`<br>`dub build --config=benchmark-symgc` |
+
+### Runtime Graceful Fallback
+All engine GC primitives in [`source/engine/core/gc.d`](file:///home/leonardo/Projetos/game-engine/source/engine/core/gc.d) inspect `gcIsSteadyGcActive()` at runtime (checking if card-table memory was mapped by `gc:sdcq`). When running under **Tier 1** on stock `druntime` GC:
+- `gcStepFrameSlack(slack)`: Graceful no-op.
+- `gcDefragment()`: Graceful no-op (returns 0).
+- `gcExcludeCurrentThread()` / `gcIncludeCurrentThread()`: Graceful no-op.
+- `gcBarrierRange(...)`: Graceful no-op.
+- `gcTotalTimes()`: Seamlessly falls back to `core.memory.GC.profileStats()`.
 
 ---
 

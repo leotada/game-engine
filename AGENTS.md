@@ -161,6 +161,17 @@ Benchmark: 1200 frames, 4096 NPCs, same logical workload, `precise:1` GC.
 Full methodology and results: [docs/incremental-gc-research.md](docs/incremental-gc-research.md) §7.5.  
 Implementation plan: [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md).
 
+### Optional Plug-in GC: `steadygc` (`symgc`)
+
+The engine ships with `steadygc` (`symgc`) as an **optional, plug-in collector** (`engine/core/gc.d`, `vendor/symgc/`).
+- **No custom compiler required:** The engine compiles and runs out-of-the-box with **standard stock DMD** (`/usr/bin/dmd`) and **stock LDC**.
+- **Three tiers of operation:**
+  1. *Tier 1: Stock DMD / LDC + Stock GC (Default)*: Plain `dub build` and `dub run`. All `gc.d` hooks gracefully no-op.
+  2. *Tier 2: Stock DMD / LDC + SteadyGC*: Run with `--DRT-gcopt=gc:sdcq`. SteadyGC runs concurrent sweeping without compiler barriers (~1.1–1.3 ms pause).
+  3. *Tier 3: Custom Compiler + SteadyGC*: `dub build --config=player-symgc` or `benchmark-symgc`. Uses `-preview=gcbarrier` (DMD) / `-gc-card-marking` (LDC) to achieve 0.09–0.13 ms p99 pauses.
+- **Graceful fallback:** All `gc.d` functions check `gcIsSteadyGcActive()`. Under stock GC, `gcStepFrameSlack`, `gcDefragment`, `gcExcludeCurrentThread`, and `gcBarrierRange` are safe, instant no-ops.
+- Full architecture: [docs/symgc-multiplatform-integration.md](docs/symgc-multiplatform-integration.md).
+
 ## Directory Structure
 
 ```
