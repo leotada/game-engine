@@ -88,3 +88,55 @@ unittest {
     assert(abs(n.z - q.z) < 1e-6f);
     assert(cross(Vec3(1, 0, 0), Vec3(0, 1, 0)) == Vec3(0, 0, 1));
 }
+
+// ---- Quaternion factories (scalar versions of upstream SimdQuaternion helpers) ----
+
+import std.math : sin, cos;
+
+/// Rotation of `angle` radians around the unit vector `axis`.
+Quat fromAxisAngle(Vec3 axis, float angle) {
+    immutable half = angle * 0.5f;
+    immutable s = sin(half);
+    return Quat(axis.x * s, axis.y * s, axis.z * s, cos(half));
+}
+
+/// Rotation around the unit vector `axis` given the cosine of the angle (in [-1, 1]).
+Quat fromAxisCosAngle(Vec3 axis, float cosAngle) {
+    immutable halfCos2 = (1.0f + cosAngle) * 0.5f;
+    immutable halfSin2 = 1.0f - halfCos2;
+    immutable s = sqrt(halfSin2);
+    return Quat(axis.x * s, axis.y * s, axis.z * s, sqrt(halfCos2));
+}
+
+/// Shortest rotation taking direction `from` to direction `to` (inputs need not be normalized;
+/// null vectors give identity).
+Quat fromVectors(Vec3 from, Vec3 to) {
+    immutable normFromNormTo = sqrt(dot(from, from) * dot(to, to));
+    if (normFromNormTo < 1.0e-6f) return Quat(0, 0, 0, 1);
+    immutable realPart = normFromNormTo + dot(from, to);
+    Quat q;
+    if (realPart < 1.0e-6f * normFromNormTo) {
+        // Opposite vectors: 180 degrees around an arbitrary orthogonal axis.
+        import std.math : fabs;
+        q = fabs(from.x) > fabs(from.z) ? Quat(-from.y, from.x, 0, 0) : Quat(0, -from.z, from.y, 0);
+    } else {
+        immutable c = cross(from, to);
+        q = Quat(c.x, c.y, c.z, realPart);
+    }
+    return normalize(q);
+}
+
+unittest {
+    import std.math : abs;
+    immutable q = fromVectors(Vec3(1, 0, 0), Vec3(0, 1, 0));
+    immutable r = rotate(q, Vec3(1, 0, 0));
+    assert(abs(r.y - 1) < 1e-6f && abs(r.x) < 1e-6f);
+    // Opposite vectors still give a proper half-turn.
+    immutable h = rotate(fromVectors(Vec3(0, 0, 1), Vec3(0, 0, -1)), Vec3(0, 0, 1));
+    assert(abs(h.z + 1) < 1e-6f);
+    assert(fromVectors(Vec3(0, 0, 0), Vec3(1, 0, 0)) == Quat(0, 0, 0, 1));
+    // Axis-cos-angle and axis-angle agree.
+    immutable a = fromAxisAngle(Vec3(0, 0, 1), 1.0f);
+    immutable b = fromAxisCosAngle(Vec3(0, 0, 1), cos(1.0f));
+    assert(abs(a.z - b.z) < 1e-6f && abs(a.w - b.w) < 1e-6f);
+}

@@ -18,3 +18,6 @@ public import engine.animation.math.scalar;
 public import engine.animation.track;
 public import engine.animation.track_sampling;
 public import engine.animation.track_triggering;
+public import engine.animation.ik;
+public import engine.animation.math.matrix;
+public import engine.animation.motion_blending;
