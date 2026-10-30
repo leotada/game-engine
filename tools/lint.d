@@ -51,6 +51,9 @@ void main() @trusted
             || rel.canFind("/project/")
             || rel.canFind("scene_file.d")
             || rel.canFind("scene_load.d")
+            // ozz port: asset-owned data (clip) and the load-time reader never live in components.
+            || rel.canFind("animation/clip.d")
+            || rel.canFind("animation/io/archive.d")
             || rel.canFind("attrs.d"))
             continue;
 

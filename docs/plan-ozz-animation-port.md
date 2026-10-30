@@ -1,6 +1,7 @@
 # Port Plan: ozz-animation Runtime → Pure D (`engine.animation`)
 
-> **Status:** proposed · Priority: medium (roadmap #5, skeletal animation)
+> **Status:** in progress · OZ-1, OZ-3 … OZ-8 implemented (scalar reference math only); see
+> [Implementation status](#implementation-status). Priority: medium (roadmap #5, skeletal animation)
 > **Upstream:** [guillaumeblanc/ozz-animation](https://github.com/guillaumeblanc/ozz-animation), pinned at
 > commit `744eb9d` (release **0.17.0**, Aug 2026). License: **MIT**.
 > **Scope:** the **runtime** libraries only (`ozz_base`, `ozz_animation`, `ozz_geometry`).
@@ -9,6 +10,46 @@
 > AN-1 (POD data structures) and AN-3 (pose evaluation) of [plan-animation.md](plan-animation.md),
 > and supplies the CPU side of AN-4 (GPU skinning). AN-2 (glTF animation parsing) is replaced by
 > the `.ozz` data pipeline described in §3.
+
+---
+
+## Implementation status
+
+Run with `dub build --config=test-animation && ./game-engine-test-animation` (builds with
+unittests, no window/GPU), or compile only the port:
+`dmd -unittest -main -preview=dip1000 -Isource source/engine/animation/{,io/,math/}*.d`
+(also green under LDC2).
+
+| Phase | State | Notes |
+|:---|:---|:---|
+| OZ-0 | partial | Fixtures vendored in `assets/animation/test/`; `engine.animation.testing` helper. **No C++ golden harness yet** (see deviations). |
+| OZ-1 | done (subset) | `math/simd.d` (scalar reference backend), `math/soa.d`, `math/half.d`. Only ops reachable from the implemented jobs. |
+| OZ-2 | not started | Vector (`core.simd`) backend. |
+| OZ-3 | done | `io/archive.d` (endianness-aware, bounds-checked), `io/math_archive.d`, `io/group_varint.d` (decode). |
+| OZ-4 | done | `skeleton.d` (load + validation, `findJoint`, `isLeaf`). `iterateJointsDF*`, rest-pose helpers pending. |
+| OZ-5 | done | `keyframe.d`, `clip.d` (v7 only, load-time validation, `uid`), key counting. |
+| OZ-6 | done | `sampling.d`: `SamplingContext` + `SamplingJob`, iframes, forward/backward cache. |
+| OZ-7 | done | `local_to_model.d` incl. `from` / `to` / `fromExcluded`. |
+| OZ-8 | done | `blending.d`: normal, partial, rest-pose threshold, additive and subtractive layers. |
+| OZ-9 … OZ-14 | not started | Tracks, IK, motion blending, skinning, ECS integration, performance. |
+
+**Deviations from the plan as written**
+
+- **Reference math only.** `SimdFloat4` is a plain 4-float struct; `rcpEst` / `rsqrtEst` are exact,
+  so results can differ from upstream's SSE estimates within estimate precision.
+- **No golden fixtures from C++.** Correctness is checked by oracles instead: a long-lived sampling
+  context must be bit-identical to a fresh context at every ratio (forward, backward, random
+  seeks); an independent per-track reconstruction of translations; local-to-model against a naive
+  recursive evaluation and partial updates against full ones; blend identities (single layer,
+  weighted mean, opposed quaternions, rest-pose threshold, add/subtract round trip).
+- **Key ratios widened to `ushort[]`** at load (upstream keeps raw `u8` when there are <= 255
+  timepoints).
+- **Separate GC arrays instead of one block per resource.** `new T[]` of pointer-free types is not
+  scanned by the GC, so the NO_SCAN goal holds; the single-allocation layout was not worth the
+  carving code.
+- `Float4x4` is used directly by `LocalToModelJob` (layout-identical to `Mat4`); a `Mat4[]` view is
+  not added yet.
+- `lint` exempts `animation/clip.d` and `animation/io/archive.d` (asset-owned data / load-time reader).
 
 ---
 
@@ -77,7 +118,21 @@ Line counts are from the pinned commit (headers + sources, comments included).
 The SIMD layer dominates the line count because upstream carries two complete backends (reference
 and SSE) plus many operations the animation runtime never calls. The D port implements **only the
 operations reachable from the runtime jobs**, discovered by compiling each job and adding what is
-missing. Expected D size: **~5–7 kLOC** of library code plus **~4–6 kLOC** of tests.
+missing. Expected D size: **~5–7 kLOC** of library code plus **~6–9 kLOC** of tests.
+
+Measured upstream scope (raw lines / code lines without comments and blanks):
+
+| Area | Raw | Code |
+|:---|---:|---:|
+| Maths, all backends (reference ≈ 1.76k code, SSE ≈ 1.7k code) | 8,452 | 5,707 |
+| IO, endianness, math archives, group-varint | 2,106 | 1,206 |
+| Animation runtime | 4,858 | 2,511 |
+| Skinning | 685 | 395 |
+| **Library total** | **16,101** | **9,819** |
+| Matching upstream tests | 15,037 | 11,383 |
+
+The test estimate is below the upstream 11.4k because tests that build their input with the
+offline builders become golden fixtures produced by the C++ harness (OZ-0) instead of D code.
 
 ### 2.2 Explicitly excluded
 

@@ -186,6 +186,19 @@
             "versions": ["NoSDL", "NoWGPU"]
         },
         {
+            "name": "test-animation",
+            "targetType": "executable",
+            "targetName": "game-engine-test-animation",
+            "mainSourceFile": "source/demo/test_animation.d",
+            "sourcePaths": ["source/engine/animation", "source/demo"],
+            "importPaths": ["source"],
+            "sourceFiles": [],
+            "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c"],
+            "buildOptions": ["unittests"],
+            "libs": [],
+            "versions": ["NoSDL", "NoWGPU"]
+        },
+        {
             "name": "test-scene",
             "targetType": "executable",
             "targetName": "game-engine-test-scene",

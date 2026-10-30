@@ -49,6 +49,11 @@ This is a commercial-grade 3D game engine written in **D**, targeting Bevy Engin
 
 - **All documentation must be written in English.** This applies to all files in `docs/`, architecture documents, roadmaps, implementation plans, code comments, docstrings, and commit messages. Never write documentation or plans in Portuguese or any other language. All existing and future documentation must be maintained in English.
 
+### Workflow: Commits and Memory
+
+- **At every step / phase / milestone, make a local git commit** (never push unless asked). One logical unit of work per commit, with tests green first.
+- **At every step / phase / milestone, record in ai-memory what was decided and what was done** (decisions, deviations from the plan, open items), so later sessions can resume without re-deriving context.
+
 ### Performance Principles
 
 - **Cache locality first** — contiguous arrays (`T[]`), sparse-set iteration over dense storage.
