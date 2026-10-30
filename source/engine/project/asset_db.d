@@ -172,6 +172,10 @@ struct AssetDatabase {
             case ".ogg":
             case ".mp3":
                 return "audio";
+            case ".ozz":
+                // Skeleton, animation or track archive (ozz-animation runtime format); the
+                // archive tag inside the file says which, see engine.animation.
+                return "ozz";
             case ".d":
                 return "script";
             default:
@@ -216,4 +220,10 @@ unittest {
     assert(!exists(file2));
     assert(!exists(file2 ~ ".meta"));
     assert(db.getGuid(file2).isNull());
+}
+
+unittest {
+    assert(AssetDatabase.detectImporter("assets/char/skeleton.ozz") == "ozz");
+    assert(AssetDatabase.detectImporter("assets/char/walk.ozz") == "ozz");
+    assert(AssetDatabase.detectImporter("assets/char/walk.gltf") == "gltf");
 }

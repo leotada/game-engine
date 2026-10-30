@@ -17,26 +17,29 @@
 
 Run with `dub build --config=test-animation && ./game-engine-test-animation` (builds with
 unittests, no window/GPU), or compile only the port:
-`dmd -unittest -main -preview=dip1000 -Isource source/engine/animation/{,io/,math/}*.d`
-(also green under LDC2).
+`dmd -unittest -main -preview=dip1000 -Isource source/engine/animation/{,io/,math/,ecs/}*.d` plus the engine modules the ECS layer imports (see the `test-animation` sources); also green under LDC2 and with `-version=EngineAnimScalarMath`.
 
 | Phase | State | Notes |
 |:---|:---|:---|
-| OZ-0 | partial | Fixtures vendored in `assets/animation/test/`; `engine.animation.testing` helper. **No C++ golden harness yet** (see deviations). |
-| OZ-1 | done (subset) | `math/simd.d` (scalar reference backend), `math/soa.d`, `math/half.d`. Only ops reachable from the implemented jobs. |
-| OZ-2 | not started | Vector (`core.simd`) backend. |
+| OZ-0 | partial | Fixtures vendored in `assets/animation/test/`; `engine.animation.testing` helper. **No C++ golden harness** (see deviations). |
+| OZ-1 | done (subset) | `math/soa.d`, `math/half.d`, scalar reference backend. Only ops reachable from the implemented jobs. |
+| OZ-2 | done | `math/simd_backend.d` mixin instantiated as `simd_ref` / `simd_vec` (`core.simd`, SHUFPS transpose and broadcasts), selected in `simd.d`; `-version=EngineAnimScalarMath` forces scalar. `simd_diff_tests.d` compares both. |
 | OZ-3 | done | `io/archive.d` (endianness-aware, bounds-checked), `io/math_archive.d`, `io/group_varint.d` (decode). |
-| OZ-4 | done | `skeleton.d` (load + validation, `findJoint`, `isLeaf`). `iterateJointsDF*`, rest-pose helpers pending. |
+| OZ-4 | done | `skeleton.d`, `skeleton_utils.d` (`iterateJointsDF[Reverse]`, rest-pose local/model). |
 | OZ-5 | done | `keyframe.d`, `clip.d` (v7 only, load-time validation, `uid`), key counting. |
 | OZ-6 | done | `sampling.d`: `SamplingContext` + `SamplingJob`, iframes, forward/backward cache. |
 | OZ-7 | done | `local_to_model.d` incl. `from` / `to` / `fromExcluded`. |
 | OZ-8 | done | `blending.d`: normal, partial, rest-pose threshold, additive and subtractive layers. |
-| OZ-9 … OZ-14 | not started | Tracks, IK, motion blending, skinning, ECS integration, performance. |
+| OZ-9 | done | `track.d`, `track_sampling.d`, `track_triggering.d`. |
+| OZ-10 | done | `ik.d`: `IKTwoBoneJob`, `IKAimJob`, `applyCorrection`. |
+| OZ-11 | done | `motion_blending.d`. |
+| OZ-12 | done | `skinning.d` (CPU). |
+| OZ-13 | mostly done | `ecs/` stores + hot reload, components (Inspector-annotated), `PosePool`, `@nogc` systems, skeleton debug draw, `gltf_skin.d`, `"ozz"` importer id in `AssetDatabase`, headless `--config=anim` demo. **Not done:** windowed/keyboard demo, GPU palette upload (AN-4), `gltf2ozz` editor action. |
+| OZ-14 | partly done | `--config=anim` doubles as the benchmark (per-stage timings, N characters, `ruby`/`pab`); one measured optimization (SHUFPS transpose, local-to-model 8.7x). [animation-guide.md](animation-guide.md) written. **Not done:** `anim-bench` as a separate config, C++ comparison, `@trusted` unchecked indexing pass. |
 
 **Deviations from the plan as written**
 
-- **Reference math only.** `SimdFloat4` is a plain 4-float struct; `rcpEst` / `rsqrtEst` are exact,
-  so results can differ from upstream's SSE estimates within estimate precision.
+- **Estimates.** The scalar backend's `rcpEst` / `rsqrtEst` are exact; the DMD x86_64 vector backend uses `rcpps` / `rsqrtps`; LDC uses exact values. Results can differ from upstream within estimate precision.
 - **No golden fixtures from C++.** Correctness is checked by oracles instead: a long-lived sampling
   context must be bit-identical to a fresh context at every ratio (forward, backward, random
   seeks); an independent per-track reconstruction of translations; local-to-model against a naive

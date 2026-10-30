@@ -2,7 +2,7 @@
 /// `PosePool` allocated at spawn.
 ///
 /// Order: `advancePlaybackSystem` -> `sampleSystem` -> `blendSystem` -> `localToModelSystem` ->
-/// `lookAtSystem` (needs model-space joints, then re-runs local-to-model from the aimed joint) ->
+/// `ikSystem` -> `lookAtSystem` (each needs model-space joints, then re-runs local-to-model below its joint) ->
 /// `skinPaletteSystem`. Each character is independent, so every system is a candidate for the
 /// parallel ECS (docs/plan-parallel-ecs.md).
 module engine.animation.ecs.systems;
@@ -153,6 +153,42 @@ void lookAtSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool pool
     }
 }
 
+/// Two-bone IK. Runs after `localToModelSystem` and before `lookAtSystem`: it corrects the start
+/// and mid joints, then refreshes model matrices from the start joint down.
+void ikSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool pool) @trusted {
+    foreach (e; world.query!(AnimSkeleton, AnimTwoBoneIK)()) {
+        auto sk = world.getPtr!AnimSkeleton(e);
+        auto ik = world.getPtr!AnimTwoBoneIK(e);
+        auto pose = pool.get(sk.poseSlot);
+        auto skeleton = assets.skeletons.get(sk.skeleton);
+        if (pose is null || skeleton is null) continue;
+        immutable n = cast(uint) skeleton.numJoints;
+        if (ik.startJoint >= n || ik.midJoint >= n || ik.endJoint >= n) continue;
+
+        Quat startCorrection, midCorrection;
+        IKTwoBoneJob job;
+        job.target = ik.target;
+        job.poleVector = ik.pole;
+        job.midAxis = ik.midAxis;
+        job.weight = ik.weight;
+        job.startJoint = &pose.model[ik.startJoint];
+        job.midJoint = &pose.model[ik.midJoint];
+        job.endJoint = &pose.model[ik.endJoint];
+        job.startJointCorrection = &startCorrection;
+        job.midJointCorrection = &midCorrection;
+        if (!job.run()) continue;
+        applyCorrection(pose.blended, cast(int) ik.startJoint, startCorrection);
+        applyCorrection(pose.blended, cast(int) ik.midJoint, midCorrection);
+
+        LocalToModelJob l2m;
+        l2m.skeleton = skeleton;
+        l2m.input = pose.blended;
+        l2m.output = pose.model;
+        l2m.from = cast(int) ik.startJoint;
+        l2m.run();
+    }
+}
+
 /// `palette[j] = model[remap[j]] * inverseBind[j]`; without a skin the palette is the model pose.
 void skinPaletteSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool pool) @trusted {
     foreach (e; world.query!AnimSkeleton()) {
@@ -177,7 +213,7 @@ version (unittest) {
     import engine.animation.testing : fixtureDir, near;
     import engine.ecs.world : World;
 
-    alias AnimWorld = World!(AnimSkeleton, AnimPlayback, AnimBlend2, AnimAdditive, AnimLookAt);
+    alias AnimWorld = World!(AnimSkeleton, AnimPlayback, AnimBlend2, AnimAdditive, AnimLookAt, AnimTwoBoneIK);
 }
 
 unittest {
@@ -336,4 +372,50 @@ unittest {
     foreach (j; 0 .. skeleton.numJoints)
         foreach (c; 0 .. 4) foreach (r; 0 .. 4)
             assert(near(pose.palette[j].cols[c][r], c == r ? 1.0f : 0.0f, 1e-3f));
+}
+
+unittest {
+    // Two-bone IK: with a hinge axis that fits the chain, the end joint reaches a nearby target
+    // that it did not reach before. Axes are tried in turn since the skeleton's hinge is unknown.
+    import engine.animation.math.matrix : translationOf;
+    import std.math : sqrt;
+    AnimAssets assets;
+    PosePool pool;
+    AnimWorld world;
+    string err;
+    auto sk = loadSkeletonFile(assets.skeletons, fixtureDir ~ "pab/skeleton.ozz", err);
+    auto skeleton = assets.skeletons.get(sk);
+    auto walk = loadAnimationFile(assets.animations, fixtureDir ~ "pab/walk.ozz", err);
+
+    // First joint with a parent and a grandparent, deep enough to be a limb.
+    int end = -1;
+    foreach (j; 3 .. skeleton.numJoints)
+        if (skeleton.parents[skeleton.parents[j]] != kNoParent && skeleton.parents[skeleton.parents[skeleton.parents[j]]] != kNoParent) { end = j; break; }
+    assert(end > 0);
+    immutable mid = skeleton.parents[end], start = skeleton.parents[mid];
+
+    float bestError = float.infinity;
+    foreach (axis; [Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1)]) {
+        auto w = AnimWorld();
+        PosePool p2;
+        immutable e = w.spawn();
+        w.set(e, AnimSkeleton(sk, p2.acquire(skeleton.numJoints)));
+        w.set(e, AnimPlayback(walk, 0.3f, 1, true));
+        sampleSystem(w, assets, p2);
+        blendSystem(w, assets, p2);
+        localToModelSystem(w, assets, p2);
+        auto pose = p2.get(0);
+        immutable before = translationOf(pose.model[end]);
+        immutable sPos = translationOf(pose.model[start]);
+        // Target: pull the end joint 10% closer to the start joint (always reachable).
+        immutable target = Vec3(before.x + (sPos.x - before.x) * 0.1f, before.y + (sPos.y - before.y) * 0.1f,
+                                before.z + (sPos.z - before.z) * 0.1f);
+        w.set(e, AnimTwoBoneIK(start, mid, end, target, Vec3(0, 1, 0), axis, 1.0f));
+        ikSystem(w, assets, p2);
+        immutable after = translationOf(pose.model[end]);
+        immutable d = Vec3(after.x - target.x, after.y - target.y, after.z - target.z);
+        immutable err2 = sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (err2 < bestError) bestError = err2;
+    }
+    assert(bestError < 1e-2f, "IK never reached the target");
 }

@@ -75,7 +75,10 @@ mixin template SimdBackend(bool useVec) {
         static SimdFloat4 zero() { return SimdFloat4(0, 0, 0, 0); }
         static SimdFloat4 one() { return SimdFloat4(1, 1, 1, 1); }
         static SimdFloat4 load(float x, float y, float z, float w) { return SimdFloat4(x, y, z, w); }
-        static SimdFloat4 load1(float v) { return SimdFloat4(v, v, v, v); }
+        static SimdFloat4 load1(float v) {
+            static if (useVec) { float4 r = v; return SimdFloat4(r); }
+            else return SimdFloat4(v, v, v, v);
+        }
         static SimdFloat4 fromInt(SimdInt4 v) { return SimdFloat4(v.x, v.y, v.z, v.w); }
 
         SimdFloat4 opBinary(string op)(SimdFloat4 o) const if (op == "+" || op == "-" || op == "*" || op == "/") {
@@ -164,14 +167,43 @@ mixin template SimdBackend(bool useVec) {
                           halfToFloat(cast(ushort)(h.z & 0xffff)), halfToFloat(cast(ushort)(h.w & 0xffff)));
     }
 
+    // `shuf!(a, b, c, d)(x, y)` = SHUFPS: result lanes are x[a], x[b], y[c], y[d] (a..d in 0..3).
+    static if (useVec) {
+        version (LDC) {
+            import ldc.simd : shufflevector;
+            enum bool hasShuffle = true;
+            float4 shuf(int a, int b, int c, int d)(float4 x, float4 y) pure nothrow @nogc @safe {
+                return shufflevector!(float4, a, b, c + 4, d + 4)(x, y);
+            }
+        } else version (D_SIMD) {
+            enum bool hasShuffle = true;
+            float4 shuf(int a, int b, int c, int d)(float4 x, float4 y) pure nothrow @nogc @trusted {
+                return cast(float4) __simd(XMM.SHUFPS, x, y, cast(ubyte)(a | (b << 2) | (c << 4) | (d << 6)));
+            }
+        } else enum bool hasShuffle = false;
+    } else enum bool hasShuffle = false;
+
     /// Upstream's `Transpose16x16`: `out[4*i + j][k] = in[4*j + k][i]`. With `in` holding 4 SoA
     /// matrix columns (4 component vectors each), `out` receives 4 AoS matrices (4 column vectors each).
     void transpose16x16(const(SimdFloat4)[] input, SimdFloat4[] output) {
         assert(input.length >= 16 && output.length >= 16);
-        foreach (i; 0 .. 4) {
-            foreach (j; 0 .. 4) {
-                foreach (k; 0 .. 4) {
-                    output[i * 4 + j][k] = input[j * 4 + k][i];
+        static if (hasShuffle) {
+            // Four register-only 4x4 transposes. Building rows lane by lane through memory makes
+            // the following 16-byte loads miss store forwarding and costs ~10x.
+            static foreach (j; 0 .. 4) {{
+                auto a = input[j * 4 + 0].v, b = input[j * 4 + 1].v, c = input[j * 4 + 2].v, d = input[j * 4 + 3].v;
+                auto t0 = shuf!(0, 1, 0, 1)(a, b), t1 = shuf!(2, 3, 2, 3)(a, b);
+                auto t2 = shuf!(0, 1, 0, 1)(c, d), t3 = shuf!(2, 3, 2, 3)(c, d);
+                output[0 * 4 + j] = SimdFloat4(shuf!(0, 2, 0, 2)(t0, t2));
+                output[1 * 4 + j] = SimdFloat4(shuf!(1, 3, 1, 3)(t0, t2));
+                output[2 * 4 + j] = SimdFloat4(shuf!(0, 2, 0, 2)(t1, t3));
+                output[3 * 4 + j] = SimdFloat4(shuf!(1, 3, 1, 3)(t1, t3));
+            }}
+        } else {
+            static foreach (i; 0 .. 4) {
+                static foreach (j; 0 .. 4) {
+                    output[i * 4 + j] = SimdFloat4(input[j * 4 + 0][i], input[j * 4 + 1][i],
+                                                   input[j * 4 + 2][i], input[j * 4 + 3][i]);
                 }
             }
         }
@@ -193,11 +225,19 @@ mixin template SimdBackend(bool useVec) {
 
         Float4x4 opBinary(string op : "*")(const Float4x4 b) const {
             Float4x4 r;
-            foreach (i; 0 .. 4) {
-                r.cols[i] = cols[0] * SimdFloat4.load1(b.cols[i].x)
-                          + cols[1] * SimdFloat4.load1(b.cols[i].y)
-                          + cols[2] * SimdFloat4.load1(b.cols[i].z)
-                          + cols[3] * SimdFloat4.load1(b.cols[i].w);
+            static foreach (i; 0 .. 4) {
+                static if (hasShuffle) {
+                    // Broadcast each lane of b's column with a shuffle instead of a scalar round-trip.
+                    r.cols[i] = cols[0] * SimdFloat4(shuf!(0, 0, 0, 0)(b.cols[i].v, b.cols[i].v))
+                              + cols[1] * SimdFloat4(shuf!(1, 1, 1, 1)(b.cols[i].v, b.cols[i].v))
+                              + cols[2] * SimdFloat4(shuf!(2, 2, 2, 2)(b.cols[i].v, b.cols[i].v))
+                              + cols[3] * SimdFloat4(shuf!(3, 3, 3, 3)(b.cols[i].v, b.cols[i].v));
+                } else {
+                    r.cols[i] = cols[0] * SimdFloat4.load1(b.cols[i].x)
+                              + cols[1] * SimdFloat4.load1(b.cols[i].y)
+                              + cols[2] * SimdFloat4.load1(b.cols[i].z)
+                              + cols[3] * SimdFloat4.load1(b.cols[i].w);
+                }
             }
             return r;
         }
