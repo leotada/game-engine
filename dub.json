@@ -192,7 +192,7 @@
             "mainSourceFile": "source/demo/test_animation.d",
             "sourcePaths": ["source/engine/animation", "source/demo"],
             "importPaths": ["source"],
-            "sourceFiles": [],
+            "sourceFiles": ["source/engine/math/vec.d", "source/engine/math/mat.d", "source/engine/ecs/store.d", "source/engine/ecs/world.d", "source/engine/core/pod.d", "source/engine/core/handle.d", "source/engine/core/strings.d", "source/engine/graphics/types.d"],
             "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c"],
             "buildOptions": ["unittests"],
             "libs": [],
