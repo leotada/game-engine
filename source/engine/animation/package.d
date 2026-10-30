@@ -21,3 +21,4 @@ public import engine.animation.track_triggering;
 public import engine.animation.ik;
 public import engine.animation.math.matrix;
 public import engine.animation.motion_blending;
+public import engine.animation.skinning;
