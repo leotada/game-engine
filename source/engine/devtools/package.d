@@ -5,5 +5,6 @@
 /// (DebugOverlay). Built on top of the existing renderer + TextRenderer.
 module engine.devtools;
 
+public import engine.devtools.anim_overlay;
 public import engine.devtools.gizmos;
 public import engine.devtools.overlay;

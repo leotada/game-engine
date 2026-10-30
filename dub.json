@@ -271,6 +271,25 @@
             "versions": ["NoSDL", "NoWGPU"]
         },
         {
+            "name": "anim-bench",
+            "targetType": "executable",
+            "targetName": "game-engine-anim-bench",
+            "mainSourceFile": "source/demo/anim_demo.d",
+            "sourcePaths": ["source/engine/animation"],
+            "importPaths": ["source"],
+            "sourceFiles": ["source/demo/anim_demo.d", "source/engine/math/vec.d", "source/engine/math/mat.d", "source/engine/math/quat.d", "source/engine/ecs/store.d", "source/engine/ecs/world.d", "source/engine/core/pod.d", "source/engine/reflect/attrs.d", "source/engine/core/handle.d", "source/engine/core/strings.d", "source/engine/graphics/types.d"],
+            "excludedSourceFiles": ["source/engine/animation/testing.d"],
+            "buildOptions": ["releaseMode", "optimize", "noBoundsCheck"],
+            "libs": [],
+            "versions": ["NoSDL", "NoWGPU"]
+        },
+        {
+            "name": "anim-viewer",
+            "targetType": "executable",
+            "targetName": "game-engine-anim-viewer",
+            "mainSourceFile": "source/demo/anim_viewer.d"
+        },
+        {
             "name": "ui-gallery",
             "targetType": "executable",
             "targetName": "game-engine-ui-gallery",

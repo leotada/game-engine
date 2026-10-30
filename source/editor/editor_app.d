@@ -728,6 +728,18 @@ struct EditorApp {
         } else if (tag == 0xBB01) {
             assetDb.scanAssets("assets");
             projectPanel.dirty = true;
+        } else if (tag == 0xBB30) {
+            // Converts the selected glTF into .ozz files with upstream's external tool, if installed.
+            import engine.animation.gltf2ozz : convertGltfToOzz;
+            import std.path : dirName;
+            string msg;
+            if (convertGltfToOzz(projectPanel.selectedItem, dirName(projectPanel.selectedItem), msg)) {
+                info("gltf2ozz: converted ", projectPanel.selectedItem);
+                assetDb.scanAssets("assets");
+                projectPanel.dirty = true;
+            } else {
+                warn("gltf2ozz: ", msg);
+            }
         } else if (tag == 0xBB20) {
             projectPanel.currentDir = "assets";
             projectPanel.dirty = true;

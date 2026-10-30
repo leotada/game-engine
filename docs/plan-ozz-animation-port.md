@@ -21,7 +21,7 @@ unittests, no window/GPU), or compile only the port:
 
 | Phase | State | Notes |
 |:---|:---|:---|
-| OZ-0 | partial | Fixtures vendored in `assets/animation/test/`; `engine.animation.testing` helper. **No C++ golden harness** (see deviations). |
+| OZ-0 | done (goldens cover sampling, blending, local-to-model, IK) | Fixtures vendored in `assets/animation/test/`; `engine.animation.testing`; C++ golden generator in `tools/ozz/golden/` with committed dumps in `assets/animation/test/golden/` (`golden_tests.d`). Tracks, motion blending and skinning have no goldens (oracle tests). |
 | OZ-1 | done (subset) | `math/soa.d`, `math/half.d`, scalar reference backend. Only ops reachable from the implemented jobs. |
 | OZ-2 | done | `math/simd_backend.d` mixin instantiated as `simd_ref` / `simd_vec` (`core.simd`, SHUFPS transpose and broadcasts), selected in `simd.d`; `-version=EngineAnimScalarMath` forces scalar. `simd_diff_tests.d` compares both. |
 | OZ-3 | done | `io/archive.d` (endianness-aware, bounds-checked), `io/math_archive.d`, `io/group_varint.d` (decode). |
@@ -34,8 +34,8 @@ unittests, no window/GPU), or compile only the port:
 | OZ-10 | done | `ik.d`: `IKTwoBoneJob`, `IKAimJob`, `applyCorrection`. |
 | OZ-11 | done | `motion_blending.d`. |
 | OZ-12 | done | `skinning.d` (CPU). |
-| OZ-13 | mostly done | `ecs/` stores + hot reload, components (Inspector-annotated), `PosePool`, `@nogc` systems, skeleton debug draw, `gltf_skin.d`, `"ozz"` importer id in `AssetDatabase`, headless `--config=anim` demo. **Not done:** windowed/keyboard demo, GPU palette upload (AN-4), `gltf2ozz` editor action. |
-| OZ-14 | partly done | `--config=anim` doubles as the benchmark (per-stage timings, N characters, `ruby`/`pab`); one measured optimization (SHUFPS transpose, local-to-model 8.7x). [animation-guide.md](animation-guide.md) written. **Not done:** `anim-bench` as a separate config, C++ comparison, `@trusted` unchecked indexing pass. |
+| OZ-13 | done except GPU upload | `ecs/` stores + hot reload, Inspector-annotated components (incl. `AnimTwoBoneIK`), `PosePool`, `@nogc` systems (incl. `ikSystem`, `lookAtSystem`), skeleton debug draw, overlay line (`devtools/anim_overlay.d`), `gltf_skin.d`, `"ozz"` importer id, `gltf2ozz` wrapper + editor "Import with gltf2ozz" button, headless `--config=anim` and windowed `--config=anim-viewer` (keyboard blend, look-at). **Not done:** GPU palette upload / skinned mesh pipeline (AN-4); visual comparison with the upstream viewer. |
+| OZ-14 | done, targets partly missed | `anim-bench` config (DMD, functional) and `tools/ozz/bench.sh` (LDC) vs the C++ golden binary `--bench`; sampling within target (1.06-1.15x), blend and local-to-model ~1.2-1.3x vs 1.15x target. Measured optimizations: SHUFPS transpose/broadcasts (8.7x on local-to-model), `@trusted` unchecked local-to-model hot loop. [animation-guide.md](animation-guide.md) written. DMD `-inline` crashes on `math/soa.d` (compiler bug, documented). |
 
 **Deviations from the plan as written**
 

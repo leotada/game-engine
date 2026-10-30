@@ -124,6 +124,12 @@ struct ProjectPanel {
         UiNodeId refBtn = button(ui, bar, "Refresh", theme);
         ui.get(refBtn).customTag = 0xBB01;
 
+        immutable selExt = extension(selectedItem);
+        if (selExt == ".gltf" || selExt == ".glb") {
+            UiNodeId ozzBtn = button(ui, bar, "Import with gltf2ozz", theme);
+            ui.get(ozzBtn).customTag = 0xBB30;
+        }
+
         // Content split: left folders, right files
         UiStyle splitStyle;
         splitStyle.direction = UiFlexDirection.row;

@@ -40,23 +40,33 @@ struct LocalToModelJob {
         if (i < 0) i = 0;
         bool process = i < end && (!fromExcluded || parents[i] >= from);
 
+        run_(parents, identity, i, end, process);
+        return true;
+    }
+
+    /// Hot loop. Unchecked indexing is sound here: `validate()` guarantees `input` covers every
+    /// SoA block and `output` every joint, `i < end <= numJoints`, and `loadSkeleton` guarantees
+    /// `parents[i] < i` (so a parent index is always a valid, already-written output entry).
+    private void run_(const(short)[] parents, ref const Float4x4 identity, int i, int end, bool process)
+            scope pure nothrow @nogc @trusted {
+        const(short)* par = parents.ptr;
+        Float4x4* out_ = output.ptr;
+        const(SoaTransform)* in_ = input.ptr;
         Float4x4[4] local = void;
         while (process) {
-            const t = input[i / 4];
+            const t = in_ + (i >> 2);
             toAos(SoaFloat4x4.fromAffine(t.translation, t.rotation, t.scale), local);
 
             immutable soaEnd = (i + 4) & ~3;
             for (; i < soaEnd && process; ) {
-                immutable parent = parents[i];
-                // `output` is non-const in the job; read the parent before writing the child.
-                immutable Float4x4 parentMatrix = parent == kNoParent
-                    ? (root is null ? identity : *root) : output[parent];
-                output[i] = parentMatrix * local[i & 3];
+                immutable parent = par[i];
+                const(Float4x4)* parentMatrix = parent == kNoParent
+                    ? (root is null ? &identity : root) : out_ + parent;
+                out_[i] = *parentMatrix * local[i & 3];
                 ++i;
-                process = i < end && parents[i] >= from;
+                process = i < end && par[i] >= from;
             }
         }
-        return true;
     }
 }
 

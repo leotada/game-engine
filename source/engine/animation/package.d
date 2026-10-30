@@ -13,6 +13,7 @@ public import engine.animation.local_to_model;
 public import engine.animation.math.simd;
 public import engine.animation.math.soa;
 public import engine.animation.sampling;
+public import engine.animation.gltf2ozz;
 public import engine.animation.gltf_skin;
 public import engine.animation.skeleton;
 public import engine.animation.skeleton_utils;
