@@ -14,6 +14,7 @@ public import engine.animation.math.simd;
 public import engine.animation.math.soa;
 public import engine.animation.sampling;
 public import engine.animation.skeleton;
+public import engine.animation.skeleton_utils;
 public import engine.animation.math.scalar;
 public import engine.animation.track;
 public import engine.animation.track_sampling;
