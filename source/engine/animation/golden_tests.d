@@ -199,3 +199,135 @@ private bool nearQuat(Quat a, const(float)[] w, float tol) {
     }
     assert(at == want.length);
 }
+
+// ---------------------------------------------------------------------------
+// Tracks, triggering, motion blending, skinning
+// ---------------------------------------------------------------------------
+
+import engine.animation.motion_blending;
+import engine.animation.skinning;
+import engine.animation.track;
+import engine.animation.track_sampling;
+import engine.animation.track_triggering;
+
+unittest {
+    auto ar = InputArchive(loadFixture("pab/walk_motion_track.ozz"));
+    Float3Track t;
+    assert(loadTrack(ar, t), ar.error);
+    auto want = loadFloats("track_float3_walk.bin");
+    assert(want.length == 41 * 3);
+    foreach (i; 0 .. 41) {
+        Vec3 r;
+        Float3TrackSamplingJob j;
+        j.track = &t; j.result = &r; j.ratio = i / 40.0f;
+        assert(j.run());
+        assert(near(r.x, want[i * 3], 1e-5f) && near(r.y, want[i * 3 + 1], 1e-5f)
+               && near(r.z, want[i * 3 + 2], 1e-5f), "float3 track");
+    }
+}
+
+unittest {
+    auto ar = InputArchive(loadFixture("robot_track_grasp.ozz"));
+    FloatTrack t;
+    assert(loadTrack(ar, t), ar.error);
+    auto want = loadFloats("track_float_grasp.bin");
+    assert(want.length == 41);
+    foreach (i; 0 .. 41) {
+        float r;
+        FloatTrackSamplingJob j;
+        j.track = &t; j.result = &r; j.ratio = i / 40.0f;
+        assert(j.run());
+        assert(near(r, want[i], 1e-5f), "float track");
+    }
+
+    // Edge detection over the same ranges as the generator, including looping and reversed ranges.
+    auto trig = loadFloats("trigger_grasp.bin");
+    size_t at, ranges, totalEdges;
+    while (at < trig.length) {
+        TrackTriggeringJob job;
+        job.track = &t; job.from = trig[at]; job.to = trig[at + 1]; job.threshold = trig[at + 2];
+        immutable n = cast(size_t) trig[at + 3];
+        at += 4;
+        size_t k;
+        foreach (e; job.edges) {
+            assert(k < n, "more edges than upstream");
+            assert(near(e.ratio, trig[at + k * 2], 1e-5f), "edge ratio");
+            assert(e.rising == (trig[at + k * 2 + 1] != 0), "edge direction");
+            ++k;
+        }
+        assert(k == n, "fewer edges than upstream");
+        at += n * 2;
+        totalEdges += n;
+        ++ranges;
+    }
+    assert(ranges == 8 && totalEdges >= 6, "trigger goldens are vacuous");
+}
+
+unittest {
+    auto want = loadFloats("motion.bin");
+    enum perCase = 3 * 8 + 7;
+    assert(want.length == 4 * perCase);
+    foreach (c; 0 .. 4) {
+        Transform[3] deltas;
+        MotionBlendingJob.Layer[3] layers;
+        foreach (i; 0 .. 3) {
+            auto d = want[c * perCase + i * 8 .. c * perCase + (i + 1) * 8];
+            deltas[i].translation = Vec3(d[1], d[2], d[3]);
+            deltas[i].rotation = Quat(d[4], d[5], d[6], d[7]);
+            layers[i] = MotionBlendingJob.Layer(d[0], &deltas[i]);
+        }
+        Transform o;
+        MotionBlendingJob job;
+        job.layers = layers[];
+        job.output = &o;
+        assert(job.run());
+        auto w = want[c * perCase + 24 .. (c + 1) * perCase];
+        assert(near(o.translation.x, w[0], 1e-5f) && near(o.translation.y, w[1], 1e-5f)
+               && near(o.translation.z, w[2], 1e-5f), "motion translation");
+        assert(nearQuat(o.rotation, w[3 .. 7], 1e-4f), "motion rotation");
+    }
+}
+
+@trusted unittest {
+    enum J = 8, V = 64, I = 4;
+    auto d = loadFloats("skinning.bin");
+    size_t at;
+    auto take(size_t n) { auto s = d[at .. at + n]; at += n; return s; }
+    Float4x4[] mats, invT;
+    foreach (dst; [&mats, &invT]) {
+        foreach (j; 0 .. J) {
+            auto f = take(16);
+            Float4x4 m;
+            foreach (c; 0 .. 4) m.cols[c] = SimdFloat4(f[c * 4], f[c * 4 + 1], f[c * 4 + 2], f[c * 4 + 3]);
+            *dst ~= m;
+        }
+    }
+    auto pos = take(V * 3).dup, nrm = take(V * 3).dup, tan = take(V * 3).dup;
+    ushort[] idx;
+    foreach (f; take(V * I)) idx ~= cast(ushort) f;
+    auto wts = take(V * (I - 1)).dup;
+    auto wantP = take(V * 3), wantN = take(V * 3), wantT = take(V * 3);
+    assert(at == d.length);
+
+    auto op = new float[V * 3], on = new float[V * 3], ot = new float[V * 3];
+    op[] = 0; on[] = 0; ot[] = 0;
+    SkinningJob job;
+    job.vertexCount = V;
+    job.influencesCount = I;
+    job.jointMatrices = mats;
+    job.jointInverseTransposeMatrices = invT;
+    job.jointIndices = asBytes(idx); job.jointIndicesStride = ushort.sizeof * I;
+    job.jointWeights = asBytes(wts); job.jointWeightsStride = float.sizeof * (I - 1);
+    job.inPositions = asBytes(pos); job.inPositionsStride = float.sizeof * 3;
+    job.inNormals = asBytes(nrm); job.inNormalsStride = float.sizeof * 3;
+    job.inTangents = asBytes(tan); job.inTangentsStride = float.sizeof * 3;
+    job.outPositions = asBytes(op); job.outPositionsStride = float.sizeof * 3;
+    job.outNormals = asBytes(on); job.outNormalsStride = float.sizeof * 3;
+    job.outTangents = asBytes(ot); job.outTangentsStride = float.sizeof * 3;
+    assert(job.run());
+    foreach (i; 0 .. V * 3) {
+        assert(near(op[i], wantP[i], 1e-4f), "skin position");
+        assert(near(on[i], wantN[i], 1e-3f), "skin normal");
+        assert(near(ot[i], wantT[i], 1e-3f), "skin tangent");
+    }
+}

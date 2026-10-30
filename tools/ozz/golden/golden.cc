@@ -17,7 +17,13 @@
 #include "ozz/animation/runtime/ik_two_bone_job.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/sampling_job.h"
+#include "ozz/animation/runtime/motion_blending_job.h"
 #include "ozz/animation/runtime/skeleton.h"
+#include "ozz/animation/runtime/track.h"
+#include "ozz/animation/runtime/track_sampling_job.h"
+#include "ozz/animation/runtime/track_triggering_job.h"
+#include "ozz/base/maths/transform.h"
+#include "ozz/geometry/runtime/skinning_job.h"
 #include "ozz/base/io/archive.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/simd_quaternion.h"
@@ -117,6 +123,153 @@ static void BlendAndModel() {
   Dump("model_pab.bin", md);
 }
 
+
+template <typename T>
+static bool LoadObject(const std::string& n, T* o) {
+  io::File f((g_in + "/" + n).c_str(), "rb");
+  if (!f.opened()) { std::fprintf(stderr, "cannot open %s\n", n.c_str()); return false; }
+  io::IArchive a(&f);
+  a >> *o;
+  return true;
+}
+
+static void Tracks() {
+  animation::Float3Track t3;
+  if (LoadObject("pab/walk_motion_track.ozz", &t3)) {
+    std::vector<float> out;
+    for (int i = 0; i <= 40; ++i) {
+      animation::Float3TrackSamplingJob j;
+      math::Float3 r;
+      j.track = &t3; j.result = &r; j.ratio = i / 40.f;
+      j.Run();
+      out.push_back(r.x); out.push_back(r.y); out.push_back(r.z);
+    }
+    Dump("track_float3_walk.bin", out);
+  }
+  animation::FloatTrack tf;
+  if (LoadObject("robot_track_grasp.ozz", &tf)) {
+    std::vector<float> out;
+    for (int i = 0; i <= 40; ++i) {
+      animation::FloatTrackSamplingJob j;
+      float r = 0;
+      j.track = &tf; j.result = &r; j.ratio = i / 40.f;
+      j.Run();
+      out.push_back(r);
+    }
+    Dump("track_float_grasp.bin", out);
+
+    // Triggering: [from, to, threshold, n, (ratio, rising) * n] per range.
+    std::vector<float> trig;
+    const float ranges[][3] = {{0.f, 1.f, 0.5f}, {1.f, 0.f, 0.5f}, {0.1f, 0.9f, 0.2f}, {0.3f, 2.4f, 0.5f},
+                               {2.4f, 0.3f, 0.5f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f, 0.5f}, {0.f, 3.f, 0.8f}};
+    for (const auto& r : ranges) {
+      animation::TrackTriggeringJob job;
+      animation::TrackTriggeringJob::Iterator it;
+      job.track = &tf; job.from = r[0]; job.to = r[1]; job.threshold = r[2]; job.iterator = &it;
+      job.Run();
+      std::vector<float> edges;
+      for (auto& i = it; i != job.end(); ++i) {
+        edges.push_back(i->ratio); edges.push_back(i->rising ? 1.f : 0.f);
+      }
+      trig.insert(trig.end(), {r[0], r[1], r[2], float(edges.size() / 2)});
+      trig.insert(trig.end(), edges.begin(), edges.end());
+    }
+    Dump("trigger_grasp.bin", trig);
+  }
+}
+
+static void Motion() {
+  std::vector<float> out;
+  struct Case { float w[3]; math::Transform d[3]; };
+  auto T = [](float x, float y, float z, float qx, float qy, float qz, float qw) {
+    math::Transform t = math::Transform::identity();
+    t.translation = math::Float3(x, y, z);
+    t.rotation = math::Quaternion(qx, qy, qz, qw);
+    return t;
+  };
+  const float s = 0.70710678f;
+  Case cases[] = {
+      {{1.f, 0.f, 0.f}, {T(1, 2, 3, 0, 0, 0, 1), T(0, 0, 0, 0, 0, 0, 1), T(0, 0, 0, 0, 0, 0, 1)}},
+      {{0.5f, 0.5f, 0.f}, {T(1, 0, 0, 0, 0, 0, 1), T(0, 0, 2, 0, s, 0, s), T(0, 0, 0, 0, 0, 0, 1)}},
+      {{0.2f, 0.3f, 0.5f}, {T(1, 2, 3, 0, 0, s, s), T(-1, 0.5f, 2, 0, 0, -s, -s), T(0.3f, 0.2f, 0.1f, s, 0, 0, s)}},
+      {{0.f, 0.f, 0.f}, {T(1, 0, 0, 0, 0, 0, 1), T(1, 0, 0, 0, 0, 0, 1), T(1, 0, 0, 0, 0, 0, 1)}},
+  };
+  for (auto& c : cases) {
+    animation::MotionBlendingJob::Layer layers[3];
+    for (int i = 0; i < 3; ++i) { layers[i].weight = c.w[i]; layers[i].delta = &c.d[i]; }
+    math::Transform o;
+    animation::MotionBlendingJob job;
+    job.layers = layers; job.output = &o;
+    job.Run();
+    for (int i = 0; i < 3; ++i) {
+      out.push_back(c.w[i]);
+      out.insert(out.end(), {c.d[i].translation.x, c.d[i].translation.y, c.d[i].translation.z,
+                             c.d[i].rotation.x, c.d[i].rotation.y, c.d[i].rotation.z, c.d[i].rotation.w});
+    }
+    out.insert(out.end(), {o.translation.x, o.translation.y, o.translation.z, o.rotation.x, o.rotation.y,
+                           o.rotation.z, o.rotation.w});
+  }
+  Dump("motion.bin", out);
+}
+
+// Deterministic pseudo-random in [-1, 1).
+static float Rnd(unsigned& s) { s = s * 1664525u + 1013904223u; return ((s >> 8) & 0xffff) / 32768.f - 1.f; }
+
+static void Skinning() {
+  const int kJoints = 8, kVerts = 64, kInf = 4;
+  unsigned seed = 12345;
+  std::vector<math::Float4x4> m(kJoints), it(kJoints);
+  for (int j = 0; j < kJoints; ++j) {
+    const float a = Rnd(seed) * 3.f, b = Rnd(seed) * 3.f;
+    const math::SimdFloat4 axis = math::simd_float4::Load(Rnd(seed), Rnd(seed) + 2.f, Rnd(seed), 0.f);
+    m[j] = math::Float4x4::FromAxisAngle(math::Normalize3(axis), math::simd_float4::Load1(a)) *
+           math::Float4x4::Scaling(math::simd_float4::Load(1.f + 0.2f * b, 1.f, 1.f - 0.1f * b, 0.f));
+    m[j].cols[3] = math::simd_float4::Load(Rnd(seed), Rnd(seed), Rnd(seed), 1.f);
+    it[j] = Transpose(Invert(m[j]));
+  }
+  std::vector<float> pos(kVerts * 3), nrm(kVerts * 3), tan(kVerts * 3), w(kVerts * (kInf - 1));
+  std::vector<uint16_t> idx(kVerts * kInf);
+  for (auto& v : pos) v = Rnd(seed) * 2.f;
+  for (int i = 0; i < kVerts; ++i) {
+    float n[3] = {Rnd(seed), Rnd(seed), Rnd(seed) + 1.5f};
+    const float l = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (int k = 0; k < 3; ++k) { nrm[i * 3 + k] = n[k] / l; tan[i * 3 + k] = Rnd(seed); }
+    float rest = 1.f;
+    for (int k = 0; k < kInf - 1; ++k) { const float x = (Rnd(seed) * 0.5f + 0.5f) * rest * 0.8f; w[i * (kInf - 1) + k] = x; rest -= x; }
+    for (int k = 0; k < kInf; ++k) idx[i * kInf + k] = uint16_t((i + k * 3) % kJoints);
+  }
+  std::vector<float> op(kVerts * 3), on(kVerts * 3), ot(kVerts * 3);
+  {
+    geometry::SkinningJob job;
+    job.vertex_count = kVerts; job.influences_count = kInf;
+    job.joint_matrices = make_span(m); job.joint_inverse_transpose_matrices = make_span(it);
+    job.joint_indices = make_span(idx); job.joint_indices_stride = sizeof(uint16_t) * kInf;
+    job.joint_weights = make_span(w); job.joint_weights_stride = sizeof(float) * (kInf - 1);
+    job.in_positions = make_span(pos); job.in_positions_stride = sizeof(float) * 3;
+    job.in_normals = make_span(nrm); job.in_normals_stride = sizeof(float) * 3;
+    job.in_tangents = make_span(tan); job.in_tangents_stride = sizeof(float) * 3;
+    job.out_positions = make_span(op); job.out_positions_stride = sizeof(float) * 3;
+    job.out_normals = make_span(on); job.out_normals_stride = sizeof(float) * 3;
+    job.out_tangents = make_span(ot); job.out_tangents_stride = sizeof(float) * 3;
+    if (!job.Run()) std::fprintf(stderr, "skinning failed\n");
+  }
+  // Layout: matrices, inverse transposes (16 floats each), positions, normals, tangents,
+  // indices (as floats), weights (3 per vertex), out positions, out normals, out tangents.
+  std::vector<float> out;
+  for (int pass = 0; pass < 2; ++pass)
+    for (int j = 0; j < kJoints; ++j)
+      for (int c = 0; c < 4; ++c) { float f[4]; math::StorePtrU((pass ? it[j] : m[j]).cols[c], f); out.insert(out.end(), f, f + 4); }
+  out.insert(out.end(), pos.begin(), pos.end());
+  out.insert(out.end(), nrm.begin(), nrm.end());
+  out.insert(out.end(), tan.begin(), tan.end());
+  for (auto i : idx) out.push_back(float(i));
+  out.insert(out.end(), w.begin(), w.end());
+  out.insert(out.end(), op.begin(), op.end());
+  out.insert(out.end(), on.begin(), on.end());
+  out.insert(out.end(), ot.begin(), ot.end());
+  Dump("skinning.bin", out);
+}
+
 static math::Float4x4 Translate(float x, float y, float z) {
   math::Float4x4 m = math::Float4x4::identity();
   m.cols[3] = math::simd_float4::Load(x, y, z, 1.f);
@@ -213,6 +366,9 @@ int main(int argc, char** argv) {
   Sampling("ruby", "ruby_skeleton.ozz", "ruby_animation.ozz", 12);  // 368 joints: keep the fixture small
   BlendAndModel();
   Ik();
+  Tracks();
+  Motion();
+  Skinning();
   if (argc > 3 && std::strcmp(argv[3], "--bench") == 0) {
     Bench("pab", "pab/skeleton.ozz", "pab/walk.ozz", "pab/jog.ozz", 1000, 300);
     Bench("ruby", "ruby_skeleton.ozz", "ruby_animation.ozz", "ruby_animation.ozz", 1000, 100);

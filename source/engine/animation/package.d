@@ -17,6 +17,7 @@ public import engine.animation.gltf2ozz;
 public import engine.animation.gltf_skin;
 public import engine.animation.skeleton;
 public import engine.animation.skeleton_utils;
+public import engine.animation.bone_mesh;
 public import engine.animation.math.scalar;
 public import engine.animation.track;
 public import engine.animation.track_sampling;

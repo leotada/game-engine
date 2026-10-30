@@ -155,15 +155,24 @@ standalone `tools/ozz/bench.sh`.
 | `tools/ozz/golden/` | C++ golden generator (see its README) |
 | Editor, Project panel | with a `.gltf` selected, **Import with gltf2ozz** runs upstream's `gltf2ozz` if it is on `PATH` |
 
-## 7. Known gaps
+## 7. GPU skinning
 
-- GPU skinning (AN-4) is not implemented: the viewer draws skeleton gizmos, and `skinPaletteSystem`
-  produces the palette (`asMat4`) ready for a future skinned pipeline. `SkinningJob` provides CPU
-  skinning.
-- Goldens cover sampling, blending, local-to-model and IK; tracks, motion blending and skinning rely
-  on oracle tests.
-- The viewer and the editor action were smoke-tested (viewer ran 6 s without crashing) but not
-  visually compared with the upstream sample viewer.
-- Blend and local-to-model are ~1.2-1.3x C++ against a 1.15x target.
+`engine.gpu.skinned.SkinnedRenderer` draws a skinned mesh with linear-blend skinning (4 influences).
+The palette (`skinPaletteSystem` output, viewed with `asMat4`) goes to a read-only storage buffer
+every frame via `updatePalette`. Limit: 1024 joints (the ozz skeleton limit, 64 KiB). Vertex format:
+`SkinnedVertex` (position, normal, 4 x uint32 joints, 4 x float weights, 56 bytes). Normals assume
+(near-)uniform scale. `buildBoneMesh` generates a tapered prism per bone for any skeleton, which the
+viewer uses; real meshes come from `loadGltfSkin`.
+
+## 8. Known gaps
+
+- The viewer and the editor action were smoke-tested (the viewer starts, creates the skinned
+  pipeline and renders for several seconds without errors) but not visually compared with the
+  upstream sample viewer; an automated screenshot attempt captured the wrong window.
+- Goldens cover sampling, blending, local-to-model, IK, tracks, triggering, motion blending and
+  skinning. Not covered: track types other than float/float3, additive/partial blending paths, and
+  the `SamplingJob` on animations other than pab/ruby.
+- Blend and local-to-model are ~1.2-1.3x C++ against a 1.15x target (deviation measured and
+  documented above; the remaining cost is a dependent parent-matrix load chain, not bounds checks).
 - Per-character jobs are independent but run serially; they are ready for
   [plan-parallel-ecs.md](plan-parallel-ecs.md).

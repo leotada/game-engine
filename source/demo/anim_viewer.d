@@ -1,4 +1,5 @@
-/// Windowed animation viewer: a `pab` character blending walk/jog, drawn as skeleton gizmos.
+/// Windowed animation viewer: a `pab` character blending walk/jog, GPU-skinned procedural bone mesh
+/// plus skeleton gizmos.
 ///
 ///   Left/Right: blend weight (walk <-> jog)   Up/Down: playback speed
 ///   G: toggle head look-at (target orbits)    Esc: quit
@@ -13,6 +14,7 @@ import engine.app : App;
 import engine.devtools.anim_overlay : animationOverlay;
 import engine.devtools.gizmos : GizmoRenderer;
 import engine.devtools.overlay : DebugOverlay;
+import engine.gpu.skinned : SkinnedRenderer, SkinnedVertex;
 import engine.ecs.world : World;
 import engine.gpu.text : FpsCounter, TextRenderer;
 import engine.graphics.types : Color4;
@@ -42,7 +44,11 @@ int main() {
     immutable joints = assets.skeletons.get(sk).numJoints;
     immutable e = world.spawn();
     immutable slot = pool.acquire(joints);
-    world.set(e, AnimSkeleton(sk, slot));
+    // Procedural bone mesh bound to the skeleton, skinned on the GPU from the palette.
+    auto boneMesh = buildBoneMesh(*assets.skeletons.get(sk));
+    boneMesh.binding.skeleton = sk;
+    immutable skin = assets.skins.add(boneMesh.binding);
+    world.set(e, AnimSkeleton(sk, slot, skin));
     world.set(e, AnimBlend2(walk, jog, 0.0f));
     world.set(e, AnimLookAt(joints / 2, Vec3(0, 1, 2), 0.0f, Vec3(0, 0, 1), Vec3(0, 1, 0)));
 
@@ -51,6 +57,14 @@ int main() {
     scope(exit) text.destroy();
     auto gizmos = GizmoRenderer.create(app.gpu);
     scope(exit) gizmos.destroy();
+    SkinnedVertex[] gpuVerts;
+    foreach (v; boneMesh.vertices) {
+        SkinnedVertex g;
+        g.position = v.position; g.normal = v.normal; g.joints = v.joints; g.weights = v.weights;
+        gpuVerts ~= g;
+    }
+    auto skinned = SkinnedRenderer.create(app.gpu, gpuVerts, boneMesh.indices);
+    scope(exit) skinned.destroy();
     auto fps = FpsCounter.create();
     DebugOverlay overlay;
     auto camera = Camera.create(0.85f, SCREEN_W, SCREEN_H, 0.1f, 100.0f);
@@ -83,12 +97,15 @@ int main() {
         lookAtSystem(world, assets, pool);
         skinPaletteSystem(world, assets, pool);
         immutable ms = sw.peek.total!"usecs" / 1000.0;
+        auto pose_ = pool.get(slot);
 
         auto frame = app.beginFrame(Color4(0.05f, 0.06f, 0.09f, 1.0f));
         if (!frame.valid) continue;
+        skinned.updatePalette(asMat4(pose_.palette));
+        skinned.draw(frame, camera.viewProjection(), Color4(0.75f, 0.8f, 0.95f, 1.0f));
         gizmos.begin(camera.viewProjection());
         gizmos.grid(6, 12, Color4(0.25f, 0.28f, 0.35f, 1));
-        drawSkeleton(gizmos, *assets.skeletons.get(sk), pool.get(slot).model);
+        drawSkeleton(gizmos, *assets.skeletons.get(sk), pose_.model);
         if (look.weight > 0) gizmos.axes(look.target, 0.15f);
         gizmos.render(frame);
         app.resolvePost(frame);

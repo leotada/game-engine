@@ -35,3 +35,5 @@ enum tonemapShaderSource = preprocessShader(import("post_tonemap.wgsl"), "post_t
 enum fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
 
 enum blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;
+
+enum skinnedShaderSource = import("skinned.wgsl");

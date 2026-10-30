@@ -28,7 +28,7 @@ Upstream is built with SSE4.2, i.e. `rcpps` / `rsqrtps` estimates. The DMD x86_6
 uses the same instructions and matches to 1e-5; backends with exact division (LDC, scalar) are
 checked with a looser tolerance. See `golden_tests.d`.
 
-Not covered by goldens: tracks, motion blending and skinning (covered by oracle tests only).
+`track_float3_walk.bin`, `track_float_grasp.bin` (41 ratios), `trigger_grasp.bin` (8 ranges incl. reversed and looping), `motion.bin` (4 weight cases), `skinning.bin` (64 vertices, 4 influences, positions/normals/tangents; inputs are stored in the file).
 
 ## Benchmark
 

@@ -1,7 +1,7 @@
 # Plan: Skeletal Animation
 
-> **Status:** CPU runtime done (AN-1, AN-3, AN-5 headless) via the ozz-animation port; GPU skinning
-> (AN-4) and the windowed demo are pending · Priority: medium · See [roadmap.md](roadmap.md) and
+> **Status:** implemented via the ozz-animation port (AN-1, AN-3, AN-5; AN-4 GPU skinning in
+> `engine.gpu.skinned`, shown by `--config=anim-viewer`; not yet visually verified) · Priority: medium · See [roadmap.md](roadmap.md) and
 > [animation-guide.md](animation-guide.md). AN-2 (glTF animation parsing) is replaced by the `.ozz`
 > pipeline; only the skin half (`JOINTS_0` / `WEIGHTS_0` / inverse binds) is implemented in
 > `engine.animation.gltf_skin`.
