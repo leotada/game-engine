@@ -104,25 +104,34 @@ with `line(Vec3, Vec3, Color4)`, including `GizmoRenderer`.
 
 `tools/ozz/bench.sh 1000 300 pab` builds the whole pipeline with LDC (`-O3 -release`) and prints
 per-stage times; `dub run --config=anim -- --headless-frames=600 --assert-no-gc --characters=1000`
-is the DMD functional run (also asserts zero GC allocations). `tools/ozz/golden/golden_gen ... --bench`
-runs the same scenario against upstream C++ (g++ -O2, same machine, single thread, 1000
-characters, 2-clip blend with continuous playback). Microseconds per character:
+is the DMD functional run (also asserts zero GC allocations). The baseline is upstream C++ built
+with `clang++ -O3 -msse4.1` (the plan's baseline) through `golden_gen ... --bench`: same machine,
+single thread, 1000 characters, 2-clip blend, continuous playback. Microseconds per character,
+median of three runs (about 5 percent run-to-run noise):
 
-| Stage | pab (67 joints) D | C++ | D/C++ | ruby (368 joints) D | C++ | D/C++ |
+| Stage | pab (67 joints) D | clang | D/C++ | ruby (368 joints) D | clang | D/C++ |
 |:---|---:|---:|---:|---:|---:|---:|
-| sampling (2 clips) | 4.1 | 3.9 | 1.06 | 12.6 | 11.0 | 1.15 |
-| blending (2 layers) | 1.1 | 0.9 | ~1.3 | 4.9 | 3.9 | ~1.25 |
-| local to model | 1.2 | 0.9 | ~1.3 | 5.6 | 4.7 | ~1.2 |
+| sampling (2 clips) | 3.63 | 3.5-3.6 | ~1.02 | 10.2 | 11.1 | ~0.95 |
+| blending (2 layers) | 0.97 | 0.88 | ~1.10 | 4.0 | 3.9 | ~1.03 |
+| local to model | 0.97 | 0.88 | ~1.10 | 4.4 | 4.5-5.0 | ~0.95 |
 
-Measurements are noisy (about 10 percent run to run). Plan targets (section 10 of the port plan) are
-sampling <= 1.25x (met), blending and local-to-model <= 1.15x (**not met**, about 1.2-1.3x). Removing
-bounds checks entirely (`-boundscheck=off`) gains about 9 percent overall, so the remaining gap is
-arithmetic/codegen, not indexing. The hot loop of local-to-model already uses a narrowly-scoped
-`@trusted` unchecked path (invariants documented at the function); no other loop was changed because
-measurements did not justify it.
+Plan targets (section 10): sampling <= 1.25x, blending and local-to-model <= 1.15x: **met** on both
+skeletons for this scenario. Not measured against C++: random-seek sampling, 3 layers + additive
+blending, and skinning timings (the plan lists these targets too).
 
-Full ECS pipeline, 1000 pab characters, LDC: ~7.3 ms per frame (sampling 4.1, blend 1.1, local to
-model 1.2, look-at on 1/8 of characters 0.1, palette 0.7 us/char), zero GC allocations.
+What made the difference (all measured):
+1. Building vectors lane by lane through a union made every following 16-byte load miss store
+   forwarding. The transpose and the matrix-product broadcasts use register shuffles (`SHUFPS`):
+   local-to-model 10.4 -> 1.2 us/char.
+2. `transpose16x16`, `toAos` and `fromAffine` were not inlined into the local-to-model loop (a call
+   plus a `memcpy` of 64-byte matrices per joint); `pragma(inline, true)`: 1.2 -> 1.0.
+3. On LDC, `rcpEst` / `rsqrtEst` were exact `1/sqrt` divisions; they now use `rcpps` / `rsqrtps`
+   (`ldc.gccbuiltins_x86`) like upstream, which also makes LDC match the upstream goldens to 1e-5.
+4. Narrow `@trusted` unchecked paths in the local-to-model loop and the four blend passes, justified
+   by `validate()` (documented at each function): a few percent.
+
+Full ECS pipeline, 1000 pab characters, LDC: ~6.5 ms per frame (sampling 3.6, blend 1.0, local to
+model 1.0, look-at on 1/8 of characters, palette 0.7 us/char), zero GC allocations.
 
 The `core.simd` backend (default on DMD x86_64 and LDC) is selected in `math/simd.d`;
 `-version=EngineAnimScalarMath` forces the scalar reference backend. Both are checked against each
@@ -166,13 +175,16 @@ viewer uses; real meshes come from `loadGltfSkin`.
 
 ## 8. Known gaps
 
-- The viewer and the editor action were smoke-tested (the viewer starts, creates the skinned
-  pipeline and renders for several seconds without errors) but not visually compared with the
-  upstream sample viewer; an automated screenshot attempt captured the wrong window.
+- The windowed viewer starts, creates the skinned pipeline and runs without GPU errors, but the
+  window itself was never captured (the engine has no framebuffer readback; desktop screenshots hit
+  the wrong window and were discarded). The data path was verified visually instead: a CPU render of
+  the same mesh skinned with the same palette formula at 4 walk phases shows the legs and arms
+  following the sampled pose, and `bone_mesh.d` asserts each ring stays centred on its posed joint.
+  The WGSL shader itself has not been seen on screen.
 - Goldens cover sampling, blending, local-to-model, IK, tracks, triggering, motion blending and
   skinning. Not covered: track types other than float/float3, additive/partial blending paths, and
   the `SamplingJob` on animations other than pab/ruby.
-- Blend and local-to-model are ~1.2-1.3x C++ against a 1.15x target (deviation measured and
-  documented above; the remaining cost is a dependent parent-matrix load chain, not bounds checks).
+- Performance was measured only for sampling, 2-layer blending and local-to-model against C++;
+  random seeks, 3 layers + additive and skinning are not compared.
 - Per-character jobs are independent but run serially; they are ready for
   [plan-parallel-ecs.md](plan-parallel-ecs.md).

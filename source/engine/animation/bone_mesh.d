@@ -118,3 +118,51 @@ unittest {
         assert(moved ? near(p.y, v.position[1] + 5, 1e-4f) : near(p.y, v.position[1], 1e-4f));
     }
 }
+
+unittest {
+    // The skinned mesh follows the sampled pose: the ring at each end of a bone prism is centred on
+    // the posed joint it belongs to.
+    import engine.animation.clip;
+    import engine.animation.io.archive : InputArchive;
+    import engine.animation.local_to_model;
+    import engine.animation.math.soa;
+    import engine.animation.sampling;
+    import engine.animation.testing : loadFixture, near;
+
+    auto sa = InputArchive(loadFixture("pab/skeleton.ozz"));
+    Skeleton s;
+    assert(loadSkeleton(sa, s));
+    auto aa = InputArchive(loadFixture("pab/walk.ozz"));
+    Animation anim;
+    assert(loadAnimation(aa, anim));
+    auto mesh = buildBoneMesh(s);
+
+    auto ctx = SamplingContext(s.numJoints);
+    auto local = new SoaTransform[s.numSoaJoints];
+    auto model = new Float4x4[s.numJoints];
+    foreach (ratio; [0.0f, 0.3f, 0.7f]) {
+        SamplingJob sj;
+        sj.animation = &anim; sj.context = &ctx; sj.ratio = ratio; sj.output = local;
+        assert(sj.run());
+        LocalToModelJob lj;
+        lj.skeleton = &s; lj.input = local; lj.output = model;
+        assert(lj.run());
+
+        // Skin on the CPU with the same palette the GPU receives.
+        auto skinned = new Vec3[mesh.vertices.length];
+        foreach (i, v; mesh.vertices) {
+            immutable pal = model[v.joints[0]] * mesh.binding.inverseBinds[v.joints[0]];
+            skinned[i] = transformPoint(pal, Vec3(v.position[0], v.position[1], v.position[2]));
+        }
+        // Vertices come in rings of 4: ring r belongs to joint mesh.vertices[4r].joints[0].
+        foreach (r; 0 .. mesh.vertices.length / 4) {
+            Vec3 c = Vec3(0, 0, 0);
+            foreach (k; 0 .. 4) c = add(c, skinned[r * 4 + k]);
+            c = mul(c, 0.25f);
+            immutable joint = mesh.vertices[r * 4].joints[0];
+            immutable p = translationOf(model[joint]);
+            assert(near(c.x, p.x, 1e-3f) && near(c.y, p.y, 1e-3f) && near(c.z, p.z, 1e-3f),
+                   "ring not centred on its posed joint");
+        }
+    }
+}

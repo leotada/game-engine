@@ -24,8 +24,8 @@ tools/ozz/golden/build.sh /tmp/ozz /tmp/golden_gen
 | `model_pab.bin` | model-space matrices of those blends (column-major) |
 | `ik.bin` | two-bone IK (3 targets) and aim IK (2 targets) corrections on synthetic chains, plus `reached` |
 
-Upstream is built with SSE4.2, i.e. `rcpps` / `rsqrtps` estimates. The DMD x86_64 vector backend
-uses the same instructions and matches to 1e-5; backends with exact division (LDC, scalar) are
+Upstream is built with SSE, i.e. `rcpps` / `rsqrtps` estimates. The DMD and LDC x86_64 vector
+backends use the same instructions and match to 1e-5; the scalar backend (exact division) is
 checked with a looser tolerance. See `golden_tests.d`.
 
 `track_float3_walk.bin`, `track_float_grasp.bin` (41 ratios), `trigger_grasp.bin` (8 ranges incl. reversed and looping), `motion.bin` (4 weight cases), `skinning.bin` (64 vertices, 4 influences, positions/normals/tangents; inputs are stored in the file).
@@ -34,4 +34,4 @@ checked with a looser tolerance. See `golden_tests.d`.
 
 `tools/ozz/bench.sh [characters] [frames] [pab|ruby] [ldc flags]` builds the D pipeline with LDC
 and runs it; `golden_gen ... --bench` runs the same scenario (2-clip blend, continuous playback)
-in C++ (g++ -O2 here).
+in C++. The reference numbers in the guide use `clang++ -O3 -msse4.1` (build.sh uses g++ -O2 by default).

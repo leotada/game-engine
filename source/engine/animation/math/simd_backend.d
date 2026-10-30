@@ -117,11 +117,20 @@ mixin template SimdBackend(bool useVec) {
         return SimdFloat4(v.x < 0 ? -v.x : v.x, v.y < 0 ? -v.y : v.y, v.z < 0 ? -v.z : v.z, v.w < 0 ? -v.w : v.w);
     }
 
-    version (D_SIMD) enum bool hwEst = useVec; else enum bool hwEst = false;
+    version (D_SIMD) enum bool hwEst = useVec;
+    else version (LDC) {
+        version (X86_64) enum bool hwEst = useVec; else enum bool hwEst = false;
+    } else enum bool hwEst = false;
     static if (hwEst) {
-        // DMD x86_64: hardware estimates, like upstream's SSE backend (~12 bits).
-        SimdFloat4 rcpEst(SimdFloat4 a) @trusted { return SimdFloat4(cast(float4) __simd(XMM.RCPPS, a.v)); }
-        SimdFloat4 rsqrtEst(SimdFloat4 a) @trusted { return SimdFloat4(cast(float4) __simd(XMM.RSQRTPS, a.v)); }
+        // x86_64: hardware estimates, like upstream's SSE backend (~12 bits).
+        version (LDC) {
+            import ldc.gccbuiltins_x86 : __builtin_ia32_rcpps, __builtin_ia32_rsqrtps;
+            SimdFloat4 rcpEst(SimdFloat4 a) @trusted { return SimdFloat4(__builtin_ia32_rcpps(a.v)); }
+            SimdFloat4 rsqrtEst(SimdFloat4 a) @trusted { return SimdFloat4(__builtin_ia32_rsqrtps(a.v)); }
+        } else {
+            SimdFloat4 rcpEst(SimdFloat4 a) @trusted { return SimdFloat4(cast(float4) __simd(XMM.RCPPS, a.v)); }
+            SimdFloat4 rsqrtEst(SimdFloat4 a) @trusted { return SimdFloat4(cast(float4) __simd(XMM.RSQRTPS, a.v)); }
+        }
         /// Estimate refined with one Newton-Raphson step (upstream `RSqrtEstNR`).
         SimdFloat4 rsqrtEstNR(SimdFloat4 a) {
             immutable e = rsqrtEst(a);
@@ -185,7 +194,7 @@ mixin template SimdBackend(bool useVec) {
 
     /// Upstream's `Transpose16x16`: `out[4*i + j][k] = in[4*j + k][i]`. With `in` holding 4 SoA
     /// matrix columns (4 component vectors each), `out` receives 4 AoS matrices (4 column vectors each).
-    void transpose16x16(const(SimdFloat4)[] input, SimdFloat4[] output) {
+    pragma(inline, true) void transpose16x16(const(SimdFloat4)[] input, SimdFloat4[] output) {
         assert(input.length >= 16 && output.length >= 16);
         static if (hasShuffle) {
             // Four register-only 4x4 transposes. Building rows lane by lane through memory makes

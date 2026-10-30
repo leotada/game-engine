@@ -84,7 +84,7 @@ struct SoaFloat4x4 {
     struct Col { SimdFloat4 x, y, z, w; }
     Col[4] cols;
 
-    static SoaFloat4x4 fromAffine(SoaFloat3 t, SoaQuaternion q, SoaFloat3 s) {
+    pragma(inline, true) static SoaFloat4x4 fromAffine(SoaFloat3 t, SoaQuaternion q, SoaFloat3 s) {
         immutable zero = SimdFloat4.zero();
         immutable one = SimdFloat4.one();
         immutable two = one + one;
@@ -101,7 +101,7 @@ struct SoaFloat4x4 {
 }
 
 /// Converts 4 SoA matrices into 4 AoS matrices (upstream `Transpose16x16` on the SoA columns).
-void toAos(const SoaFloat4x4 soa, ref Float4x4[4] aos) {
+pragma(inline, true) void toAos(const SoaFloat4x4 soa, ref Float4x4[4] aos) {
     SimdFloat4[16] src = void;
     foreach (c; 0 .. 4) {
         src[c * 4 + 0] = soa.cols[c].x;

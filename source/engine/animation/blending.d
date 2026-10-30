@@ -352,7 +352,11 @@ void subPass(ref const SoaTransform src, SimdFloat4 w, SimdFloat4 oneMinusW, ref
     dest.scale.z = dest.scale.z * rcpEst(madd(src.scale.z, w, oneMinusW));
 }
 
-void blendLayers(ref BlendingJob job, ref Args args) {
+// The four passes below index `layers`, `output`, `restPose`, `jointWeights` and `accumulatedWeights`
+// below `numSoaJoints`. `BlendingJob.validate()` (run first) guarantees every one of those is at
+// least that long and that `numSoaJoints <= kMaxSoaJoints`, so they are `@trusted` to drop the
+// bounds checks from the hot loops (measured: ~15% of blending).
+void blendLayers(ref BlendingJob job, ref Args args) @trusted {
     foreach (ref layer; job.layers) {
         if (layer.weight <= 0.0f) continue;
         args.accumulatedWeight += layer.weight;
@@ -374,7 +378,7 @@ void blendLayers(ref BlendingJob job, ref Args args) {
     }
 }
 
-void blendRestPose(ref BlendingJob job, ref Args args) {
+void blendRestPose(ref BlendingJob job, ref Args args) @trusted {
     if (args.numPartialPasses == 0) {
         // No partial pass: the threshold is tested globally.
         immutable bpWeight = job.threshold - args.accumulatedWeight;
@@ -399,7 +403,7 @@ void blendRestPose(ref BlendingJob job, ref Args args) {
     }
 }
 
-void normalize(ref BlendingJob job, ref const Args args) {
+void normalize(ref BlendingJob job, ref const Args args) @trusted {
     if (args.numPartialPasses == 0) {
         immutable ratio = SimdFloat4.load1(1.0f / args.accumulatedWeight);
         foreach (i; 0 .. args.numSoaJoints) {
@@ -419,7 +423,7 @@ void normalize(ref BlendingJob job, ref const Args args) {
     }
 }
 
-void addLayers(ref BlendingJob job) {
+void addLayers(ref BlendingJob job) @trusted {
     immutable one = SimdFloat4.one();
     foreach (ref layer; job.additiveLayers) {
         if (layer.weight == 0.0f) continue;

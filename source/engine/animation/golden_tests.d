@@ -106,7 +106,9 @@ private void checkSampling(string tag, string skel, string clip, float tol) {
 // differ by the estimate error.
 version (EngineAnimScalarMath) enum float samplingTol = 2e-3f;
 else version (D_SIMD) enum float samplingTol = 1e-5f;
-else enum float samplingTol = 2e-3f;
+else version (LDC) {
+    version (X86_64) enum float samplingTol = 1e-5f; else enum float samplingTol = 2e-3f;
+} else enum float samplingTol = 2e-3f;
 
 unittest {
     checkSampling("pab_walk", "pab/skeleton.ozz", "pab/walk.ozz", samplingTol);
