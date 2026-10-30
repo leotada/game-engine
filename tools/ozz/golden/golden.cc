@@ -270,6 +270,96 @@ static void Skinning() {
   Dump("skinning.bin", out);
 }
 
+
+// Deterministic LCG shared with tools/ozz/bench_jobs.d.
+static float Lcg(unsigned& s) { s = s * 1664525u + 1013904223u; return float((s >> 8) & 0xffff) / 65536.f; }
+
+// Workloads of plan section 10 beyond the pipeline bench: random-seek sampling, 3 layers + one
+// additive layer, and skinning (4 influences, positions + normals). Output is us per unit.
+static void BenchJobs() {
+  using clk = std::chrono::steady_clock;
+  auto us = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::micro>(b - a).count(); };
+  animation::Skeleton s; animation::Animation walk, jog, run, add;
+  if (!LoadSkeleton("pab/skeleton.ozz", &s) || !LoadAnimation("pab/walk.ozz", &walk) ||
+      !LoadAnimation("pab/jog.ozz", &jog) || !LoadAnimation("pab/run.ozz", &run) ||
+      !LoadAnimation("pab/crackhead_additive.ozz", &add)) return;
+  const int n = 1000;
+  {
+    std::vector<animation::SamplingJob::Context> ctx(n);
+    for (auto& c : ctx) c.Resize(s.num_joints());
+    std::vector<math::SoaTransform> out(s.num_soa_joints());
+    unsigned seed = 7; const int frames = 100;
+    double t = 0;
+    for (int f = 0; f < frames + 3; ++f) {
+      auto t0 = clk::now();
+      for (int i = 0; i < n; ++i) {
+        animation::SamplingJob j; j.animation = &walk; j.context = &ctx[i]; j.ratio = Lcg(seed); j.output = make_span(out); j.Run();
+      }
+      if (f >= 3) t += us(t0, clk::now());
+    }
+    std::printf("seek-sampling pab/walk: %.2f us/char\n", t / frames / n);
+  }
+  {
+    const size_t ns = s.num_soa_joints();
+    std::vector<math::SoaTransform> p0(ns), p1(ns), p2(ns), pa(ns), out(ns);
+    animation::SamplingJob::Context c0(s.num_joints()), c1(s.num_joints()), c2(s.num_joints()), c3(s.num_joints());
+    auto samp = [&](animation::Animation& a, animation::SamplingJob::Context& c, float r, std::vector<math::SoaTransform>& o) {
+      animation::SamplingJob j; j.animation = &a; j.context = &c; j.ratio = r; j.output = make_span(o); j.Run(); };
+    samp(walk, c0, .2f, p0); samp(jog, c1, .5f, p1); samp(run, c2, .8f, p2); samp(add, c3, .4f, pa);
+    animation::BlendingJob::Layer layers[3]; animation::BlendingJob::Layer addl[1];
+    layers[0].transform = make_span(p0); layers[0].weight = .5f;
+    layers[1].transform = make_span(p1); layers[1].weight = .3f;
+    layers[2].transform = make_span(p2); layers[2].weight = .2f;
+    addl[0].transform = make_span(pa); addl[0].weight = .6f;
+    const int reps = 300; double t = 0;
+    for (int f = 0; f < reps + 3; ++f) {
+      auto t0 = clk::now();
+      for (int i = 0; i < n; ++i) {
+        animation::BlendingJob job; job.layers = layers; job.additive_layers = addl;
+        job.rest_pose = s.joint_rest_poses(); job.output = make_span(out); job.Run();
+      }
+      if (f >= 3) t += us(t0, clk::now());
+    }
+    std::printf("blend 3 layers + additive: %.2f us/char\n", t / reps / n);
+  }
+  {
+    const int kJ = 24, kV = 20000, kI = 4;
+    unsigned seed = 99;
+    std::vector<math::Float4x4> m(kJ), it(kJ);
+    for (int j = 0; j < kJ; ++j) {
+      m[j] = math::Float4x4::identity();
+      const float a = Lcg(seed) * 3.f;
+      m[j] = math::Float4x4::FromAxisAngle(math::Normalize3(math::simd_float4::Load(Lcg(seed), Lcg(seed) + 1.f, Lcg(seed), 0.f)), math::simd_float4::Load1(a));
+      m[j].cols[3] = math::simd_float4::Load(Lcg(seed), Lcg(seed), Lcg(seed), 1.f);
+      it[j] = Transpose(Invert(m[j]));
+    }
+    std::vector<float> pos(kV * 3), nrm(kV * 3), w(kV * (kI - 1)), op(kV * 3), on(kV * 3);
+    std::vector<uint16_t> idx(kV * kI);
+    for (auto& v : pos) v = Lcg(seed) - .5f;
+    for (auto& v : nrm) v = Lcg(seed) - .5f;
+    for (int i = 0; i < kV; ++i) {
+      for (int k = 0; k < kI - 1; ++k) w[i * (kI - 1) + k] = .25f * Lcg(seed);
+      for (int k = 0; k < kI; ++k) idx[i * kI + k] = uint16_t((i * 7 + k * 5) % kJ);
+    }
+    const int reps = 100; double t = 0;
+    for (int f = 0; f < reps + 3; ++f) {
+      auto t0 = clk::now();
+      geometry::SkinningJob job;
+      job.vertex_count = kV; job.influences_count = kI;
+      job.joint_matrices = make_span(m); job.joint_inverse_transpose_matrices = make_span(it);
+      job.joint_indices = make_span(idx); job.joint_indices_stride = sizeof(uint16_t) * kI;
+      job.joint_weights = make_span(w); job.joint_weights_stride = sizeof(float) * (kI - 1);
+      job.in_positions = make_span(pos); job.in_positions_stride = 12;
+      job.in_normals = make_span(nrm); job.in_normals_stride = 12;
+      job.out_positions = make_span(op); job.out_positions_stride = 12;
+      job.out_normals = make_span(on); job.out_normals_stride = 12;
+      job.Run();
+      if (f >= 3) t += us(t0, clk::now());
+    }
+    std::printf("skinning 4 influences pos+normals: %.2f us per 1000 vertices\n", t / reps / (kV / 1000.0));
+  }
+}
+
 static math::Float4x4 Translate(float x, float y, float z) {
   math::Float4x4 m = math::Float4x4::identity();
   m.cols[3] = math::simd_float4::Load(x, y, z, 1.f);
@@ -373,5 +463,6 @@ int main(int argc, char** argv) {
     Bench("pab", "pab/skeleton.ozz", "pab/walk.ozz", "pab/jog.ozz", 1000, 300);
     Bench("ruby", "ruby_skeleton.ozz", "ruby_animation.ozz", "ruby_animation.ozz", 1000, 100);
   }
+  if (argc > 3 && std::strcmp(argv[3], "--bench-jobs") == 0) BenchJobs();
   return 0;
 }

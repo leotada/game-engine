@@ -83,19 +83,24 @@ private {
 
 pure nothrow @nogc {
 
-// Unaligned, bounds-checked scalar access into byte buffers.
+// Unaligned scalar access into byte buffers. Unchecked in release builds: `SkinningJob.validate()`
+// runs first and guarantees every buffer covers `stride * (vertexCount - 1) + element size`, and
+// the accessors are only called with offsets inside those extents (asserted in debug builds).
 float readF(const(ubyte)[] b, size_t at) @trusted {
-    ubyte[4] t = b[at .. at + 4];
-    return *cast(const(float)*) t.ptr;
+    assert(at + 4 <= b.length);
+    float r = void;
+    (cast(ubyte*)&r)[0 .. 4] = b.ptr[at .. at + 4];
+    return r;
 }
 
-ushort readU16(const(ubyte)[] b, size_t at) {
-    return cast(ushort)(b[at] | (b[at + 1] << 8)); // joint indices are stored little-endian here
+ushort readU16(const(ubyte)[] b, size_t at) @trusted {
+    assert(at + 2 <= b.length);
+    return cast(ushort)(b.ptr[at] | (b.ptr[at + 1] << 8)); // joint indices are little-endian here
 }
 
 void writeF(ubyte[] b, size_t at, float v) @trusted {
-    ubyte[4] t = *cast(ubyte[4]*)&v;
-    b[at .. at + 4] = t[];
+    assert(at + 4 <= b.length);
+    b.ptr[at .. at + 4] = (cast(ubyte*)&v)[0 .. 4];
 }
 
 Vec3 readV3(const(ubyte)[] b, size_t at) {

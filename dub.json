@@ -174,7 +174,7 @@
             "sourcePaths": ["tools"],
             "importPaths": ["tools"],
             "excludedSourceFiles": [
-                "tools/spikes/*",
+                "tools/spikes/*", "tools/ozz/*",
                 "source/demo/*",
                 "source/demo/golf.d", "source/demo/_legacy/*",
                 "source/engine/*",

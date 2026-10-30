@@ -64,18 +64,19 @@ Float4x4 invert(const Float4x4 m, out bool invertible) {
     return r;
 }
 
-/// Transforms a point (translation applied).
-Vec3 transformPoint(const Float4x4 m, Vec3 p) {
-    return Vec3(m.cols[0].x * p.x + m.cols[1].x * p.y + m.cols[2].x * p.z + m.cols[3].x,
-                m.cols[0].y * p.x + m.cols[1].y * p.y + m.cols[2].y * p.z + m.cols[3].y,
-                m.cols[0].z * p.x + m.cols[1].z * p.y + m.cols[2].z * p.z + m.cols[3].z);
+/// Transforms a point (translation applied). Whole-vector arithmetic: the lanes are extracted once
+/// at the end, not per term.
+pragma(inline, true) Vec3 transformPoint(const Float4x4 m, Vec3 p) {
+    immutable r = m.cols[0] * SimdFloat4.load1(p.x) + m.cols[1] * SimdFloat4.load1(p.y)
+                + m.cols[2] * SimdFloat4.load1(p.z) + m.cols[3];
+    return Vec3(r.x, r.y, r.z);
 }
 
 /// Transforms a direction (translation ignored).
-Vec3 transformVector(const Float4x4 m, Vec3 v) {
-    return Vec3(m.cols[0].x * v.x + m.cols[1].x * v.y + m.cols[2].x * v.z,
-                m.cols[0].y * v.x + m.cols[1].y * v.y + m.cols[2].y * v.z,
-                m.cols[0].z * v.x + m.cols[1].z * v.y + m.cols[2].z * v.z);
+pragma(inline, true) Vec3 transformVector(const Float4x4 m, Vec3 v) {
+    immutable r = m.cols[0] * SimdFloat4.load1(v.x) + m.cols[1] * SimdFloat4.load1(v.y)
+                + m.cols[2] * SimdFloat4.load1(v.z);
+    return Vec3(r.x, r.y, r.z);
 }
 
 /// Translation part of `m`.
