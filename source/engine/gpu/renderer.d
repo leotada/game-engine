@@ -24,6 +24,10 @@ struct Renderer {
     private uint rtW, rtH;
     private PostProcessor post;
     private bool postOwned;
+    private WGPUTextureFormat surfaceFormat;
+    // Frame capture (screenshots for verification): readback buffer filled during endFrame.
+    private WGPUBuffer captureBuf;
+    private uint captureStride, captureW, captureH;
 
     @disable this(this);
 
@@ -32,6 +36,7 @@ struct Renderer {
         r.device = gpuCtx.getDevice();
         r.queue = gpuCtx.getQueue();
         r.surface = gpuCtx.getSurface();
+        r.surfaceFormat = gpuCtx.getFormat();
         r.post = PostProcessor.create(gpuCtx, gpuCtx.getFormat());
         r.postOwned = true;
         r.createSceneTargets(gpuCtx.width(), gpuCtx.height());
@@ -197,6 +202,8 @@ struct Renderer {
         wgpuRenderPassEncoderEnd(frame.pass);
         wgpuRenderPassEncoderRelease(frame.pass);
 
+        if (captureBuf !is null && frame.texture !is null) encodeCapture(frame);
+
         WGPUCommandBufferDescriptor cbDesc;
         auto cmdBuf = wgpuCommandEncoderFinish(frame.encoder, &cbDesc);
         wgpuCommandEncoderRelease(frame.encoder);
@@ -210,6 +217,75 @@ struct Renderer {
         if (frame.texture !is null) wgpuTextureRelease(frame.texture);
 
         frame = FrameContext.init;
+    }
+
+    /// Asks for the next presented frame to be copied into a readback buffer. Fetch it with
+    /// `readCapture` after `endFrame`. Not for the frame path (allocates a GPU buffer).
+    void requestCapture() nothrow @nogc @trusted {
+        if (captureBuf !is null) return;
+        captureW = rtW;
+        captureH = rtH;
+        captureStride = (captureW * 4 + 255) & ~255u; // bytesPerRow must be a multiple of 256
+        WGPUBufferDescriptor bd;
+        bd.usage = WGPUBufferUsage.copyDst | WGPUBufferUsage.mapRead;
+        bd.size = cast(ulong) captureStride * captureH;
+        captureBuf = wgpuDeviceCreateBuffer(device, &bd);
+    }
+
+    private void encodeCapture(ref FrameContext frame) nothrow @nogc @trusted {
+        WGPUImageCopyTexture src;
+        src.texture = frame.texture;
+        WGPUImageCopyBuffer dst;
+        dst.buffer = captureBuf;
+        dst.layout.bytesPerRow = captureStride;
+        dst.layout.rowsPerImage = captureH;
+        immutable size = WGPUExtent3D(captureW, captureH, 1);
+        wgpuCommandEncoderCopyTextureToBuffer(frame.encoder, &src, &dst, &size);
+    }
+
+    /// Returns the captured frame as tightly packed RGBA8 (empty if none was requested or the
+    /// format is not 8-bit BGRA/RGBA), then releases the readback buffer. Blocks until the GPU is done.
+    ubyte[] readCapture(out uint width, out uint height) @trusted {
+        if (captureBuf is null) return null;
+        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+        static struct Wait { bool done; bool ok; }
+        Wait w;
+        static extern(C) void onMapped(WGPUMapAsyncStatus status, WGPUStringView, void* u1, void*) nothrow @nogc {
+            auto p = cast(Wait*) u1;
+            p.ok = status == WGPUMapAsyncStatus.success;
+            p.done = true;
+        }
+        WGPUBufferMapCallbackInfo cb;
+        cb.mode = WGPUCallbackMode.allowProcessEvents;
+        cb.callback = &onMapped;
+        cb.userdata1 = &w;
+        wgpuBufferMapAsync(captureBuf, WGPUMapMode.read, 0, cast(size_t) captureStride * captureH, cb);
+        foreach (_; 0 .. 1000) {
+            wgpuDevicePoll(device, WGPU_TRUE, null);
+            if (w.done) break;
+        }
+        if (!w.ok) { warn("frame capture: buffer map failed"); return null; }
+        immutable bgra = surfaceFormat == WGPUTextureFormat.bgra8Unorm
+                      || surfaceFormat == WGPUTextureFormat.bgra8UnormSrgb;
+        immutable rgba = surfaceFormat == WGPUTextureFormat.rgba8Unorm
+                      || surfaceFormat == WGPUTextureFormat.rgba8UnormSrgb;
+        if (!bgra && !rgba) { warn("frame capture: unsupported surface format"); wgpuBufferUnmap(captureBuf); return null; }
+        auto src = cast(const(ubyte)*) wgpuBufferGetConstMappedRange(captureBuf, 0, cast(size_t) captureStride * captureH);
+        auto outPx = new ubyte[captureW * captureH * 4];
+        foreach (y; 0 .. captureH) {
+            foreach (x; 0 .. captureW) {
+                const px = src + y * captureStride + x * 4;
+                auto o = outPx.ptr + (y * captureW + x) * 4;
+                o[0] = bgra ? px[2] : px[0];
+                o[1] = px[1];
+                o[2] = bgra ? px[0] : px[2];
+                o[3] = 255;
+            }
+        }
+        wgpuBufferUnmap(captureBuf);
+        width = captureW;
+        height = captureH;
+        return outPx;
     }
 
     void resize(uint w, uint h) nothrow @nogc {

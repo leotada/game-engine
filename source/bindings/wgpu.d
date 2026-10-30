@@ -900,6 +900,39 @@ struct WGPUTextureDataLayout {
     uint rowsPerImage = 0;
 }
 
+/// webgpu.h `WGPUTexelCopyBufferInfo` (a.k.a. ImageCopyBuffer): `layout` then `buffer`.
+struct WGPUImageCopyBuffer {
+    WGPUTextureDataLayout layout;
+    WGPUBuffer buffer;
+}
+
+/// webgpu.h `WGPUMapMode` flags.
+enum WGPUMapMode : WGPUFlags {
+    none  = 0x0000_0000,
+    read  = 0x0000_0001,
+    write = 0x0000_0002,
+}
+
+/// webgpu.h `WGPUMapAsyncStatus`.
+enum WGPUMapAsyncStatus : uint {
+    success         = 0x0000_0001,
+    instanceDropped = 0x0000_0002,
+    error           = 0x0000_0003,
+    aborted         = 0x0000_0004,
+    unknown         = 0x0000_0005,
+}
+
+alias WGPUBufferMapCallback = void function(WGPUMapAsyncStatus status, WGPUStringView message,
+                                            void* userdata1, void* userdata2);
+
+struct WGPUBufferMapCallbackInfo {
+    WGPUChainedStruct* nextInChain;
+    WGPUCallbackMode mode;
+    WGPUBufferMapCallback callback;
+    void* userdata1;
+    void* userdata2;
+}
+
 // ---------------------------------------------------------------------------
 // Functions
 // ---------------------------------------------------------------------------
@@ -964,6 +997,7 @@ void wgpuTextureViewAddRef(WGPUTextureView view);
 void wgpuTextureViewRelease(WGPUTextureView view);
 
 // CommandEncoder
+void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder encoder, const(WGPUImageCopyTexture)* source, const(WGPUImageCopyBuffer)* destination, const(WGPUExtent3D)* copySize);
 WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder encoder, const(WGPURenderPassDescriptor)* descriptor);
 WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder encoder, const(WGPUCommandBufferDescriptor)* descriptor);
 void wgpuCommandEncoderAddRef(WGPUCommandEncoder encoder);
@@ -987,6 +1021,11 @@ void wgpuBufferUnmap(WGPUBuffer buffer);
 void wgpuBufferDestroy(WGPUBuffer buffer);
 void wgpuBufferAddRef(WGPUBuffer buffer);
 void wgpuBufferRelease(WGPUBuffer buffer);
+WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset, size_t size, WGPUBufferMapCallbackInfo callbackInfo);
+const(void)* wgpuBufferGetConstMappedRange(WGPUBuffer buffer, size_t offset, size_t size);
+void wgpuBufferUnmap(WGPUBuffer buffer);
+// wgpu-native extension (wgpu.h): blocks until submitted work completes when `wait` is true.
+WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, const(void)* wrappedSubmissionIndex);
 
 // ShaderModule
 void wgpuShaderModuleAddRef(WGPUShaderModule module_);

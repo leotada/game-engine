@@ -3,6 +3,7 @@
 ///
 ///   Left/Right: blend weight (walk <-> jog)   Up/Down: playback speed
 ///   G: toggle head look-at (target orbits)    Esc: quit
+///   --capture=<file.ppm> [--capture-frame=N]: save presented frame N (default 60, GPU readback), exit
 module demo.anim_viewer;
 
 import std.math : cos, sin;
@@ -28,7 +29,11 @@ private enum SCREEN_W = 1280;
 private enum SCREEN_H = 720;
 private enum string fixtures = "assets/animation/test/";
 
-int main() {
+int main(string[] args) {
+    string capturePath;
+    uint frameNo, captureFrame = 60;
+    foreach (a; args[1 .. $]) if (a.length > 10 && a[0 .. 10] == "--capture=") capturePath = a[10 .. $];
+    else if (a.length > 16 && a[0 .. 16] == "--capture-frame=") { import std.conv : to; captureFrame = a[16 .. $].to!uint; }
     AnimAssets assets;
     PosePool pool;
     AnimWorld world;
@@ -117,7 +122,19 @@ int main() {
         text.drawText(frame, "Left/Right: walk<->jog   Up/Down: speed   G: look-at   Esc: quit",
                       10, SCREEN_H - 28, 2);
         overlay.render(text, frame);
+        immutable capturing = capturePath.length && ++frameNo == captureFrame;
+        if (capturing) app.requestCapture();
         app.endFrame(frame);
+        if (capturing) {
+            import std.stdio : File, stderr;
+            uint w, h;
+            auto px = app.readCapture(w, h);
+            if (px.length == 0) { stderr.writeln("anim_viewer: capture failed"); return 2; }
+            auto f = File(capturePath, "wb");
+            f.writef("P6\n%d %d\n255\n", w, h);
+            foreach (i; 0 .. w * h) f.rawWrite(px[i * 4 .. i * 4 + 3]);
+            return 0;
+        }
     }
     return 0;
 }

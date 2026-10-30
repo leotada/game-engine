@@ -115,9 +115,15 @@ median of three runs (about 5 percent run-to-run noise):
 | blending (2 layers) | 0.97 | 0.88 | ~1.10 | 4.0 | 3.9 | ~1.03 |
 | local to model | 0.97 | 0.88 | ~1.10 | 4.4 | 4.5-5.0 | ~0.95 |
 
-Plan targets (section 10): sampling <= 1.25x, blending and local-to-model <= 1.15x: **met** on both
-skeletons for this scenario. Not measured against C++: random-seek sampling, 3 layers + additive
-blending, and skinning timings (the plan lists these targets too).
+Other workloads (`tools/ozz/bench_jobs.sh` vs `golden_gen --bench-jobs`, same data; 3 runs each):
+
+| Workload | D | clang | D/C++ |
+|:---|---:|---:|---:|
+| random-seek sampling, pab/walk (us/char) | 2.7-2.9 | 3.0-3.4 | ~0.9 |
+| 3 layers + 1 additive blend (us/char) | 0.60 | 0.62 | ~0.97 |
+| skinning, 4 influences, pos + normals (us / 1000 vertices) | 11.0-11.9 | 12.2-12.5 | ~0.92 |
+
+Plan targets (section 10) are **met** for every listed workload.
 
 What made the difference (all measured):
 1. Building vectors lane by lane through a union made every following 16-byte load miss store
@@ -175,16 +181,16 @@ viewer uses; real meshes come from `loadGltfSkin`.
 
 ## 8. Known gaps
 
-- The windowed viewer starts, creates the skinned pipeline and runs without GPU errors, but the
-  window itself was never captured (the engine has no framebuffer readback; desktop screenshots hit
-  the wrong window and were discarded). The data path was verified visually instead: a CPU render of
-  the same mesh skinned with the same palette formula at 4 walk phases shows the legs and arms
-  following the sampled pose, and `bone_mesh.d` asserts each ring stays centred on its posed joint.
-  The WGSL shader itself has not been seen on screen.
+- The GPU skinning path was verified on screen through the engine's own frame readback
+  (`Renderer.requestCapture` / `readCapture`: the presented swapchain texture is copied to a mapped
+  buffer, so nothing but the engine's own output is captured):
+  `dub run --config=anim-viewer -- --capture=out.ppm [--capture-frame=N]`. The result,
+  `docs/images/anim-viewer.png`, shows the WGSL-skinned prisms following the sampled pose, matching
+  the skeleton gizmos drawn from the CPU-side model matrices; frames 30 and 90 differ as the walk
+  cycle advances. `bone_mesh.d` additionally asserts on the CPU that each prism ring stays centred
+  on its posed joint.
 - Goldens cover sampling, blending, local-to-model, IK, tracks, triggering, motion blending and
   skinning. Not covered: track types other than float/float3, additive/partial blending paths, and
   the `SamplingJob` on animations other than pab/ruby.
-- Performance was measured only for sampling, 2-layer blending and local-to-model against C++;
-  random seeks, 3 layers + additive and skinning are not compared.
 - Per-character jobs are independent but run serially; they are ready for
   [plan-parallel-ecs.md](plan-parallel-ecs.md).

@@ -184,7 +184,7 @@ struct GpuContext {
         WGPUSurfaceConfiguration config;
         config.device      = device;
         config.format      = surfaceFormat;
-        config.usage       = WGPUTextureUsage.renderAttachment;
+        config.usage       = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.copySrc; // copySrc: frame capture
         config.width       = surfW;
         config.height      = surfH;
         config.presentMode = presentModeVal;

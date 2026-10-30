@@ -126,6 +126,10 @@ struct App {
         renderer.resolvePost(frame);
     }
 
+    /// Frame capture, see `Renderer.requestCapture` / `readCapture`.
+    void requestCapture() nothrow @nogc { renderer.requestCapture(); }
+    ubyte[] readCapture(out uint w, out uint h) { return renderer.readCapture(w, h); }
+
     void endFrame(ref FrameContext frame) nothrow @nogc {
         renderer.endFrame(frame);
         frameArena.reset();

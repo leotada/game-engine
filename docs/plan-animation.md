@@ -1,7 +1,7 @@
 # Plan: Skeletal Animation
 
 > **Status:** implemented via the ozz-animation port (AN-1, AN-3, AN-5; AN-4 GPU skinning in
-> `engine.gpu.skinned`, shown by `--config=anim-viewer`; not yet visually verified) · Priority: medium · See [roadmap.md](roadmap.md) and
+> `engine.gpu.skinned`, shown by `--config=anim-viewer`; verified on screen via frame readback, see `docs/images/anim-viewer.png`) · Priority: medium · See [roadmap.md](roadmap.md) and
 > [animation-guide.md](animation-guide.md). AN-2 (glTF animation parsing) is replaced by the `.ozz`
 > pipeline; only the skin half (`JOINTS_0` / `WEIGHTS_0` / inverse binds) is implemented in
 > `engine.animation.gltf_skin`.
@@ -61,9 +61,9 @@ Real repository paths:
 
 ### AN-4 — GPU Skinning Pipeline
 
-- [ ] Vertex shader with UBO/storage buffer of bone matrices
-- [ ] Dedicated skinning pipeline or feature permutation in textured pipeline
-- [ ] Documented maximum active bone limit (e.g. 64 or 128 joints)
+- [x] Vertex shader with UBO/storage buffer of bone matrices
+- [x] Dedicated skinning pipeline or feature permutation in textured pipeline
+- [x] Documented maximum active bone limit (1024 joints, storage buffer)
 
 **DoD:** Skinned mesh renders on screen following the sampled pose.
 
