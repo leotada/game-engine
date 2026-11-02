@@ -1,6 +1,6 @@
 # Port Plan: meshoptimizer → pure D (`engine.meshopt.*`)
 
-> **Status:** Planned (decisions D1–D4 recorded in §12) · **Upstream:** [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) **v1.3** (`MESHOPTIMIZER_VERSION 1030`, released 2026-09-25) · **License:** MIT (© 2016-2026 Arseny Kapoulkine)
+> **Status:** M0 landed (decisions D1–D4 in §12, M0 corrections in §2.1) · **Upstream:** [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) **v1.3** commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (`MESHOPTIMIZER_VERSION 1030`, released 2026-09-25) · **License:** MIT (© 2016-2026 Arseny Kapoulkine), text in [third-party-licenses.md](third-party-licenses.md)
 >
 > Related: [graphics.md](graphics.md) · [plan-pbr.md](plan-pbr.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [jph-port-plan.md](jph-port-plan.md) (lessons learned) · [roadmap.md](roadmap.md)
 
@@ -19,7 +19,7 @@ meshoptimizer is the industry-standard toolkit for preparing triangle meshes for
 | Imported glTF meshes are uploaded as-is (`engine/assets/gltf.d` → `TexMesh.fromData`), with no reindexing or reordering | Vertex deduplication, vertex-cache / overdraw / vertex-fetch optimization (typically 10–40% faster vertex processing) |
 | No LOD system; every object renders at full detail | Quadric-error simplifier with attribute awareness, locked borders, error metrics for screen-space LOD selection |
 | Shadow pass (`engine/gpu/shadow.d`) draws the full-attribute mesh | Position-only shadow index buffers (fewer unique vertices in depth passes) |
-| `gltf.d` rejects 32-bit indices > 65535 and `EXT_meshopt_compression` files | Index/vertex codecs + filters (the exact format behind `EXT_meshopt_compression` produced by `gltfpack`) |
+| `gltf.d` stores `ushort[]` indices and rejects any index above 65535. It never reads `extensions`, so `EXT_meshopt_compression` bufferViews are misread as raw floats or indices | Index/vertex codecs + filters (the exact format behind `EXT_meshopt_compression` produced by `gltfpack`). M7 decodes a compressed bufferView before any accessor read |
 | PBR normal mapping needs tangents; glTF files often ship without them | MikkTSpace-compatible tangent generation (`generateTangents`) |
 | Collision meshes for Box3D (`AssetCollision`) are raw render meshes | Sloppy/prune simplification to build cheap collision proxies |
 | No cluster-based rendering path | Meshlet building, cluster bounds/cones, cluster partitioning (foundation for GPU-driven culling and Nanite-style cluster LOD) |
@@ -30,7 +30,7 @@ meshoptimizer is the industry-standard toolkit for preparing triangle meshes for
 - **Safety model**: the decoders process untrusted input (downloaded or modded assets). A `@safe` D implementation with bounds-checked API entry points fits the engine's `@safe:` / DIP1000 rules.
 - **GC-safe integration**: scratch memory, output buffers and statistics can use the engine's own primitives (`Pod!T`, `FrameArena`, a dedicated scratch allocator) instead of global `meshopt_setAllocator` callbacks.
 - **CTFE**: several upstream lookup tables are built at startup or written out by hand, for example the vertex-codec shuffle tables and the vertex-cache score tables. In D they become `static immutable` values computed at compile time.
-- **The library ports well**: it is about 15.9k lines of mostly scalar, self-contained algorithmic C++ with no external dependencies. It has no virtual dispatch and no exceptions, and it already uses explicit temporary allocation.
+- **The library ports well**: the v1.3 `src/*.cpp` tree is 15665 lines of mostly scalar, self-contained algorithmic C++ (plus a 1724-line header) with no external dependencies. It has no virtual dispatch and no exceptions, and it already uses explicit temporary allocation.
 
 ### 1.3 Non-goals
 
@@ -55,15 +55,18 @@ meshoptimizer is a far better candidate than Jolt. It has no simulation state, n
 
 ## 2. Upstream Inventory (v1.3)
 
-Source of truth: `ref/meshoptimizer/` (a gitignored clone, pinned to tag `v1.3`, next to `ref/JoltPhysics/`).
+Source of truth: `ref/meshoptimizer/` (a gitignored clone, pinned to tag `v1.3`, commit `9e1f07b`). Do not revive a Jolt tree under `ref/`.
 
 ```bash
 git clone --branch v1.3 --depth 1 https://github.com/zeux/meshoptimizer ref/meshoptimizer
+# HEAD is 9e1f07b159d3cb777f1c67ed31fc11fd117986f4
 ```
+
+Line counts below are `wc -l` on that commit. `allocator.cpp` is 21 lines because `meshopt_Allocator` lives in the header; only `meshopt_setAllocator` is in the `.cpp`.
 
 | Upstream file | Lines | Public API covered | D module | Phase | Runtime-critical? |
 |:---|---:|:---|:---|:---:|:---:|
-| `allocator.cpp` | 192 | `setAllocator`, `setAllocatorCache` | `meshopt.scratch` | M0 | — |
+| `allocator.cpp` | 21 | `setAllocator`, `setAllocatorCache` | `meshopt.scratch` | M0 | — |
 | `quantization.cpp` | 127 | `quantizeHalf/Float`, `dequantizeHalf`, `computePositionExponent` (+ inline `quantizeUnorm/Snorm` from header) | `meshopt.quantize` | M0 | yes (helpers) |
 | `indexgenerator.cpp` | 825 | `generateVertexRemap{,Multi,Custom}`, `remapVertexBuffer`, `remapIndexBuffer`, `filterIndexBuffer{,Multi}`, `generateShadowIndexBuffer{,Multi}`, `generatePositionRemap`, `generateAdjacencyIndexBuffer`, `generateTessellationIndexBuffer`, `generateProvokingIndexBuffer` | `meshopt.indexgen` | M1 | no |
 | `vcacheoptimizer.cpp` | 467 | `optimizeVertexCache{,Strip,Fifo}` | `meshopt.vcache` | M2 | no |
@@ -71,21 +74,37 @@ git clone --branch v1.3 --depth 1 https://github.com/zeux/meshoptimizer ref/mesh
 | `vfetchoptimizer.cpp` | 71 | `optimizeVertexFetch{,Remap}` | `meshopt.vfetch` | M2 | no |
 | `indexanalyzer.cpp` | 125 | `analyzeVertexCache`, `analyzeVertexFetch` | `meshopt.analyze` | M2 | no |
 | `rasterizer.cpp` | 289 | `analyzeOverdraw`, `analyzeCoverage` | `meshopt.analyze` | M2 | no |
-| `stripifier.cpp` | 326 | `stripify{,Bound}`, `unstripify{,Bound}` | `meshopt.stripify` | M2 | no |
+| `stripifier.cpp` | 296 | `stripify{,Bound}`, `unstripify{,Bound}` | `meshopt.stripify` | M2 | no |
 | `simplifier.cpp` | 2947 | `simplify`, `simplifyWithAttributes`, `simplifyWithUpdate`, `simplifySloppy`, `simplifyPrune`, `simplifyPoints`, `simplifyScale` | `meshopt.simplify.*` | M4 | no |
-| `indexcodec.cpp` | 708 | `encode/decodeIndexBuffer`, `encode/decodeIndexSequence`, `*Version`, `*Bound` | `meshopt.codec.index` | M6 | **decode: yes** |
-| `vertexcodec.cpp` | 1897 | `encode/decodeVertexBuffer`, `encodeVertexBufferLevel`, `*Version`, `*Bound` (scalar + SSSE3/AVX-512/NEON/WASM decoders) | `meshopt.codec.vertex` | M6 | **decode: yes** |
+| `indexcodec.cpp` | 703 | `encode/decodeIndexBuffer`, `encode/decodeIndexSequence`, `*Version`, `*Bound` | `meshopt.codec.index` | M6 | **decode: yes** |
+| `vertexcodec.cpp` | 1880 | `encode/decodeVertexBuffer`, `encodeVertexBufferLevel`, `*Version`, `*Bound` (scalar + SSSE3/AVX-512/NEON/WASM decoders) | `meshopt.codec.vertex` | M6 | **decode: yes** |
 | `vertexfilter.cpp` | 1503 | `encode/decodeFilter{Oct,Quat,Exp,Color}` (scalar + SSE/NEON/WASM) | `meshopt.codec.filter` | M6 | **decode: yes** |
 | `meshletcodec.cpp` | 1051 | `encodeMeshlet{,Bound}`, `decodeMeshlet{,Raw}` (scalar + SSE4.1/NEON) | `meshopt.codec.meshlet` | M9 | decode: yes |
-| `tangentspace.cpp` | 750 | `generateTangents`, `generateNormals` (experimental) | `meshopt.tangent` | M8 | no |
-| `clusterizer.cpp` | 1380 | `buildMeshlets{,Scan,Bound,Flex,Spatial}`, `computeClusterBounds`, `computeMeshletBounds`, `computeSphereBounds` | `meshopt.cluster` | M9 | no |
-| `meshletutils.cpp` | 620 | `optimizeMeshlet{,Level}`, `extractMeshletIndices` | `meshopt.meshlet` | M9 | no |
+| `tangentspace.cpp` | 730 | `generateTangents`, `generateNormals` (experimental) | `meshopt.tangent` | M8 | no |
+| `clusterizer.cpp` | 1377 | `buildMeshlets{,Scan,Bound,Flex,Spatial}`, `computeClusterBounds`, `computeMeshletBounds`, `computeSphereBounds` | `meshopt.cluster` | M9 | no |
+| `meshletutils.cpp` | 619 | `optimizeMeshlet{,Level}`, `extractMeshletIndices` | `meshopt.meshlet` | M9 | no |
 | `partition.cpp` | 621 | `partitionClusters` | `meshopt.partition` | M9 | no |
 | `spatialorder.cpp` | 341 | `spatialSortRemap`, `spatialSortTriangles`, `spatialClusterPoints` | `meshopt.spatial` | M9 | no |
 | `opacitymap.cpp` | 557 | `opacityMap{Measure,Rasterize,EntrySize,Compact}` | — | deferred | — |
 | `remesher.cpp` | 782 | `remesh` (experimental) | — | deferred | — |
-| `meshoptimizer.h` | 1735 | Types, enums, inline helpers, C++ template wrappers (`meshopt_IndexAdapter`) | `meshopt.types` + templates | M0 | — |
-| **Total** | **≈15.9k** | | | | |
+| `meshoptimizer.h` | 1724 | Types, enums, inline helpers, C++ template wrappers (`meshopt_IndexAdapter`) | `meshopt.types` + templates | M0 | — |
+| **Total** | **17389** | | | | |
+
+### 2.1 Corrections locked at M0
+
+These override any older sentence in this document.
+
+- **Pin.** Tag `v1.3`, commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4`, `MESHOPTIMIZER_VERSION 1030`. The header is 1724 lines (`wc -l`). Pre-clone estimates (header 1735 or 1725, and the `.cpp` counts replaced above) are not used.
+- **Strides.** v1.3 allows vertex strides that are not multiples of 4. `FloatStream` stays a multiple of 4 (`strideFloats`, byte stride = `strideFloats * 4`). Raw `VertexStream.stride` must not be forced to a multiple of 4. `filterIndexBuffer` and `generateShadowIndexBuffer` take both `vertexSize` and `vertexStride`, with `stride >= size`.
+- **Views are POD.** `VertexStream` and `FloatStream` store the buffer address as `ulong`, not a slice or pointer, so `isPod` holds. The caller keeps the buffer alive for the call. A slice would be a GC-traced indirection.
+- **Codec versions.** Do not port the process-global `meshopt_encodeIndexVersion` / `meshopt_encodeVertexVersion` setters. They are not thread-safe upstream, and an editor import thread can run while a load decodes. Pass the version as an argument. Decoders still accept both on-disk versions (v0 and v1).
+- **Half floats.** `engine.animation.math.half` is the ozz binary16 decoder (it preserves denormals). It must not be reused for meshopt `quantizeHalf` / `dequantizeHalf`, which flush denormals to zero and canonicalize NaNs. The quantizer is a separate port of `quantization.cpp`.
+- **glTF compression.** `source/engine/assets/gltf.d` does not explicitly reject `EXT_meshopt_compression`. It never reads `extensions`, so a compressed `bufferView` is misread as raw floats or indices. M7 must decode before accessor reads (`readFloatVec`, `readIndices`). Integration belongs in `source/engine/assets/gltf.d` only. `engine.animation.gltf_skin` only reads joints and weights and is out of scope.
+- **Index format today.** `createIndexBuffer` (`engine/gpu/buffer.d`) is already generic. These draw sites hardcode `WGPUIndexFormat.uint16` and `indexCount * ushort.sizeof`: `source/engine/scene/scene3d.d`, `source/engine/scene/scene3d_textured.d`, and both draws in `source/engine/gpu/shadow.d` (`submitShadowPass`, `submitPointShadowFace`). `source/engine/gpu/skinned.d` already uses `uint32` and is outside this static-mesh path. M3 switches the three uint16 sites to the mesh's index format.
+- **M8 shadow stride.** When a mesh is `TexTanVert` (48 bytes), the shadow vertex layout stride is updated to 48 even though the depth shader does not read the tangent. Skinned `float[3]` tangents in `SkinningJob` (`engine/animation/skinning.d`) and `assets/shaders/skinned.wgsl` stay as they are. M8 is the static PBR path.
+- **M5 collision.** M5 adds a generated collision payload (baked triangle mesh and/or decimated hull input). It does not overload `AssetTriangleMesh.source` (that field stays a path: `"render"` or another glTF).
+- **Corpus.** `assets/models/meshopt/pirate.obj` is upstream `demo/pirate.obj` (CC-BY-SA 3.0, Clint Bellanger; see [third-party-licenses.md](third-party-licenses.md)). Procedural grid, sphere, torus, UV-seam, and non-manifold soup meshes are generated in tests (`engine.meshopt.corpus`). A scanned mesh is optional and only if its license is compatible and the corpus stays ≤ 10 MB. M0 does not commit one.
+- **License.** Upstream MIT text is in `docs/third-party-licenses.md`, added before any ported function. Each ported module carries the v1.3 header comment. `public import engine.meshopt` is added to `source/engine/package.d` at M3, not before.
 
 Reference material used for tests:
 
@@ -158,7 +177,7 @@ These rules apply to every phase. Each one is checked in code review.
 | Anonymous `enum { meshopt_SimplifyLockBorder = 1 << 0, … }` | `enum SimplifyOptions : uint { none = 0, lockBorder = 1 << 0, … }` (bit values identical to upstream for golden-file compatibility) |
 | `meshopt_SimplifyVertex_*` | `enum SimplifyVertexFlags : ubyte { lock = 1, protect = 2, priority = 4 }` |
 | `meshopt_EncodeExpMode` | `enum EncodeExpMode { separate, sharedVector, sharedComponent, clamped }` |
-| `meshopt_Stream` | `struct VertexStream { const(ubyte)[] data; size_t size; size_t stride; }` |
+| `meshopt_Stream` | `struct VertexStream { ulong address; size_t size; size_t stride; }` — `stride` is bytes between elements, `stride >= size`, and it is **not** required to be a multiple of 4. `address` is the first byte (0 = null) so the struct stays `isPod`. |
 | `meshopt_` function prefix | none. The functions live in the `engine.meshopt` namespace (`engine.meshopt.simplify(...)`). |
 
 All public structs must pass `isPod!T` and are declared with `Pod!T` wherever they are stored in engine memory.
@@ -168,20 +187,20 @@ All public structs must pass `isPod!T` and are declared with `Pod!T` wherever th
 Every `T* destination, size_t count` pair becomes a slice. Strided float inputs, described in C as `const float* vertex_positions, size_t vertex_count, size_t stride_bytes`, become:
 
 ```d
-/// Strided view over float3 (or floatN) attributes. Stride is in bytes, as upstream,
-/// but must be a multiple of 4 so the view stays a @safe float slice.
+/// Strided view over float3 attributes. The byte stride is strideFloats * 4,
+/// so a FloatStream is always a multiple of 4. Raw VertexStream.stride is not.
 struct FloatStream {
-    const(float)[] data;   // whole vertex buffer reinterpreted as floats
+    ulong address;         // first float of element 0; 0 = null. POD (no slice).
     size_t strideFloats;   // = strideBytes / 4
     size_t count;
 
     float[3] get3(size_t i) const pure nothrow @nogc { … }
 }
 
-FloatStream positionsOf(T)(const(T)[] verts, string field = "pos") @trusted; // offsetof-based view, the only @trusted cast
+FloatStream positionsOf(T, string field = "pos")(const(T)[] verts) @trusted; // offsetof-based view, the only @trusted cast
 ```
 
-The engine vertex types (`Vert`, `TexVert`, future skinned vertices) get zero-copy `FloatStream` views through a single audited `@trusted` helper that uses `T.tupleof` / `offsetof`.
+The engine vertex types (`Vert`, `TexVert`, future skinned vertices) get zero-copy `FloatStream` views through a single audited `@trusted` helper that uses `offsetof`. `T.sizeof` must be a multiple of 4. This view is not used for a raw `VertexStream` whose stride is not a multiple of 4.
 
 ### 4.3 Index type templating
 
@@ -262,7 +281,7 @@ One phase equals one commit (or a short commit series for M4 and M6). Every phas
 
 | # | Phase | Upstream source | Est. D LOC | Depends on | Status |
 |:---|:---|:---|---:|:---|:---|
-| M0 | Infrastructure: package skeleton, scratch, bits/hash/sort, quantize, oracle + golden harness, bench harness | `allocator`, `quantization`, header | ~900 | — | ⏳ Pending |
+| M0 | Infrastructure: package skeleton, scratch, bits/hash/sort, quantize, oracle + golden harness, bench harness | `allocator`, `quantization`, header | ~900 | — | ✅ Done |
 | M1 | Indexing & reindexing | `indexgenerator` | ~800 | M0 | ⏳ Pending |
 | M2 | Pipeline optimizers + analyzers + stripifier | `vcache`, `overdraw`, `vfetch`, `indexanalyzer`, `rasterizer`, `stripifier` | ~1300 | M1 | ⏳ Pending |
 | **G1** | **Go/No-Go checkpoint**: performance and equivalence review | — | — | M2 | ⏳ Pending |
@@ -290,15 +309,15 @@ The delivery order is the table order (D1): import optimization (M0–M3), then 
 2. Package skeleton `source/engine/meshopt/` (§3), with `types.d` containing all public structs and enums.
 3. `scratch.d` (§4.4) with unit tests for mark/release ordering, block growth, steady state with no reallocation, and `isPod` enforcement.
 4. `internal/bits.d`, `internal/hash.d` (generic `hashLookup!(Hasher)` matching upstream's quadratic probing and `hashBuckets` sizing), `internal/sort.d`, and `internal/vec.d`.
-5. `quantize.d`, a full port of `quantization.cpp` plus the header inline helpers `quantizeUnorm`, `quantizeSnorm`, `quantizeHalf`, `quantizeFloat`, `dequantizeHalf` and `computePositionExponent`. These are `pure nothrow @nogc` and CTFE-able.
+5. `quantize.d`, a full port of `quantization.cpp` plus the header inline helpers `quantizeUnorm`, `quantizeSnorm`, `quantizeHalf`, `quantizeFloat`, `dequantizeHalf` and `computePositionExponent`. These are `pure nothrow @nogc` and CTFE-able. Do not call `engine.animation.math.half` (that module is the ozz binary16 decoder and preserves denormals).
 6. **Oracle and golden-data tooling** (§7.1): `tools/meshopt-oracle/build_ref.sh` builds `libs/libmeshoptimizer_ref.a` from `ref/meshoptimizer/src` with `clang++ -O2 -ffp-contract=off`, and a `dub` configuration `meshopt-oracle` holds the minimal `extern(C)` declarations used **only by the oracle tool** (it is never part of `library`).
 7. Benchmark harness `tools/benchmarks/meshopt_bench.d` (dub config `meshopt-bench`). It runs each ported function and its C++ counterpart (when the oracle library is present) on the test corpus and prints a markdown table.
 8. Test corpus under `assets/models/meshopt/` (≤ 10 MB total, Git LFS not required):
-   - `pirate.obj` from upstream
+   - `pirate.obj` from upstream `demo/pirate.obj` (CC-BY-SA 3.0)
    - a procedural grid, sphere and torus generated in-test
-   - one high-poly scan, for example a decimated Stanford dragon (~100k triangles, license-compatible)
-   - a mesh with UV seams and hard edges
-   - a non-manifold "soup" mesh
+   - a mesh with UV seams and hard edges (generated in-test)
+   - a non-manifold "soup" mesh (generated in-test)
+   - a high-poly scan is optional, and only if the license is compatible and the corpus stays ≤ 10 MB. M0 does not commit one.
 
 **Exit criteria**: quantization is bit-exact versus the oracle for all 2³² `quantizeHalf` inputs (an exhaustive test, behind `version(MeshoptExhaustive)`), and the scratch allocator passes `--assert-no-gc`.
 
@@ -314,8 +333,8 @@ Port `indexgenerator.cpp` in full.
 | `generateVertexRemapMulti` | Takes `const(VertexStream)[]`. |
 | `generateVertexRemapCustom` | Upstream takes a C callback. D takes a **template alias predicate** (`alias equal`), so the compiler inlines the comparison. That is the compile-time dispatch rule from `AGENTS.md`. |
 | `remapVertexBuffer` / `remapIndexBuffer` | Typed generic versions plus a raw `ubyte[]` + `vertexSize` version. |
-| `filterIndexBuffer{,Multi}` | Removes degenerate triangles, using either full-vertex or per-stream equality. |
-| `generateShadowIndexBuffer{,Multi}` | Used by the shadow pass in M3. |
+| `filterIndexBuffer{,Multi}` | Removes degenerate triangles. The single-stream form takes both `vertexSize` and `vertexStride` (`stride >= size`). Stride is not required to be a multiple of 4. |
+| `generateShadowIndexBuffer{,Multi}` | Used by the shadow pass in M3. The single-stream form takes both `vertexSize` and `vertexStride` (`stride >= size`). |
 | `generatePositionRemap` | |
 | `generateAdjacencyIndexBuffer`, `generateTessellationIndexBuffer` | Ported for completeness. WebGPU has no geometry/tessellation stages, but the outputs are useful for silhouette/outline compute passes. |
 | `generateProvokingIndexBuffer` | |
@@ -376,10 +395,10 @@ This phase makes the M1/M2 work immediately visible in every demo and in the edi
                                           const MeshOptSettings s = MeshOptSettings.init);
    ```
    This layer may use the GC (it is import-time, not frame-path).
-2. **glTF loader** (`engine/assets/gltf.d`):
+2. **glTF loader** (`source/engine/assets/gltf.d` only — not `engine.animation.gltf_skin`):
    - accept `u32` indices instead of rejecting values above 65535. `GltfMesh.indices` becomes `uint[]`, and the loader narrows to `ushort` only when `vertices.length <= 65536`.
    - run `optimizeMesh` after loading, controlled by a setting in the asset's `.meta` sidecar (`AssetDatabase`).
-3. **GPU side**: `Mesh` / `TexMesh` accept `uint` index buffers (`WGPUIndexFormat_Uint32`) in addition to `ushort`. Add a `shadowIndexBuffer` to the mesh types, used by `engine/gpu/shadow.d` when present.
+3. **GPU side**: `Mesh` / `TexMesh` accept `uint` index buffers (`WGPUIndexFormat.uint32`) in addition to `ushort`. `createIndexBuffer` is already generic. Switch the draw sites that hardcode `WGPUIndexFormat.uint16` — `scene3d.d`, `scene3d_textured.d`, and both draws in `shadow.d` — to the mesh's index format. `skinned.d` already uses `uint32` and is out of scope. Add a `shadowIndexBuffer` to the mesh types, used by `engine/gpu/shadow.d` when present.
 4. **Editor**:
    - an Inspector "Mesh Optimization" section on model assets (toggles from `MeshOptSettings`, stored in `.meta`), with a "Reimport" button
    - a read-only stats block (before/after ACMR, ATVR, overdraw, vertex count)
@@ -399,6 +418,7 @@ This phase makes the M1/M2 work immediately visible in every demo and in the edi
 - Vertex layout:
   - add `TexTanVert { float[3] pos; float[3] normal; float[2] uv; float[4] tangent; }` (stride 48) to `engine/graphics/types.d`, with a matching vertex buffer layout in `engine/gpu/pipeline.d`
   - keep `TexVert` (stride 32) for meshes without normal maps, so unrelated pipelines pay no bandwidth cost
+- Shadow vertex layout: when the mesh is `TexTanVert`, the shadow pipeline's vertex stride becomes 48 even though the depth shader does not read the tangent. Keep stride 32 for `TexVert`. Skinned `float[3]` tangents in `SkinningJob` and `skinned.wgsl` are not changed; M8 is the static PBR path.
 - Shader:
   - `textured3d_pbr.wgsl` gains a per-vertex tangent attribute at `@location(8) tangent: vec4<f32>`. Locations 0–2 are vertex attributes and 3–7 are per-instance data (`model0..3`, `tint`), so existing locations are not renumbered.
   - the bitangent becomes `cross(N, T) * tangent.w`
@@ -476,7 +496,7 @@ Every such exception is documented in §11.
    - a gameplay-layer `lodSelectSystem`, which converts `error × simplifyScale × worldScale` to projected pixels using camera FOV and distance and picks the coarsest level under 1 px (biasable). It is `@nogc`, reuses the instanced draw path, and changes only the index range.
    - optional hysteresis to avoid popping; dithered cross-fade is deferred
 4. **Shadow LOD**: the shadow pass picks `current + 1` (or a configurable offset), so it uses position-only shadow indices from the coarser level.
-5. **Collision proxies**: in the editor, `AssetCollision.triangleMesh` can be generated from `simplifySloppy` or `simplify` with `lockBorder` at a target triangle budget. The convex hull input is decimated with `simplifyPoints` before hull building.
+5. **Collision proxies**: add a generated collision payload (baked triangles from `simplifySloppy` or `simplify` with `lockBorder` at a target triangle budget, and a convex-hull point list decimated with `simplifyPoints`). Do not overload `AssetTriangleMesh.source`; that field stays a path (`"render"` or another glTF).
 6. **Editor**:
    - a LOD preview slider in Scene View
    - per-LOD triangle counts and error values in the Inspector
@@ -496,9 +516,11 @@ Every such exception is documented in §11.
 - **Index codec**:
   - `encodeIndexBuffer` / `decodeIndexBuffer` (edge FIFO + vertex FIFO + varint, versions 0 and 1)
   - `encodeIndexSequence` / `decodeIndexSequence`
-  - `encodeIndexVersion`, `decodeIndexVersion` and the `Bound` helpers
+  - `decodeIndexVersion` and the `Bound` helpers
+  - do **not** port the process-global `encodeIndexVersion` setter. Pass the version as an argument (the setter is not thread-safe upstream). Decoders still accept both on-disk versions.
 - **Vertex codec**:
   - versions v0 and v1 (current default), `encodeVertexBufferLevel` (levels 0–3)
+  - do **not** port the process-global `encodeVertexVersion` setter. Pass the version as an argument. Decoders still accept both on-disk versions.
   - the byte-group encoding (`kByteGroupSize = 16`, block size up to 256 vertices, bit widths 0/1/2/4/8, and the v1 control modes)
   - the scalar decoder, ported from upstream's `SIMD_FALLBACK` path, which is the reference behavior
 - **Filters**:
@@ -528,7 +550,7 @@ Every such exception is documented in §11.
 
 ### M7 — Engine Integration III: Compressed Geometry
 
-1. **glTF `EXT_meshopt_compression`** in `engine/assets/gltf.d`. Decode `bufferView` extensions (`mode`: `ATTRIBUTES` / `TRIANGLES` / `INDICES`; `filter`: `NONE` / `OCTAHEDRAL` / `QUATERNION` / `EXPONENTIAL` / `COLOR`) into the fallback buffer. Files produced by `gltfpack -c` / `-cc` then load directly.
+1. **glTF `EXT_meshopt_compression`** in `source/engine/assets/gltf.d` only (not `engine.animation.gltf_skin`). The loader does not reject the extension today: it never reads `extensions`, so a compressed `bufferView` is misread as raw data. Decode the extension (`mode`: `ATTRIBUTES` / `TRIANGLES` / `INDICES`; `filter`: `NONE` / `OCTAHEDRAL` / `QUATERNION` / `EXPONENTIAL` / `COLOR`) into the fallback buffer **before** accessor reads (`readFloatVec`, `readIndices`). Files produced by `gltfpack -c` / `-cc` then load directly.
 2. **`KHR_mesh_quantization`**: accept normalized and unnormalized integer attributes (`SHORT`/`BYTE` positions, normals, tangents, UVs) and **dequantize them to `float` on load** into the existing `Vert`/`TexVert` layouts (D4). This also covers the node/mesh transform that gltfpack uses to rescale dequantized positions. Files are smaller on disk; GPU memory is unchanged. Native quantized GPU layouts are a separate graphics task (§9).
 3. **Engine `.asset` binary mesh payload**: an optional compressed mesh blob (vertex streams encoded with `encodeVertexBuffer` v1 level 2 + oct/exp filters, indices with `encodeIndexBuffer` v1). Expected size is about 4–6× smaller than raw before general-purpose compression, and the data compresses further with zstd/deflate if a compressor is added later.
 4. **Load-time measurement**: decode is the only runtime-critical meshoptimizer code. Add the asset-load time of the `pbr` demo and of a 1M-triangle test scene to §11.
@@ -581,7 +603,7 @@ import engine.meshopt;
 size_t generateVertexRemap(I, V)(uint[] remap, const(I)[] indices, const(V)[] vertices);
 void   remapVertexBuffer(V)(V[] dst, const(V)[] src, const(uint)[] remap);
 void   remapIndexBuffer(I)(I[] dst, const(I)[] src, const(uint)[] remap);
-void   generateShadowIndexBuffer(I, V)(I[] dst, const(I)[] indices, const(V)[] vertices, size_t compareBytes);
+void   generateShadowIndexBuffer(I)(I[] dst, const(I)[] indices, const(ubyte)[] vertices, size_t vertexSize, size_t vertexStride); // stride >= size; stride need not be a multiple of 4
 
 // --- optimization ---
 void   optimizeVertexCache(I)(I[] dst, const(I)[] indices, size_t vertexCount);
@@ -678,7 +700,7 @@ Every optimization that introduces `@trusted` code must come with a before/after
 | Config | Purpose | Notes |
 |:---|:---|:---|
 | `library` (existing) | Includes `source/engine/meshopt/` automatically through `sourcePaths` | No new libs, no C/C++ files. |
-| `meshopt-bench` (new) | Benchmarks | Links `libmeshoptimizer_ref.a` if present (`version(MeshoptOracle)`), otherwise D-only timings. |
+| `meshopt-bench` (new) | Benchmarks | D-only timings by default. `-version=MeshoptOracle` also times `libmeshoptimizer_ref.a`. Dub invokes `cc` directly and ignores `pragma(lib)`, so that link needs `-L-lmeshoptimizer_ref -L-lstdc++` (the archive is optional and gitignored). |
 | `meshopt-oracle` (new) | Golden generation + live diff | Requires `tools/meshopt-oracle/build_ref.sh` and `clang++` with libstdc++. **Never** a dependency of other configs. |
 | `meshopt-fuzz` (new) | libFuzzer targets | LDC only. |
 
@@ -726,7 +748,7 @@ Update this section at the end of every phase.
 
 | Phase | Commit | Date | Golden equivalence | LDC ratio (geomean) | Notes |
 |:---|:---|:---|:---|:---|:---|
-| M0 | — | — | — | — | Upstream commit: _(fill in on clone)_ |
+| M0 | — | 2026-11-02 | quantize* bit-exact on committed goldens (exhaustive `quantizeHalf` is `version(MeshoptExhaustive)` only) | D-only table in `meshopt-bench` (C++ column with `-version=MeshoptOracle`) | Upstream commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (tag v1.3, `MESHOPTIMIZER_VERSION 1030`). Header is 1724 lines (`wc -l`). No scanned mesh. `encode*Version` setters are not ported. `dub test --config=library` is green on DMD. A full LDC library link fails on the prebuilt DMD `libsymgc-cards.a` (`__dmd_personality_v0`); the M0 unittests themselves pass under ldc2. |
 | M1 | — | — | — | — | |
 | M2 | — | — | — | — | |
 | G1 | — | — | — | — | Decision: _pending_ |
@@ -765,12 +787,12 @@ Every public upstream function, with its target phase. ☐ = not started, ☑ = 
 
 **Simplification (M4)**: ☐ simplify ☐ simplifyWithAttributes ☐ simplifyWithUpdate ☐ simplifySloppy ☐ simplifyPrune ☐ simplifyPoints ☐ simplifyScale
 
-**Codecs (M6/M9)**: ☐ encodeIndexBuffer ☐ encodeIndexBufferBound ☐ encodeIndexVersion ☐ decodeIndexBuffer ☐ decodeIndexVersion ☐ encodeIndexSequence ☐ encodeIndexSequenceBound ☐ decodeIndexSequence ☐ encodeVertexBuffer ☐ encodeVertexBufferBound ☐ encodeVertexBufferLevel ☐ encodeVertexVersion ☐ decodeVertexBuffer ☐ decodeVertexVersion ☐ decodeFilterOct ☐ decodeFilterQuat ☐ decodeFilterExp ☐ decodeFilterColor ☐ encodeFilterOct ☐ encodeFilterQuat ☐ encodeFilterExp ☐ encodeFilterColor ☐ encodeMeshlet ☐ encodeMeshletBound ☐ decodeMeshlet ☐ decodeMeshletRaw
+**Codecs (M6/M9)**: ☐ encodeIndexBuffer ☐ encodeIndexBufferBound ☐ encodeIndexVersion *(argument, not the process-global setter)* ☐ decodeIndexBuffer ☐ decodeIndexVersion ☐ encodeIndexSequence ☐ encodeIndexSequenceBound ☐ decodeIndexSequence ☐ encodeVertexBuffer ☐ encodeVertexBufferBound ☐ encodeVertexBufferLevel ☐ encodeVertexVersion *(argument, not the process-global setter)* ☐ decodeVertexBuffer ☐ decodeVertexVersion ☐ decodeFilterOct ☐ decodeFilterQuat ☐ decodeFilterExp ☐ decodeFilterColor ☐ encodeFilterOct ☐ encodeFilterQuat ☐ encodeFilterExp ☐ encodeFilterColor ☐ encodeMeshlet ☐ encodeMeshletBound ☐ decodeMeshlet ☐ decodeMeshletRaw
 
 **Clusters (M9)**: ☐ buildMeshlets ☐ buildMeshletsScan ☐ buildMeshletsBound ☐ buildMeshletsFlex ☐ buildMeshletsSpatial ☐ optimizeMeshlet ☐ optimizeMeshletLevel ☐ computeClusterBounds ☐ computeMeshletBounds ☐ computeSphereBounds ☐ extractMeshletIndices ☐ partitionClusters ☐ spatialSortRemap ☐ spatialSortTriangles ☐ spatialClusterPoints
 
 **Tangents (M8)**: ☐ generateTangents ☐ generateNormals
 
-**Quantization & memory (M0)**: ☐ quantizeUnorm ☐ quantizeSnorm ☐ quantizeHalf ☐ quantizeFloat ☐ dequantizeHalf ☐ computePositionExponent ☐ setAllocator → `MeshoptScratch`
+**Quantization & memory (M0)**: ☑ quantizeUnorm ☑ quantizeSnorm ☑ quantizeHalf ☑ quantizeFloat ☑ dequantizeHalf ☑ computePositionExponent ☑ setAllocator → `MeshoptScratch`
 
 **Deferred**: opacityMapMeasure · opacityMapRasterize · opacityMapEntrySize · opacityMapCompact · remesh · setAllocatorCache

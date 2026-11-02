@@ -4,6 +4,8 @@ Consolidated overview of remaining engine work. The initial roadmap (phases 1–
 
 The native Jolt port (`engine.jph`) was **cancelled** and removed — see [jph-port-plan.md](jph-port-plan.md).
 
+Mesh processing (meshoptimizer, pure D) is in progress — see [plan-meshoptimizer.md](plan-meshoptimizer.md).
+
 ## Suggested Priority
 
 Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphics & shaders (shadow infrastructure, modular shaders, hot-reload) → animated content → iteration tooling → scale.
@@ -21,6 +23,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 8 | Hot reload (assets + data + shaders) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) · [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Medium (Shaders Done) | Day-to-day iteration; shader hot-reload complete |
 | 9 | Parallel ECS | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Low | Stable serial API; opt-in scheduler |
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
+| 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 
 ### Ordering Notes
 

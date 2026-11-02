@@ -1,6 +1,8 @@
 # Compiled Object files
 *.o
 *.obj
+# Wavefront meshes are source assets, not compiler object files.
+!assets/**/*.obj
 
 # Compiled Dynamic libraries
 *.so
@@ -30,6 +32,8 @@ game-engine-pbr
 game-engine-player
 game-engine-ui-gallery
 game-engine-ecs-bench
+/meshopt-oracle
+/meshopt-bench
 
 # Engine workspace / build cache
 .engine/

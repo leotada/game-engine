@@ -302,6 +302,43 @@
             "mainSourceFile": "tools/benchmarks/ecs_benchmark.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/benchmarks"],
             "importPaths": ["source", "source/bindings/box3d", "tools/benchmarks"]
+        },
+        {
+            "name": "meshopt-oracle",
+            "targetType": "executable",
+            "targetName": "meshopt-oracle",
+            "mainSourceFile": "tools/meshopt-oracle/main.d",
+            "sourcePaths": ["source/engine/meshopt"],
+            "sourceFiles": [
+                "tools/meshopt-oracle/main.d",
+                "tools/meshopt-oracle/meshopt_oracle_capi.d"
+            ],
+            "importPaths": ["source", "tools/meshopt-oracle"],
+            "excludedSourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/demo/*"
+            ],
+            "libs": ["meshoptimizer_ref", "stdc++"],
+            "lflags-linux": ["-L./libs"],
+            "versions": ["MeshoptOracle"]
+        },
+        {
+            "name": "meshopt-bench",
+            "targetType": "executable",
+            "targetName": "meshopt-bench",
+            "mainSourceFile": "tools/benchmarks/meshopt_bench.d",
+            "sourcePaths": ["source/engine/meshopt"],
+            "sourceFiles": [
+                "tools/benchmarks/meshopt_bench.d",
+                "tools/meshopt-oracle/meshopt_oracle_capi.d"
+            ],
+            "importPaths": ["source", "tools/meshopt-oracle"],
+            "excludedSourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/demo/*"
+            ],
+            "libs": [],
+            "lflags-linux": ["-L./libs"]
         }
     ]
 }
