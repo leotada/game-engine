@@ -1,4 +1,4 @@
-/// M0 quantize timings.
+/// M0 quantize timings and M1 index timings.
 /// D-only: `dub run --config=meshopt-bench`
 /// With the C++ oracle (dub ignores pragma(lib), so link the archive explicitly):
 ///   dmd -version=MeshoptOracle -Isource -Itools/meshopt-oracle -of=meshopt-bench \
@@ -7,7 +7,10 @@
 ///       tools/benchmarks/meshopt_bench.d -L-L./libs -L-lmeshoptimizer_ref -L-lstdc++
 module meshopt_bench;
 
+import engine.meshopt.corpus;
+import engine.meshopt.indexgen;
 import engine.meshopt.quantize;
+import engine.meshopt.types : FloatStream;
 
 import core.time : MonoTime;
 import std.stdio : writeln, writefln;
@@ -44,8 +47,56 @@ int main() {
     row!((float f) => quantizeFloat(f, 12), (float f) => refFloat(f))("quantizeFloat", data);
     row!((float f) => dequantizeHalf(cast(ushort) quantizeHalf(f)), (float f) => refDehalf(f))("dequantizeHalf", data);
     row!((float f) => quantizeUnorm(f < 0 ? 0 : f > 1 ? 1 : f, 16), (float f) => refUnorm(f))("quantizeUnorm", data);
+    timeIndex();
     writeln("<!-- sink ", sink, " -->");
     return 0;
+}
+
+private void timeIndex() {
+    ProcMesh grid = makeGrid(64, 64);
+    ubyte[] raw = floatBytes(grid.positions);
+    size_t vc = grid.positions.length / 3;
+    uint[] remap = new uint[vc];
+    uint[] filtered = new uint[grid.indices.length];
+    uint[] shadow = new uint[grid.indices.length];
+    uint[] adj = new uint[grid.indices.length * 2];
+    uint[] prov = new uint[grid.indices.length];
+    uint[] reorder = new uint[vc + grid.indices.length / 3];
+    FloatStream fs = floatsOf(grid.positions);
+    enum reps = 4;
+    meshRow!({ sink += generateVertexRemap(remap, grid.indices, raw, 12); })("generateVertexRemap", reps);
+    meshRow!({ sink += filterIndexBuffer(filtered, grid.indices, raw, vc, 12, 12); })("filterIndexBuffer", reps);
+    meshRow!({ generateShadowIndexBuffer(shadow, grid.indices, raw, vc, 12, 12); sink += shadow[0]; })("generateShadowIndexBuffer", reps);
+    meshRow!({ generateAdjacencyIndexBuffer(adj, grid.indices, fs); sink += adj[0]; })("generateAdjacencyIndexBuffer", reps);
+    meshRow!({ sink += generateProvokingIndexBuffer(prov, reorder, grid.indices, vc); })("generateProvokingIndexBuffer", reps);
+}
+
+private void meshRow(alias fn)(string name, int reps) {
+    fn();
+    auto t0 = MonoTime.currTime;
+    foreach (_; 0 .. reps)
+        fn();
+    double dms = (MonoTime.currTime - t0).total!"usecs" / 1000.0 / reps;
+    version (MeshoptOracle)
+        writefln("| `%s` | grid 64 |  | %.3f |  |", name, dms);
+    else
+        writefln("| `%s` | grid 64 | %.3f |", name, dms);
+}
+
+private ubyte[] floatBytes(const(float)[] data) @trusted {
+    ubyte[] o = new ubyte[data.length * 4];
+    if (data.length)
+        o[] = (cast(const(ubyte)*) data.ptr)[0 .. o.length];
+    return o;
+}
+
+private FloatStream floatsOf(const(float)[] data) @trusted {
+    FloatStream s;
+    s.strideFloats = 3;
+    s.count = data.length / 3;
+    if (data.length)
+        s.address = cast(ulong) data.ptr;
+    return s;
 }
 
 private ulong sink;

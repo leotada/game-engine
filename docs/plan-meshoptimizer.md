@@ -749,7 +749,7 @@ Update this section at the end of every phase.
 | Phase | Commit | Date | Golden equivalence | LDC ratio (geomean) | Notes |
 |:---|:---|:---|:---|:---|:---|
 | M0 | — | 2026-11-02 | quantize* bit-exact on committed goldens (exhaustive `quantizeHalf` is `version(MeshoptExhaustive)` only) | D-only table in `meshopt-bench` (C++ column with `-version=MeshoptOracle`) | Upstream commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (tag v1.3, `MESHOPTIMIZER_VERSION 1030`). Header is 1724 lines (`wc -l`). No scanned mesh. `encode*Version` setters are not ported. `dub test --config=library` is green on DMD. A full LDC library link fails on the prebuilt DMD `libsymgc-cards.a` (`__dmd_personality_v0`); the M0 unittests themselves pass under ldc2. |
-| M1 | — | — | — | — | |
+| M1 | — | 2026-11-02 | byte-exact on committed goldens (corpus + odd stride); live `diff --random=10000` matches the C++ oracle | D-only rows in `meshopt-bench` (C++ column is G1) | `indexgenerator.cpp` is 825 lines. `generateVertexRemapCustom` is a template alias predicate (`meshoptPositionsEqual` when the C callback is null). Empty index slices are the unindexed case. `dub test --config=library` is green on DMD. |
 | M2 | — | — | — | — | |
 | G1 | — | — | — | — | Decision: _pending_ |
 | M3 | — | — | — | — | Demo frame time before/after: |
@@ -781,7 +781,7 @@ Update this section at the end of every phase.
 
 Every public upstream function, with its target phase. ☐ = not started, ☑ = ported and golden-verified.
 
-**Indexing (M1)**: ☐ generateVertexRemap ☐ generateVertexRemapMulti ☐ generateVertexRemapCustom ☐ remapVertexBuffer ☐ remapIndexBuffer ☐ filterIndexBuffer ☐ filterIndexBufferMulti ☐ generateShadowIndexBuffer ☐ generateShadowIndexBufferMulti ☐ generatePositionRemap ☐ generateAdjacencyIndexBuffer ☐ generateTessellationIndexBuffer ☐ generateProvokingIndexBuffer
+**Indexing (M1)**: ☑ generateVertexRemap ☑ generateVertexRemapMulti ☑ generateVertexRemapCustom ☑ remapVertexBuffer ☑ remapIndexBuffer ☑ filterIndexBuffer ☑ filterIndexBufferMulti ☑ generateShadowIndexBuffer ☑ generateShadowIndexBufferMulti ☑ generatePositionRemap ☑ generateAdjacencyIndexBuffer ☑ generateTessellationIndexBuffer ☑ generateProvokingIndexBuffer
 
 **Optimization & analysis (M2)**: ☐ optimizeVertexCache ☐ optimizeVertexCacheStrip ☐ optimizeVertexCacheFifo ☐ optimizeOverdraw ☐ optimizeVertexFetch ☐ optimizeVertexFetchRemap ☐ analyzeVertexCache ☐ analyzeVertexFetch ☐ analyzeOverdraw ☐ analyzeCoverage ☐ stripify ☐ stripifyBound ☐ unstripify ☐ unstripifyBound
 
