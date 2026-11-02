@@ -11,6 +11,7 @@
 /// skinning, multiple primitives.
 module engine.assets.gltf;
 
+import core.math : sqrt;
 import std.conv : to;
 import std.exception : enforce;
 import std.file : read, exists;
@@ -24,11 +25,19 @@ import engine.graphics.material : Material, MaterialParams, MaterialFlags;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, Sampler;
 import engine.graphics.types : TexVert;
+import engine.math.mat : Mat4;
+import engine.math.quat : Quat;
+import engine.math.vec : Vec3, Vec4;
+import engine.meshopt.codec.filter;
+import engine.meshopt.codec.index;
+import engine.meshopt.codec.vertex;
 import bindings.wgpu : WGPUBindGroupLayout;
 
 @safe:
 
+private enum uint CT_BYTE   = 5120;
 private enum uint CT_UBYTE  = 5121;
+private enum uint CT_SHORT  = 5122;
 private enum uint CT_USHORT = 5123;
 private enum uint CT_UINT   = 5125;
 private enum uint CT_FLOAT  = 5126;
@@ -249,6 +258,196 @@ private ubyte toU8(float v) pure nothrow @nogc {
     return cast(ubyte)(v * 255.0f + 0.5f);
 }
 
+private bool jsonFlag(ref JSONValue obj, string key) @trusted {
+    if (key !in obj.object)
+        return false;
+    auto v = obj[key];
+    if (v.type == JSONType.true_)
+        return true;
+    return false;
+}
+
+private size_t componentSize(uint componentType) pure nothrow @nogc {
+    if (componentType == CT_BYTE || componentType == CT_UBYTE)
+        return 1;
+    if (componentType == CT_SHORT || componentType == CT_USHORT)
+        return 2;
+    if (componentType == CT_UINT || componentType == CT_FLOAT)
+        return 4;
+    return 0;
+}
+
+private float dequantizeComponent(int value, uint componentType, bool normalized) pure nothrow @nogc {
+    if (componentType == CT_FLOAT)
+        return 0;
+    if (!normalized)
+        return value;
+    int bits = componentType == CT_BYTE || componentType == CT_UBYTE ? 8 : 16;
+    if (componentType == CT_BYTE || componentType == CT_SHORT) {
+        float maxv = cast(float)((1 << (bits - 1)) - 1);
+        float f = cast(float) value / maxv;
+        return f < -1.0f ? -1.0f : f;
+    }
+    float denom = cast(float)((1 << bits) - 1);
+    return cast(float) value / denom;
+}
+
+private int readComponent(const(ubyte)[] src, size_t at, uint componentType) pure nothrow @nogc {
+    if (componentType == CT_BYTE)
+        return cast(byte) src[at];
+    if (componentType == CT_UBYTE)
+        return src[at];
+    if (componentType == CT_SHORT)
+        return cast(short)(src[at] | (src[at + 1] << 8));
+    if (componentType == CT_USHORT)
+        return src[at] | (src[at + 1] << 8);
+    if (componentType == CT_UINT) {
+        uint u = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
+        return cast(int) u;
+    }
+    return 0;
+}
+
+private void applyMeshoptFilter(ubyte[] data, size_t count, size_t stride, string filter) @trusted {
+    if (filter == "NONE" || filter.length == 0)
+        return;
+    if (filter == "OCTAHEDRAL") {
+        enforce(stride == 4 || stride == 8, "glTF: octahedral filter stride must be 4 or 8");
+        decodeFilterOct(data, count, stride);
+    } else if (filter == "QUATERNION") {
+        enforce(stride == 8, "glTF: quaternion filter stride must be 8");
+        decodeFilterQuat(data, count, stride);
+    } else if (filter == "EXPONENTIAL") {
+        enforce(stride % 4 == 0, "glTF: exponential filter stride must be a multiple of 4");
+        decodeFilterExp(data, count, stride);
+    } else if (filter == "COLOR") {
+        enforce(stride == 4 || stride == 8, "glTF: color filter stride must be 4 or 8");
+        decodeFilterColor(data, count, stride);
+    }
+    else
+        enforce(false, "glTF: unsupported EXT_meshopt_compression filter " ~ filter);
+}
+
+/// Decode one `EXT_meshopt_compression` bufferView into tightly packed bytes.
+private ubyte[] decodeMeshoptView(ref JSONValue ext, const(ubyte)[][] buffers) @trusted {
+    enforce("buffer" in ext.object && "byteLength" in ext.object && "byteStride" in ext.object
+            && "count" in ext.object && "mode" in ext.object,
+            "glTF: EXT_meshopt_compression is missing required fields");
+    immutable size_t bufIdx = cast(size_t) ext["buffer"].integer;
+    enforce(bufIdx < buffers.length, "glTF: meshopt buffer index OOB");
+    immutable size_t off = ("byteOffset" in ext.object) ? cast(size_t) ext["byteOffset"].integer : 0;
+    immutable size_t len = cast(size_t) ext["byteLength"].integer;
+    immutable size_t stride = cast(size_t) ext["byteStride"].integer;
+    immutable size_t count = cast(size_t) ext["count"].integer;
+    string mode = ext["mode"].str;
+    string filter = ("filter" in ext.object) ? ext["filter"].str : "NONE";
+    auto srcBuf = buffers[bufIdx];
+    enforce(off + len <= srcBuf.length, "glTF: meshopt block out of buffer bounds");
+    auto src = srcBuf[off .. off + len];
+    enforce(stride > 0 && count <= size_t.max / stride, "glTF: meshopt stride/count overflow");
+    ubyte[] dst = new ubyte[count * stride];
+    int rc = -1;
+    if (mode == "ATTRIBUTES") {
+        rc = decodeVertexBuffer(dst, count, stride, src);
+    } else if (mode == "TRIANGLES" || mode == "INDICES") {
+        enforce(stride == 2 || stride == 4, "glTF: meshopt index byteStride must be 2 or 4");
+        if (stride == 2) {
+            ushort[] idx = new ushort[count];
+            rc = mode == "TRIANGLES" ? decodeIndexBuffer(idx, src) : decodeIndexSequence(idx, src);
+            if (rc == 0)
+                dst = cast(ubyte[]) idx;
+        } else {
+            uint[] idx = new uint[count];
+            rc = mode == "TRIANGLES" ? decodeIndexBuffer(idx, src) : decodeIndexSequence(idx, src);
+            if (rc == 0)
+                dst = cast(ubyte[]) idx;
+        }
+    } else {
+        enforce(false, "glTF: unsupported EXT_meshopt_compression mode " ~ mode);
+    }
+    enforce(rc == 0, "glTF: EXT_meshopt_compression decode failed (code " ~ rc.to!string ~ ")");
+    applyMeshoptFilter(dst, count, stride, filter);
+    return dst;
+}
+
+private Mat4 nodeLocalMatrix(ref JSONValue node) @trusted {
+    if ("matrix" in node.object) {
+        auto arr = node["matrix"].array;
+        enforce(arr.length == 16, "glTF: node matrix must have 16 elements");
+        Mat4 m;
+        foreach (i; 0 .. 16)
+            m.m[i] = jsonFloat(arr[i]);
+        return m;
+    }
+    Vec3 t = Vec3(0, 0, 0);
+    Quat r = Quat.identity();
+    Vec3 s = Vec3(1, 1, 1);
+    if ("translation" in node.object) {
+        auto a = node["translation"].array;
+        if (a.length >= 3)
+            t = Vec3(jsonFloat(a[0]), jsonFloat(a[1]), jsonFloat(a[2]));
+    }
+    if ("rotation" in node.object) {
+        auto a = node["rotation"].array;
+        if (a.length >= 4)
+            r = Quat(jsonFloat(a[0]), jsonFloat(a[1]), jsonFloat(a[2]), jsonFloat(a[3]));
+    }
+    if ("scale" in node.object) {
+        auto a = node["scale"].array;
+        if (a.length >= 3)
+            s = Vec3(jsonFloat(a[0]), jsonFloat(a[1]), jsonFloat(a[2]));
+    }
+    // glTF: T * R * S.
+    return Mat4.translation(t.x, t.y, t.z) * r.toMat4() * Mat4.scaling(s.x, s.y, s.z);
+}
+
+/// World matrix of the first node that instances mesh 0, including parents.
+/// Identity when the file has no such node (the mesh is used as authored).
+private Mat4 meshNodeWorld(ref JSONValue root) @trusted {
+    if ("nodes" !in root)
+        return Mat4.identity;
+    auto nodes = root["nodes"].array;
+    if (nodes.length == 0)
+        return Mat4.identity;
+    int[] parent;
+    parent.length = nodes.length;
+    parent[] = -1;
+    int meshNode = -1;
+    foreach (i, ref n; nodes) {
+        if ("children" in n.object) {
+            foreach (c; n["children"].array) {
+                int ci = cast(int) c.integer;
+                if (ci >= 0 && ci < cast(int) parent.length)
+                    parent[ci] = cast(int) i;
+            }
+        }
+        if (meshNode < 0 && "mesh" in n.object && cast(int) n["mesh"].integer == 0)
+            meshNode = cast(int) i;
+    }
+    if (meshNode < 0)
+        return Mat4.identity;
+    int[] chain;
+    int guard = 0;
+    for (int i = meshNode; i >= 0 && guard < cast(int) nodes.length; i = parent[i], ++guard)
+        chain ~= i;
+    Mat4 world = Mat4.identity;
+    for (int k = cast(int) chain.length - 1; k >= 0; --k)
+        world = world * nodeLocalMatrix(nodes[chain[k]]);
+    return world;
+}
+
+private Vec3 transformNormal(Mat4 invWorld, Vec3 n) pure nothrow @nogc {
+    float x = invWorld.m[0] * n.x + invWorld.m[1] * n.y + invWorld.m[2] * n.z;
+    float y = invWorld.m[4] * n.x + invWorld.m[5] * n.y + invWorld.m[6] * n.z;
+    float z = invWorld.m[8] * n.x + invWorld.m[9] * n.y + invWorld.m[10] * n.z;
+    Vec3 r = Vec3(x, y, z);
+    float len2 = r.x * r.x + r.y * r.y + r.z * r.z;
+    if (len2 <= 0)
+        return Vec3(0, 1, 0);
+    float inv = 1.0f / sqrt(len2);
+    return Vec3(r.x * inv, r.y * inv, r.z * inv);
+}
+
 /// Parse a .gltf file and return its first primitive as CPU geometry.
 GltfMesh parseGltfMesh(string gltfPath) @trusted {
     auto text = cast(string) read(gltfPath);
@@ -283,10 +482,34 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         bufferData[i] = cast(const(ubyte)[]) read(buildPath(baseDir, uri));
     }
 
+    // Decode EXT_meshopt_compression before any accessor read. The decoded
+    // bytes replace that bufferView; accessor byteOffset is relative to them.
+    ubyte[][] meshoptViews;
+    meshoptViews.length = bufferViews.length;
+    foreach (vi, ref bv; bufferViews) {
+        if ("extensions" !in bv.object)
+            continue;
+        auto exts = bv["extensions"];
+        if ("EXT_meshopt_compression" !in exts.object)
+            continue;
+        meshoptViews[vi] = decodeMeshoptView(exts["EXT_meshopt_compression"], bufferData);
+    }
+
+    const(ubyte)[] viewBytes(int bvIndex, ref size_t baseOff) {
+        auto bv = bufferViews[bvIndex];
+        if (meshoptViews[bvIndex].length) {
+            baseOff = 0;
+            return meshoptViews[bvIndex];
+        }
+        immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
+        baseOff = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
+        return bufferData[bufIdx];
+    }
+
     float[] readFloatVec(int accessorIndex, uint expectedComponents) @trusted {
         auto acc = accessors[accessorIndex];
-        enforce(cast(uint) acc["componentType"].integer == CT_FLOAT,
-                "glTF: non-float vector accessor unsupported");
+        immutable uint ct = cast(uint) acc["componentType"].integer;
+        immutable bool normalized = jsonFlag(acc, "normalized");
         immutable string type = acc["type"].str;
         uint comps = 0;
         if (type == "VEC2") comps = 2;
@@ -297,16 +520,36 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         immutable size_t count = cast(size_t) acc["count"].integer;
         immutable int bvIndex  = cast(int) acc["bufferView"].integer;
         auto bv = bufferViews[bvIndex];
-        immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
-        immutable size_t offset = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
+        size_t baseOff;
+        auto src = viewBytes(bvIndex, baseOff);
         immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
-        immutable size_t totalOff = offset + accOff;
-        immutable size_t byteLen  = count * comps * float.sizeof;
-        auto src = bufferData[bufIdx];
-        enforce(totalOff + byteLen <= src.length, "glTF: accessor out of buffer bounds");
+        immutable size_t elem = componentSize(ct) * comps;
+        immutable size_t stride = ("byteStride" in bv.object) ? cast(size_t) bv["byteStride"].integer : elem;
+        enforce(stride >= elem, "glTF: byteStride smaller than the element");
+        immutable size_t totalOff = baseOff + accOff;
+        enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
+                "glTF: accessor out of buffer bounds");
         auto dst = new float[count * comps];
-        auto fSrc = cast(const(float)*) (src.ptr + totalOff);
-        foreach (i; 0 .. count * comps) dst[i] = fSrc[i];
+        if (ct == CT_FLOAT && stride == elem) {
+            auto fSrc = cast(const(float)*) (src.ptr + totalOff);
+            foreach (i; 0 .. count * comps) dst[i] = fSrc[i];
+            return dst;
+        }
+        foreach (v; 0 .. count) {
+            size_t at = totalOff + v * stride;
+            foreach (c; 0 .. comps) {
+                if (ct == CT_FLOAT) {
+                    uint bits = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
+                    import engine.meshopt.internal.bits : bitsFloat;
+                    dst[v * comps + c] = bitsFloat(bits);
+                    at += 4;
+                } else {
+                    int raw = readComponent(src, at, ct);
+                    dst[v * comps + c] = dequantizeComponent(raw, ct, normalized);
+                    at += componentSize(ct);
+                }
+            }
+        }
         return dst;
     }
 
@@ -318,24 +561,34 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         immutable size_t count = cast(size_t) acc["count"].integer;
         immutable int bvIndex  = cast(int) acc["bufferView"].integer;
         auto bv = bufferViews[bvIndex];
-        immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
-        immutable size_t offset = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
+        size_t baseOff;
+        auto src = viewBytes(bvIndex, baseOff);
         immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
-        immutable size_t totalOff = offset + accOff;
-        auto src = bufferData[bufIdx];
+        immutable size_t elem = componentSize(ct);
+        immutable size_t stride = ("byteStride" in bv.object && meshoptViews[bvIndex].length == 0)
+                ? cast(size_t) bv["byteStride"].integer : elem;
+        immutable size_t totalOff = baseOff + accOff;
+        enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
+                "glTF: index accessor out of buffer bounds");
         auto dst = new ushort[count];
-        if (ct == CT_USHORT) {
+        if (ct == CT_USHORT && stride == 2) {
             auto p = cast(const(ushort)*) (src.ptr + totalOff);
             foreach (i; 0 .. count) dst[i] = p[i];
-        } else if (ct == CT_UINT) {
+        } else if (ct == CT_UINT && stride == 4) {
             auto p = cast(const(uint)*) (src.ptr + totalOff);
             foreach (i; 0 .. count) {
                 enforce(p[i] <= 65535, "glTF: u32 index exceeds ushort range");
                 dst[i] = cast(ushort) p[i];
             }
-        } else if (ct == CT_UBYTE) {
+        } else if (ct == CT_UBYTE && stride == 1) {
             auto p = cast(const(ubyte)*) (src.ptr + totalOff);
             foreach (i; 0 .. count) dst[i] = p[i];
+        } else if (ct == CT_USHORT || ct == CT_UINT || ct == CT_UBYTE) {
+            foreach (i; 0 .. count) {
+                int raw = readComponent(src, totalOff + i * stride, ct);
+                enforce(raw >= 0 && raw <= 65535, "glTF: u32 index exceeds ushort range");
+                dst[i] = cast(ushort) raw;
+            }
         } else {
             enforce(false, "glTF: unsupported index component type");
         }
@@ -370,6 +623,112 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         }
         out_.vertices[i] = v;
     }
+    Mat4 world = meshNodeWorld(root);
+    Mat4 ident = Mat4.identity;
+    bool hasXform = world.m != ident.m;
+    if (hasXform) {
+        Mat4 inv = world.inverse();
+        foreach (ref v; out_.vertices) {
+            Vec4 p = world * Vec4(v.pos[0], v.pos[1], v.pos[2], 1);
+            v.pos = [p.x, p.y, p.z];
+            if (normals.length) {
+                Vec3 n = transformNormal(inv, Vec3(v.normal[0], v.normal[1], v.normal[2]));
+                v.normal = [n.x, n.y, n.z];
+            }
+        }
+    }
     out_.indices = readIndices(idxAcc);
     return out_;
+}
+
+@trusted unittest {
+    import std.file : mkdirRecurse, write, rmdirRecurse;
+    import std.path : buildPath;
+
+    // Three positions, triangle 0,1,2. Vertex codec v1 level 2, index codec v1.
+    float[9] pos = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+    float[9] nrm = [0, 0, 1, 0, 0, 1, 0, 0, 1];
+    ubyte[] posBytes = new ubyte[9 * 4];
+    ubyte[] nrmBytes = new ubyte[9 * 4];
+    foreach (i; 0 .. 9) {
+        import engine.meshopt.internal.bits : floatBits;
+        uint pb = floatBits(pos[i]);
+        uint nb = floatBits(nrm[i]);
+        foreach (b; 0 .. 4) {
+            posBytes[i * 4 + b] = cast(ubyte)(pb >> (8 * b));
+            nrmBytes[i * 4 + b] = cast(ubyte)(nb >> (8 * b));
+        }
+    }
+    ubyte[] penc = new ubyte[encodeVertexBufferBound(3, 12)];
+    ubyte[] nenc = new ubyte[encodeVertexBufferBound(3, 12)];
+    size_t pn = encodeVertexBuffer(penc, posBytes, 3, 12);
+    size_t nn = encodeVertexBuffer(nenc, nrmBytes, 3, 12);
+    uint[3] idx = [0, 1, 2];
+    ubyte[] ienc = new ubyte[encodeIndexBufferBound(3, 3)];
+    size_t in_ = encodeIndexBuffer(ienc, idx[], 1);
+    ubyte[] bin;
+    bin ~= penc[0 .. pn];
+    size_t nOff = bin.length;
+    bin ~= nenc[0 .. nn];
+    size_t iOff = bin.length;
+    bin ~= ienc[0 .. in_];
+
+    string dir = "/tmp/meshopt-gltf-m7";
+    mkdirRecurse(dir);
+    write(buildPath(dir, "mesh.bin"), bin);
+    string gltf = `{
+      "asset":{"version":"2.0"},
+      "extensionsUsed":["EXT_meshopt_compression","KHR_mesh_quantization"],
+      "buffers":[{"uri":"mesh.bin","byteLength":` ~ bin.length.to!string ~ `}],
+      "bufferViews":[
+        {"buffer":0,"byteOffset":0,"byteLength":4,"extensions":{"EXT_meshopt_compression":{"buffer":0,"byteOffset":0,"byteLength":` ~ pn.to!string ~ `,"byteStride":12,"count":3,"mode":"ATTRIBUTES","filter":"NONE"}}},
+        {"buffer":0,"byteOffset":0,"byteLength":4,"extensions":{"EXT_meshopt_compression":{"buffer":0,"byteOffset":` ~ nOff.to!string ~ `,"byteLength":` ~ nn.to!string ~ `,"byteStride":12,"count":3,"mode":"ATTRIBUTES","filter":"NONE"}}},
+        {"buffer":0,"byteOffset":0,"byteLength":4,"extensions":{"EXT_meshopt_compression":{"buffer":0,"byteOffset":` ~ iOff.to!string ~ `,"byteLength":` ~ in_.to!string ~ `,"byteStride":4,"count":3,"mode":"TRIANGLES","filter":"NONE"}}}
+      ],
+      "accessors":[
+        {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+        {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+        {"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}
+      ],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]}],
+      "nodes":[{"mesh":0,"translation":[10,20,30],"scale":[2,2,2]}]
+    }`;
+    write(buildPath(dir, "mesh.gltf"), gltf);
+    auto mesh = parseGltfMesh(buildPath(dir, "mesh.gltf"));
+    assert(mesh.indices == [0, 1, 2]);
+    assert(mesh.vertices.length == 3);
+    // T * S on (0,0,0), (1,0,0), (0,1,0) → (10,20,30), (12,20,30), (10,22,30)
+    assert(mesh.vertices[0].pos[0] > 9.9f && mesh.vertices[0].pos[0] < 10.1f);
+    assert(mesh.vertices[1].pos[0] > 11.9f && mesh.vertices[1].pos[0] < 12.1f);
+    assert(mesh.vertices[2].pos[1] > 21.9f && mesh.vertices[2].pos[1] < 22.1f);
+    assert(mesh.vertices[0].normal[2] > 0.9f);
+
+    // KHR_mesh_quantization: ushort positions normalized, node scale bakes them back.
+    ushort[9] qpos = [0, 0, 0, 65535, 0, 0, 0, 65535, 0];
+    ubyte[] qbin = cast(ubyte[]) qpos.dup;
+    ushort[3] qidx = [0, 1, 2];
+    qbin ~= cast(ubyte[]) qidx.dup;
+    write(buildPath(dir, "q.bin"), qbin);
+    string qgltf = `{
+      "asset":{"version":"2.0"},
+      "extensionsUsed":["KHR_mesh_quantization"],
+      "buffers":[{"uri":"q.bin","byteLength":` ~ qbin.length.to!string ~ `}],
+      "bufferViews":[
+        {"buffer":0,"byteOffset":0,"byteLength":18},
+        {"buffer":0,"byteOffset":18,"byteLength":6}
+      ],
+      "accessors":[
+        {"bufferView":0,"componentType":5123,"normalized":true,"count":3,"type":"VEC3"},
+        {"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}
+      ],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+      "nodes":[{"mesh":0,"translation":[10,20,30],"scale":[2,2,2]}]
+    }`;
+    write(buildPath(dir, "q.gltf"), qgltf);
+    auto qmesh = parseGltfMesh(buildPath(dir, "q.gltf"));
+    assert(qmesh.indices == [0, 1, 2]);
+    assert(qmesh.vertices[0].pos[0] > 9.9f && qmesh.vertices[0].pos[0] < 10.1f);
+    assert(qmesh.vertices[1].pos[0] > 11.9f && qmesh.vertices[1].pos[0] < 12.1f);
+    assert(qmesh.vertices[2].pos[1] > 21.9f && qmesh.vertices[2].pos[1] < 22.1f);
+    rmdirRecurse(dir);
 }
