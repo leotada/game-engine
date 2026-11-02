@@ -2,6 +2,8 @@
 /// Real symbols are compiled only with `-version=MeshoptOracle`.
 module meshopt_oracle_capi;
 
+import engine.meshopt.types : CoverageStatistics, OverdrawStatistics, VertexCacheStatistics, VertexFetchStatistics;
+
 /// C layout of `meshopt_Stream` (pointer, not the engine's `ulong` address).
 struct RefStream {
     const(void)* data;
@@ -41,6 +43,21 @@ extern (C) nothrow @nogc {
     void meshopt_generateAdjacencyIndexBuffer(uint* destination, const(uint)* indices, size_t indexCount, const(float)* positions, size_t vertexCount, size_t positionStride);
     void meshopt_generateTessellationIndexBuffer(uint* destination, const(uint)* indices, size_t indexCount, const(float)* positions, size_t vertexCount, size_t positionStride);
     size_t meshopt_generateProvokingIndexBuffer(uint* destination, uint* reorder, const(uint)* indices, size_t indexCount, size_t vertexCount);
+
+    void meshopt_optimizeVertexCache(uint* destination, const(uint)* indices, size_t indexCount, size_t vertexCount);
+    void meshopt_optimizeVertexCacheStrip(uint* destination, const(uint)* indices, size_t indexCount, size_t vertexCount);
+    void meshopt_optimizeVertexCacheFifo(uint* destination, const(uint)* indices, size_t indexCount, size_t vertexCount, uint cacheSize);
+    void meshopt_optimizeOverdraw(uint* destination, const(uint)* indices, size_t indexCount, const(float)* positions, size_t vertexCount, size_t positionStride, float threshold);
+    size_t meshopt_optimizeVertexFetch(void* destination, uint* indices, size_t indexCount, const(void)* vertices, size_t vertexCount, size_t vertexSize);
+    size_t meshopt_optimizeVertexFetchRemap(uint* destination, const(uint)* indices, size_t indexCount, size_t vertexCount);
+    VertexCacheStatistics meshopt_analyzeVertexCache(const(uint)* indices, size_t indexCount, size_t vertexCount, uint cacheSize, uint warpSize, uint primGroupSize);
+    VertexFetchStatistics meshopt_analyzeVertexFetch(const(uint)* indices, size_t indexCount, size_t vertexCount, size_t vertexSize);
+    OverdrawStatistics meshopt_analyzeOverdraw(const(uint)* indices, size_t indexCount, const(float)* positions, size_t vertexCount, size_t positionStride);
+    CoverageStatistics meshopt_analyzeCoverage(const(uint)* indices, size_t indexCount, const(float)* positions, size_t vertexCount, size_t positionStride);
+    size_t meshopt_stripify(uint* destination, const(uint)* indices, size_t indexCount, size_t vertexCount, uint restartIndex);
+    size_t meshopt_stripifyBound(size_t indexCount);
+    size_t meshopt_unstripify(uint* destination, const(uint)* indices, size_t indexCount, uint restartIndex);
+    size_t meshopt_unstripifyBound(size_t indexCount);
 }
 
 version (MeshoptOracle) {
@@ -134,6 +151,57 @@ void refGenerateTessellationIndexBuffer(scope uint[] destination, scope const(ui
 
 size_t refGenerateProvokingIndexBuffer(scope uint[] destination, scope uint[] reorder, scope const(uint)[] indices, size_t vertexCount) nothrow @nogc @trusted {
     return meshopt_generateProvokingIndexBuffer(destination.ptr, reorder.ptr, indices.ptr, indices.length, vertexCount);
+}
+
+void refOptimizeVertexCache(scope uint[] destination, scope const(uint)[] indices, size_t vertexCount) nothrow @nogc @trusted {
+    meshopt_optimizeVertexCache(destination.ptr, indices.ptr, indices.length, vertexCount);
+}
+
+void refOptimizeVertexCacheStrip(scope uint[] destination, scope const(uint)[] indices, size_t vertexCount) nothrow @nogc @trusted {
+    meshopt_optimizeVertexCacheStrip(destination.ptr, indices.ptr, indices.length, vertexCount);
+}
+
+void refOptimizeVertexCacheFifo(scope uint[] destination, scope const(uint)[] indices, size_t vertexCount, uint cacheSize) nothrow @nogc @trusted {
+    meshopt_optimizeVertexCacheFifo(destination.ptr, indices.ptr, indices.length, vertexCount, cacheSize);
+}
+
+void refOptimizeOverdraw(scope uint[] destination, scope const(uint)[] indices, scope const(float)[] positions, size_t vertexCount, size_t positionStride, float threshold) nothrow @nogc @trusted {
+    const(float)* pp = positions.length ? positions.ptr : null;
+    meshopt_optimizeOverdraw(destination.ptr, indices.ptr, indices.length, pp, vertexCount, positionStride, threshold);
+}
+
+size_t refOptimizeVertexFetch(scope ubyte[] destination, scope uint[] indices, scope const(ubyte)[] vertices, size_t vertexCount, size_t vertexSize) nothrow @nogc @trusted {
+    return meshopt_optimizeVertexFetch(destination.ptr, indices.ptr, indices.length, vertices.ptr, vertexCount, vertexSize);
+}
+
+size_t refOptimizeVertexFetchRemap(scope uint[] destination, scope const(uint)[] indices, size_t vertexCount) nothrow @nogc @trusted {
+    return meshopt_optimizeVertexFetchRemap(destination.ptr, indices.ptr, indices.length, vertexCount);
+}
+
+VertexCacheStatistics refAnalyzeVertexCache(scope const(uint)[] indices, size_t vertexCount, uint cacheSize, uint warpSize, uint primGroupSize) nothrow @nogc @trusted {
+    return meshopt_analyzeVertexCache(indices.ptr, indices.length, vertexCount, cacheSize, warpSize, primGroupSize);
+}
+
+VertexFetchStatistics refAnalyzeVertexFetch(scope const(uint)[] indices, size_t vertexCount, size_t vertexSize) nothrow @nogc @trusted {
+    return meshopt_analyzeVertexFetch(indices.ptr, indices.length, vertexCount, vertexSize);
+}
+
+OverdrawStatistics refAnalyzeOverdraw(scope const(uint)[] indices, scope const(float)[] positions, size_t vertexCount, size_t positionStride) nothrow @nogc @trusted {
+    const(float)* pp = positions.length ? positions.ptr : null;
+    return meshopt_analyzeOverdraw(indices.ptr, indices.length, pp, vertexCount, positionStride);
+}
+
+CoverageStatistics refAnalyzeCoverage(scope const(uint)[] indices, scope const(float)[] positions, size_t vertexCount, size_t positionStride) nothrow @nogc @trusted {
+    const(float)* pp = positions.length ? positions.ptr : null;
+    return meshopt_analyzeCoverage(indices.ptr, indices.length, pp, vertexCount, positionStride);
+}
+
+size_t refStripify(scope uint[] destination, scope const(uint)[] indices, size_t vertexCount, uint restartIndex) nothrow @nogc @trusted {
+    return meshopt_stripify(destination.ptr, indices.ptr, indices.length, vertexCount, restartIndex);
+}
+
+size_t refUnstripify(scope uint[] destination, scope const(uint)[] indices, uint restartIndex) nothrow @nogc @trusted {
+    return meshopt_unstripify(destination.ptr, indices.ptr, indices.length, restartIndex);
 }
 } else {
 ushort refQuantizeHalf(float) nothrow @nogc {

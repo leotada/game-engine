@@ -749,9 +749,9 @@ Update this section at the end of every phase.
 | Phase | Commit | Date | Golden equivalence | LDC ratio (geomean) | Notes |
 |:---|:---|:---|:---|:---|:---|
 | M0 | — | 2026-11-02 | quantize* bit-exact on committed goldens (exhaustive `quantizeHalf` is `version(MeshoptExhaustive)` only) | D-only table in `meshopt-bench` (C++ column with `-version=MeshoptOracle`) | Upstream commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (tag v1.3, `MESHOPTIMIZER_VERSION 1030`). Header is 1724 lines (`wc -l`). No scanned mesh. `encode*Version` setters are not ported. `dub test --config=library` is green on DMD. A full LDC library link fails on the prebuilt DMD `libsymgc-cards.a` (`__dmd_personality_v0`); the M0 unittests themselves pass under ldc2. |
-| M1 | — | 2026-11-02 | byte-exact on committed goldens (corpus + odd stride); live `diff --random=10000` matches the C++ oracle | D-only rows in `meshopt-bench` (C++ column is G1) | `indexgenerator.cpp` is 825 lines. `generateVertexRemapCustom` is a template alias predicate (`meshoptPositionsEqual` when the C callback is null). Empty index slices are the unindexed case. `dub test --config=library` is green on DMD. |
-| M2 | — | — | — | — | |
-| G1 | — | — | — | — | Decision: _pending_ |
+| M1 | 5b79f97 | 2026-11-02 | byte-exact on committed goldens (corpus + odd stride); live `diff --random=10000` matches the C++ oracle | see G1 | `indexgenerator.cpp` is 825 lines. `generateVertexRemapCustom` is a template alias predicate (`meshoptPositionsEqual` when the C callback is null). Empty index slices are the unindexed case. `dub test --config=library` is green on DMD. |
+| M2 | — | 2026-11-02 | byte-exact on committed goldens; live `diff --random=32` (raster on corpus + 8 random) matches the C++ oracle | see G1 | `vcacheoptimizer.cpp` 467, `overdrawoptimizer.cpp` 333, `vfetchoptimizer.cpp` 71, `indexanalyzer.cpp` 125, `rasterizer.cpp` 289, `stripifier.cpp` 296. Upstream sorts only. `float` locals are zeroed explicitly (`float.init` is NaN). |
+| G1 | — | 2026-11-02 | 100% byte-exact | **1.10** LDC, 2.58 DMD (informational) | Decision: **continue**. Grid 64 (8192 tris), clang `-O2 -ffp-contract=off` vs LDC `-O3 -release -mcpu=native` / DMD `-O -release`. LDC ratios: remap 1.01, filter 0.91, shadow 0.89, adjacency 0.71, provoking 1.56, vcache 1.33, fifo 1.15, overdraw 1.25, vfetch 1.70, analyzeCache 1.41, analyzeOverdraw 0.70, stripify 1.10. Worst LDC is 1.70, so no profiling pass. `@trusted` markers are 26 / 2541 lines (1.02%) in the M1+M2 modules. |
 | M3 | — | — | — | — | Demo frame time before/after: |
 | M8 | — | — | — | — | Normal-map regression screenshots: |
 | M4a | — | — | — | — | |
@@ -783,7 +783,7 @@ Every public upstream function, with its target phase. ☐ = not started, ☑ = 
 
 **Indexing (M1)**: ☑ generateVertexRemap ☑ generateVertexRemapMulti ☑ generateVertexRemapCustom ☑ remapVertexBuffer ☑ remapIndexBuffer ☑ filterIndexBuffer ☑ filterIndexBufferMulti ☑ generateShadowIndexBuffer ☑ generateShadowIndexBufferMulti ☑ generatePositionRemap ☑ generateAdjacencyIndexBuffer ☑ generateTessellationIndexBuffer ☑ generateProvokingIndexBuffer
 
-**Optimization & analysis (M2)**: ☐ optimizeVertexCache ☐ optimizeVertexCacheStrip ☐ optimizeVertexCacheFifo ☐ optimizeOverdraw ☐ optimizeVertexFetch ☐ optimizeVertexFetchRemap ☐ analyzeVertexCache ☐ analyzeVertexFetch ☐ analyzeOverdraw ☐ analyzeCoverage ☐ stripify ☐ stripifyBound ☐ unstripify ☐ unstripifyBound
+**Optimization & analysis (M2)**: ☑ optimizeVertexCache ☑ optimizeVertexCacheStrip ☑ optimizeVertexCacheFifo ☑ optimizeOverdraw ☑ optimizeVertexFetch ☑ optimizeVertexFetchRemap ☑ analyzeVertexCache ☑ analyzeVertexFetch ☑ analyzeOverdraw ☑ analyzeCoverage ☑ stripify ☑ stripifyBound ☑ unstripify ☑ unstripifyBound
 
 **Simplification (M4)**: ☐ simplify ☐ simplifyWithAttributes ☐ simplifyWithUpdate ☐ simplifySloppy ☐ simplifyPrune ☐ simplifyPoints ☐ simplifyScale
 

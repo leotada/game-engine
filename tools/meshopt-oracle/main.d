@@ -15,13 +15,17 @@ int main(string[] args) @trusted {
     if (cmd == "generate") {
         generate();
         generateMesh();
+        generateOpt();
         return 0;
     }
     if (cmd == "diff") {
         int quant = diff();
         if (quant)
             return quant;
-        return diffMesh(randomCount(args));
+        int mesh = diffMesh(randomCount(args));
+        if (mesh)
+            return mesh;
+        return diffOpt(randomCount(args));
     }
     if (cmd == "exhaustive") {
         version (MeshoptExhaustive)
@@ -962,4 +966,306 @@ private RefStream refStream(scope const(float)[] data, size_t size, size_t strid
     s.size = size;
     s.stride = stride;
     return s;
+}
+
+private int diffOpt(int randomN) @trusted {
+    import engine.meshopt.analyze;
+    import engine.meshopt.overdraw;
+    import engine.meshopt.stripify;
+    import engine.meshopt.types : FloatStream;
+    import engine.meshopt.vcache;
+    import engine.meshopt.vfetch;
+
+    meshMisses = 0;
+    void one(MeshCase c, bool raster) {
+        if (c.idx.length == 0 || c.idx.length % 3 != 0)
+            return;
+        diffOptCase(c, raster);
+    }
+    eachCorpus!(c => one(c, true));
+    uint seed = 99;
+    foreach (n; 0 .. randomN) {
+        if (meshMisses > 8)
+            break;
+        uint vc = 3 + rnd(seed) % 24;
+        uint tc = 1 + rnd(seed) % 16;
+        float[] pos = new float[vc * 3];
+        foreach (ref p; pos)
+            p = (cast(int)(rnd(seed) % 400) - 200) * 0.1f;
+        uint[] idx = new uint[tc * 3];
+        foreach (ref id; idx)
+            id = rnd(seed) % vc;
+        one(MeshCase(formatRand(n), pos, null, idx), n < 8);
+    }
+    if (meshMisses) {
+        writefln("diff: %s optimizer mismatches", meshMisses);
+        return 1;
+    }
+    writeln("diff: M2 optimizers match the C++ oracle");
+    return 0;
+}
+
+private void diffOptCase(MeshCase c, bool raster) {
+    import engine.meshopt.analyze;
+    import engine.meshopt.overdraw;
+    import engine.meshopt.stripify;
+    import engine.meshopt.types : CoverageStatistics, FloatStream, OverdrawStatistics, VertexCacheStatistics, VertexFetchStatistics;
+    import engine.meshopt.vcache;
+    import engine.meshopt.vfetch;
+
+    string tag = c.name;
+    size_t vc = c.pos.length / 3;
+    uint[] idx = c.idx.dup;
+    uint[] d = new uint[idx.length];
+    uint[] r = new uint[idx.length];
+    optimizeVertexCache(d, idx, vc);
+    refOptimizeVertexCache(r, idx, vc);
+    if (d != r)
+        meshMiss("optimizeVertexCache " ~ tag);
+    d[] = 0;
+    r[] = 0;
+    optimizeVertexCacheStrip(d, idx, vc);
+    refOptimizeVertexCacheStrip(r, idx, vc);
+    if (d != r)
+        meshMiss("optimizeVertexCacheStrip " ~ tag);
+    optimizeVertexCacheFifo(d, idx, vc, 16);
+    refOptimizeVertexCacheFifo(r, idx, vc, 16);
+    if (d != r)
+        meshMiss("optimizeVertexCacheFifo " ~ tag);
+
+    if (vc > 0 && c.pos.length >= vc * 3) {
+        FloatStream fs;
+        fs.address = floatAddr(c.pos);
+        fs.strideFloats = 3;
+        fs.count = vc;
+        optimizeOverdraw(d, idx, fs, 1.05f);
+        refOptimizeOverdraw(r, idx, c.pos, vc, 12, 1.05f);
+        if (d != r)
+            meshMiss("optimizeOverdraw " ~ tag);
+    }
+
+    ubyte[] raw = floatBytes(c.pos);
+    ubyte[] dd = new ubyte[vc * 12];
+    ubyte[] rd = new ubyte[vc * 12];
+    uint[] di = idx.dup;
+    uint[] ri = idx.dup;
+    size_t dn = optimizeVertexFetch(dd, di, raw, vc, 12);
+    size_t rn = refOptimizeVertexFetch(rd, ri, raw, vc, 12);
+    if (dn != rn || di != ri || dd[0 .. dn * 12] != rd[0 .. rn * 12])
+        meshMiss("optimizeVertexFetch " ~ tag);
+    uint[] dmap = new uint[vc];
+    uint[] rmap = new uint[vc];
+    dn = optimizeVertexFetchRemap(dmap, idx, vc);
+    rn = refOptimizeVertexFetchRemap(rmap, idx, vc);
+    if (dn != rn || dmap != rmap)
+        meshMiss("optimizeVertexFetchRemap " ~ tag);
+
+    VertexCacheStatistics ds = analyzeVertexCache(idx, vc, 16, 0, 0);
+    VertexCacheStatistics rs = refAnalyzeVertexCache(idx, vc, 16, 0, 0);
+    if (!sameCache(ds, rs))
+        meshMiss("analyzeVertexCache " ~ tag);
+    ds = analyzeVertexCache(idx, vc, 16, 64, 128);
+    rs = refAnalyzeVertexCache(idx, vc, 16, 64, 128);
+    if (!sameCache(ds, rs))
+        meshMiss("analyzeVertexCache.warp " ~ tag);
+    VertexFetchStatistics df = analyzeVertexFetch(idx, vc, 12);
+    VertexFetchStatistics rf = refAnalyzeVertexFetch(idx, vc, 12);
+    if (df.bytesFetched != rf.bytesFetched || floatBits(df.overfetch) != floatBits(rf.overfetch))
+        meshMiss("analyzeVertexFetch " ~ tag);
+
+    if (raster && vc > 0) {
+        FloatStream fs;
+        fs.address = floatAddr(c.pos);
+        fs.strideFloats = 3;
+        fs.count = vc;
+        OverdrawStatistics od = analyzeOverdraw(idx, fs);
+        OverdrawStatistics or_ = refAnalyzeOverdraw(idx, c.pos, vc, 12);
+        if (od.pixelsCovered != or_.pixelsCovered || od.pixelsShaded != or_.pixelsShaded || floatBits(od.overdraw) != floatBits(or_.overdraw))
+            meshMiss("analyzeOverdraw " ~ tag);
+        CoverageStatistics cd = analyzeCoverage(idx, fs);
+        CoverageStatistics cr = refAnalyzeCoverage(idx, c.pos, vc, 12);
+        if (floatBits(cd.extent) != floatBits(cr.extent) || floatBits(cd.coverage[0]) != floatBits(cr.coverage[0])
+            || floatBits(cd.coverage[1]) != floatBits(cr.coverage[1]) || floatBits(cd.coverage[2]) != floatBits(cr.coverage[2]))
+            meshMiss("analyzeCoverage " ~ tag);
+    }
+
+    uint[2] restarts = [0, 0xffff];
+    foreach (restart; restarts) {
+        uint[] stripD = new uint[stripifyBound(idx.length)];
+        uint[] stripR = new uint[stripifyBound(idx.length)];
+        size_t sn = stripify(stripD, idx, vc, restart);
+        size_t rn2 = refStripify(stripR, idx, vc, restart);
+        if (sn != rn2 || stripD[0 .. sn] != stripR[0 .. rn2])
+            meshMiss("stripify " ~ tag);
+        uint[] du = new uint[unstripifyBound(sn == 0 ? 3 : sn)];
+        uint[] ru = new uint[unstripifyBound(rn2 == 0 ? 3 : rn2)];
+        if (sn >= 3 || sn == 0) {
+            size_t un = sn == 0 ? 0 : unstripify(du, stripD[0 .. sn], restart);
+            size_t urn = rn2 == 0 ? 0 : refUnstripify(ru, stripR[0 .. rn2], restart);
+            if (un != urn || du[0 .. un] != ru[0 .. urn])
+                meshMiss("unstripify " ~ tag);
+        }
+    }
+}
+
+private void generateOpt() @trusted {
+    eachCorpus!(c => writeOptCase(c));
+    writeln("wrote tests/meshopt/golden/<optimizer>/*.bin");
+}
+
+private void writeOptCase(MeshCase c) {
+    import engine.meshopt.analyze;
+    import engine.meshopt.overdraw;
+    import engine.meshopt.stripify;
+    import engine.meshopt.types : FloatStream;
+    import engine.meshopt.vcache;
+    import engine.meshopt.vfetch;
+
+    if (c.idx.length == 0 || c.idx.length % 3 != 0)
+        return;
+    size_t vc = c.pos.length / 3;
+    uint[] idx = c.idx;
+    uint[] out_ = new uint[idx.length];
+
+    refOptimizeVertexCache(out_, idx, vc);
+    writeIndexResult("optimizeVertexCache", c.name, vc, idx, out_);
+    refOptimizeVertexCacheStrip(out_, idx, vc);
+    writeIndexResult("optimizeVertexCacheStrip", c.name, vc, idx, out_);
+    refOptimizeVertexCacheFifo(out_, idx, vc, 16);
+    W wf;
+    wf.u32(cast(uint) vc);
+    wf.u32(cast(uint) idx.length);
+    wf.u32(16);
+    wf.u32s(idx);
+    wf.u32s(out_);
+    writeGolden("optimizeVertexCacheFifo", c.name, wf.b);
+
+    if (vc == 0)
+        return;
+    refOptimizeOverdraw(out_, idx, c.pos, vc, 12, 1.05f);
+    W wo;
+    wo.u32(cast(uint) vc);
+    wo.u32(cast(uint) idx.length);
+    wo.u32(3);
+    wo.u32(floatBits(1.05f));
+    wo.u32s(idx);
+    wo.f32s(c.pos);
+    wo.u32s(out_);
+    writeGolden("optimizeOverdraw", c.name, wo.b);
+
+    ubyte[] raw = floatBytes(c.pos);
+    ubyte[] dst = new ubyte[vc * 12];
+    uint[] rewritten = idx.dup;
+    size_t unique = refOptimizeVertexFetch(dst, rewritten, raw, vc, 12);
+    W wv;
+    wv.u32(cast(uint) vc);
+    wv.u32(12);
+    wv.u32(cast(uint) idx.length);
+    wv.u32(cast(uint) unique);
+    wv.u32s(idx);
+    wv.bytes(raw);
+    wv.u32s(rewritten);
+    wv.bytes(dst[0 .. unique * 12]);
+    writeGolden("optimizeVertexFetch", c.name, wv.b);
+
+    uint[] remap = new uint[vc];
+    unique = refOptimizeVertexFetchRemap(remap, idx, vc);
+    W wr;
+    wr.u32(cast(uint) vc);
+    wr.u32(cast(uint) idx.length);
+    wr.u32(cast(uint) unique);
+    wr.u32s(idx);
+    wr.u32s(remap);
+    writeGolden("optimizeVertexFetchRemap", c.name, wr.b);
+
+    auto cache = refAnalyzeVertexCache(idx, vc, 16, 0, 0);
+    writeCache("analyzeVertexCache", c.name, vc, idx, 16, 0, 0, cache);
+    cache = refAnalyzeVertexCache(idx, vc, 16, 64, 128);
+    writeCache("analyzeVertexCache", c.name ~ "_warp", vc, idx, 16, 64, 128, cache);
+    auto fetch = refAnalyzeVertexFetch(idx, vc, 12);
+    W wfetch;
+    wfetch.u32(cast(uint) vc);
+    wfetch.u32(cast(uint) idx.length);
+    wfetch.u32(12);
+    wfetch.u32s(idx);
+    wfetch.u32(fetch.bytesFetched);
+    wfetch.u32(floatBits(fetch.overfetch));
+    writeGolden("analyzeVertexFetch", c.name, wfetch.b);
+
+    auto over = refAnalyzeOverdraw(idx, c.pos, vc, 12);
+    W wov;
+    wov.u32(cast(uint) vc);
+    wov.u32(cast(uint) idx.length);
+    wov.u32(3);
+    wov.u32s(idx);
+    wov.f32s(c.pos);
+    wov.u32(over.pixelsCovered);
+    wov.u32(over.pixelsShaded);
+    wov.u32(floatBits(over.overdraw));
+    writeGolden("analyzeOverdraw", c.name, wov.b);
+    auto cov = refAnalyzeCoverage(idx, c.pos, vc, 12);
+    W wcov;
+    wcov.u32(cast(uint) vc);
+    wcov.u32(cast(uint) idx.length);
+    wcov.u32(3);
+    wcov.u32s(idx);
+    wcov.f32s(c.pos);
+    foreach (k; 0 .. 3)
+        wcov.u32(floatBits(cov.coverage[k]));
+    wcov.u32(floatBits(cov.extent));
+    writeGolden("analyzeCoverage", c.name, wcov.b);
+
+    foreach (restart; [0u, 0xffff]) {
+        uint[] strip = new uint[refStripifyBound(idx.length)];
+        size_t sn = refStripify(strip, idx, vc, restart);
+        uint[] tris = new uint[sn == 0 ? 0 : refUnstripifyBound(sn)];
+        size_t tn = sn == 0 ? 0 : refUnstripify(tris, strip[0 .. sn], restart);
+        W ws;
+        ws.u32(cast(uint) vc);
+        ws.u32(cast(uint) idx.length);
+        ws.u32(restart);
+        ws.u32(cast(uint) sn);
+        ws.u32(cast(uint) tn);
+        ws.u32s(idx);
+        ws.u32s(strip[0 .. sn]);
+        ws.u32s(tris[0 .. tn]);
+        writeGolden("stripify", c.name ~ (restart ? "_restart" : "_degen"), ws.b);
+    }
+}
+
+private size_t refStripifyBound(size_t indexCount) {
+    return (indexCount / 3) * 5;
+}
+
+private size_t refUnstripifyBound(size_t indexCount) {
+    return indexCount == 0 ? 0 : (indexCount - 2) * 3;
+}
+
+private void writeIndexResult(string name, string stem, size_t vc, const(uint)[] idx, const(uint)[] out_) {
+    W w;
+    w.u32(cast(uint) vc);
+    w.u32(cast(uint) idx.length);
+    w.u32s(idx);
+    w.u32s(out_);
+    writeGolden(name, stem, w.b);
+}
+
+private void writeCache(string name, string stem, size_t vc, const(uint)[] idx, uint cache, uint warp, uint prim, engine.meshopt.types.VertexCacheStatistics s) {
+    W w;
+    w.u32(cast(uint) vc);
+    w.u32(cast(uint) idx.length);
+    w.u32(cache);
+    w.u32(warp);
+    w.u32(prim);
+    w.u32s(idx);
+    w.u32(s.verticesTransformed);
+    w.u32(s.warpsExecuted);
+    w.u32(floatBits(s.acmr));
+    w.u32(floatBits(s.atvr));
+    writeGolden(name, stem, w.b);
+}
+
+private bool sameCache(engine.meshopt.types.VertexCacheStatistics a, engine.meshopt.types.VertexCacheStatistics b) {
+    return a.verticesTransformed == b.verticesTransformed && a.warpsExecuted == b.warpsExecuted
+        && floatBits(a.acmr) == floatBits(b.acmr) && floatBits(a.atvr) == floatBits(b.atvr);
 }

@@ -7,10 +7,15 @@
 ///       tools/benchmarks/meshopt_bench.d -L-L./libs -L-lmeshoptimizer_ref -L-lstdc++
 module meshopt_bench;
 
+import engine.meshopt.analyze;
 import engine.meshopt.corpus;
 import engine.meshopt.indexgen;
+import engine.meshopt.overdraw;
 import engine.meshopt.quantize;
+import engine.meshopt.stripify;
 import engine.meshopt.types : FloatStream;
+import engine.meshopt.vcache;
+import engine.meshopt.vfetch;
 
 import core.time : MonoTime;
 import std.stdio : writeln, writefln;
@@ -52,6 +57,8 @@ int main() {
     return 0;
 }
 
+private double[] ratios;
+
 private void timeIndex() {
     ProcMesh grid = makeGrid(64, 64);
     ubyte[] raw = floatBytes(grid.positions);
@@ -62,21 +69,89 @@ private void timeIndex() {
     uint[] adj = new uint[grid.indices.length * 2];
     uint[] prov = new uint[grid.indices.length];
     uint[] reorder = new uint[vc + grid.indices.length / 3];
+    uint[] cache = new uint[grid.indices.length];
+    uint[] fetched = grid.indices.dup;
+    uint[] fetchedSrc = grid.indices.dup;
+    ubyte[] fetchedVerts = new ubyte[vc * 12];
+    uint[] strip = new uint[stripifyBound(grid.indices.length)];
     FloatStream fs = floatsOf(grid.positions);
     enum reps = 4;
-    meshRow!({ sink += generateVertexRemap(remap, grid.indices, raw, 12); })("generateVertexRemap", reps);
-    meshRow!({ sink += filterIndexBuffer(filtered, grid.indices, raw, vc, 12, 12); })("filterIndexBuffer", reps);
-    meshRow!({ generateShadowIndexBuffer(shadow, grid.indices, raw, vc, 12, 12); sink += shadow[0]; })("generateShadowIndexBuffer", reps);
-    meshRow!({ generateAdjacencyIndexBuffer(adj, grid.indices, fs); sink += adj[0]; })("generateAdjacencyIndexBuffer", reps);
-    meshRow!({ sink += generateProvokingIndexBuffer(prov, reorder, grid.indices, vc); })("generateProvokingIndexBuffer", reps);
+    timeOne("generateVertexRemap", reps,
+        { sink += generateVertexRemap(remap, grid.indices, raw, 12); },
+        { version (MeshoptOracle) sink += refGenerateVertexRemap(remap, grid.indices, raw, vc, 12); });
+    timeOne("filterIndexBuffer", reps,
+        { sink += filterIndexBuffer(filtered, grid.indices, raw, vc, 12, 12); },
+        { version (MeshoptOracle) sink += refFilterIndexBuffer(filtered, grid.indices, raw, vc, 12, 12); });
+    timeOne("generateShadowIndexBuffer", reps,
+        { generateShadowIndexBuffer(shadow, grid.indices, raw, vc, 12, 12); sink += shadow[0]; },
+        { version (MeshoptOracle) { refGenerateShadowIndexBuffer(shadow, grid.indices, raw, vc, 12, 12); sink += shadow[0]; } });
+    timeOne("generateAdjacencyIndexBuffer", reps,
+        { generateAdjacencyIndexBuffer(adj, grid.indices, fs); sink += adj[0]; },
+        { version (MeshoptOracle) { refGenerateAdjacencyIndexBuffer(adj, grid.indices, grid.positions, vc, 12); sink += adj[0]; } });
+    timeOne("generateProvokingIndexBuffer", reps,
+        { sink += generateProvokingIndexBuffer(prov, reorder, grid.indices, vc); },
+        { version (MeshoptOracle) sink += refGenerateProvokingIndexBuffer(prov, reorder, grid.indices, vc); });
+    timeOne("optimizeVertexCache", reps,
+        { optimizeVertexCache(cache, grid.indices, vc); sink += cache[0]; },
+        { version (MeshoptOracle) { refOptimizeVertexCache(cache, grid.indices, vc); sink += cache[0]; } });
+    timeOne("optimizeVertexCacheFifo", reps,
+        { optimizeVertexCacheFifo(cache, grid.indices, vc, 16); sink += cache[0]; },
+        { version (MeshoptOracle) { refOptimizeVertexCacheFifo(cache, grid.indices, vc, 16); sink += cache[0]; } });
+    timeOne("optimizeOverdraw", reps,
+        { optimizeOverdraw(cache, grid.indices, fs, 1.05f); sink += cache[0]; },
+        { version (MeshoptOracle) { refOptimizeOverdraw(cache, grid.indices, grid.positions, vc, 12, 1.05f); sink += cache[0]; } });
+    timeOne("optimizeVertexFetch", reps,
+        { fetched[] = fetchedSrc[]; sink += optimizeVertexFetch(fetchedVerts, fetched, raw, vc, 12); },
+        { version (MeshoptOracle) { fetched[] = fetchedSrc[]; sink += refOptimizeVertexFetch(fetchedVerts, fetched, raw, vc, 12); } });
+    timeOne("analyzeVertexCache", reps,
+        { sink += analyzeVertexCache(grid.indices, vc).verticesTransformed; },
+        { version (MeshoptOracle) sink += refAnalyzeVertexCache(grid.indices, vc, 16, 0, 0).verticesTransformed; });
+    timeOne("analyzeOverdraw", 2,
+        { sink += analyzeOverdraw(grid.indices, fs).pixelsShaded; },
+        { version (MeshoptOracle) sink += refAnalyzeOverdraw(grid.indices, grid.positions, vc, 12).pixelsShaded; });
+    timeOne("stripify", reps,
+        { sink += stripify(strip, grid.indices, vc, 0); },
+        { version (MeshoptOracle) sink += refStripify(strip, grid.indices, vc, 0); });
+    version (MeshoptOracle) {
+        if (ratios.length) {
+            double logSum = 0;
+            foreach (r; ratios)
+                logSum += libmLog(r);
+            double geo = libmExp(logSum / ratios.length);
+            writefln("| geomean | grid 64 |  |  | %.2f |", geo);
+        }
+    }
 }
 
-private void meshRow(alias fn)(string name, int reps) {
-    fn();
+private double libmLog(double x) @trusted {
+    import core.stdc.math : log;
+    return log(x);
+}
+
+private double libmExp(double x) @trusted {
+    import core.stdc.math : exp;
+    return exp(x);
+}
+
+private void timeOne(string name, int reps, void delegate() @system dFun, void delegate() @system cFun = null) @trusted {
+    dFun();
     auto t0 = MonoTime.currTime;
     foreach (_; 0 .. reps)
-        fn();
+        dFun();
     double dms = (MonoTime.currTime - t0).total!"usecs" / 1000.0 / reps;
+    version (MeshoptOracle) {
+        if (cFun !is null) {
+            cFun();
+            auto t1 = MonoTime.currTime;
+            foreach (_; 0 .. reps)
+                cFun();
+            double cms = (MonoTime.currTime - t1).total!"usecs" / 1000.0 / reps;
+            double ratio = cms == 0 ? 0 : dms / cms;
+            ratios ~= ratio;
+            writefln("| `%s` | grid 64 | %.3f | %.3f | %.2f |", name, cms, dms, ratio);
+            return;
+        }
+    }
     version (MeshoptOracle)
         writefln("| `%s` | grid 64 |  | %.3f |  |", name, dms);
     else
