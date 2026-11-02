@@ -4,7 +4,7 @@ module engine.graphics.texmesh;
 import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
-import engine.graphics.types : TexVert;
+import engine.graphics.types : TexTanVert, TexVert;
 
 @safe:
 
@@ -35,6 +35,16 @@ struct TexMesh {
         return upload!TexVert(gpu, verts, indices, shadowIndices);
     }
 
+    /// `TexTanVert` upload. Stride is 48. `uint` indices narrow when every index fits in 65535.
+    static TexMesh fromData(I)(ref GpuContext gpu, const(TexTanVert)[] verts, const(I)[] indices, const(I)[] shadowIndices = null)
+    if (is(I == ushort) || is(I == uint)) {
+        static if (is(I == uint)) {
+            if (indicesFitU16(indices) && indicesFitU16(shadowIndices))
+                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices));
+        }
+        return upload!TexTanVert(gpu, verts, indices, shadowIndices);
+    }
+
     /// Textured unit cube with per-face UVs (0..1 on each face).
     static TexMesh cube(ref GpuContext gpu) {
         return fromData(gpu, texCubeVertices[], texCubeIndices[]);
@@ -48,7 +58,8 @@ struct TexMesh {
 
     /// UV sphere of radius 0.5 centered at origin (unit diameter).
     /// `segments` = longitude subdivisions, `rings` = latitude subdivisions.
-    static TexMesh sphere(ref GpuContext gpu, uint segments = 32, uint rings = 16) {
+    /// `withTangents` builds a `TexTanVert` sphere for normal-mapped draws.
+    static TexMesh sphere(ref GpuContext gpu, uint segments = 32, uint rings = 16, bool withTangents = false) {
         import std.math : sin, cos, PI;
         assert(segments >= 3 && rings >= 2);
 
@@ -85,7 +96,9 @@ struct TexMesh {
                 indices[ii++] = b;
             }
         }
-        return fromData(gpu, verts, indices);
+        if (!withTangents)
+            return fromData(gpu, verts, indices);
+        return uploadSphereTangents(gpu, verts, indices);
     }
 
     /// Index buffer the shadow pass binds. The color pass keeps `indexBuffer`.
@@ -106,6 +119,34 @@ struct TexMesh {
         indexBuffer = null;
         shadowIndexBuffer = null;
     }
+}
+
+private TexMesh uploadSphereTangents(ref GpuContext gpu, TexVert[] verts, ushort[] indices) {
+    import engine.meshopt.pipeline : optimizeMesh;
+    import engine.meshopt.tangent : generateTangents;
+    import engine.meshopt.types : FloatStream, TangentOptions, positionsOf;
+
+    uint[] idx = new uint[indices.length];
+    foreach (i, v; indices)
+        idx[i] = v;
+    float[4][] corners = new float[4][](idx.length);
+    FloatStream uvs;
+    uvs.strideFloats = TexVert.sizeof / 4;
+    uvs.count = verts.length;
+    uvs.address = () @trusted {
+        return verts.length ? cast(ulong)(cast(ubyte*) verts.ptr + TexVert.uv.offsetof) : 0;
+    }();
+    generateTangents(corners, idx, positionsOf!TexVert(verts), positionsOf!(TexVert, "normal")(verts), uvs, TangentOptions.compatible);
+    TexTanVert[] expanded = new TexTanVert[idx.length];
+    foreach (i, id; idx) {
+        expanded[i].pos = verts[id].pos;
+        expanded[i].normal = verts[id].normal;
+        expanded[i].uv = verts[id].uv;
+        expanded[i].tangent = corners[i];
+        idx[i] = cast(uint) i;
+    }
+    auto opt = optimizeMesh(expanded, idx);
+    return TexMesh.fromData(gpu, opt.vertices, opt.indices, opt.shadowIndices);
 }
 
 private bool indicesFitU16(scope const(uint)[] indices) pure nothrow @nogc {

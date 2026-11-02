@@ -752,8 +752,8 @@ Update this section at the end of every phase.
 | M1 | 5b79f97 | 2026-11-02 | byte-exact on committed goldens (corpus + odd stride); live `diff --random=10000` matches the C++ oracle | see G1 | `indexgenerator.cpp` is 825 lines. `generateVertexRemapCustom` is a template alias predicate (`meshoptPositionsEqual` when the C callback is null). Empty index slices are the unindexed case. `dub test --config=library` is green on DMD. |
 | M2 | — | 2026-11-02 | byte-exact on committed goldens; live `diff --random=32` (raster on corpus + 8 random) matches the C++ oracle | see G1 | `vcacheoptimizer.cpp` 467, `overdrawoptimizer.cpp` 333, `vfetchoptimizer.cpp` 71, `indexanalyzer.cpp` 125, `rasterizer.cpp` 289, `stripifier.cpp` 296. Upstream sorts only. `float` locals are zeroed explicitly (`float.init` is NaN). |
 | G1 | — | 2026-11-02 | 100% byte-exact | **1.10** LDC, 2.58 DMD (informational) | Decision: **continue**. Grid 64 (8192 tris), clang `-O2 -ffp-contract=off` vs LDC `-O3 -release -mcpu=native` / DMD `-O -release`. LDC ratios: remap 1.01, filter 0.91, shadow 0.89, adjacency 0.71, provoking 1.56, vcache 1.33, fifo 1.15, overdraw 1.25, vfetch 1.70, analyzeCache 1.41, analyzeOverdraw 0.70, stripify 1.10. Worst LDC is 1.70, so no profiling pass. `@trusted` markers are 26 / 2541 lines (1.02%) in the M1+M2 modules. |
-| M3 | — | 2026-11-02 | M1/M2 goldens unchanged | — | `optimizeMesh` runs at glTF import when `.meta` has no `settings.meshopt` key (explicit `enabled: false` skips it). `uint` indices narrow to `ushort` when every index fits in 65535. Shadow index buffer is bound by both shadow draws. Color draws use the mesh index format and byte size. Editor inspector skipped: the Inspector edits entity Visual kinds, not model-asset `.meta`. Headless editor `--headless-frames=600 --assert-no-gc` passed (0 GC bytes). Demo frame time not measured. |
-| M8 | — | — | — | — | Normal-map regression screenshots: |
+| M3 | d430fca | 2026-11-02 | M1/M2 goldens unchanged | — | `optimizeMesh` runs at glTF import when `.meta` has no `settings.meshopt` key (explicit `enabled: false` skips it). `uint` indices narrow to `ushort` when every index fits in 65535. Shadow index buffer is bound by both shadow draws. Color draws use the mesh index format and byte size. Editor inspector skipped: the Inspector edits entity Visual kinds, not model-asset `.meta`. Headless editor `--headless-frames=600 --assert-no-gc` passed (0 GC bytes). Demo frame time not measured. |
+| M8 | — | 2026-11-02 | byte-exact vs clang `-O2 -ffp-contract=off` (`generateTangents` 44 cases, `generateNormals` 18) | — | `TexTanVert` stride 48, shader `@location(8)`, bitangent `cross(N, T) * tangent.w`. Fixed-axis fallback stays on the no-tangent variant only. glTF reads `TANGENT` or generates with `compatible` when a normal map is present, then reindexes. `TexMesh.sphere(..., withTangents: true)` uses the same path. Screenshot not taken. Handedness covered by a CPU unittest (mirrored-UV quad). |
 | M4a | — | — | — | — | |
 | M4b | — | — | — | — | |
 | M4c | — | — | — | — | |
@@ -791,7 +791,7 @@ Every public upstream function, with its target phase. ☐ = not started, ☑ = 
 
 **Clusters (M9)**: ☐ buildMeshlets ☐ buildMeshletsScan ☐ buildMeshletsBound ☐ buildMeshletsFlex ☐ buildMeshletsSpatial ☐ optimizeMeshlet ☐ optimizeMeshletLevel ☐ computeClusterBounds ☐ computeMeshletBounds ☐ computeSphereBounds ☐ extractMeshletIndices ☐ partitionClusters ☐ spatialSortRemap ☐ spatialSortTriangles ☐ spatialClusterPoints
 
-**Tangents (M8)**: ☐ generateTangents ☐ generateNormals
+**Tangents (M8)**: ☑ generateTangents ☑ generateNormals
 
 **Quantization & memory (M0)**: ☑ quantizeUnorm ☑ quantizeSnorm ☑ quantizeHalf ☑ quantizeFloat ☑ dequantizeHalf ☑ computePositionExponent ☑ setAllocator → `MeshoptScratch`
 

@@ -36,6 +36,9 @@ struct VertexInput {
     @location(5) model2: vec4<f32>,
     @location(6) model3: vec4<f32>,
     @location(7) tint: vec4<f32>,
+#ifdef MESH_TANGENT
+    @location(8) tangent: vec4<f32>,
+#endif
 };
 
 struct VertexOutput {
@@ -56,13 +59,20 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clipPos = frame.viewProj * worldPos4;
     out.worldPos = worldPos4.xyz;
-    out.worldNormal = normalize(normalMat * in.normal);
+    let N = normalize(normalMat * in.normal);
+    out.worldNormal = N;
+#ifdef MESH_TANGENT
+    let T = normalize(normalMat * in.tangent.xyz);
+    out.worldTangent = T;
+    out.worldBitangent = cross(N, T) * in.tangent.w;
+#else
     var t = normalize(normalMat * vec3<f32>(1.0, 0.0, 0.0));
-    if (abs(dot(t, out.worldNormal)) > 0.9) {
+    if (abs(dot(t, N)) > 0.9) {
         t = normalize(normalMat * vec3<f32>(0.0, 0.0, 1.0));
     }
-    out.worldTangent = normalize(t - out.worldNormal * dot(out.worldNormal, t));
-    out.worldBitangent = cross(out.worldNormal, out.worldTangent);
+    out.worldTangent = normalize(t - N * dot(N, t));
+    out.worldBitangent = cross(N, out.worldTangent);
+#endif
     out.uv = in.uv;
     out.tint = in.tint.rgb;
     return out;

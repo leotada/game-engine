@@ -128,7 +128,10 @@ struct ShaderHotReloader {
                     break;
                 case "textured3d_pbr.wgsl":
                     if (texScene !is null) {
-                        ok = texScene.reloadShader(res.code);
+                        auto wide = loadAndPreprocessShader(rel, ["MESH_TANGENT"], shadersDir);
+                        ok = wide.success && texScene.reloadShader(res.code) && texScene.reloadTangentShader(wide.code);
+                        if (!wide.success)
+                            err("ShaderHotReloader: tangent variant failed for '%s': %s", rel, wide.errorMessage);
                     }
                     break;
                 case "gizmo_line.wgsl":

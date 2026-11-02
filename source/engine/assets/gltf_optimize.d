@@ -5,7 +5,12 @@ module engine.assets.gltf_optimize;
 import std.file : exists, read;
 import std.json : JSONType, JSONValue, parseJSON;
 
+import engine.gpu.context : GpuContext;
+import engine.graphics.texmesh : TexMesh;
+import engine.graphics.types : TexTanVert, TexVert;
 import engine.meshopt.pipeline : MeshOptSettings, optimizeMesh;
+import engine.meshopt.tangent : generateTangents;
+import engine.meshopt.types : FloatStream, TangentOptions, positionsOf;
 
 @safe:
 
@@ -63,6 +68,89 @@ if (is(typeof(V.init.pos) == float[3]) && V.pos.offsetof == 0 && V.sizeof % 4 ==
     shadowIndices = opt.shadowIndices;
 }
 
+/// Optimize `TexVert` data, or a packed tangent vertex when `tangents` is one entry per vertex.
+void finalizeImportedMesh(string assetPath, ref TexVert[] vertices, ref uint[] indices, ref uint[] shadowIndices, ref float[4][] tangents) {
+    if (tangents.length == vertices.length && tangents.length > 0) {
+        TexTanVert[] packed = packTangents(vertices, tangents);
+        auto spec = meshOptImportFor(assetPath);
+        if (!spec.enabled) {
+            shadowIndices = null;
+            return;
+        }
+        auto opt = optimizeMesh(packed, indices, spec.settings);
+        unpackTangents(opt.vertices, opt.indices, opt.shadowIndices, vertices, indices, shadowIndices, tangents);
+        return;
+    }
+    optimizeImportedMesh(assetPath, vertices, indices, shadowIndices);
+}
+
+/// Per-corner tangents for a normal map, then the import-time pipeline.
+/// No-op when `tangents` is already one entry per vertex.
+void generateMissingTangents(string assetPath, ref TexVert[] vertices, ref uint[] indices, ref uint[] shadowIndices, ref float[4][] tangents) {
+    if (tangents.length == vertices.length && tangents.length > 0)
+        return;
+    if (vertices.length == 0 || indices.length == 0)
+        return;
+    float[4][] corners = new float[4][](indices.length);
+    generateTangents(corners, indices, positionsOf!TexVert(vertices), positionsOf!(TexVert, "normal")(vertices), uvStream(vertices), TangentOptions.compatible);
+    TexTanVert[] expanded = new TexTanVert[indices.length];
+    uint[] expandedIdx = new uint[indices.length];
+    foreach (i, id; indices) {
+        expanded[i].pos = vertices[id].pos;
+        expanded[i].normal = vertices[id].normal;
+        expanded[i].uv = vertices[id].uv;
+        expanded[i].tangent = corners[i];
+        expandedIdx[i] = cast(uint) i;
+    }
+    auto spec = meshOptImportFor(assetPath);
+    if (!spec.enabled) {
+        unpackTangents(expanded, expandedIdx, null, vertices, indices, shadowIndices, tangents);
+        return;
+    }
+    auto opt = optimizeMesh(expanded, expandedIdx, spec.settings);
+    unpackTangents(opt.vertices, opt.indices, opt.shadowIndices, vertices, indices, shadowIndices, tangents);
+}
+
+/// Upload `TexTanVert` when tangents are present, otherwise `TexVert`.
+TexMesh uploadOptimizedMesh(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents) {
+    if (tangents.length == vertices.length && tangents.length > 0)
+        return TexMesh.fromData(gpu, packTangents(vertices, tangents), indices, shadowIndices);
+    return TexMesh.fromData(gpu, vertices, indices, shadowIndices);
+}
+
+private TexTanVert[] packTangents(const(TexVert)[] vertices, const(float[4])[] tangents) {
+    auto packed = new TexTanVert[vertices.length];
+    foreach (i, v; vertices) {
+        packed[i].pos = v.pos;
+        packed[i].normal = v.normal;
+        packed[i].uv = v.uv;
+        packed[i].tangent = tangents[i];
+    }
+    return packed;
+}
+
+private void unpackTangents(const(TexTanVert)[] packed, const(uint)[] optIndices, const(uint)[] optShadow, ref TexVert[] vertices, ref uint[] indices, ref uint[] shadowIndices, ref float[4][] tangents) {
+    vertices.length = packed.length;
+    tangents.length = packed.length;
+    foreach (i, v; packed) {
+        vertices[i].pos = v.pos;
+        vertices[i].normal = v.normal;
+        vertices[i].uv = v.uv;
+        tangents[i] = v.tangent;
+    }
+    indices = optIndices.dup;
+    shadowIndices = optShadow.dup;
+}
+
+private FloatStream uvStream(const(TexVert)[] vertices) @trusted {
+    FloatStream uvs;
+    uvs.strideFloats = TexVert.sizeof / 4;
+    uvs.count = vertices.length;
+    if (vertices.length)
+        uvs.address = cast(ulong)(cast(const(ubyte)*) vertices.ptr + TexVert.uv.offsetof);
+    return uvs;
+}
+
 private bool jsonBool(ref JSONValue obj, string key, bool fallback) {
     if (key !in obj)
         return fallback;
@@ -98,4 +186,27 @@ private bool jsonBool(ref JSONValue obj, string key, bool fallback) {
     auto bare = meshOptImportFor(path);
     assert(bare.enabled);
     assert(bare.settings.vertexFetch);
+}
+
+@("generateMissingTangents.mirror") unittest {
+    TexVert[4] quad = [
+        TexVert([0, 0, 0], [0, 1, 0], [1, 0]),
+        TexVert([1, 0, 0], [0, 1, 0], [0, 0]),
+        TexVert([1, 0, 1], [0, 1, 0], [0, 1]),
+        TexVert([0, 0, 1], [0, 1, 0], [1, 1]),
+    ];
+    TexVert[] verts = quad.dup;
+    uint[] indices = [0, 1, 2, 0, 2, 3];
+    uint[] shadow;
+    float[4][] tangents;
+    generateMissingTangents("/tmp/meshopt-no-such-tangent-asset.gltf", verts, indices, shadow, tangents);
+    assert(tangents.length == verts.length);
+    assert(tangents.length > 0);
+    bool negative = false;
+    foreach (t; tangents) {
+        assert(t[3] == 1.0f || t[3] == -1.0f);
+        if (t[3] < 0)
+            negative = true;
+    }
+    assert(negative);
 }

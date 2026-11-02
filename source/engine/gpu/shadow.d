@@ -108,6 +108,8 @@ struct ShadowMap {
 /// per-instance buffer. Uses one uniform (binding 0): the light's VP matrix.
 struct ShadowPipeline {
     WGPURenderPipeline  pipeline;
+    /// Same depth shader, vertex stride 48 (`TexTanVert`).
+    WGPURenderPipeline  pipeline48;
     WGPUBindGroupLayout bindGroupLayout;
     WGPUPipelineLayout  pipelineLayout;
     WGPUShaderModule    shaderModule;
@@ -115,6 +117,7 @@ struct ShadowPipeline {
     @disable this(this);
 
     void release() nothrow @nogc @trusted {
+        if (pipeline48 !is null)      { wgpuRenderPipelineRelease(pipeline48); pipeline48 = null; }
         if (pipeline !is null)        { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
         if (pipelineLayout !is null)  { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
         if (bindGroupLayout !is null) { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
@@ -188,6 +191,11 @@ ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
 
     r.pipeline = wgpuDeviceCreateRenderPipeline(device, &pd);
     if (r.pipeline is null) fatal("Shadow pipeline creation failed");
+    WGPUVertexBufferLayout[2] wideLayouts = bufferLayouts;
+    wideLayouts[0].arrayStride = 48;
+    pd.vertex.buffers = wideLayouts.ptr;
+    r.pipeline48 = wgpuDeviceCreateRenderPipeline(device, &pd);
+    if (r.pipeline48 is null) fatal("Shadow pipeline (stride 48) creation failed");
 
     info("Shadow depth-only pipeline created");
     return r;
@@ -259,7 +267,7 @@ void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeli
     auto enc = wgpuDeviceCreateCommandEncoder(gpu.getDevice(), &encDesc);
     auto pass = beginShadowPass(enc, shadow, clear);
 
-    wgpuRenderPassEncoderSetPipeline(pass, pipe.pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, shadowPipelineFor(pipe, mesh.vertexStride));
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
@@ -274,6 +282,10 @@ void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeli
     wgpuCommandEncoderRelease(enc);
     wgpuQueueSubmit(gpu.getQueue(), 1, &cmd);
     wgpuCommandBufferRelease(cmd);
+}
+
+private WGPURenderPipeline shadowPipelineFor(ref ShadowPipeline pipe, uint vertexStride) pure nothrow @nogc {
+    return vertexStride == 48 ? pipe.pipeline48 : pipe.pipeline;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +417,7 @@ void submitPointShadowFace(ref GpuContext gpu, ref PointShadowMap shadow,
     auto enc = wgpuDeviceCreateCommandEncoder(gpu.getDevice(), &encDesc);
     auto pass = beginShadowPassView(enc, shadow.faceViews[face], clear);
 
-    wgpuRenderPassEncoderSetPipeline(pass, pipe.pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, shadowPipelineFor(pipe, mesh.vertexStride));
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);

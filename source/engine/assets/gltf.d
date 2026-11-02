@@ -28,7 +28,7 @@ import engine.graphics.types : TexVert;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3, Vec4;
-import engine.assets.gltf_optimize : optimizeImportedMesh;
+import engine.assets.gltf_optimize : finalizeImportedMesh, generateMissingTangents, uploadOptimizedMesh;
 import engine.meshopt.codec.filter;
 import engine.meshopt.codec.index;
 import engine.meshopt.codec.vertex;
@@ -49,7 +49,7 @@ TexMesh loadGltfMesh(ref GpuContext gpu, string gltfPath) @trusted {
     auto mesh = parseGltfMesh(gltfPath);
     info("Loaded glTF: ", gltfPath, " (",
          mesh.vertices.length, " verts, ", mesh.indices.length, " indices)");
-    return TexMesh.fromData(gpu, mesh.vertices, mesh.indices, mesh.shadowIndices);
+    return uploadOptimizedMesh(gpu, mesh.vertices, mesh.indices, mesh.shadowIndices, mesh.tangents);
 }
 
 /// Parsed glTF mesh on the CPU (no GPU resources yet).
@@ -58,6 +58,8 @@ struct GltfMesh {
     uint[] indices;
     /// Position-only indices from `optimizeMesh`. Empty when optimization is off.
     uint[] shadowIndices;
+    /// One tangent per vertex when the file has `TANGENT` or a normal map generated one. `tangent[3]` is handedness.
+    float[4][] tangents;
 }
 
 /// CPU-side PBR material description extracted from glTF.
@@ -108,10 +110,12 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
 
     auto meshCpu = parseGltfMesh(gltfPath);
     auto matDesc = parseGltfMaterial(gltfPath);
+    if (matDesc.normalUri.length)
+        generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
     immutable baseDir = dirName(gltfPath);
 
     GltfModel model;
-    model.mesh = TexMesh.fromData(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices);
+    model.mesh = uploadOptimizedMesh(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
     MaterialParams params;
     params.baseColorFactor = matDesc.baseColorFactor;
@@ -467,6 +471,7 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
     immutable int posAcc   = cast(int) attrs["POSITION"].integer;
     immutable int normAcc  = ("NORMAL"     in attrs) ? cast(int) attrs["NORMAL"].integer     : -1;
     immutable int uvAcc    = ("TEXCOORD_0" in attrs) ? cast(int) attrs["TEXCOORD_0"].integer : -1;
+    immutable int tanAcc   = ("TANGENT"    in attrs) ? cast(int) attrs["TANGENT"].integer    : -1;
     enforce("indices" in prim, "glTF: primitive missing indices (non-indexed meshes unsupported)");
     immutable int idxAcc   = cast(int) prim["indices"].integer;
 
@@ -602,9 +607,10 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
 
     auto positions = readFloatVec(posAcc, 3);
     immutable size_t vcount = positions.length / 3;
-    float[] normals; float[] uvs;
+    float[] normals; float[] uvs; float[] tans;
     if (normAcc >= 0) normals = readFloatVec(normAcc, 3);
     if (uvAcc   >= 0) uvs     = readFloatVec(uvAcc,   2);
+    if (tanAcc  >= 0) tans    = readFloatVec(tanAcc,  4);
 
     GltfMesh out_;
     out_.vertices.length = vcount;
@@ -628,6 +634,12 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         }
         out_.vertices[i] = v;
     }
+    if (tans.length) {
+        enforce(tans.length == vcount * 4, "glTF: TANGENT count mismatch");
+        out_.tangents.length = vcount;
+        foreach (i; 0 .. vcount)
+            out_.tangents[i] = [tans[i * 4 + 0], tans[i * 4 + 1], tans[i * 4 + 2], tans[i * 4 + 3]];
+    }
     Mat4 world = meshNodeWorld(root);
     Mat4 ident = Mat4.identity;
     bool hasXform = world.m != ident.m;
@@ -641,9 +653,17 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
                 v.normal = [n.x, n.y, n.z];
             }
         }
+        if (out_.tangents.length) {
+            foreach (ref t; out_.tangents) {
+                Vec3 n = transformNormal(inv, Vec3(t[0], t[1], t[2]));
+                t[0] = n.x;
+                t[1] = n.y;
+                t[2] = n.z;
+            }
+        }
     }
     out_.indices = readIndices(idxAcc);
-    optimizeImportedMesh(gltfPath, out_.vertices, out_.indices, out_.shadowIndices);
+    finalizeImportedMesh(gltfPath, out_.vertices, out_.indices, out_.shadowIndices, out_.tangents);
     return out_;
 }
 

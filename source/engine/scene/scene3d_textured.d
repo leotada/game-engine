@@ -161,7 +161,13 @@ struct Scene3DTextured {
     /// Safely hot-reload the textured 3D PBR pipeline without reallocating bind groups.
     bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
-        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl);
+        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, false);
+    }
+
+    /// Hot-reload the stride-48 variant (`MESH_TANGENT` already applied to `newWgsl`).
+    bool reloadTangentShader(scope const(char)[] newWgsl) nothrow @nogc {
+        import engine.gpu.pipeline : reloadTexturedPipeline3D;
+        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, true);
     }
 
     /// Update multi-light UBO + bind shadow maps for the next draws.
@@ -327,7 +333,6 @@ struct Scene3DTextured {
     void end(ref FrameContext frame) {
         if (!frame.valid) return;
 
-        frame.setPipeline(pipeline.pipeline);
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
 
@@ -335,6 +340,7 @@ struct Scene3DTextured {
             if (b.instances.length == 0) continue;
             updateBuffer(queue, b.instanceBuf, b.instances);
 
+            frame.setPipeline(b.mesh.vertexStride == 48 ? pipeline.pipelineTangent : pipeline.pipeline);
             frame.setBindGroup(1, b.material.bindGroup);
             frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
             frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * InstanceData.sizeof);

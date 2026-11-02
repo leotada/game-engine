@@ -18,6 +18,18 @@ struct TexVert {
     float[2] uv;
 }
 
+/// Textured vertex with a tangent frame. Stride = 48 bytes.
+/// `tangent[3]` is the handedness (+1 or -1). Used when a normal map is present.
+struct TexTanVert {
+    float[3] pos;
+    float[3] normal;
+    float[2] uv;
+    float[4] tangent;
+}
+
+static assert(TexVert.sizeof == 32);
+static assert(TexTanVert.sizeof == 48);
+
 /// Per-instance data: model matrix + RGBA color.
 /// Buffer 1, stride = 80 bytes. Matches colored3dShaderSource layout.
 struct InstanceData {

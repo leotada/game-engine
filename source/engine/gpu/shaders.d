@@ -15,6 +15,7 @@ enum colored3dShaderSource = import("colored3d.wgsl");
 enum text2dShaderSource = import("text2d.wgsl");
 
 enum textured3dShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl").code;
+enum textured3dTangentShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT"]).code;
 
 enum shadowDepthShaderSource = import("shadow_depth.wgsl");
 
