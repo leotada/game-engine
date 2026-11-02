@@ -204,6 +204,7 @@ source/
 │   ├── ecs/            # Sparse-set ComponentStore, World template, SceneWorld
 │   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text, shadow
 │   ├── graphics/       # High-level mesh, texture, material types
+│   ├── meshopt/        # Import-time mesh processing (pure-D meshoptimizer)
 │   ├── hotreload/      # Inotify file watcher, build runner, dynamic module loader, state migration
 │   ├── math/           # Vec2/3/4, Mat4 (perspective, ortho, lookAt, transforms)
 │   ├── platform/       # SDL3 window wrapper, input state
@@ -274,6 +275,10 @@ dub build --config=library           # Build as static library
 1. Add the function signature to `source/bindings/sdl3.d` with `extern(C) nothrow @nogc`.
 2. Use `@trusted` wrappers in `engine/platform/` modules.
 
+## Mesh Processing
+
+Use `engine.meshopt.pipeline` (`optimizeMesh`) at import or load time. Never call mesh optimization or simplification from the frame loop (`pollEvents` through `endFrame`).
+
 ## Common Mistakes to Avoid
 
 - **Using `T const*` in bindings** — D syntax is `const(T)*`. The C-style postfix `const` doesn't compile.
@@ -287,3 +292,4 @@ dub build --config=library           # Build as static library
 - **Using `format()` for per-frame labels inside the engine** — `format()` allocates on the GC heap. In hot frame paths use `FrameArena.fmt()` which writes into a pre-allocated scratch buffer and is reset at frame end.
 - **Intern-ing unbounded strings** — `StringTable.intern()` is O(1) for repeated strings but stores each unique string permanently. Only intern identifiers with bounded cardinality (material names, asset paths, dialog keys). Per-frame computed labels (e.g., `"npc_42_t1200"`) belong in `FrameArena`, not the interner.
 - **Enabling `FrameGcScheduler` mid-game** — benchmarks proved the frame-budgeted GC scheduler triples total pause under sustained allocation pressure. Use `GC.disable()` + `GC.collect()` only at explicit scene transitions and loading screens, where the heap is cold and slack is real.
+- **Using `std.math` real-precision functions or `std.algorithm.sort` inside `engine.meshopt`** — breaks bit-exactness with upstream meshoptimizer. Use `core.stdc.math` and the sorts in `engine.meshopt.internal.sort`.

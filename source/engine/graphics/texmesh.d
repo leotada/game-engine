@@ -1,34 +1,38 @@
 /// Textured mesh (position + normal + uv) and built-in textured primitives.
 module engine.graphics.texmesh;
 
-import bindings.wgpu : WGPUBuffer;
+import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.graphics.types : TexVert;
 
 @safe:
 
-/// Owned GPU mesh with UV-equipped vertices (TexVert).
+/// Owned GPU mesh with UV-equipped vertices (TexVert, stride 32).
 struct TexMesh {
     package(engine) WGPUBuffer vertexBuffer;
     package(engine) WGPUBuffer indexBuffer;
+    /// Position-welded index buffer. Null when the mesh has no shadow indices.
+    package(engine) WGPUBuffer shadowIndexBuffer;
     package(engine) uint indexCount;
     package(engine) ulong vertexBufSize;
+    package(engine) ulong indexBufSize;
+    package(engine) ulong shadowIndexBufSize;
+    package(engine) WGPUIndexFormat indexFormat;
+    /// Byte stride of `vertexBuffer`. 32 for `TexVert`, 48 for `TexTanVert`.
+    package(engine) uint vertexStride;
 
     @disable this(this);
 
     /// Build a TexMesh from vertex + index data.
-    static TexMesh fromData(ref GpuContext gpu,
-                            const(TexVert)[] verts,
-                            const(ushort)[] indices) {
-        auto device = gpu.getDevice();
-        auto queue  = gpu.getQueue();
-        TexMesh m;
-        m.vertexBuffer  = createVertexBuffer(device, queue, verts);
-        m.indexBuffer   = createIndexBuffer(device, queue, indices);
-        m.indexCount    = cast(uint) indices.length;
-        m.vertexBufSize = verts.length * TexVert.sizeof;
-        return m;
+    /// `uint` indices are stored as `ushort` when every index fits in 65535.
+    static TexMesh fromData(I)(ref GpuContext gpu, const(TexVert)[] verts, const(I)[] indices, const(I)[] shadowIndices = null)
+    if (is(I == ushort) || is(I == uint)) {
+        static if (is(I == uint)) {
+            if (indicesFitU16(indices) && indicesFitU16(shadowIndices))
+                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices));
+        }
+        return upload!TexVert(gpu, verts, indices, shadowIndices);
     }
 
     /// Textured unit cube with per-face UVs (0..1 on each face).
@@ -84,12 +88,61 @@ struct TexMesh {
         return fromData(gpu, verts, indices);
     }
 
+    /// Index buffer the shadow pass binds. The color pass keeps `indexBuffer`.
+    WGPUBuffer shadowDrawBuffer() pure nothrow @nogc {
+        return shadowIndexBuffer !is null ? shadowIndexBuffer : indexBuffer;
+    }
+
+    /// Byte size of `shadowDrawBuffer`.
+    ulong shadowDrawBytes() const pure nothrow @nogc {
+        return shadowIndexBuffer !is null ? shadowIndexBufSize : indexBufSize;
+    }
+
     void destroy() nothrow @nogc {
         destroyBuffer(vertexBuffer);
         destroyBuffer(indexBuffer);
+        destroyBuffer(shadowIndexBuffer);
         vertexBuffer = null;
         indexBuffer = null;
+        shadowIndexBuffer = null;
     }
+}
+
+private bool indicesFitU16(scope const(uint)[] indices) pure nothrow @nogc {
+    foreach (i; indices) {
+        if (i > 65535)
+            return false;
+    }
+    return true;
+}
+
+private ushort[] narrowU16(const(uint)[] indices) {
+    auto dst = new ushort[indices.length];
+    foreach (i, v; indices)
+        dst[i] = cast(ushort) v;
+    return dst;
+}
+
+private TexMesh upload(V, I)(ref GpuContext gpu, const(V)[] verts, const(I)[] indices, const(I)[] shadowIndices)
+if ((is(I == ushort) || is(I == uint)) && V.sizeof % 4 == 0) {
+    auto device = gpu.getDevice();
+    auto queue = gpu.getQueue();
+    TexMesh m;
+    m.vertexBuffer = createVertexBuffer(device, queue, verts);
+    m.indexBuffer = createIndexBuffer(device, queue, indices);
+    m.indexCount = cast(uint) indices.length;
+    m.vertexBufSize = verts.length * V.sizeof;
+    m.indexBufSize = indices.length * I.sizeof;
+    m.vertexStride = cast(uint) V.sizeof;
+    static if (is(I == uint))
+        m.indexFormat = WGPUIndexFormat.uint32;
+    else
+        m.indexFormat = WGPUIndexFormat.uint16;
+    if (shadowIndices.length) {
+        m.shadowIndexBuffer = createIndexBuffer(device, queue, shadowIndices);
+        m.shadowIndexBufSize = shadowIndices.length * I.sizeof;
+    }
+    return m;
 }
 
 // ---------------------------------------------------------------------------

@@ -157,7 +157,7 @@ ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
     ];
     WGPUVertexBufferLayout[2] bufferLayouts = [
         { arrayStride: 32, stepMode: WGPUVertexStepMode.vertex,
-          attributeCount: 3, attributes: vertexAttrs.ptr },
+          attributeCount: 3, attributes: vertexAttrs.ptr }, // TexVert. M8 selects 48 for TexTanVert.
         { arrayStride: 80, stepMode: WGPUVertexStepMode.instance_,
           attributeCount: 5, attributes: instanceAttrs.ptr },
     ];
@@ -263,8 +263,8 @@ void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeli
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indexBuffer, WGPUIndexFormat.uint16,
-                                        0, mesh.indexCount * ushort.sizeof);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.shadowDrawBuffer(), mesh.indexFormat,
+                                        0, mesh.shadowDrawBytes());
     wgpuRenderPassEncoderDrawIndexed(pass, mesh.indexCount, instanceCount, 0, 0, 0);
 
     endShadowPass(pass);
@@ -409,8 +409,8 @@ void submitPointShadowFace(ref GpuContext gpu, ref PointShadowMap shadow,
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indexBuffer, WGPUIndexFormat.uint16,
-                                        0, mesh.indexCount * ushort.sizeof);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.shadowDrawBuffer(), mesh.indexFormat,
+                                        0, mesh.shadowDrawBytes());
     wgpuRenderPassEncoderDrawIndexed(pass, mesh.indexCount, instanceCount, 0, 0, 0);
 
     endShadowPass(pass);

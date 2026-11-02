@@ -2,7 +2,7 @@
 ///
 /// Supported:
 ///   - .gltf JSON + external .bin buffer (same directory)
-///   - Component types: 5123 (u16), 5125 (u32 → downcast to u16 if in range)
+///   - Component types: 5123 (u16), 5125 (u32). Upload narrows to u16 when every index fits in 65535.
 ///   - Attribute types: VEC3 positions/normals, VEC2 uvs (float32)
 ///   - Materials: pbrMetallicRoughness factors + baseColor / MR / normal /
 ///     occlusion / emissive textures (BMP or TGA via engine loaders)
@@ -28,6 +28,7 @@ import engine.graphics.types : TexVert;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3, Vec4;
+import engine.assets.gltf_optimize : optimizeImportedMesh;
 import engine.meshopt.codec.filter;
 import engine.meshopt.codec.index;
 import engine.meshopt.codec.vertex;
@@ -48,13 +49,15 @@ TexMesh loadGltfMesh(ref GpuContext gpu, string gltfPath) @trusted {
     auto mesh = parseGltfMesh(gltfPath);
     info("Loaded glTF: ", gltfPath, " (",
          mesh.vertices.length, " verts, ", mesh.indices.length, " indices)");
-    return TexMesh.fromData(gpu, mesh.vertices, mesh.indices);
+    return TexMesh.fromData(gpu, mesh.vertices, mesh.indices, mesh.shadowIndices);
 }
 
 /// Parsed glTF mesh on the CPU (no GPU resources yet).
 struct GltfMesh {
     TexVert[] vertices;
-    ushort[]  indices;
+    uint[] indices;
+    /// Position-only indices from `optimizeMesh`. Empty when optimization is off.
+    uint[] shadowIndices;
 }
 
 /// CPU-side PBR material description extracted from glTF.
@@ -108,7 +111,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     immutable baseDir = dirName(gltfPath);
 
     GltfModel model;
-    model.mesh = TexMesh.fromData(gpu, meshCpu.vertices, meshCpu.indices);
+    model.mesh = TexMesh.fromData(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices);
 
     MaterialParams params;
     params.baseColorFactor = matDesc.baseColorFactor;
@@ -553,7 +556,7 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         return dst;
     }
 
-    ushort[] readIndices(int accessorIndex) @trusted {
+    uint[] readIndices(int accessorIndex) @trusted {
         auto acc = accessors[accessorIndex];
         immutable uint ct = cast(uint) acc["componentType"].integer;
         immutable string type = acc["type"].str;
@@ -570,24 +573,26 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         immutable size_t totalOff = baseOff + accOff;
         enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
                 "glTF: index accessor out of buffer bounds");
-        auto dst = new ushort[count];
+        auto dst = new uint[count];
         if (ct == CT_USHORT && stride == 2) {
             auto p = cast(const(ushort)*) (src.ptr + totalOff);
             foreach (i; 0 .. count) dst[i] = p[i];
         } else if (ct == CT_UINT && stride == 4) {
             auto p = cast(const(uint)*) (src.ptr + totalOff);
-            foreach (i; 0 .. count) {
-                enforce(p[i] <= 65535, "glTF: u32 index exceeds ushort range");
-                dst[i] = cast(ushort) p[i];
-            }
+            foreach (i; 0 .. count) dst[i] = p[i];
         } else if (ct == CT_UBYTE && stride == 1) {
             auto p = cast(const(ubyte)*) (src.ptr + totalOff);
             foreach (i; 0 .. count) dst[i] = p[i];
         } else if (ct == CT_USHORT || ct == CT_UINT || ct == CT_UBYTE) {
             foreach (i; 0 .. count) {
-                int raw = readComponent(src, totalOff + i * stride, ct);
-                enforce(raw >= 0 && raw <= 65535, "glTF: u32 index exceeds ushort range");
-                dst[i] = cast(ushort) raw;
+                size_t at = totalOff + i * stride;
+                if (ct == CT_UINT) {
+                    dst[i] = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
+                } else {
+                    int raw = readComponent(src, at, ct);
+                    enforce(raw >= 0, "glTF: negative index");
+                    dst[i] = cast(uint) raw;
+                }
             }
         } else {
             enforce(false, "glTF: unsupported index component type");
@@ -638,6 +643,7 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         }
     }
     out_.indices = readIndices(idxAcc);
+    optimizeImportedMesh(gltfPath, out_.vertices, out_.indices, out_.shadowIndices);
     return out_;
 }
 

@@ -338,8 +338,7 @@ struct Scene3DTextured {
             frame.setBindGroup(1, b.material.bindGroup);
             frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
             frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(b.mesh.indexBuffer, WGPUIndexFormat.uint16,
-                                 b.mesh.indexCount * ushort.sizeof);
+            frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
             frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
         }
     }

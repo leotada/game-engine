@@ -2,7 +2,7 @@
 /// Manages pipeline, uniform buffer, and per-mesh instance batches internally.
 module engine.scene.scene3d;
 
-import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUIndexFormat, WGPUQueue, WGPUDevice;
+import bindings.wgpu : WGPUBuffer, WGPUBindGroup, WGPUQueue, WGPUDevice;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : Pipeline3D, createColoredPipeline3D;
@@ -107,8 +107,7 @@ struct Scene3D {
             // Set vertex buffers and draw
             frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
             frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(b.mesh.indexBuffer, WGPUIndexFormat.uint16,
-                                 b.mesh.indexCount * ushort.sizeof);
+            frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
             frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
         }
     }
