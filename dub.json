@@ -339,6 +339,69 @@
             ],
             "libs": [],
             "lflags-linux": ["-L./libs"]
+        },
+        {
+            "name": "meshopt-codec-oracle",
+            "targetType": "executable",
+            "targetName": "meshopt-codec-oracle",
+            "mainSourceFile": "tools/meshopt-oracle/codec_main.d",
+            "sourcePaths": ["source/engine/meshopt"],
+            "sourceFiles": [
+                "tools/meshopt-oracle/codec_main.d"
+            ],
+            "importPaths": ["source"],
+            "excludedSourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/demo/*"
+            ],
+            "libs": ["meshoptimizer_codec_scalar", "stdc++"],
+            "lflags-linux": ["-L./libs"],
+            "versions": ["MeshoptOracle"]
+        },
+        {
+            "name": "meshopt-codec-bench",
+            "targetType": "executable",
+            "targetName": "meshopt-codec-bench",
+            "mainSourceFile": "tools/benchmarks/meshopt_codec_bench.d",
+            "sourcePaths": ["source/engine/meshopt"],
+            "sourceFiles": [
+                "tools/benchmarks/meshopt_codec_bench.d"
+            ],
+            "importPaths": ["source"],
+            "excludedSourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/demo/*"
+            ],
+            "libs": ["meshoptimizer_ref", "stdc++"],
+            "lflags-linux": ["-L./libs"],
+            "versions": ["MeshoptCodecBench"]
+        },
+        {
+            "name": "meshopt-fuzz",
+            "targetType": "executable",
+            "targetName": "meshopt-fuzz",
+            "mainSourceFile": "tools/meshopt-oracle/codec_fuzz.d",
+            "sourcePaths": ["source/engine/meshopt"],
+            "sourceFiles": [
+                "tools/meshopt-oracle/codec_fuzz.d",
+                "source/engine/meshopt/codec/index.d",
+                "source/engine/meshopt/codec/vertex.d",
+                "source/engine/meshopt/codec/vertex_simd.d",
+                "source/engine/meshopt/codec/filter.d",
+                "source/engine/meshopt/codec/filter_simd.d",
+                "source/engine/meshopt/internal/bits.d",
+                "source/engine/meshopt/quantize.d",
+                "source/engine/meshopt/types.d",
+                "source/engine/core/pod.d"
+            ],
+            "importPaths": ["source"],
+            "excludedSourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/demo/*",
+                "source/engine/*"
+            ],
+            "dflags-ldc": ["-fsanitize=address,fuzzer"],
+            "libs": []
         }
     ]
 }
