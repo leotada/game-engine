@@ -8,6 +8,13 @@ import engine.graphics.types : TexTanVert, TexVert;
 
 @safe:
 
+/// Shadow pass range. `useLodRange` means draw `indexBuffer[first .. first + count]`.
+struct ShadowLodDraw {
+    bool useLodRange;
+    uint first;
+    uint count;
+}
+
 /// Owned GPU mesh with UV-equipped vertices (TexVert, stride 32).
 struct TexMesh {
     package(engine) WGPUBuffer vertexBuffer;
@@ -21,6 +28,10 @@ struct TexMesh {
     package(engine) WGPUIndexFormat indexFormat;
     /// Byte stride of `vertexBuffer`. 32 for `TexVert`, 48 for `TexTanVert`.
     package(engine) uint vertexStride;
+    /// Concatenated LOD index ranges in `indexBuffer`. 0 or 1 means no chain.
+    package(engine) ubyte lodLevels;
+    package(engine) uint[8] lodFirst;
+    package(engine) uint[8] lodDrawCount;
 
     @disable this(this);
 
@@ -109,6 +120,35 @@ struct TexMesh {
     /// Byte size of `shadowDrawBuffer`.
     ulong shadowDrawBytes() const pure nothrow @nogc {
         return shadowIndexBuffer !is null ? shadowIndexBufSize : indexBufSize;
+    }
+
+    /// Record concatenated LOD ranges. `first.length` is the level count (max 8).
+    void setLodChain(scope const(uint)[] first, scope const(uint)[] counts) pure nothrow @nogc {
+        assert(first.length == counts.length && first.length <= 8);
+        lodLevels = cast(ubyte) first.length;
+        foreach (i; 0 .. 8) {
+            lodFirst[i] = i < first.length ? first[i] : 0;
+            lodDrawCount[i] = i < counts.length ? counts[i] : 0;
+        }
+    }
+
+    /**
+     * Shadow draw of the coarser LOD (`colorLod + 1`).
+     * `useLodRange` selects `indexBuffer` at `first`. Otherwise the caller
+     * keeps the position-welded shadow index buffer and `indexCount`.
+     */
+    ShadowLodDraw shadowLodDraw(ubyte colorLod = ubyte.max) const pure nothrow @nogc {
+        ShadowLodDraw draw;
+        draw.count = indexCount;
+        if (lodLevels <= 1)
+            return draw;
+        uint level = colorLod == ubyte.max ? 1 : cast(uint) colorLod + 1;
+        if (level >= lodLevels)
+            level = lodLevels - 1;
+        draw.useLodRange = true;
+        draw.first = lodFirst[level];
+        draw.count = lodDrawCount[level];
+        return draw;
     }
 
     void destroy() nothrow @nogc {
@@ -242,3 +282,18 @@ immutable TexVert[4] texQuadVertices = [
 ];
 
 immutable ushort[6] texQuadIndices = [0, 2, 1,  0, 3, 2];
+
+@("texmesh.shadowLod") pure nothrow @nogc unittest {
+    TexMesh mesh;
+    mesh.indexCount = 30;
+    assert(!mesh.shadowLodDraw().useLodRange);
+    assert(mesh.shadowLodDraw().count == 30);
+    mesh.setLodChain([0u, 30, 48], [30u, 18, 9]);
+    ShadowLodDraw coarse = mesh.shadowLodDraw();
+    assert(coarse.useLodRange);
+    assert(coarse.first == 30 && coarse.count == 18);
+    ShadowLodDraw fromCurrent = mesh.shadowLodDraw(1);
+    assert(fromCurrent.first == 48 && fromCurrent.count == 9);
+    ShadowLodDraw clamped = mesh.shadowLodDraw(2);
+    assert(clamped.first == 48 && clamped.count == 9);
+}

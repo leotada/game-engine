@@ -136,6 +136,107 @@ struct Camera3D {
 
 static assert(isPod!Camera3D);
 
+/**
+ * Per-entity LOD selector. `errors` are mesh-relative (simplifier output).
+ * `meshScale` is `simplifyScale` of the shared vertex buffer.
+ * `indexOffset` / `indexCount` address the concatenated LOD index buffer.
+ * The frame loop only writes `current`; it does not simplify.
+ */
+struct MeshLod {
+    ubyte levelCount;
+    ubyte current;
+    float[8] errors;
+    float bias = 1;
+    float meshScale = 1;
+    uint[8] indexOffset;
+    uint[8] indexCount;
+}
+
+static assert(isPod!MeshLod);
+
+/// Index range for the selected color LOD.
+void lodIndexRange(const(MeshLod) lod, out uint offset, out uint count) pure nothrow @nogc {
+    if (lod.levelCount == 0) {
+        offset = 0;
+        count = 0;
+        return;
+    }
+    ubyte i = lod.current < lod.levelCount ? lod.current : cast(ubyte)(lod.levelCount - 1);
+    offset = lod.indexOffset[i];
+    count = lod.indexCount[i];
+}
+
+/// Shadow range: one level coarser than `current`, clamped to the last LOD.
+void lodShadowRange(const(MeshLod) lod, out uint offset, out uint count) pure nothrow @nogc {
+    if (lod.levelCount == 0) {
+        offset = 0;
+        count = 0;
+        return;
+    }
+    uint next = cast(uint) lod.current + 1;
+    if (next >= lod.levelCount)
+        next = lod.levelCount - 1;
+    offset = lod.indexOffset[next];
+    count = lod.indexCount[next];
+}
+
+/**
+ * Pick the coarsest LOD whose projected error is under one pixel.
+ * `error * meshScale * worldScale` is the world-space tolerance.
+ * A 20% band keeps the previous level when the choice is on the boundary.
+ */
+void lodSelectSystem(W)(ref W world, Vec3 cameraPos, float fovYRadians, float screenHeight) nothrow @nogc {
+    foreach (entity; world.query!(Transform, MeshLod)) {
+        Transform xform = world.get!Transform(entity);
+        ref MeshLod lod = world.get!MeshLod(entity);
+        if (lod.levelCount == 0)
+            continue;
+        float worldScale = absF(xform.scale.x);
+        float sy = absF(xform.scale.y);
+        float sz = absF(xform.scale.z);
+        if (sy > worldScale)
+            worldScale = sy;
+        if (sz > worldScale)
+            worldScale = sz;
+        Vec3 delta = Vec3(xform.position.x - cameraPos.x, xform.position.y - cameraPos.y, xform.position.z - cameraPos.z);
+        float distance = delta.length();
+        ubyte chosen = 0;
+        foreach (i; 0 .. lod.levelCount) {
+            if (lodPixels(lod.errors[i], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias <= 1)
+                chosen = cast(ubyte) i;
+        }
+        if (chosen > lod.current) {
+            float px = lodPixels(lod.errors[chosen], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias;
+            if (px > 0.8f)
+                chosen = lod.current;
+        } else if (chosen < lod.current && lod.current < lod.levelCount) {
+            float px = lodPixels(lod.errors[lod.current], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias;
+            if (px < 1.2f)
+                chosen = lod.current;
+        }
+        lod.current = chosen;
+    }
+}
+
+private float absF(float v) pure nothrow @nogc {
+    return v < 0 ? -v : v;
+}
+
+private float tanF(float x) nothrow @nogc @trusted {
+    import core.stdc.math : tanf;
+    alias F = float function(float) nothrow @nogc @trusted;
+    return (cast(F) &tanf)(x);
+}
+
+private float lodPixels(float relativeError, float meshScale, float worldScale, float distance, float fovYRadians, float screenHeight) nothrow @nogc {
+    if (distance < 1e-4f)
+        distance = 1e-4f;
+    float denom = 2.0f * distance * tanF(fovYRadians * 0.5f);
+    if (!(denom > 0))
+        return float.max;
+    return relativeError * meshScale * worldScale * screenHeight / denom;
+}
+
 /// Default editor ECS registry (ED-1…ED-5).
 alias EditorWorld = World!(
     Transform,
@@ -145,7 +246,8 @@ alias EditorWorld = World!(
     MaterialOverride,
     Light,
     PhysicsBody,
-    Camera3D
+    Camera3D,
+    MeshLod
 );
 
 /// True when shape is triangle mesh and motion is dynamic (forbidden).
@@ -214,4 +316,33 @@ Vec3 defaultHalfExtents(VisualKind kind) {
         case VisualKind.plane:  return Vec3(0.5f, 0.01f, 0.5f);
         case VisualKind.mesh:   return Vec3(0.5f, 0.5f, 0.5f);
     }
+}
+
+@("lodSelect.pixels") nothrow unittest {
+    EditorWorld world;
+    auto near = world.spawn();
+    auto far = world.spawn();
+    Transform close;
+    close.position = Vec3(0, 0, 0);
+    Transform distant;
+    distant.position = Vec3(0, 0, 100);
+    world.set(near, close);
+    world.set(far, distant);
+    MeshLod lod;
+    lod.levelCount = 3;
+    lod.errors[0 .. 3] = [0, 0.001f, 0.002f];
+    lod.meshScale = 1;
+    lod.bias = 1;
+    lod.indexOffset[0 .. 3] = [0, 100, 160];
+    lod.indexCount[0 .. 3] = [100, 60, 30];
+    world.set(near, lod);
+    world.set(far, lod);
+    lodSelectSystem(world, Vec3(0, 0, 0), 1.0f, 1080);
+    assert(world.get!MeshLod(near).current == 0);
+    assert(world.get!MeshLod(far).current == 2);
+    uint off, count;
+    lodShadowRange(world.get!MeshLod(far), off, count);
+    assert(off == 160 && count == 30);
+    lodIndexRange(world.get!MeshLod(near), off, count);
+    assert(off == 0 && count == 100);
 }

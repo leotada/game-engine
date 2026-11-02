@@ -38,7 +38,7 @@ import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader  : createShaderModule;
 import engine.gpu.shaders : shadowDepthShaderSource;
-import engine.graphics.texmesh : TexMesh;
+import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.math.mat    : Mat4;
 import engine.math.vec    : Vec3;
 
@@ -258,7 +258,7 @@ void endShadowPass(WGPURenderPassEncoder pass) @trusted nothrow @nogc {
 void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeline pipe,
                       WGPUBindGroup lightBg, WGPUBuffer lightBuf, Mat4 lightVP,
                       ref TexMesh mesh, WGPUBuffer instanceBuf, uint instanceCount,
-                      bool clear = true) @trusted {
+                      bool clear = true, ubyte colorLod = ubyte.max) @trusted {
     import engine.gpu.buffer : updateBuffer;
 
     updateBuffer(gpu.getQueue(), lightBuf, lightVP.m[]);
@@ -271,9 +271,11 @@ void submitShadowPass(ref GpuContext gpu, ref ShadowMap shadow, ref ShadowPipeli
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.shadowDrawBuffer(), mesh.indexFormat,
-                                        0, mesh.shadowDrawBytes());
-    wgpuRenderPassEncoderDrawIndexed(pass, mesh.indexCount, instanceCount, 0, 0, 0);
+    ShadowLodDraw lod = mesh.shadowLodDraw(colorLod);
+    WGPUBuffer indexBuf = lod.useLodRange ? mesh.indexBuffer : mesh.shadowDrawBuffer();
+    ulong indexBytes = lod.useLodRange ? mesh.indexBufSize : mesh.shadowDrawBytes();
+    wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, mesh.indexFormat, 0, indexBytes);
+    wgpuRenderPassEncoderDrawIndexed(pass, lod.count, instanceCount, lod.first, 0, 0);
 
     endShadowPass(pass);
 
@@ -407,7 +409,7 @@ void submitPointShadowFace(ref GpuContext gpu, ref PointShadowMap shadow,
                            uint face, ref ShadowPipeline pipe,
                            WGPUBindGroup lightBg, WGPUBuffer lightBuf, Mat4 faceVP,
                            ref TexMesh mesh, WGPUBuffer instanceBuf, uint instanceCount,
-                           bool clear = true) @trusted {
+                           bool clear = true, ubyte colorLod = ubyte.max) @trusted {
     import engine.gpu.buffer : updateBuffer;
 
     if (face >= 6) return;
@@ -421,9 +423,11 @@ void submitPointShadowFace(ref GpuContext gpu, ref PointShadowMap shadow,
     wgpuRenderPassEncoderSetBindGroup(pass, 0, lightBg, 0, null);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instanceBuf, 0, instanceCount * 80);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.shadowDrawBuffer(), mesh.indexFormat,
-                                        0, mesh.shadowDrawBytes());
-    wgpuRenderPassEncoderDrawIndexed(pass, mesh.indexCount, instanceCount, 0, 0, 0);
+    ShadowLodDraw lod = mesh.shadowLodDraw(colorLod);
+    WGPUBuffer indexBuf = lod.useLodRange ? mesh.indexBuffer : mesh.shadowDrawBuffer();
+    ulong indexBytes = lod.useLodRange ? mesh.indexBufSize : mesh.shadowDrawBytes();
+    wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, mesh.indexFormat, 0, indexBytes);
+    wgpuRenderPassEncoderDrawIndexed(pass, lod.count, instanceCount, lod.first, 0, 0);
 
     endShadowPass(pass);
 

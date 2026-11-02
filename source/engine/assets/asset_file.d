@@ -24,7 +24,7 @@ import std.string : strip;
 @safe:
 
 enum string assetFormatId = "game-engine.asset";
-enum int assetSchemaVersion = 1;
+enum int assetSchemaVersion = 2;
 
 /// Top-level asset kind.
 enum AssetKind : string {
@@ -70,12 +70,28 @@ struct AssetConvexHull {
     float[3][] points;
 }
 
+/// One LOD in the shared index buffer. Absent `lods` means a single level.
+struct AssetLod {
+    uint indexOffset;
+    uint indexCount;
+    float error;
+}
+
+/// Generated collision stand-in. Does not replace `triangleMesh.source`.
+struct AssetGeneratedCollision {
+    bool present;
+    float error;
+    uint[] triangles;
+    float[3][] hull;
+}
+
 /// Optional collision data.
 struct AssetCollision {
     bool hasTriangleMesh;
     AssetTriangleMesh triangleMesh;
     bool hasConvexHull;
     AssetConvexHull convexHull;
+    AssetGeneratedCollision generated;
 }
 
 /// Parsed `*.asset.json` (game-engine.asset v1).
@@ -84,6 +100,8 @@ struct AssetFile {
     AssetMeta meta;
     AssetRender render;
     AssetMaterialSlot[] materials;
+    /// Empty means one LOD covering the render mesh.
+    AssetLod[] lods;
     AssetCollision collision;
 
     /// glTF path for `loadGltfMesh` / `loadGltfPbr`, or empty.
@@ -122,7 +140,7 @@ AssetFile parseAssetJson(string text) {
     auto root = parseJSON(text.strip());
     enforce(root.type == JSONType.object, "asset root must be a JSON object");
     requireOnlyKeys(root, [
-        "format", "version", "kind", "meta", "render", "materials", "collision"
+        "format", "version", "kind", "meta", "render", "materials", "lods", "collision"
     ], "asset root");
 
     enforce("format" in root, "asset missing 'format'");
@@ -151,11 +169,11 @@ string assetToMinifiedJson(const ref AssetFile asset) {
     return app.data;
 }
 
-/// Version migration chain stub. Currently only v1 is accepted.
+/// v1 assets have no `lods` and no generated collision payload. They load as one LOD.
 AssetFile migrateAsset(AssetFile asset, int fromVersion) {
-    enforce(fromVersion == assetSchemaVersion,
+    enforce(fromVersion >= 1 && fromVersion <= assetSchemaVersion,
         "unsupported asset version " ~ fromVersion.to!string
-            ~ " (only " ~ assetSchemaVersion.to!string ~ " implemented; migrate_vN stub)");
+            ~ " (supported 1.." ~ assetSchemaVersion.to!string ~ ")");
     return asset;
 }
 
@@ -163,7 +181,7 @@ AssetFile migrateAsset(AssetFile asset, int fromVersion) {
 void runAssetFileGoldenTests() {
     // Minified golden with render + hull points (stable key order).
     enum golden =
-        `{"format":"game-engine.asset","version":1,"kind":"model",`
+        `{"format":"game-engine.asset","version":2,"kind":"model",`
         ~ `"meta":{"name":"crate"},`
         ~ `"render":{"source":"assets/models/pbr_cube.gltf","primitive":null},`
         ~ `"materials":[{"baseColor":[1,1,1,1],"metallic":0,"roughness":0.5,`
@@ -190,8 +208,16 @@ void runAssetFileGoldenTests() {
     assert(a.hullPoints()[0] == cast(float[3])[-0.5f, -0.5f, -0.5f]);
     assert(a.hullPoints()[7] == cast(float[3])[-0.5f, 0.5f, 0.5f]);
 
+    assert(a.lods.length == 0);
+    assert(!a.collision.generated.present);
     immutable written = assetToMinifiedJson(a);
     assert(written == golden, "minified write must match golden exactly");
+
+    enum v1 = `{"format":"game-engine.asset","version":1,"kind":"model","meta":{"name":"crate"},"render":{"source":"assets/models/pbr_cube.gltf","primitive":null},"materials":[],"collision":{"triangleMesh":{"source":"render"}}}`;
+    auto migrated = parseAssetJson(v1);
+    assert(migrated.lods.length == 0);
+    assert(migrated.collision.triangleMesh.source == "render");
+    assert(!migrated.collision.generated.present);
 
     auto b = parseAssetJson(written);
     assert(assetToMinifiedJson(b) == golden);
@@ -209,7 +235,7 @@ void runAssetFileGoldenTests() {
 
     // Primitive asset round-trip.
     enum primGolden =
-        `{"format":"game-engine.asset","version":1,"kind":"primitive",`
+        `{"format":"game-engine.asset","version":2,"kind":"primitive",`
         ~ `"meta":{"name":"box1"},`
         ~ `"render":{"source":null,"primitive":{"kind":"box","dims":[1,2,3]}},`
         ~ `"materials":[{"baseColor":[1,0,0,1],"metallic":0,"roughness":1,`
@@ -222,6 +248,19 @@ void runAssetFileGoldenTests() {
     assert(p.render.primitive.dims == [1f, 2f, 3f]);
     assert(!p.collision.hasConvexHull);
     assert(assetToMinifiedJson(p) == primGolden);
+
+    enum lodGolden =
+        `{"format":"game-engine.asset","version":2,"kind":"model","meta":{"name":"lod"},`
+        ~ `"render":{"source":"m.gltf","primitive":null},"materials":[],"lods":[{"indexOffset":0,"indexCount":12,"error":0},{"indexOffset":12,"indexCount":6,"error":0.02}],`
+        ~ `"collision":{"triangleMesh":{"source":"render"},"generated":{"error":0.05,"triangles":[0,1,2],"hull":[[0,0,0],[1,0,0]]}}}`;
+    auto lod = parseAssetJson(lodGolden);
+    assert(lod.lods.length == 2);
+    assert(lod.lods[1].indexCount == 6);
+    assert(lod.collision.triangleMesh.source == "render");
+    assert(lod.collision.generated.present);
+    assert(lod.collision.generated.triangles == [0u, 1, 2]);
+    assert(lod.collision.generated.hull.length == 2);
+    assert(assetToMinifiedJson(lod) == lodGolden);
 }
 
 @safe unittest {
@@ -254,6 +293,9 @@ private AssetFile parseAssetBody(ref JSONValue root) {
 
     enforce("materials" in root, "asset missing 'materials'");
     a.materials = parseMaterials(root["materials"]);
+
+    if ("lods" in root)
+        a.lods = parseLods(root["lods"]);
 
     enforce("collision" in root, "asset missing 'collision'");
     a.collision = parseCollision(root["collision"]);
@@ -336,9 +378,24 @@ private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
     return m;
 }
 
+private AssetLod[] parseLods(ref JSONValue v) {
+    enforce(v.type == JSONType.array, "lods must be array");
+    AssetLod[] lods;
+    foreach (ref item; jsonArray(v)) {
+        enforce(item.type == JSONType.object, "lods[] must be object");
+        requireOnlyKeys(item, ["indexOffset", "indexCount", "error"], "lods[]");
+        AssetLod lod;
+        lod.indexOffset = cast(uint) jsonInt(item["indexOffset"], "lods.indexOffset");
+        lod.indexCount = cast(uint) jsonInt(item["indexCount"], "lods.indexCount");
+        lod.error = jsonFloat(item["error"], "lods.error");
+        lods ~= lod;
+    }
+    return lods;
+}
+
 private AssetCollision parseCollision(ref JSONValue v) {
     enforce(v.type == JSONType.object, "'collision' must be object");
-    requireOnlyKeys(v, ["triangleMesh", "convexHull"], "collision");
+    requireOnlyKeys(v, ["triangleMesh", "convexHull", "generated"], "collision");
 
     AssetCollision c;
     if ("triangleMesh" in v) {
@@ -349,7 +406,24 @@ private AssetCollision parseCollision(ref JSONValue v) {
         c.hasConvexHull = true;
         c.convexHull = parseConvexHull(v["convexHull"]);
     }
+    if ("generated" in v)
+        c.generated = parseGenerated(v["generated"]);
     return c;
+}
+
+private AssetGeneratedCollision parseGenerated(ref JSONValue v) {
+    enforce(v.type == JSONType.object, "collision.generated must be object");
+    requireOnlyKeys(v, ["error", "triangles", "hull"], "collision.generated");
+    AssetGeneratedCollision g;
+    g.present = true;
+    g.error = jsonFloat(v["error"], "collision.generated.error");
+    enforce(v["triangles"].type == JSONType.array, "collision.generated.triangles must be array");
+    foreach (ref t; jsonArray(v["triangles"]))
+        g.triangles ~= cast(uint) jsonInt(t, "collision.generated.triangles[]");
+    enforce(v["hull"].type == JSONType.array, "collision.generated.hull must be array");
+    foreach (ref pt; jsonArray(v["hull"]))
+        g.hull ~= jsonFloat3(pt, "collision.generated.hull[]");
+    return g;
 }
 
 private AssetTriangleMesh parseTriangleMesh(ref JSONValue v) {
@@ -395,7 +469,23 @@ private void writeAsset(ref Appender!string app, const ref AssetFile a) {
             app.put(',');
         writeMaterial(app, m);
     }
-    app.put(`],"collision":`);
+    app.put(`]`);
+    if (a.lods.length) {
+        app.put(`,"lods":[`);
+        foreach (i, ref lod; a.lods) {
+            if (i)
+                app.put(',');
+            app.put(`{"indexOffset":`);
+            app.formattedWrite("%d", lod.indexOffset);
+            app.put(`,"indexCount":`);
+            app.formattedWrite("%d", lod.indexCount);
+            app.put(`,"error":`);
+            writeFloat(app, lod.error);
+            app.put('}');
+        }
+        app.put(']');
+    }
+    app.put(`,"collision":`);
     writeCollision(app, a.collision);
     app.put('}');
 }
@@ -459,6 +549,32 @@ private void writeCollision(ref Appender!string app, const ref AssetCollision c)
         app.formattedWrite("%d", c.convexHull.maxVertexCount);
         app.put(`,"points":[`);
         foreach (i, ref p; c.convexHull.points) {
+            if (i)
+                app.put(',');
+            app.put('[');
+            writeFloat(app, p[0]);
+            app.put(',');
+            writeFloat(app, p[1]);
+            app.put(',');
+            writeFloat(app, p[2]);
+            app.put(']');
+        }
+        app.put(`]}`);
+        first = false;
+    }
+    if (c.generated.present) {
+        if (!first)
+            app.put(',');
+        app.put(`"generated":{"error":`);
+        writeFloat(app, c.generated.error);
+        app.put(`,"triangles":[`);
+        foreach (i, t; c.generated.triangles) {
+            if (i)
+                app.put(',');
+            app.formattedWrite("%d", t);
+        }
+        app.put(`],"hull":[`);
+        foreach (i, ref p; c.generated.hull) {
             if (i)
                 app.put(',');
             app.put('[');
