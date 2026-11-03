@@ -105,6 +105,6 @@ void main() {
         });
         writefln("decodeVertexBuffer  C++ %.3f GB/s   D/C++ %.3f", cVert, cVert / dVert);
         writefln("decodeIndexBuffer   C++ %.3f GB/s   D/C++ %.3f", cIdx, cIdx / dIdx);
-        writefln("decodeFilterOct8    C++ %.3f GB/s   D/C++ %.3f  (C++ is rsqrt SIMD; D is scalar)", cOct, cOct / dOct);
+        writefln("decodeFilterOct8    C++ %.3f GB/s   C++/D %.3f  (C++ is rsqrt; D LDC x86-64 is exact sqrtps)", cOct, cOct / dOct);
     }
 }

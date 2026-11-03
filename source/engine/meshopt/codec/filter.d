@@ -52,7 +52,7 @@ private int roundSnorm(float x, float s) pure nothrow @nogc {
     return cast(int)(x * s + round);
 }
 
-private void decodeOct8(ubyte[] data, size_t count) pure nothrow @nogc {
+package void decodeOct8(scope ubyte[] data, size_t count) pure nothrow @nogc {
     enum float maxv = 127.0f;
     foreach (i; 0 .. count) {
         size_t o = i * 4;
@@ -89,12 +89,19 @@ private void decodeOct16(ubyte[] data, size_t count) pure nothrow @nogc {
 }
 
 /// Decode octahedral unit vectors in place. `stride` is 4 (snorm8) or 8 (snorm16).
-void decodeFilterOct(ubyte[] buffer, size_t count, size_t stride) pure nothrow @nogc {
+void decodeFilterOct(scope ubyte[] buffer, size_t count, size_t stride) nothrow @nogc {
     assert(stride == 4 || stride == 8);
     assert(buffer.length >= count * stride);
-    if (stride == 4)
-        decodeOct8(buffer, count);
-    else
+    if (stride == 4) {
+        size_t done = 0;
+        version (LDC)
+        version (X86_64) {
+            import engine.meshopt.codec.filter_simd : decodeOct8SimdPrefix;
+            done = decodeOct8SimdPrefix(buffer, count);
+        }
+        if (done < count)
+            decodeOct8(buffer[done * 4 .. $], count - done);
+    } else
         decodeOct16(buffer, count);
 }
 

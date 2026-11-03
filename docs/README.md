@@ -24,6 +24,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-physics-api.md](plan-physics-api.md) | P0–P4+P6 done; P5 mesh deferred | Complete gameplay API on top of Box3D (#1) |
 | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | Done (#9 deferred) | GC-safe adoption + static lint (#2) |
 | [plan-pbr.md](plan-pbr.md) | Done | PBR + PCF shadow + IBL (#3) |
+| [plan-meshoptimizer.md](plan-meshoptimizer.md) | Done through M9; M10 not started | Pure-D meshoptimizer v1.3: import optimization, tangents, LODs, codecs, meshlets |
 | [plan-post-processing.md](plan-post-processing.md) | Done | Bloom, tone mapping, FXAA (#4) |
 | [plan-animation.md](plan-animation.md) | Pending | Skeletal animation + glTF skinning (#5) |
 | [plan-editor-ux.md](plan-editor-ux.md) | Delivered (v1) | Full scene editor UX (#6) |

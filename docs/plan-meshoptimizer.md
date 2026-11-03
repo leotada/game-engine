@@ -1,6 +1,6 @@
 # Port Plan: meshoptimizer → pure D (`engine.meshopt.*`)
 
-> **Status:** M0 landed (decisions D1–D4 in §12, M0 corrections in §2.1) · **Upstream:** [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) **v1.3** commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (`MESHOPTIMIZER_VERSION 1030`, released 2026-09-25) · **License:** MIT (© 2016-2026 Arseny Kapoulkine), text in [third-party-licenses.md](third-party-licenses.md)
+> **Status:** Landed through M9 on 2026-11-02. M10 (GPU cluster LOD) is optional and not started. Decisions D1–D4 are in §12; the progress log is §11. · **Upstream:** [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) **v1.3** commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (`MESHOPTIMIZER_VERSION 1030`, released 2026-09-25) · **License:** MIT (© 2016-2026 Arseny Kapoulkine), text in [third-party-licenses.md](third-party-licenses.md)
 >
 > Related: [graphics.md](graphics.md) · [plan-pbr.md](plan-pbr.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [jph-port-plan.md](jph-port-plan.md) (lessons learned) · [roadmap.md](roadmap.md)
 
@@ -12,9 +12,9 @@ This document is the plan for rewriting meshoptimizer, a C++ mesh-processing lib
 
 ### 1.1 Why port meshoptimizer
 
-meshoptimizer is the industry-standard toolkit for preparing triangle meshes for the GPU. The engine currently has none of its capabilities:
+meshoptimizer is the industry-standard toolkit for preparing triangle meshes for the GPU. Before this port, the engine had none of its capabilities:
 
-| Gap in the engine today | What meshoptimizer brings |
+| Gap before the port | What meshoptimizer brings |
 |:---|:---|
 | Imported glTF meshes are uploaded as-is (`engine/assets/gltf.d` → `TexMesh.fromData`), with no reindexing or reordering | Vertex deduplication, vertex-cache / overdraw / vertex-fetch optimization (typically 10–40% faster vertex processing) |
 | No LOD system; every object renders at full detail | Quadric-error simplifier with attribute awareness, locked borders, error metrics for screen-space LOD selection |
@@ -281,21 +281,21 @@ One phase equals one commit (or a short commit series for M4 and M6). Every phas
 
 | # | Phase | Upstream source | Est. D LOC | Depends on | Status |
 |:---|:---|:---|---:|:---|:---|
-| M0 | Infrastructure: package skeleton, scratch, bits/hash/sort, quantize, oracle + golden harness, bench harness | `allocator`, `quantization`, header | ~900 | — | ✅ Done |
-| M1 | Indexing & reindexing | `indexgenerator` | ~800 | M0 | ⏳ Pending |
-| M2 | Pipeline optimizers + analyzers + stripifier | `vcache`, `overdraw`, `vfetch`, `indexanalyzer`, `rasterizer`, `stripifier` | ~1300 | M1 | ⏳ Pending |
-| **G1** | **Go/No-Go checkpoint**: performance and equivalence review | — | — | M2 | ⏳ Pending |
-| M3 | Engine integration I: import-time optimization pipeline, 32-bit indices, stats in editor | — | ~700 | G1 | ⏳ Pending |
-| M8 | Tangent & normal generation + PBR integration (real tangents replace the shader's fixed-axis approximation) | `tangentspace` | ~650 | M3 | ⏳ Pending |
-| M4a | Simplifier core: topology, quadrics, collapse loop, `simplify` | `simplifier` (≈55%) | ~1600 | M3 | ⏳ Pending |
-| M4b | Simplifier attributes & options: `WithAttributes`, `WithUpdate`, vertex locks, Permissive, Regularize(Light), PreserveFolds, ErrorClamped, Prune option | `simplifier` (≈30%) | ~900 | M4a | ⏳ Pending |
-| M4c | `simplifySloppy`, `simplifyPrune`, `simplifyPoints`, `simplifyScale` | `simplifier` (≈15%) | ~500 | M4a | ⏳ Pending |
-| M5 | Engine integration II: LOD chains, `MeshLod` component, shadow LOD, collision proxies | — | ~900 | M4b/c | ⏳ Pending |
-| M6a | Codecs (scalar): index + vertex + filters | `indexcodec`, `vertexcodec`, `vertexfilter` (scalar paths) | ~1900 | M0 | ⏳ Pending |
-| M6b | Codec SIMD decode: SSSE3 / AVX-512 / NEON (LDC) | SIMD paths | ~1000 | M6a | ⏳ Pending |
-| M7 | Engine integration III: `EXT_meshopt_compression` + `KHR_mesh_quantization` in glTF loader, compressed `.asset` mesh payloads | — | ~800 | M6a | ⏳ Pending |
-| M9 | Clusters: meshlets, bounds, meshlet optimizer/codec, spatial order, partitioning | `clusterizer`, `meshletutils`, `meshletcodec`, `spatialorder`, `partition` | ~3200 | M2 | ⏳ Pending |
-| M10 | Research: GPU cluster culling + cluster LOD (Nanite-style) prototype | `demo/clusterlod.h`, `demo/nanite.cpp` | ~1500 | M9, M4b | 🔬 Optional |
+| M0 | Infrastructure: package skeleton, scratch, bits/hash/sort, quantize, oracle + golden harness, bench harness | `allocator`, `quantization`, header | ~900 | — | Done (`353670f`) |
+| M1 | Indexing & reindexing | `indexgenerator` | ~800 | M0 | Done (`5b79f97`) |
+| M2 | Pipeline optimizers + analyzers + stripifier | `vcache`, `overdraw`, `vfetch`, `indexanalyzer`, `rasterizer`, `stripifier` | ~1300 | M1 | Done (`f44db2c`) |
+| **G1** | **Go/No-Go checkpoint**: performance and equivalence review | — | — | M2 | Done: LDC 1.10× clang, stay pure D |
+| M3 | Engine integration I: import-time optimization pipeline, 32-bit indices, stats in editor | — | ~700 | G1 | Done (`d430fca`). Inspector UI skipped |
+| M8 | Tangent & normal generation + PBR integration (real tangents replace the shader's fixed-axis approximation) | `tangentspace` | ~650 | M3 | Done (`6b981a3`) |
+| M4a | Simplifier core: topology, quadrics, collapse loop, `simplify` | `simplifier` (≈55%) | ~1600 | M3 | Done (`0ec3da2`) |
+| M4b | Simplifier attributes & options: `WithAttributes`, `WithUpdate`, vertex locks, Permissive, Regularize(Light), PreserveFolds, ErrorClamped, Prune option | `simplifier` (≈30%) | ~900 | M4a | Done (`0ec3da2`) |
+| M4c | `simplifySloppy`, `simplifyPrune`, `simplifyPoints`, `simplifyScale` | `simplifier` (≈15%) | ~500 | M4a | Done (`0ec3da2`) |
+| M5 | Engine integration II: LOD chains, `MeshLod` component, shadow LOD, collision proxies | — | ~900 | M4b/c | Done (`5c02dd6`). No lod-stress demo or LOD slider |
+| M6a | Codecs (scalar): index + vertex + filters | `indexcodec`, `vertexcodec`, `vertexfilter` (scalar paths) | ~1900 | M0 | Done (`ab1d77a`) |
+| M6b | Codec SIMD decode: SSSE3 / AVX-512 / NEON (LDC) | SIMD paths | ~1000 | M6a | Done (`23fd849`). Oct8 exact-sqrt SSE2 is 1.24× the C++ rsqrt kernel |
+| M7 | Engine integration III: `EXT_meshopt_compression` + `KHR_mesh_quantization` in glTF loader, compressed `.asset` mesh payloads | — | ~800 | M6a | Done (`d836e2c`). Compressed `.asset` blob deferred |
+| M9 | Clusters: meshlets, bounds, meshlet optimizer/codec, spatial order, partitioning | `clusterizer`, `meshletutils`, `meshletcodec`, `spatialorder`, `partition` | ~3200 | M2 | Done (`307f5ba`). Meshlet codec is scalar |
+| M10 | Research: GPU cluster culling + cluster LOD (Nanite-style) prototype | `demo/clusterlod.h`, `demo/nanite.cpp` | ~1500 | M9, M4b | Not started (optional) |
 
 The delivery order is the table order (D1): import optimization (M0–M3), then **tangents (M8)**, then **LODs (M4/M5)**, then **compression (M6/M7)**, then clusters (M9/M10). Tangents come first because they are small and independent, and because they fix a visible bug: `assets/shaders/textured3d_pbr.wgsl:60-65` derives the tangent frame by Gram-Schmidt from a fixed model-space X axis, so normal maps are oriented incorrectly on most meshes. Phase IDs are kept stable; only the order changed. M6 depends only on M0, so it can run in parallel with M4/M5 if two people are working on the port.
 
@@ -666,7 +666,7 @@ Every low-level function also accepts an optional trailing `ref MeshoptScratch s
 
 ### 7.3 Benchmarks
 
-`dub run --config=meshopt-bench --build=release --compiler=ldc2` prints this table, which is pasted into §11 at every phase:
+`dub run --config=meshopt-bench --build=release --compiler=ldc2` prints this table. The rows below are the template. The numbers that were actually measured are in §11. No dragon mesh was added to the corpus, so those two rows were not collected. Vertex decode was measured as throughput, not milliseconds: LDC SSSE3 4.34 GB/s versus clang 4.68 GB/s. The 8-bit octahedral filter on LDC is exact `sqrtps` at 1.83 GB/s versus the C++ `rsqrtps` kernel at 2.26 GB/s.
 
 | Function | Mesh | C++ (ms) | D LDC (ms) | D DMD (ms) | LDC ratio |
 |:---|:---|---:|---:|---:|---:|
@@ -748,21 +748,21 @@ Update this section at the end of every phase.
 
 | Phase | Commit | Date | Golden equivalence | LDC ratio (geomean) | Notes |
 |:---|:---|:---|:---|:---|:---|
-| M0 | — | 2026-11-02 | quantize* bit-exact on committed goldens (exhaustive `quantizeHalf` is `version(MeshoptExhaustive)` only) | D-only table in `meshopt-bench` (C++ column with `-version=MeshoptOracle`) | Upstream commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (tag v1.3, `MESHOPTIMIZER_VERSION 1030`). Header is 1724 lines (`wc -l`). No scanned mesh. `encode*Version` setters are not ported. `dub test --config=library` is green on DMD. A full LDC library link fails on the prebuilt DMD `libsymgc-cards.a` (`__dmd_personality_v0`); the M0 unittests themselves pass under ldc2. |
+| M0 | 353670f | 2026-11-02 | quantize* bit-exact on committed goldens (exhaustive `quantizeHalf` is `version(MeshoptExhaustive)` only) | D-only table in `meshopt-bench` (C++ column with `-version=MeshoptOracle`) | Upstream commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (tag v1.3, `MESHOPTIMIZER_VERSION 1030`). Header is 1724 lines (`wc -l`). No scanned mesh. `encode*Version` setters are not ported. `dub test --config=library` is green on DMD. A full LDC library link fails on the prebuilt DMD `libsymgc-cards.a` (`__dmd_personality_v0`); the M0 unittests themselves pass under ldc2. |
 | M1 | 5b79f97 | 2026-11-02 | byte-exact on committed goldens (corpus + odd stride); live `diff --random=10000` matches the C++ oracle | see G1 | `indexgenerator.cpp` is 825 lines. `generateVertexRemapCustom` is a template alias predicate (`meshoptPositionsEqual` when the C callback is null). Empty index slices are the unindexed case. `dub test --config=library` is green on DMD. |
-| M2 | — | 2026-11-02 | byte-exact on committed goldens; live `diff --random=32` (raster on corpus + 8 random) matches the C++ oracle | see G1 | `vcacheoptimizer.cpp` 467, `overdrawoptimizer.cpp` 333, `vfetchoptimizer.cpp` 71, `indexanalyzer.cpp` 125, `rasterizer.cpp` 289, `stripifier.cpp` 296. Upstream sorts only. `float` locals are zeroed explicitly (`float.init` is NaN). |
-| G1 | — | 2026-11-02 | 100% byte-exact | **1.10** LDC, 2.58 DMD (informational) | Decision: **continue**. Grid 64 (8192 tris), clang `-O2 -ffp-contract=off` vs LDC `-O3 -release -mcpu=native` / DMD `-O -release`. LDC ratios: remap 1.01, filter 0.91, shadow 0.89, adjacency 0.71, provoking 1.56, vcache 1.33, fifo 1.15, overdraw 1.25, vfetch 1.70, analyzeCache 1.41, analyzeOverdraw 0.70, stripify 1.10. Worst LDC is 1.70, so no profiling pass. `@trusted` markers are 26 / 2541 lines (1.02%) in the M1+M2 modules. |
+| M2 | f44db2c | 2026-11-02 | byte-exact on committed goldens; live `diff --random=32` (raster on corpus + 8 random) matches the C++ oracle | see G1 | `vcacheoptimizer.cpp` 467, `overdrawoptimizer.cpp` 333, `vfetchoptimizer.cpp` 71, `indexanalyzer.cpp` 125, `rasterizer.cpp` 289, `stripifier.cpp` 296. Upstream sorts only. `float` locals are zeroed explicitly (`float.init` is NaN). |
+| G1 | f44db2c | 2026-11-02 | 100% byte-exact | **1.10** LDC, 2.58 DMD (informational) | Decision: **continue**. Grid 64 (8192 tris), clang `-O2 -ffp-contract=off` vs LDC `-O3 -release -mcpu=native` / DMD `-O -release`. LDC ratios: remap 1.01, filter 0.91, shadow 0.89, adjacency 0.71, provoking 1.56, vcache 1.33, fifo 1.15, overdraw 1.25, vfetch 1.70, analyzeCache 1.41, analyzeOverdraw 0.70, stripify 1.10. Worst LDC is 1.70, so no profiling pass. `@trusted` markers are 26 / 2541 lines (1.02%) in the M1+M2 modules. |
 | M3 | d430fca | 2026-11-02 | M1/M2 goldens unchanged | — | `optimizeMesh` runs at glTF import when `.meta` has no `settings.meshopt` key (explicit `enabled: false` skips it). `uint` indices narrow to `ushort` when every index fits in 65535. Shadow index buffer is bound by both shadow draws. Color draws use the mesh index format and byte size. Editor inspector skipped: the Inspector edits entity Visual kinds, not model-asset `.meta`. Headless editor `--headless-frames=600 --assert-no-gc` passed (0 GC bytes). Demo frame time not measured. |
-| M8 | — | 2026-11-02 | byte-exact vs clang `-O2 -ffp-contract=off` (`generateTangents` 44 cases, `generateNormals` 18) | — | `TexTanVert` stride 48, shader `@location(8)`, bitangent `cross(N, T) * tangent.w`. Fixed-axis fallback stays on the no-tangent variant only. glTF reads `TANGENT` or generates with `compatible` when a normal map is present, then reindexes. `TexMesh.sphere(..., withTangents: true)` uses the same path. Screenshot not taken. Handedness covered by a CPU unittest (mirrored-UV quad). |
+| M8 | 6b981a3 | 2026-11-02 | byte-exact vs clang `-O2 -ffp-contract=off` (`generateTangents` 44 cases, `generateNormals` 18) | — | `TexTanVert` stride 48, shader `@location(8)`, bitangent `cross(N, T) * tangent.w`. Fixed-axis fallback stays on the no-tangent variant only. glTF reads `TANGENT` or generates with `compatible` when a normal map is present, then reindexes. `TexMesh.sphere(..., withTangents: true)` uses the same path. Screenshot not taken. Handedness covered by a CPU unittest (mirrored-UV quad). |
 | M4a | 0ec3da2 | 2026-11-02 | byte-exact indices and `resultError` bits vs clang `-O2 -ffp-contract=off` on the upstream `simplify` tests and the 8×8 grid golden | — | `simplifier.cpp` uses `float` only (no `double`). `lockBorder`, `sparse`, `errorAbsolute`. |
 | M4b | 0ec3da2 | 2026-11-02 | byte-exact on `simplifyWithAttributes`, `simplifyWithUpdate`, locks, and the experimental options exercised by `demo/tests.cpp` | — | `prune`, `regularize`, `regularizeLight`, `permissive`, `preserveFolds`, `errorClamped` are experimental, matching upstream. |
 | M4c | 0ec3da2 | 2026-11-02 | byte-exact on the grid golden (`sloppy`, `prune`, `scale`) and the upstream sloppy/prune/points tests | — | Fixed-seed degenerate fuzz (32 meshes). No long libFuzzer run. |
 | M5 | 5c02dd6 | 2026-11-02 | LOD chain unittest: 8×8 grid, 384 indices → second level at most half (oracle `simplify` is 384→192, error bits `3.95285e-05`) | — | `lod-stress` GPU time not measured (no new demo). Editor LOD slider not added. Headless editor `--headless-frames=600 --assert-no-gc`: 0 GC bytes. |
 | M6a | ab1d77a | 2026-11-02 | byte-exact vs scalar C++ (`MESHOPTIMIZER_NO_SIMD`) on committed goldens, both directions, v0/v1, levels 0–3 | scalar vertex ~1.29× (D slower than clang scalar); index ~1.21× | Decoders are `@safe nothrow @nogc` and return upstream codes. Version is an argument. `dub test --config=library` green on DMD. libFuzzer+ASan of the decoders ran 181s (902473 inputs) with no crash. |
-| M6b | 23fd849 | 2026-11-02 | LDC SSSE3 decode matches the scalar goldens | vertex SIMD 4.34 / 4.68 GB/s = 1.08× (pass ≤1.15). Index 2.00 / 2.42 GB/s = 1.21× (pass ≤1.3, no SIMD upstream). Oct8 0.59 / 2.27 GB/s = 3.83× **miss** | SSSE3 vertex decode via `ldc.gccbuiltins_x86`, runtime `core.cpuid` (SSSE3+POPCNT). AVX-512 is not dispatched (this host has none; upstream only compiles it when the target flags are on). NEON is not compiled on x86_64. Oct8 stays scalar: upstream SSE uses `rsqrt` and is not bit-exact with `SIMD_FALLBACK`. D scalar oct8 is faster than C++ scalar (0.59 vs 0.19 GB/s). |
+| M6b | 23fd849 | 2026-11-02 | LDC SSSE3 decode matches the scalar goldens | vertex SIMD 4.34 / 4.68 GB/s = 1.08× (pass ≤1.15). Index 2.00 / 2.42 GB/s = 1.21× (pass ≤1.3, no SIMD upstream). Oct8 exact-sqrt SSE2 1.83 / 2.26 GB/s = 1.24× (was scalar 0.59 / 2.27 = 3.83×). | SSSE3 vertex decode via `ldc.gccbuiltins_x86`, runtime `core.cpuid` (SSSE3+POPCNT). AVX-512 is not dispatched (this host has none; upstream only compiles it when the target flags are on). NEON is not compiled on x86_64. Oct8 on LDC x86-64 uses SSE2 `sqrtps` plus the scalar ±0.5 truncation, so it matches `decodeOct8` on all 2^24 byte inputs. Upstream `rsqrtps` (and one or two Newton steps) is not byte-exact, so it is not used. DMD stays on the scalar path. |
 | M7 | d836e2c | 2026-11-02 | loader unit test: meshopt triangles+attributes and ushort-normalized positions | — | `EXT_meshopt_compression` is decoded before accessor reads. `KHR_mesh_quantization` dequantizes to float in `TexVert`. The node that instances mesh 0 (parents included) is baked in, which is the gltfpack rescale. Indices stay `ushort`; a decoded index above 65535 fails with the existing error. Compressed `.asset` mesh blob is **deferred** (asset format is still v1 with no migration path for a new payload). |
-| M9 | — | 2026-11-02 | byte-exact vs the C++ oracle on `tests/meshopt/golden/m9/corpus.bin` (9 meshes, including pirate and stride-4) | — | Scalar meshlet codec; defined decode bytes match the SIMD oracle, and no separate LDC SIMD kernel was added. `clusterBackfaceOrtho`, `clusterBackfacePerspective`, and `clusterOutsidePlane` are `@nogc` helpers in `cluster.d` and are not called from the frame loop. No GPU culling and no ECS system. Reduced clusterfuzz (16 fixed seeds) is a unittest. `dub test --config=library` is green on DMD. LDC unittests of these modules pass under `ldc2 -preview=dip1000 --fp-contract=off`. A full LDC library link still fails on the prebuilt DMD `libsymgc-cards.a`. |
-| M10 | — | 2026-11-02 | — | — | Blocked on M4: the cluster LOD DAG merges partitioned groups with `simplifyWithAttributes`, and the simplifier is not ported yet. |
+| M9 | 307f5ba | 2026-11-02 | byte-exact vs the C++ oracle on `tests/meshopt/golden/m9/corpus.bin` (9 meshes, including pirate and stride-4) | — | Scalar meshlet codec; defined decode bytes match the SIMD oracle, and no separate LDC SIMD kernel was added. `clusterBackfaceOrtho`, `clusterBackfacePerspective`, and `clusterOutsidePlane` are `@nogc` helpers in `cluster.d` and are not called from the frame loop. No GPU culling and no ECS system. Reduced clusterfuzz (16 fixed seeds) is a unittest. `dub test --config=library` is green on DMD. LDC unittests of these modules pass under `ldc2 -preview=dip1000 --fp-contract=off`. A full LDC library link still fails on the prebuilt DMD `libsymgc-cards.a`. |
+| M10 | — | 2026-11-02 | — | — | Not started. Optional. M4 `simplifyWithAttributes` (`0ec3da2`) and M9 meshlets (`307f5ba`) are both landed. The prototype was specified to ship only if it beats per-object LOD on a lod-stress scene, and that demo was not built. |
 
 ---
 

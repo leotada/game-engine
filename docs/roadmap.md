@@ -4,7 +4,7 @@ Consolidated overview of remaining engine work. The initial roadmap (phases 1–
 
 The native Jolt port (`engine.jph`) was **cancelled** and removed — see [jph-port-plan.md](jph-port-plan.md).
 
-Mesh processing (meshoptimizer, pure D) is in progress — see [plan-meshoptimizer.md](plan-meshoptimizer.md).
+Mesh processing is the pure-D port of meshoptimizer v1.3 in `engine.meshopt`. Import optimization, tangents, LOD chains, glTF `EXT_meshopt_compression`, and meshlets are landed. GPU cluster LOD, the compressed `.asset` mesh blob, and the editor LOD slider are not. See [plan-meshoptimizer.md](plan-meshoptimizer.md).
 
 ## Suggested Priority
 
