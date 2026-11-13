@@ -38,3 +38,7 @@ enum fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wg
 enum blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;
 
 enum skinnedShaderSource = import("skinned.wgsl");
+
+enum skyDomeShaderSource = preprocessShader(import("sky_dome.wgsl"), "sky_dome.wgsl").code;
+enum causticsBedShaderSource = preprocessShader(import("caustics_bed.wgsl"), "caustics_bed.wgsl").code;
+enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;

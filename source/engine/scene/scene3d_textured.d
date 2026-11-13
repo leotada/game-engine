@@ -158,6 +158,15 @@ struct Scene3DTextured {
     /// IBL layout (@group(2)) — for custom environment construction.
     auto iblLayout() nothrow @nogc { return pipeline.iblBindGroupLayout; }
 
+    /// Frame bind group layout (@group(0)) — shared with custom scene-space passes.
+    auto frameLayout() nothrow @nogc { return pipeline.frameBindGroupLayout; }
+
+    /// Active frame bind group (@group(0)) populated by `begin(...)`.
+    auto frameGroup() nothrow @nogc { return frameBindGroup; }
+
+    /// Active IBL bind group (@group(2)) populated by `begin(...)` / `setIbl(...)`.
+    auto iblGroup() nothrow @nogc { return iblBindGroup; }
+
     /// Safely hot-reload the textured 3D PBR pipeline without reallocating bind groups.
     bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;

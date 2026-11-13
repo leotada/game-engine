@@ -1,29 +1,33 @@
 /// Interactive OpenPBR Surface v1.1 Ocean & River Water Showcase.
 ///
-/// Demonstrates what the current single-pass OpenPBR v1.1 pipeline renders
-/// (animated 6-octave Gerstner waves with analytical tangent/normal frames,
-/// physical IOR 1.333, dual-lobe specular + clearcoat water film, anisotropic
-/// river flow, Charlie crest fuzz, Fresnel-modulated opacity over a submerged
-/// pebble bed, wet vs. dry vs. mossy shoreline rocks with coat darkening,
-/// F82 metal and thin-film iridescent floating buoys, and multi-light PCF
-/// shadows) and serves as the testbed for upcoming OPBR-6..9 phases
-/// (layer texture maps, multi-pass refraction, SSS, local reflection probes/SSR).
+/// Renders realistic water in a single HDR pass using dedicated WGSL shaders:
+/// GPU 6-octave Gerstner wave displacement (160x160 grid), 4-octave
+/// procedural capillary micro-normals with river streamline deflection around
+/// boulders/piers, analytical Beer-Lambert depth absorption, backlit wave-crest
+/// subsurface scattering, crisp whitecap & obstacle wake foam, animated RGB
+/// Voronoi riverbed caustics modulated by shadows, and a coherent procedural
+/// atmospheric sky dome with drifting clouds and sun corona.
 module demo.water;
 
-import std.math : cos, fabs, sin, sqrt, PI, PI_2;
+import std.math : cos, fabs, sin, sqrt, tan, PI, PI_2;
 
+import bindings.wgpu;
 import engine.app;
 import engine.assets.bmp : loadBmpTexture;
 import engine.assets.gltf : loadGltfMesh;
 import engine.core.log;
+import engine.core.pod : isPod;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
+import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
+import engine.gpu.shaders : skyDomeShaderSource, causticsBedShaderSource, waterSurfaceShaderSource;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureFilter, TextureWrap;
-import engine.graphics.types : Color4, InstanceData, TexTanVert;
+import engine.graphics.types : Color4, InstanceData, TexTanVert, TexVert;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.platform.input : InputState, Key, MouseButton;
@@ -37,7 +41,7 @@ import engine.scene.scene3d_textured : Scene3DTextured;
 
 private enum int W = 1280;
 private enum int H = 720;
-private enum uint WATER_GRID = 64;
+private enum uint WATER_GRID = 160;
 private enum float WATER_HALF = 14.0f;
 
 private struct WaveComponent {
@@ -194,34 +198,256 @@ private WaveSample sampleGerstner(float x, float z, float time, bool riverMode, 
     return s;
 }
 
-private void fillWaterGridVertices(TexTanVert[] verts, float time, bool riverMode, float waveScale) nothrow @nogc {
+/// GPU uniform payload matching `WaterUniforms` in `assets/shaders/common/water_env.wgsl`.
+private struct WaterUniforms {
+    float[4] camForward;       // xyz = forward, w = tanHalfFov
+    float[4] camRight;         // xyz = right,   w = aspect
+    float[4] camUp;            // xyz = up,      w = waterHalf
+    float[4] params0;          // x = time, y = waveScale, z = gridSpan, w = seaFloorY
+    uint[4]  flags0;           // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
+    uint[4]  counts;           // x = obstacleCount, y = waveCount, z = 0, w = 0
+    float[4][6]  wavesA;       // dirX, dirZ, wavelength, amplitude
+    float[4][6]  wavesB;       // steepness, speedScale, 0, 0
+    float[4][16] obstacles;    // x, z, radius, strength
+}
+
+mixin ValidateUniformLayout!WaterUniforms;
+static assert(WaterUniforms.sizeof == 544);
+
+/// Lightweight static vertex+index GPU mesh for stride-32 `TexVert` buffers.
+private struct StaticMesh32 {
+    WGPUBuffer vbuf;
+    WGPUBuffer ibuf;
+    ulong vSize;
+    ulong iSize;
+    uint indexCount;
+
+    @disable this(this);
+
+    static StaticMesh32 create(ref GpuContext gpu, scope const(TexVert)[] verts, scope const(ushort)[] indices) @trusted {
+        StaticMesh32 m;
+        auto dev = gpu.getDevice();
+        auto q   = gpu.getQueue();
+        m.vSize = verts.length * TexVert.sizeof;
+        m.iSize = indices.length * ushort.sizeof;
+        m.vbuf = createVertexBuffer(dev, q, verts.ptr, m.vSize);
+        m.ibuf = createIndexBuffer(dev, q, indices.ptr, m.iSize);
+        m.indexCount = cast(uint) indices.length;
+        return m;
+    }
+
+    void destroy() nothrow @nogc {
+        destroyBuffer(vbuf); vbuf = null;
+        destroyBuffer(ibuf); ibuf = null;
+    }
+}
+
+private void drawNonIndexed(ref FrameContext frame, uint vertexCount) nothrow @nogc @trusted {
+    wgpuRenderPassEncoderDraw(frame.pass, vertexCount, 1, 0, 0);
+}
+
+/// Custom sky-dome, procedural caustics bed, and GPU-Gerstner water pipelines
+/// rendered directly inside the single HDR scene pass without modifying Renderer.
+private struct WaterShaderPipelines {
+    WGPUBindGroupLayout waterBgLayout;
+    WGPUPipelineLayout  skyPipeLayout;
+    WGPUPipelineLayout  pbrPipeLayout;
+    WGPUShaderModule    skyMod;
+    WGPUShaderModule    bedMod;
+    WGPUShaderModule    waterMod;
+    WGPURenderPipeline  skyPipe;
+    WGPURenderPipeline  bedPipe;
+    WGPURenderPipeline  waterPipe;
+    WGPUBuffer          ubo;
+    WGPUBindGroup       waterBg;
+
+    @disable this(this);
+
+    static WaterShaderPipelines create(ref GpuContext gpu,
+                                       WGPUBindGroupLayout frameLayout,
+                                       WGPUBindGroupLayout iblLayout) @trusted {
+        WaterShaderPipelines p;
+        auto dev = gpu.getDevice();
+        auto colorFmt = Renderer.sceneFormat();
+
+        WGPUBindGroupLayoutEntry bgle;
+        bgle.binding = 0;
+        bgle.visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
+        bgle.buffer.type = WGPUBufferBindingType.uniform;
+        bgle.buffer.minBindingSize = WaterUniforms.sizeof;
+
+        WGPUBindGroupLayoutDescriptor bglDesc;
+        bglDesc.entryCount = 1;
+        bglDesc.entries = &bgle;
+        p.waterBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &bglDesc);
+
+        WGPUBindGroupLayout[2] skyLayouts = [frameLayout, p.waterBgLayout];
+        WGPUPipelineLayoutDescriptor skyPlDesc;
+        skyPlDesc.bindGroupLayoutCount = 2;
+        skyPlDesc.bindGroupLayouts = skyLayouts.ptr;
+        p.skyPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &skyPlDesc);
+
+        WGPUBindGroupLayout[3] pbrLayouts = [frameLayout, p.waterBgLayout, iblLayout];
+        WGPUPipelineLayoutDescriptor pbrPlDesc;
+        pbrPlDesc.bindGroupLayoutCount = 3;
+        pbrPlDesc.bindGroupLayouts = pbrLayouts.ptr;
+        p.pbrPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &pbrPlDesc);
+
+        p.ubo = createUniformBuffer(dev, WaterUniforms.sizeof);
+        p.waterBg = createUniformBindGroup(dev, p.waterBgLayout, p.ubo, WaterUniforms.sizeof);
+
+        p.skyMod   = createShaderModule(dev, skyDomeShaderSource.ptr);
+        p.bedMod   = createShaderModule(dev, causticsBedShaderSource.ptr);
+        p.waterMod = createShaderModule(dev, waterSurfaceShaderSource.ptr);
+        if (p.skyMod is null || p.bedMod is null || p.waterMod is null) {
+            fatal("Failed to compile water/sky/caustics WGSL shader modules");
+        }
+
+        // 1. Sky dome pipeline (fullscreen triangle, depth <= 1.0, no depth write)
+        {
+            WGPUColorTargetState colorTarget;
+            colorTarget.format = colorFmt;
+            colorTarget.writeMask = WGPUColorWriteMask.all;
+
+            WGPUFragmentState fragState;
+            fragState.module_ = p.skyMod;
+            fragState.entryPoint = wgpuStringView("fs_main");
+            fragState.targetCount = 1;
+            fragState.targets = &colorTarget;
+
+            WGPUDepthStencilState depthState;
+            depthState.format = WGPUTextureFormat.depth24Plus;
+            depthState.depthWriteEnabled = WGPUOptionalBool.false_;
+            depthState.depthCompare = WGPUCompareFunction.lessEqual;
+
+            WGPURenderPipelineDescriptor desc;
+            desc.layout = p.skyPipeLayout;
+            desc.vertex.module_ = p.skyMod;
+            desc.vertex.entryPoint = wgpuStringView("vs_main");
+            desc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+            desc.primitive.frontFace = WGPUFrontFace.ccw;
+            desc.primitive.cullMode = WGPUCullMode.none;
+            desc.depthStencil = &depthState;
+            desc.fragment = &fragState;
+            p.skyPipe = wgpuDeviceCreateRenderPipeline(dev, &desc);
+        }
+
+        WGPUVertexAttribute[3] vertAttrs = [
+            { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+            { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+            { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+        ];
+        WGPUVertexBufferLayout vbl;
+        vbl.arrayStride = TexVert.sizeof;
+        vbl.stepMode = WGPUVertexStepMode.vertex;
+        vbl.attributeCount = 3;
+        vbl.attributes = vertAttrs.ptr;
+
+        // 2. Caustics riverbed pipeline (opaque, depth-writing)
+        {
+            WGPUColorTargetState colorTarget;
+            colorTarget.format = colorFmt;
+            colorTarget.writeMask = WGPUColorWriteMask.all;
+
+            WGPUFragmentState fragState;
+            fragState.module_ = p.bedMod;
+            fragState.entryPoint = wgpuStringView("fs_main");
+            fragState.targetCount = 1;
+            fragState.targets = &colorTarget;
+
+            WGPUDepthStencilState depthState;
+            depthState.format = WGPUTextureFormat.depth24Plus;
+            depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+            depthState.depthCompare = WGPUCompareFunction.less;
+
+            WGPURenderPipelineDescriptor desc;
+            desc.layout = p.pbrPipeLayout;
+            desc.vertex.module_ = p.bedMod;
+            desc.vertex.entryPoint = wgpuStringView("vs_main");
+            desc.vertex.bufferCount = 1;
+            desc.vertex.buffers = &vbl;
+            desc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+            desc.primitive.frontFace = WGPUFrontFace.ccw;
+            desc.primitive.cullMode = WGPUCullMode.back;
+            desc.depthStencil = &depthState;
+            desc.fragment = &fragState;
+            p.bedPipe = wgpuDeviceCreateRenderPipeline(dev, &desc);
+        }
+
+        // 3. Dedicated GPU-Gerstner water surface pipeline (alpha blend + depth write)
+        {
+            WGPUBlendState blendState;
+            blendState.color.operation = WGPUBlendOperation.add;
+            blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+            blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+            blendState.alpha.operation = WGPUBlendOperation.add;
+            blendState.alpha.srcFactor = WGPUBlendFactor.one;
+            blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
+            WGPUColorTargetState colorTarget;
+            colorTarget.format = colorFmt;
+            colorTarget.blend = &blendState;
+            colorTarget.writeMask = WGPUColorWriteMask.all;
+
+            WGPUFragmentState fragState;
+            fragState.module_ = p.waterMod;
+            fragState.entryPoint = wgpuStringView("fs_main");
+            fragState.targetCount = 1;
+            fragState.targets = &colorTarget;
+
+            WGPUDepthStencilState depthState;
+            depthState.format = WGPUTextureFormat.depth24Plus;
+            depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+            depthState.depthCompare = WGPUCompareFunction.less;
+
+            WGPURenderPipelineDescriptor desc;
+            desc.layout = p.pbrPipeLayout;
+            desc.vertex.module_ = p.waterMod;
+            desc.vertex.entryPoint = wgpuStringView("vs_main");
+            desc.vertex.bufferCount = 1;
+            desc.vertex.buffers = &vbl;
+            desc.primitive.topology = WGPUPrimitiveTopology.triangleList;
+            desc.primitive.frontFace = WGPUFrontFace.ccw;
+            desc.primitive.cullMode = WGPUCullMode.none;
+            desc.depthStencil = &depthState;
+            desc.fragment = &fragState;
+            p.waterPipe = wgpuDeviceCreateRenderPipeline(dev, &desc);
+        }
+
+        if (p.skyPipe is null || p.bedPipe is null || p.waterPipe is null) {
+            fatal("Failed to create water/sky/caustics render pipelines");
+        }
+        return p;
+    }
+
+    void destroy() nothrow @nogc @trusted {
+        if (waterPipe !is null)     { wgpuRenderPipelineRelease(waterPipe); waterPipe = null; }
+        if (bedPipe !is null)       { wgpuRenderPipelineRelease(bedPipe); bedPipe = null; }
+        if (skyPipe !is null)       { wgpuRenderPipelineRelease(skyPipe); skyPipe = null; }
+        if (waterMod !is null)      { wgpuShaderModuleRelease(waterMod); waterMod = null; }
+        if (bedMod !is null)        { wgpuShaderModuleRelease(bedMod); bedMod = null; }
+        if (skyMod !is null)        { wgpuShaderModuleRelease(skyMod); skyMod = null; }
+        releaseBindGroup(waterBg);
+        destroyBuffer(ubo); ubo = null;
+        if (pbrPipeLayout !is null) { wgpuPipelineLayoutRelease(pbrPipeLayout); pbrPipeLayout = null; }
+        if (skyPipeLayout !is null) { wgpuPipelineLayoutRelease(skyPipeLayout); skyPipeLayout = null; }
+        if (waterBgLayout !is null) { wgpuBindGroupLayoutRelease(waterBgLayout); waterBgLayout = null; }
+    }
+}
+
+private StaticMesh32 buildWaterGridMesh32(ref GpuContext gpu) {
     immutable uint stride = WATER_GRID + 1;
     immutable float span = WATER_HALF * 2.0f;
-    immutable float flowU = riverMode ? 0.14f * time : 0.028f * time;
-    immutable float flowV = riverMode ? 0.015f * time : 0.022f * time;
-
+    auto verts = new TexVert[stride * stride];
     foreach (row; 0 .. stride) {
         immutable float v = cast(float) row / cast(float) WATER_GRID;
         immutable float z = -WATER_HALF + v * span;
         foreach (col; 0 .. stride) {
             immutable float u = cast(float) col / cast(float) WATER_GRID;
             immutable float x = -WATER_HALF + u * span;
-            immutable w = sampleGerstner(x, z, time, riverMode, waveScale);
-            immutable uint idx = row * stride + col;
-            verts[idx] = TexTanVert(
-                [w.position.x, w.position.y, w.position.z],
-                [w.normal.x, w.normal.y, w.normal.z],
-                [u * 7.0f + flowU, v * 7.0f + flowV],
-                [w.tangent.x, w.tangent.y, w.tangent.z, -1.0f]
-            );
+            verts[row * stride + col] = TexVert([x, 0.0f, z], [0.0f, 1.0f, 0.0f], [u, v]);
         }
     }
-}
-
-private TexMesh buildWaterMesh(ref GpuContext gpu, out TexTanVert[] cpuVerts) {
-    immutable uint stride = WATER_GRID + 1;
-    cpuVerts = new TexTanVert[stride * stride];
-    fillWaterGridVertices(cpuVerts, 0.0f, false, 1.0f);
 
     auto indices = new ushort[WATER_GRID * WATER_GRID * 6];
     uint ii = 0;
@@ -240,67 +466,19 @@ private TexMesh buildWaterMesh(ref GpuContext gpu, out TexTanVert[] cpuVerts) {
             indices[ii++] = d;
         }
     }
-    return TexMesh.fromData(gpu, cpuVerts, indices);
+    return StaticMesh32.create(gpu, verts, indices);
 }
 
-private void generateWaterTextures(ref GpuContext gpu,
-                                   out Texture albedoTex,
-                                   out Texture normalTex,
-                                   out Texture mrTex) {
-    enum uint SZ = 256;
-    auto albedo = new ubyte[SZ * SZ * 4];
-    auto normal = new ubyte[SZ * SZ * 4];
-    auto mr     = new ubyte[SZ * SZ * 4];
-    auto height = new float[SZ * SZ];
-
-    foreach (y; 0 .. SZ) {
-        immutable float v = cast(float) y / cast(float) SZ;
-        foreach (x; 0 .. SZ) {
-            immutable float u = cast(float) x / cast(float) SZ;
-            immutable h1 = fbmPeriodic(u, v, 8, 4);
-            immutable h2 = fbmPeriodic(u + 0.37f, v + 0.19f, 16, 3);
-            immutable h = h1 * 0.65f + h2 * 0.35f;
-            height[y * SZ + x] = h;
-
-            // Slight crest foam brightening; base deep tint comes from MaterialParams.baseColor
-            immutable foam = h > 0.64f ? (h - 0.64f) * 2.4f : 0.0f;
-            immutable baseRgb = 205.0f + foam * 50.0f;
-            immutable idx = (y * SZ + x) * 4;
-            albedo[idx + 0] = clampByte(baseRgb);
-            albedo[idx + 1] = clampByte(baseRgb + 8.0f);
-            albedo[idx + 2] = clampByte(baseRgb + 14.0f);
-            albedo[idx + 3] = 255;
-
-            // Roughness in G channel (smooth water troughs, slightly rougher ripples/foam)
-            immutable r = 18.0f + h * 26.0f + foam * 110.0f;
-            mr[idx + 0] = 255;
-            mr[idx + 1] = clampByte(r);
-            mr[idx + 2] = 0; // non-metallic
-            mr[idx + 3] = 255;
-        }
-    }
-
-    enum float NORMAL_STRENGTH = 3.2f;
-    foreach (y; 0 .. SZ) {
-        immutable uint ym = (y + SZ - 1) % SZ;
-        immutable uint yp = (y + 1) % SZ;
-        foreach (x; 0 .. SZ) {
-            immutable uint xm = (x + SZ - 1) % SZ;
-            immutable uint xp = (x + 1) % SZ;
-            immutable float dx = (height[y * SZ + xp] - height[y * SZ + xm]) * NORMAL_STRENGTH;
-            immutable float dy = (height[yp * SZ + x] - height[ym * SZ + x]) * NORMAL_STRENGTH;
-            immutable Vec3 n = Vec3(-dx, -dy, 1.0f).normalized();
-            immutable idx = (y * SZ + x) * 4;
-            normal[idx + 0] = clampByte((n.x * 0.5f + 0.5f) * 255.0f);
-            normal[idx + 1] = clampByte((n.y * 0.5f + 0.5f) * 255.0f);
-            normal[idx + 2] = clampByte((n.z * 0.5f + 0.5f) * 255.0f);
-            normal[idx + 3] = 255;
-        }
-    }
-
-    albedoTex = Texture.fromPixels(gpu, albedo, SZ, SZ);
-    normalTex = Texture.fromPixels(gpu, normal, SZ, SZ);
-    mrTex     = Texture.fromPixels(gpu, mr, SZ, SZ);
+private StaticMesh32 buildBedQuad32(ref GpuContext gpu) {
+    immutable float h = 16.0f;
+    TexVert[4] verts = [
+        TexVert([-h, -1.15f, -h], [0, 1, 0], [0.0f, 0.0f]),
+        TexVert([ h, -1.15f, -h], [0, 1, 0], [8.0f, 0.0f]),
+        TexVert([ h, -1.15f,  h], [0, 1, 0], [8.0f, 8.0f]),
+        TexVert([-h, -1.15f,  h], [0, 1, 0], [0.0f, 8.0f]),
+    ];
+    ushort[6] indices = [0, 2, 1, 0, 3, 2];
+    return StaticMesh32.create(gpu, verts[], indices[]);
 }
 
 private void buildHeightNormalMap(const(float)[] height, uint sz, float strength, ubyte[] normalOut) pure nothrow @nogc {
@@ -323,14 +501,10 @@ private void buildHeightNormalMap(const(float)[] height, uint sz, float strength
 }
 
 private void generateEnvTextures(ref GpuContext gpu,
-                                 out Texture bedAlbedoTex, out Texture bedNormalTex,
                                  out Texture bankAlbedoTex, out Texture bankNormalTex,
                                  out Texture woodAlbedoTex, out Texture woodNormalTex,
                                  out Texture masonryAlbedoTex, out Texture masonryNormalTex) {
     enum uint SZ = 512;
-    auto bedA     = new ubyte[SZ * SZ * 4];
-    auto bedN     = new ubyte[SZ * SZ * 4];
-    auto bedH     = new float[SZ * SZ];
     auto bankA    = new ubyte[SZ * SZ * 4];
     auto bankN    = new ubyte[SZ * SZ * 4];
     auto bankH    = new float[SZ * SZ];
@@ -346,17 +520,6 @@ private void generateEnvTextures(ref GpuContext gpu,
         foreach (x; 0 .. SZ) {
             immutable float u = cast(float) x / cast(float) SZ;
             immutable idx = (y * SZ + x) * 4;
-
-            // 1. Riverbed gravel + submerged pebbles (calibrated linear [0.04..0.14])
-            immutable peb1 = fbmPeriodic(u + 0.21f, v + 0.67f, 16, 4);
-            immutable peb2 = fbmPeriodic(u + 0.53f, v + 0.13f, 32, 3);
-            immutable bedMix = peb1 * 0.62f + peb2 * 0.38f;
-            bedH[y * SZ + x] = bedMix;
-            immutable bedLin = 0.042f + bedMix * 0.095f;
-            bedA[idx + 0] = clampByte(bedLin * 1.06f * 255.0f);
-            bedA[idx + 1] = clampByte(bedLin * 0.96f * 255.0f);
-            bedA[idx + 2] = clampByte(bedLin * 0.78f * 255.0f);
-            bedA[idx + 3] = 255;
 
             // 2. Damp mossy forest earth & dark slate gravel for riverbanks ([0.03..0.10])
             immutable soil = fbmPeriodic(u + 0.11f, v + 0.37f, 12, 4);
@@ -411,13 +574,10 @@ private void generateEnvTextures(ref GpuContext gpu,
         }
     }
 
-    buildHeightNormalMap(bedH, SZ, 3.0f, bedN);
     buildHeightNormalMap(bankH, SZ, 3.4f, bankN);
     buildHeightNormalMap(woodH, SZ, 3.2f, woodN);
     buildHeightNormalMap(masonryH, SZ, 3.6f, masonryN);
 
-    bedAlbedoTex     = Texture.fromPixels(gpu, bedA, SZ, SZ);
-    bedNormalTex     = Texture.fromPixels(gpu, bedN, SZ, SZ);
     bankAlbedoTex    = Texture.fromPixels(gpu, bankA, SZ, SZ);
     bankNormalTex    = Texture.fromPixels(gpu, bankN, SZ, SZ);
     woodAlbedoTex    = Texture.fromPixels(gpu, woodA, SZ, SZ);
@@ -426,16 +586,52 @@ private void generateEnvTextures(ref GpuContext gpu,
     masonryNormalTex = Texture.fromPixels(gpu, masonryN, SZ, SZ);
 }
 
-private TexMesh buildTiledBedMesh(ref GpuContext gpu) {
-    immutable float h = 16.0f;
-    TexTanVert[] verts = [
-        TexTanVert([-h, -1.15f, -h], [0, 1, 0], [0.0f, 0.0f], [1, 0, 0, -1]),
-        TexTanVert([ h, -1.15f, -h], [0, 1, 0], [8.0f, 0.0f], [1, 0, 0, -1]),
-        TexTanVert([ h, -1.15f,  h], [0, 1, 0], [8.0f, 8.0f], [1, 0, 0, -1]),
-        TexTanVert([-h, -1.15f,  h], [0, 1, 0], [0.0f, 8.0f], [1, 0, 0, -1]),
+/// Fills GPU `WaterUniforms` on the stack with camera ray basis, waves, and active obstacles.
+private WaterUniforms packWaterUniforms(ref const Camera camera,
+                                        float time,
+                                        float waveScale,
+                                        bool riverMode,
+                                        bool useOpenPbr,
+                                        bool transparent,
+                                        bool lowSun,
+                                        scope const(RockPlacement)[] rocks) nothrow @nogc {
+    WaterUniforms wu;
+    immutable fwd = (camera.target - camera.position).normalized();
+    immutable right = fwd.cross(camera.up).normalized();
+    immutable up = right.cross(fwd);
+    immutable tanHalfFov = tan(camera.fovY * 0.5f);
+
+    wu.camForward = [fwd.x, fwd.y, fwd.z, tanHalfFov];
+    wu.camRight   = [right.x, right.y, right.z, camera.aspect];
+    wu.camUp      = [up.x, up.y, up.z, WATER_HALF];
+    wu.params0    = [time, waveScale, WATER_HALF * 2.0f, -1.15f];
+    wu.flags0     = [
+        riverMode ? 1u : 0u,
+        useOpenPbr ? 1u : 0u,
+        transparent ? 1u : 0u,
+        lowSun ? 1u : 0u,
     ];
-    ushort[] indices = [0, 2, 1, 0, 3, 2];
-    return TexMesh.fromData(gpu, verts, indices);
+
+    immutable waves = riverMode ? RIVER_WAVES : OCEAN_WAVES;
+    foreach (i, ref w; waves) {
+        wu.wavesA[i] = [w.dirX, w.dirZ, w.wavelength, w.amplitude];
+        wu.wavesB[i] = [w.steepness, w.speedScale, 0.0f, 0.0f];
+    }
+
+    uint obsCount = 0;
+    if (riverMode) {
+        // Wooden bridge piers breaking stream flow & forming downstream wakes.
+        wu.obstacles[obsCount++] = [-1.5f, -4.6f, 0.42f, 1.0f];
+        wu.obstacles[obsCount++] = [-1.5f,  4.6f, 0.42f, 1.0f];
+    }
+    foreach (ref rk; rocks) {
+        if (rk.kind != 1 || obsCount >= 16) continue;
+        // Approximate emergent boulder footprint radius from mesh scale.
+        immutable r = 0.34f * (rk.scale.x + rk.scale.z) * 0.5f;
+        wu.obstacles[obsCount++] = [rk.pos.x, rk.pos.z, r, 1.0f];
+    }
+    wu.counts = [obsCount, 6u, 0u, 0u];
+    return wu;
 }
 
 /// Sculpted sloping riverbank terrain strip (z in [0..1], scaled/mirrored per side).
@@ -622,47 +818,6 @@ private struct OrbitState {
     }
 }
 
-private MaterialParams buildWaterParams(bool riverMode, bool useOpenPbr, bool transparent) {
-    MaterialParams p;
-    if (riverMode) {
-        p.baseColor = [0.06f, 0.34f, 0.30f];
-        p.geometryOpacity = transparent ? 0.72f : 1.0f;
-    } else {
-        p.baseColor = [0.03f, 0.22f, 0.34f];
-        p.geometryOpacity = transparent ? 0.80f : 1.0f;
-    }
-    p.baseWeight = 1.0f;
-    p.baseMetalness = 0.0f;
-    p.specularWeight = 1.0f;
-    p.specularIor = 1.333f;
-    p.flags = MaterialFlags.normal | MaterialFlags.metallicRoughness;
-
-    if (useOpenPbr) {
-        p.baseDiffuseRoughness = 0.20f;
-        p.specularRoughness = riverMode ? 0.14f : 0.09f;
-        p.specularAnisotropy = riverMode ? 0.45f : 0.22f;
-        // Sharp upper liquid film + subtle emerald/aqua optical absorption
-        p.coatWeight = 0.92f;
-        p.coatRoughness = 0.02f;
-        p.coatIor = 1.333f;
-        p.coatColor = riverMode ? [0.76f, 0.96f, 0.92f] : [0.70f, 0.92f, 1.0f];
-        p.coatDarkening = 1.0f;
-        // Grazing crest spray / foam sheen
-        p.fuzzWeight = riverMode ? 0.22f : 0.16f;
-        p.fuzzColor = [0.88f, 0.96f, 1.0f];
-        p.fuzzRoughness = 0.65f;
-    } else {
-        // Legacy metallic-roughness equivalent for A/B comparison
-        p.baseDiffuseRoughness = 0.0f;
-        p.specularRoughness = 0.08f;
-        p.specularAnisotropy = 0.0f;
-        p.coatWeight = 0.0f;
-        p.fuzzWeight = 0.0f;
-        p.specularIor = 1.5f;
-    }
-    return p;
-}
-
 private MaterialParams buildDryRockParams() {
     MaterialParams p;
     // Albedo is baked directly in true linear reflectance in rock_*_albedo.bmp.
@@ -774,7 +929,15 @@ private struct RockMaterialGroup {
     }
 }
 
-void main() {
+void main(string[] args) {
+    uint maxFrames = 0;
+    foreach (a; args[1 .. $]) {
+        import std.algorithm : startsWith;
+        import std.conv : to;
+        if (a.startsWith("--frames=")) {
+            maxFrames = a[9 .. $].to!uint;
+        }
+    }
     auto app = App.create("OpenPBR Water Showcase — Ocean & River", W, H);
 
     auto scene = Scene3DTextured.create(app.gpu);
@@ -790,16 +953,17 @@ void main() {
     scope(exit) cobbleRockMesh.destroy();
     auto cube = TexMesh.cube(app.gpu);
     scope(exit) cube.destroy();
-    auto bedMesh = buildTiledBedMesh(app.gpu);
-    scope(exit) bedMesh.destroy();
+    auto bedQuad = buildBedQuad32(app.gpu);
+    scope(exit) bedQuad.destroy();
     auto leftBankMesh = buildRiverBankMesh(app.gpu, -1.0f);
     scope(exit) leftBankMesh.destroy();
     auto rightBankMesh = buildRiverBankMesh(app.gpu, 1.0f);
     scope(exit) rightBankMesh.destroy();
+    auto waterGrid = buildWaterGridMesh32(app.gpu);
+    scope(exit) waterGrid.destroy();
 
-    TexTanVert[] waterVerts;
-    auto waterMesh = buildWaterMesh(app.gpu, waterVerts);
-    scope(exit) waterMesh.destroy();
+    auto waterPipes = WaterShaderPipelines.create(app.gpu, scene.frameLayout(), scene.iblLayout());
+    scope(exit) waterPipes.destroy();
 
     auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
     scope(exit) sampler.destroy();
@@ -807,24 +971,13 @@ void main() {
     auto whiteTex = Texture.solid(app.gpu, 255, 255, 255, 255);
     scope(exit) whiteTex.destroy();
 
-    Texture waterAlbedoTex, waterNormalTex, waterMrTex;
-    generateWaterTextures(app.gpu, waterAlbedoTex, waterNormalTex, waterMrTex);
-    scope(exit) {
-        waterAlbedoTex.destroy();
-        waterNormalTex.destroy();
-        waterMrTex.destroy();
-    }
-
-    Texture bedAlbedoTex, bedNormalTex, bankAlbedoTex, bankNormalTex;
+    Texture bankAlbedoTex, bankNormalTex;
     Texture woodAlbedoTex, woodNormalTex, masonryAlbedoTex, masonryNormalTex;
     generateEnvTextures(app.gpu,
-                        bedAlbedoTex, bedNormalTex,
                         bankAlbedoTex, bankNormalTex,
                         woodAlbedoTex, woodNormalTex,
                         masonryAlbedoTex, masonryNormalTex);
     scope(exit) {
-        bedAlbedoTex.destroy();
-        bedNormalTex.destroy();
         bankAlbedoTex.destroy();
         bankNormalTex.destroy();
         woodAlbedoTex.destroy();
@@ -856,12 +1009,6 @@ void main() {
     int waveLevel = 1; // 0 = calm, 1 = moderate, 2 = stormy
     bool transparent = true;
 
-    auto waterMat = makePbrMat(
-        waterAlbedoTex,
-        buildWaterParams(riverMode, useOpenPbr, transparent),
-        &waterMrTex, &waterNormalTex);
-    scope(exit) waterMat.destroy();
-
     RockMaterialGroup[3] rockMats;
     foreach (i; 0 .. 3) {
         rockMats[i].dry = makePbrMat(
@@ -886,14 +1033,6 @@ void main() {
     scope(exit) {
         foreach (ref mg; rockMats) mg.destroy();
     }
-
-    MaterialParams bedP;
-    bedP.baseColor = [1.0f, 1.0f, 1.0f];
-    bedP.baseDiffuseRoughness = 0.90f;
-    bedP.specularRoughness = 0.78f;
-    bedP.flags = MaterialFlags.normal;
-    auto bedMat = makePbrMat(bedAlbedoTex, bedP, null, &bedNormalTex);
-    scope(exit) bedMat.destroy();
 
     MaterialParams bankP;
     bankP.baseColor = [1.0f, 1.0f, 1.0f];
@@ -987,7 +1126,10 @@ void main() {
     info("OpenPBR Water Showcase — [1] Ocean [2] River [3] Sun [4] OpenPBR A/B [5] Waves [6] Opacity [F1] HUD");
 
     float time = 0.0f;
+    uint frameNum = 0;
     while (app.running()) {
+        if (maxFrames > 0 && frameNum >= maxFrames) break;
+        frameNum++;
         app.pollEvents();
         immutable float dt = fps.tick();
         time += dt;
@@ -1013,7 +1155,6 @@ void main() {
         }
 
         if (paramsDirty) {
-            waterMat.updateParams(app.gpu, buildWaterParams(riverMode, useOpenPbr, transparent));
             immutable wetP  = buildWetRockParams(useOpenPbr);
             immutable mossP = buildMossRockParams(useOpenPbr);
             immutable subP  = buildSubmergedRockParams(useOpenPbr);
@@ -1025,8 +1166,6 @@ void main() {
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
-        fillWaterGridVertices(waterVerts, time, riverMode, waveScale);
-        waterMesh.updateVertices(app.gpu, waterVerts);
 
         orbit.update(app.input, dt, camera);
 
@@ -1200,9 +1339,7 @@ void main() {
 
         scene.begin(camera);
 
-        // 1. Opaque geometry FIRST (submerged bed, riverbanks, rocks, structures, buoys)
-        scene.draw(bedMesh, bedMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
-
+        // 1. Opaque geometry FIRST (rocks, riverbanks, bridge/lighthouse, buoys)
         void drawRock(ref const RockPlacement rk, ref const Mat4 model) {
             immutable size_t mi = rk.meshKind < 3 ? rk.meshKind : 1;
             ref TexMesh mesh = mi == 0 ? cliffRockMesh : (mi == 1 ? boulderRockMesh : cobbleRockMesh);
@@ -1241,10 +1378,32 @@ void main() {
             scene.drawMatrix(sphere, goldBuoyMat, buoyModels[2], Color4.white);
         }
 
-        // 2. Animated Gerstner water surface LAST so Fresnel alpha blends over submerged scene
-        scene.draw(waterMesh, waterMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
-
         scene.end(frame);
+
+        // 2. Custom single-pass water environment draws in the same HDR frame pass:
+        //    (a) riverbed with shadowed RGB caustics, (b) sky dome behind geometry, (c) GPU-Gerstner water
+        auto wu = packWaterUniforms(camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun, rocks[]);
+        () @trusted {
+            updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);
+        }();
+
+        frame.setBindGroup(0, scene.frameGroup());
+        frame.setBindGroup(1, waterPipes.waterBg);
+
+        frame.setPipeline(waterPipes.skyPipe);
+        drawNonIndexed(frame, 3);
+
+        frame.setBindGroup(2, scene.iblGroup());
+        frame.setPipeline(waterPipes.bedPipe);
+        frame.setVertexBuffer(0, bedQuad.vbuf, bedQuad.vSize);
+        frame.setIndexBuffer(bedQuad.ibuf, WGPUIndexFormat.uint16, bedQuad.iSize);
+        frame.drawIndexed(bedQuad.indexCount, 1);
+
+        frame.setPipeline(waterPipes.waterPipe);
+        frame.setVertexBuffer(0, waterGrid.vbuf, waterGrid.vSize);
+        frame.setIndexBuffer(waterGrid.ibuf, WGPUIndexFormat.uint16, waterGrid.iSize);
+        frame.drawIndexed(waterGrid.indexCount, 1);
+
         app.resolvePost(frame);
 
         text.beginFrame();
