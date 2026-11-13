@@ -24,6 +24,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-physics-api.md](plan-physics-api.md) | P0–P4+P6 done; P5 mesh deferred | Complete gameplay API on top of Box3D (#1) |
 | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | Done (#9 deferred) | GC-safe adoption + static lint (#2) |
 | [plan-pbr.md](plan-pbr.md) | Done | PBR + PCF shadow + IBL (#3) |
+| [plan-openpbr.md](plan-openpbr.md) | Pending | Real-time OpenPBR Surface v1.1 shading model (#3b) |
 | [plan-meshoptimizer.md](plan-meshoptimizer.md) | Done through M9; M10 not started | Pure-D meshoptimizer v1.3: import optimization, tangents, LODs, codecs, meshlets |
 | [plan-post-processing.md](plan-post-processing.md) | Done | Bloom, tone mapping, FXAA (#4) |
 | [plan-animation.md](plan-animation.md) | Pending | Skeletal animation + glTF skinning (#5) |
@@ -32,6 +33,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | In Progress (Shaders done) | Asset and data hot-reload (#8) |
 | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Pending | Parallel system scheduler (#9) |
 | [plan-networking.md](plan-networking.md) | Pending | Multiplayer primitives (#10) |
+| [plan-split-screen.md](plan-split-screen.md) | Pending | Split-screen local co-op: multi-viewport rendering + gamepads (#11) |
 
 ## History / Cancelled
 
