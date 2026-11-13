@@ -50,13 +50,33 @@ struct AssetRender {
     AssetPrimitiveDesc primitive;
 }
 
-/// One material slot on disk (strings OK here; intern at scene/runtime load).
+/// One material slot on disk (OpenPBR Surface v1.1; strings OK here, interned at load).
 struct AssetMaterialSlot {
-    float[4] baseColor = [1, 1, 1, 1];
-    float metallic = 0;
-    float roughness = 1;
-    string albedo; /// texture path; empty = none
-    uint flags = 0;
+    float[3] baseColor = [1.0f, 1.0f, 1.0f];
+    float    baseWeight = 1.0f;
+    float    baseMetalness = 0.0f;
+    float    baseDiffuseRoughness = 0.0f;
+    float    specularWeight = 1.0f;
+    float    specularRoughness = 0.5f;
+    float[3] specularColor = [1.0f, 1.0f, 1.0f];
+    float    specularIor = 1.5f;
+    float    specularAnisotropy = 0.0f;
+    float    coatWeight = 0.0f;
+    float[3] coatColor = [1.0f, 1.0f, 1.0f];
+    float    coatRoughness = 0.1f;
+    float    coatIor = 1.6f;
+    float    coatDarkening = 1.0f;
+    float    fuzzWeight = 0.0f;
+    float[3] fuzzColor = [1.0f, 1.0f, 1.0f];
+    float    fuzzRoughness = 0.5f;
+    float    thinFilmWeight = 0.0f;
+    float    thinFilmThickness = 500.0f;
+    float    thinFilmIor = 1.4f;
+    float[3] emissionColor = [1.0f, 1.0f, 1.0f];
+    float    emissionLuminance = 0.0f;
+    float    geometryOpacity = 1.0f;
+    string   albedo; /// texture path; empty = none
+    uint     flags = 0;
 }
 
 /// Triangle-mesh collision source.
@@ -184,7 +204,7 @@ void runAssetFileGoldenTests() {
         `{"format":"game-engine.asset","version":2,"kind":"model",`
         ~ `"meta":{"name":"crate"},`
         ~ `"render":{"source":"assets/models/pbr_cube.gltf","primitive":null},`
-        ~ `"materials":[{"baseColor":[1,1,1,1],"metallic":0,"roughness":0.5,`
+        ~ `"materials":[{"baseColor":[1,1,1],"baseMetalness":0,"specularRoughness":0.5,`
         ~ `"albedo":"assets/models/pbr_cube_albedo.bmp","flags":0}],`
         ~ `"collision":{"triangleMesh":{"source":"render"},`
         ~ `"convexHull":{"maxVertexCount":64,"points":[`
@@ -197,7 +217,7 @@ void runAssetFileGoldenTests() {
     assert(a.render.source == "assets/models/pbr_cube.gltf");
     assert(!a.render.hasPrimitive);
     assert(a.materials.length == 1);
-    assert(a.materials[0].roughness == 0.5f);
+    assert(a.materials[0].specularRoughness == 0.5f);
     assert(a.materials[0].albedo == "assets/models/pbr_cube_albedo.bmp");
     assert(a.collision.hasTriangleMesh);
     assert(a.collision.triangleMesh.source == "render");
@@ -233,13 +253,13 @@ void runAssetFileGoldenTests() {
     }
     assert(threw, "unknown root field must error");
 
-    // Primitive asset round-trip.
+    // Primitive asset round-trip with OpenPBR slabs.
     enum primGolden =
         `{"format":"game-engine.asset","version":2,"kind":"primitive",`
         ~ `"meta":{"name":"box1"},`
         ~ `"render":{"source":null,"primitive":{"kind":"box","dims":[1,2,3]}},`
-        ~ `"materials":[{"baseColor":[1,0,0,1],"metallic":0,"roughness":1,`
-        ~ `"albedo":"","flags":0}],`
+        ~ `"materials":[{"baseColor":[1,0,0],"baseMetalness":0,"specularRoughness":1,`
+        ~ `"albedo":"","flags":0,"specularIor":1.6,"coatWeight":0.8,"fuzzWeight":0.4}],`
         ~ `"collision":{"triangleMesh":{"source":"render"}}}`;
     auto p = parseAssetJson(primGolden);
     assert(p.kind == AssetKind.primitive);
@@ -247,6 +267,9 @@ void runAssetFileGoldenTests() {
     assert(p.render.primitive.kind == "box");
     assert(p.render.primitive.dims == [1f, 2f, 3f]);
     assert(!p.collision.hasConvexHull);
+    assert(p.materials[0].coatWeight == 0.8f);
+    assert(p.materials[0].fuzzWeight == 0.4f);
+    assert(p.materials[0].specularIor == 1.6f);
     assert(assetToMinifiedJson(p) == primGolden);
 
     enum lodGolden =
@@ -361,20 +384,48 @@ private AssetMaterialSlot[] parseMaterials(ref JSONValue v) {
 
 private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
     enforce(v.type == JSONType.object, "materials[] entry must be object");
-    requireOnlyKeys(v, ["baseColor", "metallic", "roughness", "albedo", "flags"], "materials[]");
+    requireOnlyKeys(v, [
+        "baseColor", "baseWeight", "baseMetalness", "baseDiffuseRoughness",
+        "specularWeight", "specularRoughness", "specularColor", "specularIor",
+        "specularAnisotropy", "coatWeight", "coatColor", "coatRoughness",
+        "coatIor", "coatDarkening", "fuzzWeight", "fuzzColor", "fuzzRoughness",
+        "thinFilmWeight", "thinFilmThickness", "thinFilmIor",
+        "emissionColor", "emissionLuminance", "geometryOpacity",
+        "albedo", "flags"
+    ], "materials[]");
     enforce("baseColor" in v, "materials[] missing 'baseColor'");
-    enforce("metallic" in v, "materials[] missing 'metallic'");
-    enforce("roughness" in v, "materials[] missing 'roughness'");
+    enforce("baseMetalness" in v, "materials[] missing 'baseMetalness'");
+    enforce("specularRoughness" in v, "materials[] missing 'specularRoughness'");
     enforce("albedo" in v, "materials[] missing 'albedo'");
     enforce("flags" in v, "materials[] missing 'flags'");
 
     AssetMaterialSlot m;
-    m.baseColor = jsonFloat4(v["baseColor"], "materials[].baseColor");
-    m.metallic = jsonFloat(v["metallic"], "materials[].metallic");
-    m.roughness = jsonFloat(v["roughness"], "materials[].roughness");
+    m.baseColor = jsonFloat3(v["baseColor"], "materials[].baseColor");
+    m.baseMetalness = jsonFloat(v["baseMetalness"], "materials[].baseMetalness");
+    m.specularRoughness = jsonFloat(v["specularRoughness"], "materials[].specularRoughness");
     enforce(v["albedo"].type == JSONType.string, "materials[].albedo must be string");
     m.albedo = v["albedo"].str;
     m.flags = cast(uint) jsonInt(v["flags"], "materials[].flags");
+    if ("baseWeight" in v) m.baseWeight = jsonFloat(v["baseWeight"], "materials[].baseWeight");
+    if ("baseDiffuseRoughness" in v) m.baseDiffuseRoughness = jsonFloat(v["baseDiffuseRoughness"], "materials[].baseDiffuseRoughness");
+    if ("specularWeight" in v) m.specularWeight = jsonFloat(v["specularWeight"], "materials[].specularWeight");
+    if ("specularColor" in v) m.specularColor = jsonFloat3(v["specularColor"], "materials[].specularColor");
+    if ("specularIor" in v) m.specularIor = jsonFloat(v["specularIor"], "materials[].specularIor");
+    if ("specularAnisotropy" in v) m.specularAnisotropy = jsonFloat(v["specularAnisotropy"], "materials[].specularAnisotropy");
+    if ("coatWeight" in v) m.coatWeight = jsonFloat(v["coatWeight"], "materials[].coatWeight");
+    if ("coatColor" in v) m.coatColor = jsonFloat3(v["coatColor"], "materials[].coatColor");
+    if ("coatRoughness" in v) m.coatRoughness = jsonFloat(v["coatRoughness"], "materials[].coatRoughness");
+    if ("coatIor" in v) m.coatIor = jsonFloat(v["coatIor"], "materials[].coatIor");
+    if ("coatDarkening" in v) m.coatDarkening = jsonFloat(v["coatDarkening"], "materials[].coatDarkening");
+    if ("fuzzWeight" in v) m.fuzzWeight = jsonFloat(v["fuzzWeight"], "materials[].fuzzWeight");
+    if ("fuzzColor" in v) m.fuzzColor = jsonFloat3(v["fuzzColor"], "materials[].fuzzColor");
+    if ("fuzzRoughness" in v) m.fuzzRoughness = jsonFloat(v["fuzzRoughness"], "materials[].fuzzRoughness");
+    if ("thinFilmWeight" in v) m.thinFilmWeight = jsonFloat(v["thinFilmWeight"], "materials[].thinFilmWeight");
+    if ("thinFilmThickness" in v) m.thinFilmThickness = jsonFloat(v["thinFilmThickness"], "materials[].thinFilmThickness");
+    if ("thinFilmIor" in v) m.thinFilmIor = jsonFloat(v["thinFilmIor"], "materials[].thinFilmIor");
+    if ("emissionColor" in v) m.emissionColor = jsonFloat3(v["emissionColor"], "materials[].emissionColor");
+    if ("emissionLuminance" in v) m.emissionLuminance = jsonFloat(v["emissionLuminance"], "materials[].emissionLuminance");
+    if ("geometryOpacity" in v) m.geometryOpacity = jsonFloat(v["geometryOpacity"], "materials[].geometryOpacity");
     return m;
 }
 
@@ -513,23 +564,47 @@ private void writeRender(ref Appender!string app, const ref AssetRender r) {
     app.put('}');
 }
 
+private void writeFloat3(ref Appender!string app, const float[3] v) {
+    app.put('[');
+    writeFloat(app, v[0]);
+    app.put(',');
+    writeFloat(app, v[1]);
+    app.put(',');
+    writeFloat(app, v[2]);
+    app.put(']');
+}
+
 private void writeMaterial(ref Appender!string app, const ref AssetMaterialSlot m) {
-    app.put(`{"baseColor":[`);
-    writeFloat(app, m.baseColor[0]);
-    app.put(',');
-    writeFloat(app, m.baseColor[1]);
-    app.put(',');
-    writeFloat(app, m.baseColor[2]);
-    app.put(',');
-    writeFloat(app, m.baseColor[3]);
-    app.put(`],"metallic":`);
-    writeFloat(app, m.metallic);
-    app.put(`,"roughness":`);
-    writeFloat(app, m.roughness);
+    app.put(`{"baseColor":`);
+    writeFloat3(app, m.baseColor);
+    app.put(`,"baseMetalness":`);
+    writeFloat(app, m.baseMetalness);
+    app.put(`,"specularRoughness":`);
+    writeFloat(app, m.specularRoughness);
     app.put(`,"albedo":`);
     writeJsonString(app, m.albedo);
     app.put(`,"flags":`);
     app.formattedWrite("%d", m.flags);
+    if (m.baseWeight != 1.0f) { app.put(`,"baseWeight":`); writeFloat(app, m.baseWeight); }
+    if (m.baseDiffuseRoughness != 0.0f) { app.put(`,"baseDiffuseRoughness":`); writeFloat(app, m.baseDiffuseRoughness); }
+    if (m.specularWeight != 1.0f) { app.put(`,"specularWeight":`); writeFloat(app, m.specularWeight); }
+    if (m.specularColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"specularColor":`); writeFloat3(app, m.specularColor); }
+    if (m.specularIor != 1.5f) { app.put(`,"specularIor":`); writeFloat(app, m.specularIor); }
+    if (m.specularAnisotropy != 0.0f) { app.put(`,"specularAnisotropy":`); writeFloat(app, m.specularAnisotropy); }
+    if (m.coatWeight != 0.0f) { app.put(`,"coatWeight":`); writeFloat(app, m.coatWeight); }
+    if (m.coatColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"coatColor":`); writeFloat3(app, m.coatColor); }
+    if (m.coatRoughness != 0.1f) { app.put(`,"coatRoughness":`); writeFloat(app, m.coatRoughness); }
+    if (m.coatIor != 1.6f) { app.put(`,"coatIor":`); writeFloat(app, m.coatIor); }
+    if (m.coatDarkening != 1.0f) { app.put(`,"coatDarkening":`); writeFloat(app, m.coatDarkening); }
+    if (m.fuzzWeight != 0.0f) { app.put(`,"fuzzWeight":`); writeFloat(app, m.fuzzWeight); }
+    if (m.fuzzColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"fuzzColor":`); writeFloat3(app, m.fuzzColor); }
+    if (m.fuzzRoughness != 0.5f) { app.put(`,"fuzzRoughness":`); writeFloat(app, m.fuzzRoughness); }
+    if (m.thinFilmWeight != 0.0f) { app.put(`,"thinFilmWeight":`); writeFloat(app, m.thinFilmWeight); }
+    if (m.thinFilmThickness != 500.0f) { app.put(`,"thinFilmThickness":`); writeFloat(app, m.thinFilmThickness); }
+    if (m.thinFilmIor != 1.4f) { app.put(`,"thinFilmIor":`); writeFloat(app, m.thinFilmIor); }
+    if (m.emissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"emissionColor":`); writeFloat3(app, m.emissionColor); }
+    if (m.emissionLuminance != 0.0f) { app.put(`,"emissionLuminance":`); writeFloat(app, m.emissionLuminance); }
+    if (m.geometryOpacity != 1.0f) { app.put(`,"geometryOpacity":`); writeFloat(app, m.geometryOpacity); }
     app.put('}');
 }
 

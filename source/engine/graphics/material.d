@@ -3,6 +3,7 @@
 module engine.graphics.material;
 
 import bindings.wgpu;
+import engine.core.pod : isPod;
 import engine.gpu.buffer : createUniformBuffer, updateBuffer, destroyBuffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE;
@@ -14,20 +15,60 @@ import engine.core.log;
 /// Bit flags controlling which optional maps contribute in the fragment shader.
 enum MaterialFlags : uint {
     none               = 0,
-    metallicRoughness  = 1,
-    normal             = 2,
-    occlusion          = 4,
-    emissive           = 8,
+    metallicRoughness  = 1 << 0,
+    normal             = 1 << 1,
+    occlusion          = 1 << 2,
+    emissive           = 1 << 3,
 }
 
-/// POD uniform matching WGSL `MaterialParams` (32 bytes).
+/// Canonical OpenPBR Surface v1.1 uniform block matching WGSL `MaterialParams` (144 bytes = 9 × vec4<f32>).
 struct MaterialParams {
-    float[4] baseColorFactor = [1, 1, 1, 1];
-    float metallic = 0;
-    float roughness = 1;
-    uint flags = MaterialFlags.none;
-    float _pad = 0;
+    // vec4 [0] (offset 0..16): Base color & weight
+    float[3] baseColor = [1.0f, 1.0f, 1.0f];      // openpbr: base_color
+    float    baseWeight = 1.0f;                   // openpbr: base_weight [0..1]
+
+    // vec4 [1] (offset 16..32): Base metalness, diffuse roughness, Specular weight & roughness
+    float    baseMetalness = 0.0f;                // openpbr: base_metalness [0..1]
+    float    baseDiffuseRoughness = 0.0f;         // openpbr: base_diffuse_roughness [0..1]
+    float    specularWeight = 1.0f;               // openpbr: specular_weight [0..1]
+    float    specularRoughness = 1.0f;            // openpbr: specular_roughness [0..1]
+
+    // vec4 [2] (offset 32..48): Specular color (dielectric tint & F82 conductor edge tint) & IOR
+    float[3] specularColor = [1.0f, 1.0f, 1.0f];  // openpbr: specular_color
+    float    specularIor = 1.5f;                  // openpbr: specular_ior (1.5 => F0 = 0.04)
+
+    // vec4 [3] (offset 48..64): Specular anisotropy & Coat weight / roughness / IOR
+    float    specularAnisotropy = 0.0f;           // openpbr: specular_anisotropy [-1..1]
+    float    coatWeight = 0.0f;                   // openpbr: coat_weight [0..1]
+    float    coatRoughness = 0.1f;                // openpbr: coat_roughness [0..1]
+    float    coatIor = 1.6f;                      // openpbr: coat_ior
+
+    // vec4 [4] (offset 64..80): Coat color & darkening
+    float[3] coatColor = [1.0f, 1.0f, 1.0f];      // openpbr: coat_color (absorption transmittance)
+    float    coatDarkening = 1.0f;                // openpbr: coat_darkening [0..1]
+
+    // vec4 [5] (offset 80..96): Fuzz (sheen) color & weight
+    float[3] fuzzColor = [1.0f, 1.0f, 1.0f];      // openpbr: fuzz_color
+    float    fuzzWeight = 0.0f;                   // openpbr: fuzz_weight [0..1]
+
+    // vec4 [6] (offset 96..112): Fuzz roughness & Thin-film iridescence
+    float    fuzzRoughness = 0.5f;                // openpbr: fuzz_roughness [0..1]
+    float    thinFilmWeight = 0.0f;               // openpbr: thin_film_weight [0..1]
+    float    thinFilmThickness = 500.0f;          // openpbr: thin_film_thickness (nanometers)
+    float    thinFilmIor = 1.4f;                  // openpbr: thin_film_ior
+
+    // vec4 [7] (offset 112..128): Emission
+    float[3] emissionColor = [1.0f, 1.0f, 1.0f];  // openpbr: emission_color
+    float    emissionLuminance = 0.0f;            // openpbr: emission_luminance
+
+    // vec4 [8] (offset 128..144): Geometry opacity & flags
+    float    geometryOpacity = 1.0f;              // openpbr: geometry_opacity [0..1]
+    uint     flags = MaterialFlags.none;          // bound texture map bitmask
+    float    _pad0 = 0.0f;
+    float    _pad1 = 0.0f;
 }
+static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
+static assert(isPod!MaterialParams);
 
 /// Shared 1×1 fallback textures so every material binds a fixed BGL layout.
 struct MaterialDefaults {

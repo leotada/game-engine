@@ -66,7 +66,6 @@ void spawnDemoLevel(W)(ref W world, ref Selection selection) {
         mat.baseColor[0] = 0.35f;
         mat.baseColor[1] = 0.38f;
         mat.baseColor[2] = 0.34f;
-        mat.baseColor[3] = 1;
         PhysicsBody body;
         body.enabled = 1;
         body.motion = PhysicsMotion.static_;
@@ -92,7 +91,6 @@ void spawnDemoLevel(W)(ref W world, ref Selection selection) {
         mat.baseColor[0] = 0.75f;
         mat.baseColor[1] = 0.45f;
         mat.baseColor[2] = 0.25f;
-        mat.baseColor[3] = 1;
         PhysicsBody body;
         body.enabled = 1;
         body.motion = PhysicsMotion.dynamic_;

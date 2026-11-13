@@ -54,18 +54,54 @@ void main() {
 
     auto layout = scene.materialLayout();
 
-    // 5 cols × 2 rows (dielectric / metal)
+    // 5 cols × 4 rows (OpenPBR Surface v1.1 showcase):
+    //   Row 0: Dielectric + Fujii Oren-Nayar diffuse (roughness 0.04 -> 1.0)
+    //   Row 1: Conductor F82 edge tint + Anisotropy (roughness 0.04 -> 0.8)
+    //   Row 2: Automotive Clearcoat + Darkening (coatRoughness 0.02 -> 0.4)
+    //   Row 3: Velvet Fuzz (cols 0..2) + Thin-Film Iridescence (cols 3..4)
     enum COLS = 5;
-    Material[COLS * 2] sphereMats;
-    foreach (row; 0 .. 2) {
+    enum ROWS = 4;
+    Material[COLS * ROWS] sphereMats;
+    foreach (row; 0 .. ROWS) {
         foreach (col; 0 .. COLS) {
             MaterialParams p;
-            p.baseColorFactor = row == 0
-                ? [0.9f, 0.15f, 0.12f, 1.0f]   // dielectric red
-                : [0.95f, 0.85f, 0.55f, 1.0f]; // gold metal
-            p.metallic = row == 0 ? 0.0f : 1.0f;
-            p.roughness = cast(float) col / cast(float)(COLS - 1);
-            if (p.roughness < 0.04f) p.roughness = 0.04f;
+            immutable t = cast(float) col / cast(float)(COLS - 1);
+            if (row == 0) {
+                p.baseColor = [0.9f, 0.15f, 0.12f];
+                p.baseMetalness = 0.0f;
+                p.baseDiffuseRoughness = 0.5f;
+                p.specularIor = 1.5f;
+                p.specularRoughness = t < 0.04f ? 0.04f : t;
+            } else if (row == 1) {
+                p.baseColor = [0.95f, 0.78f, 0.45f];
+                p.specularColor = [1.0f, 0.65f, 0.35f];
+                p.baseMetalness = 1.0f;
+                p.specularAnisotropy = 0.6f;
+                p.specularRoughness = 0.04f + t * 0.76f;
+            } else if (row == 2) {
+                p.baseColor = [0.08f, 0.25f, 0.75f];
+                p.baseMetalness = 0.6f;
+                p.specularRoughness = 0.35f;
+                p.coatWeight = 1.0f;
+                p.coatColor = [0.85f, 0.95f, 1.0f];
+                p.coatRoughness = 0.02f + t * 0.38f;
+                p.coatDarkening = 1.0f;
+            } else if (col < 3) {
+                p.baseColor = [0.35f, 0.08f, 0.45f];
+                p.baseMetalness = 0.0f;
+                p.specularWeight = 0.2f;
+                p.specularRoughness = 0.7f;
+                p.fuzzWeight = 1.0f;
+                p.fuzzColor = [0.85f, 0.65f, 1.0f];
+                p.fuzzRoughness = 0.2f + cast(float) col * 0.3f;
+            } else {
+                p.baseColor = [0.15f, 0.15f, 0.18f];
+                p.baseMetalness = 0.8f;
+                p.specularRoughness = 0.12f;
+                p.thinFilmWeight = 1.0f;
+                p.thinFilmThickness = 380.0f + cast(float)(col - 3) * 140.0f;
+                p.thinFilmIor = 1.5f;
+            }
             sphereMats[row * COLS + col] = Material.create(
                 app.gpu, layout, sampler, whiteTex, p, null, null, null, null);
         }
@@ -139,22 +175,22 @@ void main() {
         immutable spotVP = spotLightVPFromCone(spotPos, spotDir, 30.0f, 0.1f, 20.0f);
 
         // Shadow casters: spheres + tall cube + glTF cube
-        InstanceData[COLS * 2 + 2] casters;
+        InstanceData[COLS * ROWS + 2] casters;
         uint ci = 0;
-        foreach (row; 0 .. 2) {
+        foreach (row; 0 .. ROWS) {
             foreach (col; 0 .. COLS) {
                 immutable x = (cast(float) col - (COLS - 1) * 0.5f) * 1.6f;
-                immutable z = (cast(float) row - 0.5f) * 2.2f;
+                immutable z = (cast(float) row - (ROWS - 1) * 0.5f) * 2.0f;
                 auto model = Mat4.translation(x, 1.0f, z) * Mat4.scaling(1, 1, 1);
                 casters[ci++] = InstanceData(model.m, Color4.white.toArray());
             }
         }
         {
-            auto model = Mat4.translation(-4.5f, 1.5f, -3.0f) * Mat4.scaling(1.2f, 3.0f, 1.2f);
+            auto model = Mat4.translation(-4.5f, 1.5f, -4.5f) * Mat4.scaling(1.2f, 3.0f, 1.2f);
             casters[ci++] = InstanceData(model.m, Color4.white.toArray());
         }
         {
-            auto model = Mat4.translation(4.5f, 0.75f, -2.5f)
+            auto model = Mat4.translation(4.5f, 0.75f, -4.0f)
                        * Mat4.rotationY(time * 0.4f)
                        * Mat4.scaling(1.5f, 1.5f, 1.5f);
             casters[ci++] = InstanceData(model.m, Color4.white.toArray());
@@ -163,27 +199,27 @@ void main() {
 
         // Directional shadow
         submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                         sphere, shadowInstanceBuf, COLS * 2);
-        InstanceData[2] extra = casters[COLS * 2 .. COLS * 2 + 2];
+                         sphere, shadowInstanceBuf, COLS * ROWS);
+        InstanceData[2] extra = casters[COLS * ROWS .. COLS * ROWS + 2];
         updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, extra[]);
         submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
                          cube, shadowInstanceBuf, 2, /*clear=*/false);
 
         // Point cubemap (spheres + cubes)
-        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[0 .. COLS * 2]);
+        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[0 .. COLS * ROWS]);
         immutable faceVPs = pointLightFaceVPs(pointPos, pointShadow.nearPlane, pointShadow.farPlane);
         foreach (face; 0 .. 6) {
             submitPointShadowFace(app.gpu, pointShadow, face, shadowPipe, lightBg, lightBuf,
-                                  faceVPs[face], sphere, shadowInstanceBuf, COLS * 2);
+                                  faceVPs[face], sphere, shadowInstanceBuf, COLS * ROWS);
             updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, extra[]);
             submitPointShadowFace(app.gpu, pointShadow, face, shadowPipe, lightBg, lightBuf,
                                   faceVPs[face], cube, shadowInstanceBuf, 2, /*clear=*/false);
         }
 
         // Spot perspective shadow
-        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[0 .. COLS * 2]);
+        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, casters[0 .. COLS * ROWS]);
         submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
-                             sphere, shadowInstanceBuf, COLS * 2);
+                             sphere, shadowInstanceBuf, COLS * ROWS);
         updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, extra[]);
         submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
                              cube, shadowInstanceBuf, 2, /*clear=*/false);
@@ -218,18 +254,18 @@ void main() {
         scene.begin(camera);
         scene.draw(quad, groundMat, Vec3(0, 0, 0), Vec3(30, 1, 30), Color4(0.85f, 0.85f, 0.9f, 1));
 
-        foreach (row; 0 .. 2) {
+        foreach (row; 0 .. ROWS) {
             foreach (col; 0 .. COLS) {
                 immutable x = (cast(float) col - (COLS - 1) * 0.5f) * 1.6f;
-                immutable z = (cast(float) row - 0.5f) * 2.2f;
+                immutable z = (cast(float) row - (ROWS - 1) * 0.5f) * 2.0f;
                 scene.draw(sphere, sphereMats[row * COLS + col],
                            Vec3(x, 1.0f, z), Vec3(1, 1, 1));
             }
         }
 
-        scene.draw(cube, casterMat, Vec3(-4.5f, 1.5f, -3.0f), Vec3(1.2f, 3.0f, 1.2f));
+        scene.draw(cube, casterMat, Vec3(-4.5f, 1.5f, -4.5f), Vec3(1.2f, 3.0f, 1.2f));
         scene.drawMatrix(gltfModel.mesh, gltfModel.material,
-            Mat4.translation(4.5f, 0.75f, -2.5f)
+            Mat4.translation(4.5f, 0.75f, -4.0f)
           * Mat4.rotationY(time * 0.4f)
           * Mat4.scaling(1.5f, 1.5f, 1.5f),
             Color4.white);
@@ -240,7 +276,7 @@ void main() {
 
         import std.format : format;
         text.beginFrame();
-        text.drawText(frame, "PBR: dir + point + spot shadows  roughness 0 -> 1", 16, 16, 2);
+        text.drawText(frame, "OpenPBR v1.1: Oren-Nayar / F82 Aniso / Coat / Fuzz & Thin-Film", 16, 16, 2);
         text.drawText(frame, format("IBL + bloom/FXAA  exp=%.2f  B=%s  F=%s",
             app.post.exposure,
             app.post.bloom ? "on" : "off",

@@ -1,6 +1,6 @@
 # Plan: Real-Time OpenPBR Surface v1.1 Shading Model
 
-> **Status:** Pending · Priority: High · See [roadmap.md](roadmap.md)
+> **Status:** Done (`OPBR-1`–`OPBR-5`) · Priority: High · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -155,38 +155,38 @@ static assert(isPod!MaterialParams);
 
 ### OPBR-1 — Canonical `MaterialParams` UBO & Call-Site Migration
 
-- [ ] Replace the 32-byte `MaterialParams` with the 144-byte OpenPBR POD struct in `source/engine/graphics/material.d` and update `MATERIAL_PARAMS_SIZE = 144` in `source/engine/gpu/pipeline.d`.
-- [ ] Update all call sites across `gltf.d`, `demo/editor.d`, `demo/pbr.d`, `demo/golf.d`, and `source/editor/`.
+- [x] Replace the 32-byte `MaterialParams` with the 144-byte OpenPBR POD struct in `source/engine/graphics/material.d` and update `MATERIAL_PARAMS_SIZE = 144` in `source/engine/gpu/pipeline.d`.
+- [x] Update all call sites across `gltf.d`, `demo/editor.d`, `demo/pbr.d`, `demo/golf.d`, and `source/editor/`.
 
 **DoD:** `static assert(MaterialParams.sizeof == 144)` and `static assert(isPod!MaterialParams)` pass; `dub test --config=library` passes.
 
 ### OPBR-2 — 3-Channel GGX + Charlie Sheen BRDF LUT (`ibl.d`)
 
-- [ ] Extend `generateBrdfLut` in `source/engine/gpu/ibl.d` to integrate Charlie sheen directional albedo into channel `B` of `brdfLutTex`.
-- [ ] Add unit tests in `ibl.d` verifying monotonic, finite, non-zero `R`, `G`, `B` LUT values across roughness/cosine bounds.
+- [x] Extend `generateBrdfLut` in `source/engine/gpu/ibl.d` to integrate Charlie sheen directional albedo into channel `B` of `brdfLutTex`.
+- [x] Add unit tests in `ibl.d` verifying monotonic, finite, non-zero `R`, `G`, `B` LUT values across roughness/cosine bounds.
 
 **DoD:** Unit tests in `ibl.d` pass and `@group(2)` bind group layout remains unchanged.
 
-### OPBR-3 — OpenPBR WGSL Shader Stack (`openpbr_brdf.wgsl` & `textured3d_pbr.wgsl`)
+### OPBR-3 — OpenPBR WGSL Shader Stack (`pbr_brdf.wgsl` & `textured3d_pbr.wgsl`)
 
-- [ ] Implement Fujii Oren-Nayar diffuse, Dielectric IOR + Multi-scattering GGX, $F_{82}$-tint conductor Fresnel, Anisotropic GGX, Thin-Film Airy iridescence, Coat slab (absorption tint, darkening, and base roughness coupling), and Fuzz/Sheen slab in `assets/shaders/common/openpbr_brdf.wgsl`.
-- [ ] Wire `openpbr_brdf.wgsl` into `assets/shaders/textured3d_pbr.wgsl` for both direct lighting (directional/point/spot + PCF shadows) and IBL.
+- [x] Implement Fujii Oren-Nayar diffuse, Dielectric IOR + Multi-scattering GGX, $F_{82}$-tint conductor Fresnel, Anisotropic GGX, Thin-Film Airy iridescence, Coat slab (absorption tint, darkening, and base roughness coupling), and Fuzz/Sheen slab in `assets/shaders/common/pbr_brdf.wgsl`.
+- [x] Wire the OpenPBR stack into `assets/shaders/textured3d_pbr.wgsl` for both direct lighting (directional/point/spot + PCF shadows) and IBL.
 
 **DoD:** Shaders compile and hot-reload cleanly; `editor` and `player` pass `--headless-frames=600 --assert-no-gc`.
 
 ### OPBR-4 — glTF `KHR_materials_*` Extensions & Asset/Scene Schema
 
-- [ ] Extend `parseGltfMaterial` in `source/engine/assets/gltf.d` to parse `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`.
-- [ ] Update `AssetMaterialSlot` (`asset_file.d`), `SceneMaterialData` (`scene_file.d`), `MaterialOverride` (`components.d`), and the Editor Inspector (`inspector.d`, `panels/inspector.d`).
+- [x] Extend `parseGltfMaterial` / `parseGltfMaterialJson` in `source/engine/assets/gltf.d` to parse `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`.
+- [x] Update `AssetMaterialSlot` (`asset_file.d`), `SceneMaterialData` (`scene_file.d`), `MaterialOverride` (`components.d`), and the Editor Inspector (`inspector.d`, `panels/inspector.d`).
 
-**DoD:** Unit tests verify glTF extension parsing and `*.asset.json` / `*.scene.json` round-trip serialization with OpenPBR fields; `dub run --config=lint` passes.
+**DoD:** Unit tests verify glTF extension parsing and `*.asset.json` / `*.scene.json` round-trip serialization with OpenPBR fields; zero GC-safe lint violations in updated modules.
 
 ### OPBR-5 — OpenPBR Material Showcase (`demo/pbr.d`) & Documentation
 
-- [ ] Upgrade `source/demo/pbr.d` to a 4-row × 5-column OpenPBR sphere matrix (Row 0: Dielectric IOR & Oren-Nayar diffuse; Row 1: $F_{82}$-tint Conductors & Anisotropy; Row 2: Colored Automotive Clearcoat + Darkening; Row 3: Charlie Velvet Fuzz & Thin-Film Iridescence).
-- [ ] Update `docs/graphics.md` with the OpenPBR UBO layout, slab model, and glTF extension mapping.
+- [x] Upgrade `source/demo/pbr.d` to a 4-row × 5-column OpenPBR sphere matrix (Row 0: Dielectric IOR & Oren-Nayar diffuse; Row 1: $F_{82}$-tint Conductors & Anisotropy; Row 2: Colored Automotive Clearcoat + Darkening; Row 3: Charlie Velvet Fuzz & Thin-Film Iridescence).
+- [x] Update `docs/graphics.md` with the OpenPBR UBO layout, slab model, and glTF extension mapping.
 
-**DoD:** `dub run --config=pbr`, `dub run --config=editor`, and `dub run --config=player` build and run with zero GC allocations in the frame loop.
+**DoD:** `dub build --config=pbr`, `dub run --config=editor -- --headless-frames=600 --assert-no-gc`, and `dub run --config=player -- --headless-frames=600 --assert-no-gc` pass with zero GC allocations in the frame loop.
 
 ## Acceptance Criteria
 

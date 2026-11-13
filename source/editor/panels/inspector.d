@@ -146,19 +146,28 @@ struct InspectorPanel {
 
         if (meshEntity) {
             float r = 1, g = 1, b = 1;
+            float metalness = 0.0f, roughness = 0.5f, coat = 0.0f, fuzz = 0.0f;
             if (world.has!MaterialOverride(e)) {
                 auto m = world.get!MaterialOverride(e);
                 r = m.baseColor[0];
                 g = m.baseColor[1];
                 b = m.baseColor[2];
+                metalness = m.baseMetalness;
+                roughness = m.specularRoughness;
+                coat = m.coatWeight;
+                fuzz = m.fuzzWeight;
             }
-            auto matBox = section("Cor");
+            auto matBox = section("OpenPBR Material");
             auto row = tree.createNode(matBox);
             tree.get(row).style.direction = UiFlexDirection.row;
             tree.get(row).style.gap = 4.0f;
             tagDrag(tree, row, "R", r, theme, 9, editable);
             tagDrag(tree, row, "G", g, theme, 10, editable);
             tagDrag(tree, row, "B", b, theme, 11, editable);
+            tagDrag(tree, matBox, "Metal", metalness, theme, 15, editable, 160.0f);
+            tagDrag(tree, matBox, "Rough", roughness, theme, 16, editable, 160.0f);
+            tagDrag(tree, matBox, "Coat", coat, theme, 17, editable, 160.0f);
+            tagDrag(tree, matBox, "Fuzz", fuzz, theme, 18, editable, 160.0f);
         }
 
         if (meshEntity) {

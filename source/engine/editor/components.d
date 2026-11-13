@@ -63,14 +63,34 @@ struct Visual {
 
 static assert(isPod!Visual);
 
-/// Optional PBR override applied over the asset / default material.
+/// Optional OpenPBR Surface v1.1 override applied over the asset / default material.
 struct MaterialOverride {
-    float[4] baseColor = [1, 1, 1, 1];
-    float metallic = 0;
-    float roughness = 0.5f;
-    uint flags = 0;
+    float[3] baseColor = [1.0f, 1.0f, 1.0f];
+    float    baseWeight = 1.0f;
+    float    baseMetalness = 0.0f;
+    float    baseDiffuseRoughness = 0.0f;
+    float    specularWeight = 1.0f;
+    float    specularRoughness = 0.5f;
+    float[3] specularColor = [1.0f, 1.0f, 1.0f];
+    float    specularIor = 1.5f;
+    float    specularAnisotropy = 0.0f;
+    float    coatWeight = 0.0f;
+    float[3] coatColor = [1.0f, 1.0f, 1.0f];
+    float    coatRoughness = 0.1f;
+    float    coatIor = 1.6f;
+    float    coatDarkening = 1.0f;
+    float    fuzzWeight = 0.0f;
+    float[3] fuzzColor = [1.0f, 1.0f, 1.0f];
+    float    fuzzRoughness = 0.5f;
+    float    thinFilmWeight = 0.0f;
+    float    thinFilmThickness = 500.0f;
+    float    thinFilmIor = 1.4f;
+    float[3] emissionColor = [1.0f, 1.0f, 1.0f];
+    float    emissionLuminance = 0.0f;
+    float    geometryOpacity = 1.0f;
+    uint     flags = 0;
     /// Non-zero → override contributes to the viewport material.
-    uint active = 1;
+    uint     active = 1;
 }
 
 static assert(isPod!MaterialOverride);

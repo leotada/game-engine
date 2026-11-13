@@ -62,11 +62,10 @@ struct GltfMesh {
     float[4][] tangents;
 }
 
-/// CPU-side PBR material description extracted from glTF.
+/// CPU-side OpenPBR material description extracted from glTF 2.0 + `KHR_materials_*`.
 struct GltfMaterialDesc {
-    float[4] baseColorFactor = [1, 1, 1, 1];
-    float metallic = 1;
-    float roughness = 1;
+    MaterialParams params;
+    bool hasBaseColorFactor = false;
     string baseColorUri;       // relative to glTF, empty if none
     string metallicRoughnessUri;
     string normalUri;
@@ -100,7 +99,7 @@ struct GltfModel {
     }
 }
 
-/// Load mesh + PBR material from a .gltf file.
+/// Load mesh + OpenPBR material from a .gltf file.
 /// Creates GPU textures for referenced images (BMP/TGA). Missing maps fall back
 /// to MaterialDefaults via Material.create.
 GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
@@ -110,17 +109,14 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
 
     auto meshCpu = parseGltfMesh(gltfPath);
     auto matDesc = parseGltfMaterial(gltfPath);
-    if (matDesc.normalUri.length)
+    if (matDesc.normalUri.length || matDesc.params.specularAnisotropy != 0.0f)
         generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
     immutable baseDir = dirName(gltfPath);
 
     GltfModel model;
     model.mesh = uploadOptimizedMesh(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
-    MaterialParams params;
-    params.baseColorFactor = matDesc.baseColorFactor;
-    params.metallic = matDesc.metallic;
-    params.roughness = matDesc.roughness;
+    MaterialParams params = matDesc.params;
     params.flags = MaterialFlags.none;
 
     if (matDesc.baseColorUri.length) {
@@ -132,12 +128,13 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     }
     if (!model.hasAlbedo) {
         model.albedo = Texture.solid(gpu,
-            toU8(matDesc.baseColorFactor[0]),
-            toU8(matDesc.baseColorFactor[1]),
-            toU8(matDesc.baseColorFactor[2]),
-            toU8(matDesc.baseColorFactor[3]));
+            toU8(params.baseColor[0]),
+            toU8(params.baseColor[1]),
+            toU8(params.baseColor[2]),
+            toU8(params.geometryOpacity));
         model.hasAlbedo = true;
-        params.baseColorFactor = [1, 1, 1, 1];
+        params.baseColor = [1, 1, 1];
+        params.geometryOpacity = 1.0f;
     }
 
     Texture* mrPtr = null;
@@ -179,23 +176,31 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
             model.hasEmissive = true;
             emPtr = &model.emissive;
             params.flags |= MaterialFlags.emissive;
+            if (params.emissionLuminance == 0.0f)
+                params.emissionLuminance = 1.0f;
         }
     }
 
     model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
                                      params, mrPtr, nrmPtr, aoPtr, emPtr);
 
-    info("Loaded glTF PBR: ", gltfPath, " (",
-         meshCpu.vertices.length, " verts, metallic=", matDesc.metallic,
-         " roughness=", matDesc.roughness, ")");
+    info("Loaded glTF OpenPBR: ", gltfPath, " (",
+         meshCpu.vertices.length, " verts, metalness=", params.baseMetalness,
+         " roughness=", params.specularRoughness,
+         " coat=", params.coatWeight, " fuzz=", params.fuzzWeight, ")");
     return model;
 }
 
-/// Parse pbrMetallicRoughness from the first material (or defaults).
+/// Parse pbrMetallicRoughness + `KHR_materials_*` extensions from the first material in a `.gltf` file.
 GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
-    GltfMaterialDesc desc;
     auto text = cast(string) read(gltfPath);
-    auto root = parseJSON(text);
+    return parseGltfMaterialJson(text);
+}
+
+/// Pure JSON material parser mapping glTF 2.0 + `KHR_materials_*` into OpenPBR `MaterialParams`.
+GltfMaterialDesc parseGltfMaterialJson(string jsonText) @trusted {
+    GltfMaterialDesc desc;
+    auto root = parseJSON(jsonText);
     if ("materials" !in root) return desc;
     auto materials = root["materials"].array;
     if (materials.length == 0) return desc;
@@ -203,15 +208,22 @@ GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
 
     if ("pbrMetallicRoughness" in mat) {
         auto pbr = mat["pbrMetallicRoughness"];
+        desc.params.baseMetalness = 1.0f;
+        desc.params.specularRoughness = 1.0f;
         if ("baseColorFactor" in pbr) {
             auto arr = pbr["baseColorFactor"].array;
-            foreach (i; 0 .. 4)
-                if (i < arr.length) desc.baseColorFactor[i] = jsonFloat(arr[i]);
+            if (arr.length >= 3) {
+                desc.params.baseColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+                desc.hasBaseColorFactor = true;
+            }
+            if (arr.length >= 4) {
+                desc.params.geometryOpacity = jsonFloat(arr[3]);
+            }
         }
         if ("metallicFactor" in pbr)
-            desc.metallic = jsonFloat(pbr["metallicFactor"]);
+            desc.params.baseMetalness = jsonFloat(pbr["metallicFactor"]);
         if ("roughnessFactor" in pbr)
-            desc.roughness = jsonFloat(pbr["roughnessFactor"]);
+            desc.params.specularRoughness = jsonFloat(pbr["roughnessFactor"]);
         if ("baseColorTexture" in pbr)
             desc.baseColorUri = resolveTextureUri(root, cast(int) pbr["baseColorTexture"]["index"].integer);
         if ("metallicRoughnessTexture" in pbr)
@@ -221,8 +233,75 @@ GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
         desc.normalUri = resolveTextureUri(root, cast(int) mat["normalTexture"]["index"].integer);
     if ("occlusionTexture" in mat)
         desc.occlusionUri = resolveTextureUri(root, cast(int) mat["occlusionTexture"]["index"].integer);
-    if ("emissiveTexture" in mat)
+    if ("emissiveTexture" in mat) {
         desc.emissiveUri = resolveTextureUri(root, cast(int) mat["emissiveTexture"]["index"].integer);
+        if (desc.params.emissionLuminance == 0.0f)
+            desc.params.emissionLuminance = 1.0f;
+    }
+    if ("emissiveFactor" in mat) {
+        auto arr = mat["emissiveFactor"].array;
+        if (arr.length >= 3) {
+            desc.params.emissionColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+            if (desc.params.emissionColor[0] > 0.0f ||
+                desc.params.emissionColor[1] > 0.0f ||
+                desc.params.emissionColor[2] > 0.0f) {
+                if (desc.params.emissionLuminance == 0.0f)
+                    desc.params.emissionLuminance = 1.0f;
+            }
+        }
+    }
+
+    if ("extensions" in mat && mat["extensions"].type == JSONType.object) {
+        auto ext = mat["extensions"];
+        if ("KHR_materials_ior" in ext && ext["KHR_materials_ior"].type == JSONType.object) {
+            auto e = ext["KHR_materials_ior"];
+            if ("ior" in e) desc.params.specularIor = jsonFloat(e["ior"]);
+        }
+        if ("KHR_materials_specular" in ext && ext["KHR_materials_specular"].type == JSONType.object) {
+            auto e = ext["KHR_materials_specular"];
+            if ("specularFactor" in e) desc.params.specularWeight = jsonFloat(e["specularFactor"]);
+            if ("specularColorFactor" in e) {
+                auto arr = e["specularColorFactor"].array;
+                if (arr.length >= 3)
+                    desc.params.specularColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+            }
+        }
+        if ("KHR_materials_clearcoat" in ext && ext["KHR_materials_clearcoat"].type == JSONType.object) {
+            auto e = ext["KHR_materials_clearcoat"];
+            if ("clearcoatFactor" in e) desc.params.coatWeight = jsonFloat(e["clearcoatFactor"]);
+            if ("clearcoatRoughnessFactor" in e) desc.params.coatRoughness = jsonFloat(e["clearcoatRoughnessFactor"]);
+        }
+        if ("KHR_materials_sheen" in ext && ext["KHR_materials_sheen"].type == JSONType.object) {
+            auto e = ext["KHR_materials_sheen"];
+            desc.params.fuzzWeight = 1.0f;
+            if ("sheenColorFactor" in e) {
+                auto arr = e["sheenColorFactor"].array;
+                if (arr.length >= 3)
+                    desc.params.fuzzColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+            }
+            if ("sheenRoughnessFactor" in e) desc.params.fuzzRoughness = jsonFloat(e["sheenRoughnessFactor"]);
+        }
+        if ("KHR_materials_iridescence" in ext && ext["KHR_materials_iridescence"].type == JSONType.object) {
+            auto e = ext["KHR_materials_iridescence"];
+            if ("iridescenceFactor" in e) desc.params.thinFilmWeight = jsonFloat(e["iridescenceFactor"]);
+            if ("iridescenceIor" in e) desc.params.thinFilmIor = jsonFloat(e["iridescenceIor"]);
+            if ("iridescenceThicknessMaximum" in e) desc.params.thinFilmThickness = jsonFloat(e["iridescenceThicknessMaximum"]);
+        }
+        if ("KHR_materials_emissive_strength" in ext && ext["KHR_materials_emissive_strength"].type == JSONType.object) {
+            auto e = ext["KHR_materials_emissive_strength"];
+            if ("emissiveStrength" in e) {
+                immutable strength = jsonFloat(e["emissiveStrength"]);
+                desc.params.emissionLuminance = desc.params.emissionLuminance > 0.0f
+                    ? desc.params.emissionLuminance * strength
+                    : strength;
+            }
+        }
+        if ("KHR_materials_anisotropy" in ext && ext["KHR_materials_anisotropy"].type == JSONType.object) {
+            auto e = ext["KHR_materials_anisotropy"];
+            if ("anisotropyStrength" in e) desc.params.specularAnisotropy = jsonFloat(e["anisotropyStrength"]);
+        }
+    }
+
     return desc;
 }
 
@@ -757,4 +836,47 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
     assert(qmesh.vertices[1].pos[0] > 11.9f && qmesh.vertices[1].pos[0] < 12.1f);
     assert(qmesh.vertices[2].pos[1] > 21.9f && qmesh.vertices[2].pos[1] < 22.1f);
     rmdirRecurse(dir);
+}
+
+@safe unittest {
+    string extGltf = `{
+      "asset": {"version": "2.0"},
+      "materials": [{
+        "pbrMetallicRoughness": {
+          "baseColorFactor": [0.2, 0.4, 0.8, 0.9],
+          "metallicFactor": 0.25,
+          "roughnessFactor": 0.6
+        },
+        "emissiveFactor": [1.0, 0.5, 0.1],
+        "extensions": {
+          "KHR_materials_ior": { "ior": 1.75 },
+          "KHR_materials_specular": { "specularFactor": 0.85, "specularColorFactor": [0.9, 0.8, 0.7] },
+          "KHR_materials_clearcoat": { "clearcoatFactor": 0.9, "clearcoatRoughnessFactor": 0.05 },
+          "KHR_materials_sheen": { "sheenColorFactor": [0.6, 0.2, 0.8], "sheenRoughnessFactor": 0.35 },
+          "KHR_materials_iridescence": { "iridescenceFactor": 0.7, "iridescenceIor": 1.33, "iridescenceThicknessMaximum": 620.0 },
+          "KHR_materials_emissive_strength": { "emissiveStrength": 4.5 },
+          "KHR_materials_anisotropy": { "anisotropyStrength": 0.55 }
+        }
+      }]
+    }`;
+
+    auto desc = parseGltfMaterialJson(extGltf);
+    assert(desc.hasBaseColorFactor);
+    assert(desc.params.baseColor[0] > 0.19f && desc.params.baseColor[0] < 0.21f);
+    assert(desc.params.geometryOpacity > 0.89f && desc.params.geometryOpacity < 0.91f);
+    assert(desc.params.baseMetalness == 0.25f);
+    assert(desc.params.specularRoughness == 0.6f);
+    assert(desc.params.specularIor == 1.75f);
+    assert(desc.params.specularWeight == 0.85f);
+    assert(desc.params.specularColor[1] > 0.79f && desc.params.specularColor[1] < 0.81f);
+    assert(desc.params.coatWeight == 0.9f);
+    assert(desc.params.coatRoughness == 0.05f);
+    assert(desc.params.fuzzWeight == 1.0f);
+    assert(desc.params.fuzzColor[2] > 0.79f && desc.params.fuzzColor[2] < 0.81f);
+    assert(desc.params.fuzzRoughness == 0.35f);
+    assert(desc.params.thinFilmWeight == 0.7f);
+    assert(desc.params.thinFilmIor == 1.33f);
+    assert(desc.params.thinFilmThickness == 620.0f);
+    assert(desc.params.emissionLuminance == 4.5f);
+    assert(desc.params.specularAnisotropy == 0.55f);
 }

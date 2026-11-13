@@ -205,8 +205,14 @@ bool drawInspector(W)(
         if (sliderFloat(ui, "Base R", mat.baseColor[0], 0, 1)) matChanged = true;
         if (sliderFloat(ui, "Base G", mat.baseColor[1], 0, 1)) matChanged = true;
         if (sliderFloat(ui, "Base B", mat.baseColor[2], 0, 1)) matChanged = true;
-        if (sliderFloat(ui, "Metallic", mat.metallic, 0, 1)) matChanged = true;
-        if (sliderFloat(ui, "Roughness", mat.roughness, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Metalness", mat.baseMetalness, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Roughness", mat.specularRoughness, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Spec IOR", mat.specularIor, 1.0f, 2.5f)) matChanged = true;
+        if (sliderFloat(ui, "Coat", mat.coatWeight, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Coat Rough", mat.coatRoughness, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Fuzz", mat.fuzzWeight, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Thin-Film", mat.thinFilmWeight, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Emission", mat.emissionLuminance, 0, 10)) matChanged = true;
 
         if (matChanged) {
             if (!state.editingMaterial) {
@@ -234,23 +240,42 @@ bool drawInspector(W)(
     return changed;
 }
 
-/// Apply `MaterialOverride` into GPU `MaterialParams`-compatible floats.
-/// Caller uploads to the material UBO / instance tint.
-void materialOverrideToParams(
-    ref const MaterialOverride m,
-    ref float[4] baseColor,
-    ref float metallic,
-    ref float roughness
-) nothrow @nogc {
+/// Apply `MaterialOverride` into GPU `MaterialParams` for OpenPBR shading.
+import engine.graphics.material : MaterialParams;
+
+MaterialParams materialOverrideToParams(ref const MaterialOverride m) nothrow @nogc {
+    MaterialParams p;
     if (m.active == 0) {
-        baseColor = [1, 1, 1, 1];
-        metallic = 0;
-        roughness = 1;
-        return;
+        p.baseColor = [1.0f, 1.0f, 1.0f];
+        p.baseMetalness = 0.0f;
+        p.specularRoughness = 1.0f;
+        return p;
     }
-    baseColor = m.baseColor;
-    metallic = m.metallic;
-    roughness = m.roughness;
+    p.baseColor = m.baseColor;
+    p.baseWeight = m.baseWeight;
+    p.baseMetalness = m.baseMetalness;
+    p.baseDiffuseRoughness = m.baseDiffuseRoughness;
+    p.specularWeight = m.specularWeight;
+    p.specularRoughness = m.specularRoughness < 0.04f ? 0.04f : m.specularRoughness;
+    p.specularColor = m.specularColor;
+    p.specularIor = m.specularIor;
+    p.specularAnisotropy = m.specularAnisotropy;
+    p.coatWeight = m.coatWeight;
+    p.coatColor = m.coatColor;
+    p.coatRoughness = m.coatRoughness;
+    p.coatIor = m.coatIor;
+    p.coatDarkening = m.coatDarkening;
+    p.fuzzWeight = m.fuzzWeight;
+    p.fuzzColor = m.fuzzColor;
+    p.fuzzRoughness = m.fuzzRoughness;
+    p.thinFilmWeight = m.thinFilmWeight;
+    p.thinFilmThickness = m.thinFilmThickness;
+    p.thinFilmIor = m.thinFilmIor;
+    p.emissionColor = m.emissionColor;
+    p.emissionLuminance = m.emissionLuminance;
+    p.geometryOpacity = m.geometryOpacity;
+    p.flags = m.flags;
+    return p;
 }
 
 private bool syncNameBuffer(W)(ref W world, EntityId id, ref InspectorState state) {
@@ -269,10 +294,10 @@ private bool syncNameBuffer(W)(ref W world, EntityId id, ref InspectorState stat
 
 @safe unittest {
     MaterialOverride m;
-    m.roughness = 0.3f;
+    m.specularRoughness = 0.3f;
+    m.coatWeight = 0.8f;
     m.active = 1;
-    float[4] bc;
-    float met, rough;
-    materialOverrideToParams(m, bc, met, rough);
-    assert(rough == 0.3f);
+    auto p = materialOverrideToParams(m);
+    assert(p.specularRoughness == 0.3f);
+    assert(p.coatWeight == 0.8f);
 }

@@ -1,10 +1,39 @@
 #include "common/shadows.wgsl"
 
 struct MaterialParams {
-    baseColorFactor: vec4<f32>,
-    metallic: f32,
-    roughness: f32,
+    baseColor: vec3<f32>,
+    baseWeight: f32,
+
+    baseMetalness: f32,
+    baseDiffuseRoughness: f32,
+    specularWeight: f32,
+    specularRoughness: f32,
+
+    specularColor: vec3<f32>,
+    specularIor: f32,
+
+    specularAnisotropy: f32,
+    coatWeight: f32,
+    coatRoughness: f32,
+    coatIor: f32,
+
+    coatColor: vec3<f32>,
+    coatDarkening: f32,
+
+    fuzzColor: vec3<f32>,
+    fuzzWeight: f32,
+
+    fuzzRoughness: f32,
+    thinFilmWeight: f32,
+    thinFilmThickness: f32,
+    thinFilmIor: f32,
+
+    emissionColor: vec3<f32>,
+    emissionLuminance: f32,
+
+    geometryOpacity: f32,
     flags: u32,
+    _pad0: f32,
     _pad1: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
@@ -81,23 +110,27 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let albedoSample = textureSample(albedoMap, texSampler, in.uv);
-    var albedo = albedoSample.rgb * mat.baseColorFactor.rgb * in.tint;
-    var metallic = mat.metallic;
-    var roughness = mat.roughness;
+    let baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
+    var metalness = mat.baseMetalness;
+    var roughness = mat.specularRoughness;
     if ((mat.flags & FLAG_MR) != 0u) {
         let mr = textureSample(mrMap, texSampler, in.uv);
         roughness = clamp(roughness * mr.g, 0.04, 1.0);
-        metallic = clamp(metallic * mr.b, 0.0, 1.0);
+        metalness = clamp(metalness * mr.b, 0.0, 1.0);
     } else {
         roughness = clamp(roughness, 0.04, 1.0);
-        metallic = clamp(metallic, 0.0, 1.0);
+        metalness = clamp(metalness, 0.0, 1.0);
     }
 
     var N = normalize(in.worldNormal);
+    var T = normalize(in.worldTangent);
+    var B = normalize(in.worldBitangent);
     if ((mat.flags & FLAG_NORMAL) != 0u) {
         let nSample = textureSample(normalMap, texSampler, in.uv).xyz * 2.0 - 1.0;
-        let TBN = mat3x3<f32>(normalize(in.worldTangent), normalize(in.worldBitangent), N);
+        let TBN = mat3x3<f32>(T, B, N);
         N = normalize(TBN * nSample);
+        T = normalize(T - N * dot(N, T));
+        B = cross(N, T);
     }
 
     var ao = 1.0;
@@ -105,12 +138,52 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         ao = textureSample(occlusionMap, texSampler, in.uv).r;
     }
 
-    var emissive = vec3<f32>(0.0);
+    var emissive = mat.emissionColor * mat.emissionLuminance;
     if ((mat.flags & FLAG_EMISSIVE) != 0u) {
-        emissive = textureSample(emissiveMap, texSampler, in.uv).rgb;
+        let emTex = textureSample(emissiveMap, texSampler, in.uv).rgb;
+        emissive = emTex * mat.emissionColor * max(mat.emissionLuminance, 1.0);
     }
 
     let V = normalize(frame.cameraPos - in.worldPos);
+    let NdotV = max(dot(N, V), 0.001);
+
+    let effectiveRoughness = coatRoughenBase(roughness, mat.coatRoughness, mat.coatWeight);
+    let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, effectiveRoughness)).rgb;
+    let directionalAlbedo = lutBase.r + lutBase.g;
+
+    var fuzzE = 0.0;
+    if (mat.fuzzWeight > 0.001) {
+        let fuzzR = clamp(mat.fuzzRoughness, 0.04, 1.0);
+        fuzzE = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, fuzzR)).b;
+    }
+
+    var pbrIn: OpenPbrEvalInput;
+    pbrIn.N = N;
+    pbrIn.T = T;
+    pbrIn.B = B;
+    pbrIn.V = V;
+    pbrIn.baseColor = baseColor;
+    pbrIn.metalness = metalness;
+    pbrIn.diffuseRoughness = mat.baseDiffuseRoughness;
+    pbrIn.specularWeight = mat.specularWeight;
+    pbrIn.specularRoughness = effectiveRoughness;
+    pbrIn.specularColor = mat.specularColor;
+    pbrIn.specularIor = mat.specularIor;
+    pbrIn.specularAnisotropy = mat.specularAnisotropy;
+    pbrIn.coatWeight = mat.coatWeight;
+    pbrIn.coatColor = mat.coatColor;
+    pbrIn.coatRoughness = mat.coatRoughness;
+    pbrIn.coatIor = mat.coatIor;
+    pbrIn.coatDarkening = mat.coatDarkening;
+    pbrIn.fuzzWeight = mat.fuzzWeight;
+    pbrIn.fuzzColor = mat.fuzzColor;
+    pbrIn.fuzzRoughness = mat.fuzzRoughness;
+    pbrIn.thinFilmWeight = mat.thinFilmWeight;
+    pbrIn.thinFilmThickness = mat.thinFilmThickness;
+    pbrIn.thinFilmIor = mat.thinFilmIor;
+    pbrIn.directionalAlbedo = directionalAlbedo;
+    pbrIn.fuzzAlbedo = fuzzE;
+
     var direct = vec3<f32>(0.0);
 
     // --- Directional ---
@@ -121,7 +194,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (frame.dirLight.castShadows != 0u) {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
         }
-        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
     }
 
     // --- Point lights ---
@@ -137,7 +210,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let atten = rangeAttenuation(dist, pl.range);
         let radiance = pl.color * pl.intensity * atten;
         let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
-        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
     }
 
     // --- Spot lights ---
@@ -150,7 +223,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             continue;
         }
         let L = toLight / dist;
-        // Cone: direction is light→scene, so compare against -L (scene→light flipped).
         let theta = dot(normalize(-sl.direction), L);
         let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
         let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
@@ -160,24 +232,71 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let atten = rangeAttenuation(dist, sl.range) * cone * cone;
         let radiance = sl.color * sl.intensity * atten;
         let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
-        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
     }
 
-    // IBL
-    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
-    let NdotV = max(dot(N, V), 0.001);
-    let F_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
-    let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metallic);
-    let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
-    let diffuseIbl = kD_ibl * irradiance * albedo;
-    let R = reflect(-V, N);
-    let mip = roughness * SPECULAR_MIPS;
-    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
-    let brdf = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, roughness)).rg;
-    let specularIbl = prefiltered * (F_ibl * brdf.x + brdf.y);
-    let ambient = (diffuseIbl + specularIbl) * ao;
+    // --- IBL ---
+    let f0Dielectric = dielectricF0UnderCoat(
+        mat.specularIor, mat.coatIor, mat.coatWeight, mat.specularWeight, mat.specularColor
+    );
+    let f0Base = mix(f0Dielectric, baseColor, metalness);
+    var F_ibl = fresnelSchlickRoughness(NdotV, f0Base, effectiveRoughness);
+    if (mat.thinFilmWeight > 0.001) {
+        let fFilmIbl = evalThinFilmIridescence(NdotV, mat.thinFilmThickness, mat.thinFilmIor, f0Base);
+        F_ibl = mix(F_ibl, fFilmIbl, clamp(mat.thinFilmWeight, 0.0, 1.0));
+    }
 
-    var color = direct + ambient + emissive;
+    let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness);
+    let baseAlbedoIbl = applyCoatDarkening(baseColor, mat.coatIor, mat.coatWeight, mat.coatDarkening);
+    let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
+    let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
+
+    // Anisotropic bent reflection vector for IBL
+    var iblNormal = N;
+    if (abs(mat.specularAnisotropy) > 0.001) {
+        let anisoDir = select(T, B, mat.specularAnisotropy >= 0.0);
+        let anisoTangent = cross(anisoDir, V);
+        let bentNormal = normalize(cross(anisoTangent, anisoDir));
+        iblNormal = normalize(mix(N, bentNormal, abs(mat.specularAnisotropy) * 0.5));
+    }
+    let R = reflect(-V, iblNormal);
+    let mip = effectiveRoughness * SPECULAR_MIPS;
+    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
+    let E_o = clamp(directionalAlbedo, 0.05, 1.0);
+    let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
+    let specularIbl = prefiltered * (F_ibl * lutBase.r + lutBase.g) * msScale;
+    var ambient = (diffuseIbl + specularIbl) * ao;
+
+    // Coat IBL
+    var totalEmission = emissive;
+    if (mat.coatWeight > 0.001) {
+        let coatW = clamp(mat.coatWeight, 0.0, 1.0);
+        let coatR = clamp(mat.coatRoughness, 0.04, 1.0);
+        let f0Coat = vec3<f32>(dielectricF0Scalar(mat.coatIor));
+        let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, coatR) * coatW;
+        let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
+        let coatRefl = reflect(-V, N);
+        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
+        let coatSpecIbl = coatPrefiltered * (Fc_ibl * coatLut.r + coatLut.g) * ao;
+        let coatTransIbl = mix(
+            vec3<f32>(1.0),
+            pow(max(mat.coatColor, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV, 0.05))),
+            coatW
+        );
+        ambient = ambient * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl) + coatSpecIbl;
+        totalEmission = totalEmission * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl);
+    }
+
+    // Fuzz IBL
+    if (mat.fuzzWeight > 0.001) {
+        let fuzzW = clamp(mat.fuzzWeight, 0.0, 1.0);
+        let fuzzTrans = clamp(1.0 - fuzzW * fuzzE, 0.0, 1.0);
+        let fuzzIbl = fuzzW * irradiance * mat.fuzzColor * fuzzE * ao;
+        ambient = ambient * fuzzTrans + fuzzIbl;
+        totalEmission = totalEmission * fuzzTrans;
+    }
+
+    var color = direct + ambient + totalEmission;
     color = max(color, vec3<f32>(0.0));
-    return vec4<f32>(color, albedoSample.a * mat.baseColorFactor.a);
+    return vec4<f32>(color, albedoSample.a * mat.geometryOpacity);
 }

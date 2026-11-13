@@ -357,8 +357,8 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 /// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts(16)
 /// + PointLight[8](384) + SpotLight[4](512).
 enum FRAME_UNIFORMS_SIZE = 1088;
-/// MaterialParams UBO size (baseColor + metallic/roughness/flags).
-enum MATERIAL_PARAMS_SIZE = 32;
+/// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
+enum MATERIAL_PARAMS_SIZE = 144;
 
 /// Textured 3D instanced PBR pipeline.
 ///   Buffer 0 (per-vertex): `TexVert` stride 32, or `TexTanVert` stride 48 on `pipelineTangent`.

@@ -552,9 +552,9 @@ StringId defaultLightName(ref StringTable strings) {
 
     // Material roughness override
     auto mat = world.get!MaterialOverride(a);
-    mat.roughness = 0.2f;
+    mat.specularRoughness = 0.2f;
     world.set(a, mat);
-    assert(world.get!MaterialOverride(a).roughness == 0.2f);
+    assert(world.get!MaterialOverride(a).specularRoughness == 0.2f);
 
     auto b = duplicateEntity(world, stack, sel, a);
     assert(world.alive(b));

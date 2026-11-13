@@ -288,30 +288,47 @@ private ubyte[] generateBrdfLut(uint size) {
     foreach (y; 0 .. size) foreach (x; 0 .. size) {
         immutable NdotV = (cast(float) x + 0.5f) / cast(float) size;
         immutable roughness = (cast(float) y + 0.5f) / cast(float) size;
-        immutable V = Vec3(sqrt(1.0f - NdotV * NdotV), 0, NdotV);
+        immutable V = Vec3(sqrt(max(1.0f - NdotV * NdotV, 0.0f)), 0, NdotV);
         immutable N = Vec3(0, 0, 1);
-        float A = 0, B = 0;
+        float A = 0, B = 0, C = 0;
         foreach (si; 0 .. samples) {
             immutable xi = hammersley(si, samples);
-            immutable H = importanceSampleGGX(xi, N, roughness);
-            immutable L = (H * 2.0f * V.dot(H) - V).normalized();
-            immutable NdotL = max(L.z, 0.0f);
-            immutable NdotH = max(H.z, 0.0f);
-            immutable VdotH = max(V.dot(H), 0.0f);
-            if (NdotL > 0) {
-                immutable G = geometrySmith(NdotV, NdotL, roughness);
-                immutable G_Vis = (G * VdotH) / max(NdotH * NdotV, 1e-5f);
-                immutable Fc = pow(1.0f - VdotH, 5.0f);
-                A += (1.0f - Fc) * G_Vis;
-                B += Fc * G_Vis;
+            // Channels R & G: GGX split-sum scale and bias
+            {
+                immutable H = importanceSampleGGX(xi, N, roughness);
+                immutable L = (H * 2.0f * V.dot(H) - V).normalized();
+                immutable NdotL = max(L.z, 0.0f);
+                immutable NdotH = max(H.z, 0.0f);
+                immutable VdotH = max(V.dot(H), 0.0f);
+                if (NdotL > 0) {
+                    immutable G = geometrySmith(NdotV, NdotL, roughness);
+                    immutable G_Vis = (G * VdotH) / max(NdotH * NdotV, 1e-5f);
+                    immutable Fc = pow(1.0f - VdotH, 5.0f);
+                    A += (1.0f - Fc) * G_Vis;
+                    B += Fc * G_Vis;
+                }
+            }
+            // Channel B: Charlie sheen directional albedo E_fuzz(NdotV, roughness)
+            {
+                immutable L = importanceSampleCosine(xi, N);
+                immutable NdotL = max(L.z, 0.0f);
+                if (NdotL > 0) {
+                    immutable H = (V + L).normalized();
+                    immutable NdotH = max(H.z, 0.0f);
+                    immutable D = distributionCharlie(NdotH, roughness);
+                    immutable Vis = visibilityAshikhmin(NdotV, NdotL);
+                    immutable contrib = PI * D * Vis;
+                    C += contrib > 1.0f ? 1.0f : contrib;
+                }
             }
         }
         A /= samples;
         B /= samples;
+        C /= samples;
         immutable i = (y * size + x) * 4;
         pixels[i + 0] = toU8(A);
         pixels[i + 1] = toU8(B);
-        pixels[i + 2] = 0;
+        pixels[i + 2] = toU8(C);
         pixels[i + 3] = 255;
     }
     return pixels;
@@ -365,6 +382,18 @@ private float geometrySchlickGGX(float NdotX, float roughness) {
 
 private float geometrySmith(float NdotV, float NdotL, float roughness) {
     return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+private float distributionCharlie(float NdotH, float roughness) {
+    immutable r = max(roughness, 0.04f);
+    immutable invR = 1.0f / r;
+    immutable cos2h = NdotH * NdotH;
+    immutable sin2h = max(1.0f - cos2h, 1e-6f);
+    return (2.0f + invR) * pow(sin2h, invR * 0.5f) / (2.0f * PI);
+}
+
+private float visibilityAshikhmin(float NdotV, float NdotL) {
+    return 1.0f / max(4.0f * (NdotL + NdotV - NdotL * NdotV), 1e-5f);
 }
 
 private float clamp01(float v) {
@@ -453,4 +482,25 @@ private WGPUTexture createLutTexture(WGPUDevice device, WGPUQueue queue,
     WGPUExtent3D extent = WGPUExtent3D(size, size, 1);
     wgpuQueueWriteTexture(queue, &dst, pixels.ptr, pixels.length, &layout, &extent);
     return tex;
+}
+
+@safe unittest {
+    auto lut = generateBrdfLut(16);
+    assert(lut.length == 16 * 16 * 4);
+    uint sumR, sumG, sumB;
+    foreach (y; 0 .. 16) {
+        foreach (x; 0 .. 16) {
+            immutable idx = (y * 16 + x) * 4;
+            assert(lut[idx + 3] == 255);
+            sumR += lut[idx + 0];
+            sumG += lut[idx + 1];
+            sumB += lut[idx + 2];
+        }
+    }
+    assert(sumR > 0 && sumG > 0 && sumB > 0, "GGX (R/G) and Charlie sheen (B) LUT channels must be populated");
+    // Grazing angles (x=0) have lower R and higher G/B sheen energy than head-on (x=15) at mid roughness (y=8).
+    immutable grazing = (8 * 16 + 0) * 4;
+    immutable headOn  = (8 * 16 + 15) * 4;
+    assert(lut[headOn + 0] > lut[grazing + 0], "GGX scale R should increase toward NdotV=1");
+    assert(lut[grazing + 2] >= lut[headOn + 2], "Charlie sheen directional albedo B should not drop at grazing angles");
 }

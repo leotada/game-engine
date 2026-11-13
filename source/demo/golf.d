@@ -1964,62 +1964,62 @@ int main() {
     MaterialParams matP;
 
     // Fairway Material
-    matP.baseColorFactor = [1.0f, 1.0f, 1.0f, 1.0f];
-    matP.roughness = 0.94f; matP.metallic = 0.0f;
+    matP.baseColor = [1.0f, 1.0f, 1.0f];
+    matP.specularRoughness = 0.94f; matP.baseMetalness = 0.0f;
     auto fairwayMat = Material.create(app.gpu, layout, sampler, fairwayTex, matP, null, null, null, null);
     scope(exit) fairwayMat.destroy();
 
-    matP.roughness = 0.86f; matP.metallic = 0.0f;
+    matP.specularRoughness = 0.86f; matP.baseMetalness = 0.0f;
     auto greenMat = Material.create(app.gpu, layout, sampler, greenTex, matP, null, null, null, null);
     scope(exit) greenMat.destroy();
 
-    matP.roughness = 1.0f; matP.metallic = 0.0f;
+    matP.specularRoughness = 1.0f; matP.baseMetalness = 0.0f;
     auto roughMat = Material.create(app.gpu, layout, sampler, roughTex, matP, null, null, null, null);
     scope(exit) roughMat.destroy();
 
-    matP.baseColorFactor = [0.92f, 0.78f, 0.55f, 1.0f];
-    matP.roughness = 1.0f; matP.metallic = 0.0f;
+    matP.baseColor = [0.92f, 0.78f, 0.55f];
+    matP.specularRoughness = 1.0f; matP.baseMetalness = 0.0f;
     auto sandMat = Material.create(app.gpu, layout, sampler, sandTex, matP, null, null, null, null);
     scope(exit) sandMat.destroy();
 
     // Water Material (Glossy specular mirror)
-    matP.baseColorFactor = [1.0f, 1.0f, 1.0f, 1.0f];
-    matP.roughness = 0.04f; matP.metallic = 0.06f;
+    matP.baseColor = [1.0f, 1.0f, 1.0f];
+    matP.specularRoughness = 0.04f; matP.baseMetalness = 0.06f;
     auto waterMat = Material.create(app.gpu, layout, sampler, waterTex, matP, null, null, null, null);
     scope(exit) waterMat.destroy();
 
     // Rock Material
-    matP.roughness = 0.88f; matP.metallic = 0.0f;
+    matP.specularRoughness = 0.88f; matP.baseMetalness = 0.0f;
     auto rockMat = Material.create(app.gpu, layout, sampler, rockTex, matP, null, null, null, null);
     scope(exit) rockMat.destroy();
 
-    matP.baseColorFactor = [1.0f, 1.0f, 1.0f, 1.0f];
-    matP.roughness = 0.82f; matP.metallic = 0.0f;
+    matP.baseColor = [1.0f, 1.0f, 1.0f];
+    matP.specularRoughness = 0.82f; matP.baseMetalness = 0.0f;
     auto woodMat = Material.create(app.gpu, layout, sampler, woodTex, matP, null, null, null, null);
     scope(exit) woodMat.destroy();
 
-    matP.roughness = 0.92f; matP.metallic = 0.0f;
+    matP.specularRoughness = 0.92f; matP.baseMetalness = 0.0f;
     auto needleMat = Material.create(app.gpu, layout, sampler, needleTex, matP, null, null, null, null);
     scope(exit) needleMat.destroy();
 
-    matP.roughness = 0.88f; matP.metallic = 0.0f;
+    matP.specularRoughness = 0.88f; matP.baseMetalness = 0.0f;
     auto leafMat = Material.create(app.gpu, layout, sampler, leafTex, matP, null, null, null, null);
     scope(exit) leafMat.destroy();
 
-    // Golf Ball Material (High-specular gloss white with subtle metallic sheen)
-    matP.roughness = 0.15f; matP.metallic = 0.12f;
+    // Golf Ball Material (High-specular gloss white with subtle coat)
+    matP.specularRoughness = 0.15f; matP.baseMetalness = 0.0f; matP.coatWeight = 0.5f;
     auto ballMat = Material.create(app.gpu, layout, sampler, ballTex, matP, null, null, null, null);
     scope(exit) ballMat.destroy();
 
     // Metallic Flagpole Material
-    matP.roughness = 0.22f; matP.metallic = 0.85f;
+    matP.specularRoughness = 0.22f; matP.baseMetalness = 0.85f; matP.coatWeight = 0.0f;
     auto metalMat = Material.create(app.gpu, layout, sampler, metalTex, matP, null, null, null, null);
     scope(exit) metalMat.destroy();
 
     // Red Tee Marker Material
     auto redTex = Texture.solid(app.gpu, 225, 45, 45, 255);
     scope(exit) redTex.destroy();
-    matP.roughness = 0.35f; matP.metallic = 0.1f;
+    matP.specularRoughness = 0.35f; matP.baseMetalness = 0.1f;
     auto redMat = Material.create(app.gpu, layout, sampler, redTex, matP, null, null, null, null);
     scope(exit) redMat.destroy();
 

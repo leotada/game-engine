@@ -63,10 +63,30 @@ struct SceneVisualData {
 }
 
 struct SceneMaterialData {
-    float[4] baseColor = [1, 1, 1, 1];
-    float metallic = 0;
-    float roughness = 0.5f;
-    uint flags = 0;
+    float[3] baseColor = [1.0f, 1.0f, 1.0f];
+    float    baseWeight = 1.0f;
+    float    baseMetalness = 0.0f;
+    float    baseDiffuseRoughness = 0.0f;
+    float    specularWeight = 1.0f;
+    float    specularRoughness = 0.5f;
+    float[3] specularColor = [1.0f, 1.0f, 1.0f];
+    float    specularIor = 1.5f;
+    float    specularAnisotropy = 0.0f;
+    float    coatWeight = 0.0f;
+    float[3] coatColor = [1.0f, 1.0f, 1.0f];
+    float    coatRoughness = 0.1f;
+    float    coatIor = 1.6f;
+    float    coatDarkening = 1.0f;
+    float    fuzzWeight = 0.0f;
+    float[3] fuzzColor = [1.0f, 1.0f, 1.0f];
+    float    fuzzRoughness = 0.5f;
+    float    thinFilmWeight = 0.0f;
+    float    thinFilmThickness = 500.0f;
+    float    thinFilmIor = 1.4f;
+    float[3] emissionColor = [1.0f, 1.0f, 1.0f];
+    float    emissionLuminance = 0.0f;
+    float    geometryOpacity = 1.0f;
+    uint     flags = 0;
 }
 
 struct ScenePhysicsData {
@@ -492,6 +512,32 @@ void runSceneFileGoldenTests() {
         assert(!v.ok);
         assert(v.errors.canFind!(i => i.code == SceneValidationCode.missingAsset));
     }
+
+    // OpenPBR material round-trip
+    {
+        SceneFile opbr;
+        opbr.meta.name = "opbr_test";
+        SceneEntityData e;
+        e.id = 1;
+        e.hasMaterial = true;
+        e.material.baseColor = [0.2f, 0.4f, 0.8f];
+        e.material.baseMetalness = 0.75f;
+        e.material.specularRoughness = 0.25f;
+        e.material.specularIor = 1.7f;
+        e.material.coatWeight = 0.9f;
+        e.material.coatRoughness = 0.05f;
+        e.material.fuzzWeight = 0.6f;
+        e.material.thinFilmWeight = 0.5f;
+        opbr.entities ~= e;
+        immutable json = sceneToMinifiedJson(opbr);
+        auto parsed = parseSceneJson(json);
+        assert(parsed.entities.length == 1 && parsed.entities[0].hasMaterial);
+        assert(parsed.entities[0].material.specularIor == 1.7f);
+        assert(parsed.entities[0].material.coatWeight == 0.9f);
+        assert(parsed.entities[0].material.fuzzWeight == 0.6f);
+        assert(parsed.entities[0].material.thinFilmWeight == 0.5f);
+        assert(sceneToMinifiedJson(parsed) == json);
+    }
 }
 
 @safe unittest {
@@ -638,12 +684,40 @@ private SceneVisualData parseVisual(ref JSONValue v) {
 
 private SceneMaterialData parseMaterial(ref JSONValue v) {
     enforce(v.type == JSONType.object, "material must be object");
-    requireOnlyKeys(v, ["baseColor", "metallic", "roughness", "flags"], "material");
+    requireOnlyKeys(v, [
+        "baseColor", "baseWeight", "baseMetalness", "baseDiffuseRoughness",
+        "specularWeight", "specularRoughness", "specularColor", "specularIor",
+        "specularAnisotropy", "coatWeight", "coatColor", "coatRoughness",
+        "coatIor", "coatDarkening", "fuzzWeight", "fuzzColor", "fuzzRoughness",
+        "thinFilmWeight", "thinFilmThickness", "thinFilmIor",
+        "emissionColor", "emissionLuminance", "geometryOpacity",
+        "flags"
+    ], "material");
     SceneMaterialData m;
-    m.baseColor = jsonFloat4(v["baseColor"], "material.baseColor");
-    m.metallic = jsonFloat(v["metallic"], "material.metallic");
-    m.roughness = jsonFloat(v["roughness"], "material.roughness");
+    m.baseColor = jsonFloat3(v["baseColor"], "material.baseColor");
+    m.baseMetalness = jsonFloat(v["baseMetalness"], "material.baseMetalness");
+    m.specularRoughness = jsonFloat(v["specularRoughness"], "material.specularRoughness");
     m.flags = cast(uint) jsonInt(v["flags"], "material.flags");
+    if ("baseWeight" in v) m.baseWeight = jsonFloat(v["baseWeight"], "material.baseWeight");
+    if ("baseDiffuseRoughness" in v) m.baseDiffuseRoughness = jsonFloat(v["baseDiffuseRoughness"], "material.baseDiffuseRoughness");
+    if ("specularWeight" in v) m.specularWeight = jsonFloat(v["specularWeight"], "material.specularWeight");
+    if ("specularColor" in v) m.specularColor = jsonFloat3(v["specularColor"], "material.specularColor");
+    if ("specularIor" in v) m.specularIor = jsonFloat(v["specularIor"], "material.specularIor");
+    if ("specularAnisotropy" in v) m.specularAnisotropy = jsonFloat(v["specularAnisotropy"], "material.specularAnisotropy");
+    if ("coatWeight" in v) m.coatWeight = jsonFloat(v["coatWeight"], "material.coatWeight");
+    if ("coatColor" in v) m.coatColor = jsonFloat3(v["coatColor"], "material.coatColor");
+    if ("coatRoughness" in v) m.coatRoughness = jsonFloat(v["coatRoughness"], "material.coatRoughness");
+    if ("coatIor" in v) m.coatIor = jsonFloat(v["coatIor"], "material.coatIor");
+    if ("coatDarkening" in v) m.coatDarkening = jsonFloat(v["coatDarkening"], "material.coatDarkening");
+    if ("fuzzWeight" in v) m.fuzzWeight = jsonFloat(v["fuzzWeight"], "material.fuzzWeight");
+    if ("fuzzColor" in v) m.fuzzColor = jsonFloat3(v["fuzzColor"], "material.fuzzColor");
+    if ("fuzzRoughness" in v) m.fuzzRoughness = jsonFloat(v["fuzzRoughness"], "material.fuzzRoughness");
+    if ("thinFilmWeight" in v) m.thinFilmWeight = jsonFloat(v["thinFilmWeight"], "material.thinFilmWeight");
+    if ("thinFilmThickness" in v) m.thinFilmThickness = jsonFloat(v["thinFilmThickness"], "material.thinFilmThickness");
+    if ("thinFilmIor" in v) m.thinFilmIor = jsonFloat(v["thinFilmIor"], "material.thinFilmIor");
+    if ("emissionColor" in v) m.emissionColor = jsonFloat3(v["emissionColor"], "material.emissionColor");
+    if ("emissionLuminance" in v) m.emissionLuminance = jsonFloat(v["emissionLuminance"], "material.emissionLuminance");
+    if ("geometryOpacity" in v) m.geometryOpacity = jsonFloat(v["geometryOpacity"], "material.geometryOpacity");
     return m;
 }
 
@@ -757,20 +831,35 @@ private void writeEntity(ref Appender!string app, const ref SceneEntityData e) {
         writeVisual(app, e.visual);
     }
     if (e.hasMaterial) {
-        app.put(`,"material":{"baseColor":[`);
-        writeFloat(app, e.material.baseColor[0]);
-        app.put(',');
-        writeFloat(app, e.material.baseColor[1]);
-        app.put(',');
-        writeFloat(app, e.material.baseColor[2]);
-        app.put(',');
-        writeFloat(app, e.material.baseColor[3]);
-        app.put(`],"metallic":`);
-        writeFloat(app, e.material.metallic);
-        app.put(`,"roughness":`);
-        writeFloat(app, e.material.roughness);
+        auto m = e.material;
+        app.put(`,"material":{"baseColor":`);
+        writeFloat3(app, m.baseColor);
+        app.put(`,"baseMetalness":`);
+        writeFloat(app, m.baseMetalness);
+        app.put(`,"specularRoughness":`);
+        writeFloat(app, m.specularRoughness);
         app.put(`,"flags":`);
-        app.formattedWrite("%d", e.material.flags);
+        app.formattedWrite("%d", m.flags);
+        if (m.baseWeight != 1.0f) { app.put(`,"baseWeight":`); writeFloat(app, m.baseWeight); }
+        if (m.baseDiffuseRoughness != 0.0f) { app.put(`,"baseDiffuseRoughness":`); writeFloat(app, m.baseDiffuseRoughness); }
+        if (m.specularWeight != 1.0f) { app.put(`,"specularWeight":`); writeFloat(app, m.specularWeight); }
+        if (m.specularColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"specularColor":`); writeFloat3(app, m.specularColor); }
+        if (m.specularIor != 1.5f) { app.put(`,"specularIor":`); writeFloat(app, m.specularIor); }
+        if (m.specularAnisotropy != 0.0f) { app.put(`,"specularAnisotropy":`); writeFloat(app, m.specularAnisotropy); }
+        if (m.coatWeight != 0.0f) { app.put(`,"coatWeight":`); writeFloat(app, m.coatWeight); }
+        if (m.coatColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"coatColor":`); writeFloat3(app, m.coatColor); }
+        if (m.coatRoughness != 0.1f) { app.put(`,"coatRoughness":`); writeFloat(app, m.coatRoughness); }
+        if (m.coatIor != 1.6f) { app.put(`,"coatIor":`); writeFloat(app, m.coatIor); }
+        if (m.coatDarkening != 1.0f) { app.put(`,"coatDarkening":`); writeFloat(app, m.coatDarkening); }
+        if (m.fuzzWeight != 0.0f) { app.put(`,"fuzzWeight":`); writeFloat(app, m.fuzzWeight); }
+        if (m.fuzzColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"fuzzColor":`); writeFloat3(app, m.fuzzColor); }
+        if (m.fuzzRoughness != 0.5f) { app.put(`,"fuzzRoughness":`); writeFloat(app, m.fuzzRoughness); }
+        if (m.thinFilmWeight != 0.0f) { app.put(`,"thinFilmWeight":`); writeFloat(app, m.thinFilmWeight); }
+        if (m.thinFilmThickness != 500.0f) { app.put(`,"thinFilmThickness":`); writeFloat(app, m.thinFilmThickness); }
+        if (m.thinFilmIor != 1.4f) { app.put(`,"thinFilmIor":`); writeFloat(app, m.thinFilmIor); }
+        if (m.emissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"emissionColor":`); writeFloat3(app, m.emissionColor); }
+        if (m.emissionLuminance != 0.0f) { app.put(`,"emissionLuminance":`); writeFloat(app, m.emissionLuminance); }
+        if (m.geometryOpacity != 1.0f) { app.put(`,"geometryOpacity":`); writeFloat(app, m.geometryOpacity); }
         app.put('}');
     }
     if (e.hasPhysics) {
@@ -893,6 +982,16 @@ private void writeJsonString(ref Appender!string app, string s) {
 }
 
 /// Compact float: integer form when exact, else `%g`.
+private void writeFloat3(ref Appender!string app, const float[3] v) {
+    app.put('[');
+    writeFloat(app, v[0]);
+    app.put(',');
+    writeFloat(app, v[1]);
+    app.put(',');
+    writeFloat(app, v[2]);
+    app.put(']');
+}
+
 private void writeFloat(ref Appender!string app, float f) {
     enforce(!isNaN(f), "cannot serialize NaN in scene JSON");
     immutable asInt = cast(int) f;

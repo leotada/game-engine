@@ -512,8 +512,8 @@ private void seedDefaultScene(
         auto id = spawnPrimitive(world, cmds, sel, VisualKind.cube, t,
             defaultNameFor(world.strings, VisualKind.cube));
         auto mat = world.get!MaterialOverride(id);
-        mat.baseColor = [0.7f + i * 0.1f, 0.4f, 0.3f, 1];
-        mat.roughness = 0.4f + i * 0.15f;
+        mat.baseColor = [0.7f + i * 0.1f, 0.4f, 0.3f];
+        mat.specularRoughness = 0.4f + i * 0.15f;
         world.set(id, mat);
     }
     // Dynamic sphere for Simulate
@@ -582,12 +582,9 @@ private void drawWorldMeshes(
         if (world.has!MaterialOverride(id)) {
             immutable mo = world.get!MaterialOverride(id);
             if (mo.active) {
-                tint = Color4(mo.baseColor[0], mo.baseColor[1], mo.baseColor[2], mo.baseColor[3]);
+                tint = Color4(1.0f, 1.0f, 1.0f, 1.0f);
                 if (overridePoolCursor < overridePool.length) {
-                    MaterialParams p;
-                    p.baseColorFactor = mo.baseColor;
-                    p.metallic = mo.metallic;
-                    p.roughness = mo.roughness < 0.04f ? 0.04f : mo.roughness;
+                    MaterialParams p = materialOverrideToParams(mo);
                     overridePool[overridePoolCursor].updateParams(app.gpu, p);
                     mat = &overridePool[overridePoolCursor];
                     overridePoolCursor++;

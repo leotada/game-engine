@@ -16,7 +16,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
 | 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **In Progress** | Compiler card-marking across Linux/Win/Android/macOS/iOS |
 | 3 | PBR + shadow sampling | [plan-pbr.md](plan-pbr.md) | **Done** (PBR-0–5) | Textured path: GGX + IBL + PCF; `pbr` demo |
-| 3b | OpenPBR Surface shading model | [plan-openpbr.md](plan-openpbr.md) | High | Canonical single-pass OpenPBR v1.1 (Base/Oren-Nayar, Specular IOR/Anisotropy, F82 Conductor, Multi-scattering GGX, Coat, Fuzz/Sheen, Thin-Film) |
+| 3b | OpenPBR Surface shading model | [plan-openpbr.md](plan-openpbr.md) | **Done** (`OPBR-1`–`5`) | Canonical single-pass OpenPBR v1.1 (Base/Oren-Nayar, Specular IOR/Anisotropy, F82 Conductor, Multi-scattering GGX, Coat, Fuzz/Sheen, Thin-Film) |
 | 4 | Post-processing | [plan-post-processing.md](plan-post-processing.md) | **Done** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
 | 6 | Scene editor / level design | [plan-editor-ux.md](plan-editor-ux.md) | **Done** (v1) | `dub run --config=editor`; multi-light with shadows; hull+mesh; asset DB; multi-select + undo |

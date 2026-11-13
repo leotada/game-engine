@@ -1269,7 +1269,7 @@ struct EditorApp {
             Color4 col = Color4(0.75f, 0.75f, 0.80f, 1.0f);
             if (world.has!MaterialOverride(e)) {
                 auto m = world.get!MaterialOverride(e);
-                col = Color4(m.baseColor[0], m.baseColor[1], m.baseColor[2], m.baseColor[3]);
+                col = Color4(m.baseColor[0], m.baseColor[1], m.baseColor[2], m.geometryOpacity);
             }
 
             auto model = Mat4.translation(t.position.x, t.position.y, t.position.z)
@@ -1465,7 +1465,7 @@ struct EditorApp {
             if (slot >= 3 && slot <= 5)
                 dragEuler = dragBefore.rotation.toEulerYXZ();
             draggingValue = true;
-        } else if (slot <= 11) {
+        } else if (slot <= 11 || (slot >= 15 && slot <= 18)) {
             if (!world.has!MaterialOverride(dragEntity)) {
                 world.set(dragEntity, MaterialOverride.init);
                 dragHadMaterial = false;
@@ -1517,16 +1517,27 @@ struct EditorApp {
                 if (t.scale.z < 0.01f) t.scale.z = 0.01f;
             }
             world.set(dragEntity, t);
-        } else if (d != 0 && dragSlot >= 9 && dragSlot <= 11 && world.has!MaterialOverride(dragEntity)) {
+        } else if (d != 0 && ((dragSlot >= 9 && dragSlot <= 11) || (dragSlot >= 15 && dragSlot <= 18)) && world.has!MaterialOverride(dragEntity)) {
             auto m = world.get!MaterialOverride(dragEntity);
             if (dragSlot == 9) m.baseColor[0] += d;
             else if (dragSlot == 10) m.baseColor[1] += d;
-            else m.baseColor[2] += d;
+            else if (dragSlot == 11) m.baseColor[2] += d;
+            else if (dragSlot == 15) m.baseMetalness += d;
+            else if (dragSlot == 16) m.specularRoughness += d;
+            else if (dragSlot == 17) m.coatWeight += d;
+            else m.fuzzWeight += d;
             foreach (i; 0 .. 3) {
                 if (m.baseColor[i] < 0) m.baseColor[i] = 0;
                 if (m.baseColor[i] > 1) m.baseColor[i] = 1;
             }
-            m.baseColor[3] = 1;
+            if (m.baseMetalness < 0) m.baseMetalness = 0;
+            if (m.baseMetalness > 1) m.baseMetalness = 1;
+            if (m.specularRoughness < 0) m.specularRoughness = 0;
+            if (m.specularRoughness > 1) m.specularRoughness = 1;
+            if (m.coatWeight < 0) m.coatWeight = 0;
+            if (m.coatWeight > 1) m.coatWeight = 1;
+            if (m.fuzzWeight < 0) m.fuzzWeight = 0;
+            if (m.fuzzWeight > 1) m.fuzzWeight = 1;
             world.set(dragEntity, m);
         } else if (d != 0 && dragSlot >= 12 && dragSlot <= 14 && world.has!Camera3D(dragEntity)) {
             auto c = world.get!Camera3D(dragEntity);
@@ -1552,7 +1563,7 @@ struct EditorApp {
                     recordTransform(commands, dragEntity, dragBefore, after);
                     sceneDirty = true;
                 }
-            } else if (dragSlot <= 11 && world.has!MaterialOverride(dragEntity)) {
+            } else if ((dragSlot <= 11 || (dragSlot >= 15 && dragSlot <= 18)) && world.has!MaterialOverride(dragEntity)) {
                 auto after = world.get!MaterialOverride(dragEntity);
                 if (!dragHadMaterial || materialChanged(dragMatBefore, after)) {
                     if (materialChanged(dragMatBefore, after))
@@ -1758,11 +1769,7 @@ private bool transformChanged(Transform a, Transform b) {
 }
 
 private bool materialChanged(MaterialOverride a, MaterialOverride b) {
-    foreach (i; 0 .. 4) {
-        if (a.baseColor[i] != b.baseColor[i])
-            return true;
-    }
-    return a.metallic != b.metallic || a.roughness != b.roughness;
+    return a != b;
 }
 
 private Vec3 frustumCorner(Vec3 origin, Quat q, float dist, float fovRad, float sx, float sy) {

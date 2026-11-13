@@ -136,19 +136,24 @@ Pipeline for bitmap text (FPS overlay, debug text):
 - **Font atlas** — 128×48 R8Unorm texture, 8×8 CP437 glyphs (ASCII 32-127)
 - **Shader** — WGSL with screen size uniform, sampler + texture binding
 
-### Pipeline3D Textured (PBR)
+### Pipeline3D Textured (OpenPBR Surface v1.1)
 
-Variant of Pipeline3D with metallic-roughness PBR, PCF shadows, and IBL:
+Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shading model, PCF shadows, and IBL:
 
-- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32)
+- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), or tangent-extended vertex layout (`MESH_TANGENT`, stride=48, `vec4f tangent`) for anisotropic GGX and tangent-space normal mapping
 - **Vertex buffer 1** — instances: 4×`float32x4` model + tint `float32x4` (stride=80)
 - **Bind groups:**
-  - `@group(0) Frame` — `FrameUniforms` (viewProj, lightViewProj, lightDir, shadowBias, cameraPos), comparison sampler, `texture_depth_2d`
-  - `@group(1) Material` — `MaterialParams` UBO, filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
-  - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), BRDF LUT, sampler
-- **Fragment** — Cook-Torrance GGX + IBL (HDR output); tone mapping in `resolvePost`
-- **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo)`
-- **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain)
+  - `@group(0) Frame` — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos), comparison sampler, directional/point/spot shadow maps
+  - `@group(1) Material` — 144-byte `MaterialParams` UBO (`9 × vec4f`: Base, Specular/Anisotropy/IOR, Coat, Fuzz, Thin-Film, Emission, Geometry Opacity), filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
+  - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
+- **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Layered single-pass slabs:
+  - **Base & Specular:** Qualitative Fujii Oren-Nayar diffuse (`baseDiffuseRoughness`), IOR-derived dielectric $F_0$ modulated by `coatIor` (`dielectricF0UnderCoat`), multi-scattering energy-compensated anisotropic GGX, and $F_{82}$-tint conductor Fresnel (`specularColor`)
+  - **Thin-Film Iridescence:** Physical Airy thin-film reflectance modulating dielectric/conductor Fresnel (`thinFilmWeight`, `thinFilmThickness`, `thinFilmIor`)
+  - **Coat Slab:** Dielectric clearcoat GGX with optical absorption tint (`coatColor`), coat-induced base roughening (`coatRoughenBase`), and internal reflection darkening (`coatDarkening`)
+  - **Fuzz / Sheen Slab:** Charlie microcylinder NDF + Ashikhmin visibility (`fuzzWeight`, `fuzzColor`, `fuzzRoughness`) energy-conserved over coat and base
+  - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`
+- **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo, params)`
+- **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain); tone mapping in `resolvePost`
 
 ### ShadowMap (Depth-Only Pipeline)
 
