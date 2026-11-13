@@ -235,7 +235,7 @@ Vertex shader for text quads in screen space. Fragment shader samples R8Unorm at
 
 `engine/graphics/texture.d` encapsulates GPU RGBA8 texture creation, configurable samplers, and uncompressed TGA loading. It also provides procedural helpers (`checker`, `solid`) for testing.
 
-`engine/graphics/material.d` creates a `@group(1)` bind group with `MaterialParams` (metallic/roughness/baseColor/flags) + sampler + albedo and optional maps. Missing maps use default 1×1 textures.
+`engine/graphics/material.d` creates a `@group(1)` bind group with the 144-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, `flags`) + sampler + albedo and optional maps. Missing maps use default 1×1 textures.
 
 ### Supported Image Formats
 
@@ -243,7 +243,7 @@ Vertex shader for text quads in screen space. Fragment shader samples R8Unorm at
 |:---|:---|:---|
 | TGA (uncompressed) | `engine.graphics.texture` | 24/32-bpp, minimal loader |
 | BMP (24/32-bpp, uncompressed) | `engine.assets.bmp` | Flips row order vertically |
-| glTF 2.0 (mesh + PBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr`; skinning/anim/`.glb` deferred |
+| glTF 2.0 (mesh + OpenPBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr` with `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}`; skinning/anim/`.glb` deferred |
 
 ## SceneGraph
 
@@ -315,7 +315,7 @@ dub run --config=game
 # Solar system (scene graph + textures + PCF shadows)
 dub run --config=showcase
 
-# PBR validation (5×2 spheres + IBL + glTF cube)
+# OpenPBR Surface v1.1 validation (4×5 spheres + IBL + glTF cube)
 dub run --config=pbr
 
 # Visual editor (gizmos + debug overlay + shadows + docking)

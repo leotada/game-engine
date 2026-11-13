@@ -300,12 +300,12 @@ text.destroy();
 
 ### Scene3DTextured + Texture + Material
 
-For textured 3D rendering, use `Scene3DTextured` with `TexMesh` and `Material`:
+For textured OpenPBR 3D rendering, use `Scene3DTextured` with `TexMesh` and `Material`:
 
 ```d
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, Sampler;
-import engine.graphics.material : Material;
+import engine.graphics.material : Material, MaterialParams;
 import engine.scene.scene3d_textured : Scene3DTextured;
 
 auto scene = Scene3DTextured.create(app.gpu);
@@ -317,7 +317,12 @@ scope(exit) texture.destroy();
 auto sampler  = Sampler.linearRepeat(app.gpu);
 scope(exit) sampler.destroy();
 
-auto material = Material.create(app.gpu, scene.materialLayout, sampler, texture);
+MaterialParams params;
+params.baseMetalness = 0.0f;
+params.specularRoughness = 0.35f;
+params.coatWeight = 0.4f; // optional clearcoat, fuzzWeight, thinFilmWeight, specularIor, etc.
+
+auto material = Material.create(app.gpu, scene.materialLayout, sampler, texture, params);
 scope(exit) material.destroy();
 
 auto cube = TexMesh.cube(app.gpu);
@@ -399,16 +404,19 @@ Only uncompressed WAV is supported. Each `play()` queues a copy into the shared 
 
 ```d
 import engine.assets.bmp  : loadBmpTexture;
-import engine.assets.gltf : loadGltfMesh;
+import engine.assets.gltf : loadGltfMesh, loadGltfPbr;
 
 // 24/32-bpp uncompressed BMP → GPU texture
 auto tex = loadBmpTexture(app.gpu, "assets/ground.bmp");
 
 // First primitive of the first mesh of a .gltf file → TexMesh
 auto mesh = loadGltfMesh(app.gpu, "assets/chair.gltf");
+
+// Or load mesh + OpenPBR material textures/params (KHR_materials_* extensions)
+auto loaded = loadGltfPbr(app.gpu, scene.materialLayout, sampler, "assets/crate.gltf");
 ```
 
-glTF support is intentionally minimal: indexed triangle primitives with `POSITION`, `NORMAL`, `TEXCOORD_0`, loaded from an external `.bin` buffer. Materials, skins, animations, and embedded base64 buffers are not supported.
+`loadGltfMesh` loads indexed triangle primitives (`POSITION`, `NORMAL`, `TEXCOORD_0`, and tangents when needed) from an external `.bin` buffer. `loadGltfPbr` maps `pbrMetallicRoughness`, normal/occlusion/emissive maps, and `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` into OpenPBR `MaterialParams`. Skins, animations, and `.glb` containers are not yet supported.
 
 ### DevTools — Gizmos and Debug Overlay
 
@@ -437,9 +445,7 @@ Gizmos use a `lineList` topology with overlay depth (always visible). The debug 
 
 ### Shadows
 
-Infrastructure only today: a depth-only pass and comparison sampler.
-**PCF sampling is not wired into the default textured pipeline** — see
-[plan-pbr.md](plan-pbr.md) (fase PBR-0). Demos do not use `ShadowMap` yet.
+`Scene3DTextured` supports directional, point, and spot shadow maps with 3×3 PCF filtering ([plan-pbr.md](plan-pbr.md), [plan-openpbr.md](plan-openpbr.md)).
 
 ```d
 import engine.gpu.shadow :
@@ -458,8 +464,8 @@ auto shadowPass = beginShadowPass(encoder, shadow);
 //   bind shadowPipe + light bind group, draw shadow casters
 endShadowPass(shadowPass);
 
-// Main pass: today albedo/N·L only. Future shadowed material samples
-// shadow.depthView + shadow.comparisonSampler (plan-pbr PBR-0).
+// Bind directional lighting + shadow map for PCF sampling in textured3d_pbr.wgsl:
+scene.setLighting(lightDir, lightVP, shadow);
 ```
 
 ### Input

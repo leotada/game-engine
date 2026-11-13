@@ -70,10 +70,10 @@ Shaders previously existed as monolithic string literals in D source code (`shad
 assets/shaders/
 ├── common/
 │   ├── fullscreen_vs.wgsl    # Fullscreen triangle vertex shader (post-processing)
-│   ├── pbr_brdf.wgsl         # PBR BRDF functions: Cook-Torrance, GGX, Fresnel Schlick
+│   ├── pbr_brdf.wgsl         # OpenPBR v1.1 BRDF stack: Oren-Nayar, F82, GGX aniso, Airy film, Coat, Charlie fuzz
 │   └── shadows.wgsl          # Directional, point, and spot PCF shadow filtering
 ├── colored3d.wgsl            # 3D instanced pipeline with per-vertex/instance colors
-├── textured3d_pbr.wgsl       # 3D instanced textured pipeline with full PBR
+├── textured3d_pbr.wgsl       # 3D instanced textured pipeline with OpenPBR Surface v1.1 + IBL
 ├── shadow_depth.wgsl         # Shadow depth pass
 ├── gizmo_line.wgsl           # 3D debug lines and grid
 ├── ui2d.wgsl                 # Vector / UI box renderer

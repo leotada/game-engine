@@ -43,9 +43,9 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 - **Rendering:** Meshes, instancing, scene depth, directional N·L lighting, bitmap text
 - **ShadowMap Infrastructure:** `depth32Float` depth pass + comparison sampler + PCF filtering in textured pipeline (`Scene3DTextured.setLighting`)
 - **Modular Shaders & Hot-Reload:** WGSL include preprocessor (`#include`, `#define`, `#ifdef`), CTFE compile-time embedding, transactional non-destructive hot-reloading
-- **Scene:** SceneGraph, camera controllers (orbit/fly/fps), PBR materials (metallic-roughness)
-- **Assets:** BMP + glTF mesh + `pbrMetallicRoughness` (`loadGltfPbr`)
-- **PBR + IBL:** Cook-Torrance GGX, procedural IBL, `dub run --config=pbr` demo
+- **Scene:** SceneGraph, camera controllers (orbit/fly/fps), OpenPBR Surface v1.1 materials
+- **Assets:** BMP + glTF mesh + OpenPBR (`loadGltfPbr` with `KHR_materials_*` extensions)
+- **OpenPBR + IBL:** Single-pass OpenPBR Surface v1.1 (144-byte `MaterialParams`, 3-channel GGX + Charlie BRDF LUT, procedural IBL, `dub run --config=pbr` 4×5 showcase)
 - **Post-Processing:** HDR scene RT (`rgba16float`), bloom (Karis average downsample + tent upsample), ACES tone mapping, FXAA; `app.resolvePost(frame)` before UI
 - **Audio:** WAV playback via SDL3 audio streams
 - **DevTools:** 3D gizmos + FPS/label debug overlay

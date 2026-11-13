@@ -57,7 +57,7 @@ source/
     ├── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
     ├── game.d             # Crystal Collector 3D — high-level API demo
     ├── showcase.d         # Solar system — scene graph + textured materials
-    ├── pbr.d              # PBR + IBL + shadow PCF demo
+    ├── pbr.d              # OpenPBR Surface v1.1 + IBL + shadow PCF demo
     ├── editor.d           # Scene editor (gizmos, hierarchy, scene I/O)
     ├── pong3d.d           # Physics gameplay demo (Box3D)
     └── golf.d             # Par 3 — drag, Magnus lift, gusting wind
@@ -202,7 +202,7 @@ dub build --config=game
 # Build the solar-system showcase (scene graph + textured materials)
 dub build --config=showcase
 
-# Build the PBR + IBL demo
+# Build the OpenPBR Surface v1.1 + IBL demo
 dub build --config=pbr
 
 # Build the scene editor
@@ -294,9 +294,9 @@ A textured solar system built on the scene graph: planets parented to the sun, m
 dub run --config=showcase
 ```
 
-### PBR Demo
+### OpenPBR Demo
 
-Cook-Torrance GGX materials, procedural IBL, and shadow PCF on the textured path.
+Single-pass **OpenPBR Surface v1.1** 4×5 sphere showcase (Fujii Oren-Nayar dielectrics, $F_{82}$-tint anisotropic conductors, colored automotive clearcoat with darkening, Charlie velvet fuzz, and Airy thin-film iridescence), procedural 3-channel GGX + Charlie BRDF LUT / IBL, and multi-light shadow PCF.
 
 ```bash
 dub run --config=pbr
@@ -348,6 +348,7 @@ Initial roadmap phases are **complete**, including PBR + IBL + shadow PCF, post-
 - [x] Phase 16 — GC-safe adoption + lint (`Pod!T`, `Handle!T`, `StringId`, `FrameArena`)
 - [x] Phase 17 — Scene editor UX v1 (`dub run --config=editor`)
 - [x] Phase 18 — Optional `steadygc` (`symgc`) multiplatform card-marking GC (`engine.core.gc`, `vendor/symgc`)
+- [x] Phase 19 — Real-Time OpenPBR Surface v1.1 shading model ([docs/plan-openpbr.md](docs/plan-openpbr.md))
 
 Active plans and remaining work live under [`docs/`](docs/README.md). Overview: [`docs/roadmap.md`](docs/roadmap.md).
 
@@ -375,6 +376,7 @@ removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.
 - [docs/game-development-guide.md](docs/game-development-guide.md) — how to build a 3D game with the high-level API
 - [docs/physics-quickstart.md](docs/physics-quickstart.md) — Box3D gameplay physics API
 - [docs/graphics.md](docs/graphics.md) — GPU architecture and rendering pipeline
+- [docs/plan-openpbr.md](docs/plan-openpbr.md) — Real-Time OpenPBR Surface v1.1 shading model architecture
 - [docs/why-this-is-fast.md](docs/why-this-is-fast.md) — Data-Oriented Design explained for programmers from other languages
 - [docs/incremental-gc-research.md](docs/incremental-gc-research.md) — GC pause research and measurements
 - [docs/gc-safe-architecture-plan.md](docs/gc-safe-architecture-plan.md) — POD / Handle / StringId / FrameArena plan
