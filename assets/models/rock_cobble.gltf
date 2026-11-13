@@ -38,35 +38,35 @@
 		{
 			"bufferView":0,
 			"componentType":5126,
-			"count":935,
+			"count":883,
 			"max":[
-				1.3892972469329834,
-				0.6368480920791626,
-				1.0616275072097778
+				1.4090039730072021,
+				0.6168375611305237,
+				0.9992009997367859
 			],
 			"min":[
-				-1.313814640045166,
-				-0.37272220849990845,
-				-0.9874113202095032
+				-1.3073599338531494,
+				-0.35993054509162903,
+				-0.9137070775032043
 			],
 			"type":"VEC3"
 		},
 		{
 			"bufferView":1,
 			"componentType":5126,
-			"count":935,
+			"count":883,
 			"type":"VEC3"
 		},
 		{
 			"bufferView":2,
 			"componentType":5126,
-			"count":935,
+			"count":883,
 			"type":"VEC2"
 		},
 		{
 			"bufferView":3,
 			"componentType":5126,
-			"count":935,
+			"count":883,
 			"type":"VEC4"
 		},
 		{
@@ -79,38 +79,38 @@
 	"bufferViews":[
 		{
 			"buffer":0,
-			"byteLength":11220,
+			"byteLength":10596,
 			"byteOffset":0,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":11220,
-			"byteOffset":11220,
+			"byteLength":10596,
+			"byteOffset":10596,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":7480,
-			"byteOffset":22440,
+			"byteLength":7064,
+			"byteOffset":21192,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":14960,
-			"byteOffset":29920,
+			"byteLength":14128,
+			"byteOffset":28256,
 			"target":34962
 		},
 		{
 			"buffer":0,
 			"byteLength":7680,
-			"byteOffset":44880,
+			"byteOffset":42384,
 			"target":34963
 		}
 	],
 	"buffers":[
 		{
-			"byteLength":52560,
+			"byteLength":50064,
 			"uri":"rock_cobble.bin"
 		}
 	]

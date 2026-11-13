@@ -38,35 +38,35 @@
 		{
 			"bufferView":0,
 			"componentType":5126,
-			"count":4049,
+			"count":3514,
 			"max":[
-				1.2662302255630493,
-				0.9260196089744568,
-				1.050585389137268
+				1.1517294645309448,
+				0.9516981840133667,
+				1.0160154104232788
 			],
 			"min":[
-				-1.2133961915969849,
-				-0.5397151112556458,
-				-1.056912899017334
+				-1.1059478521347046,
+				-0.5169524550437927,
+				-0.9196317791938782
 			],
 			"type":"VEC3"
 		},
 		{
 			"bufferView":1,
 			"componentType":5126,
-			"count":4049,
+			"count":3514,
 			"type":"VEC3"
 		},
 		{
 			"bufferView":2,
 			"componentType":5126,
-			"count":4049,
+			"count":3514,
 			"type":"VEC2"
 		},
 		{
 			"bufferView":3,
 			"componentType":5126,
-			"count":4049,
+			"count":3514,
 			"type":"VEC4"
 		},
 		{
@@ -79,38 +79,38 @@
 	"bufferViews":[
 		{
 			"buffer":0,
-			"byteLength":48588,
+			"byteLength":42168,
 			"byteOffset":0,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":48588,
-			"byteOffset":48588,
+			"byteLength":42168,
+			"byteOffset":42168,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":32392,
-			"byteOffset":97176,
+			"byteLength":28112,
+			"byteOffset":84336,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":64784,
-			"byteOffset":129568,
+			"byteLength":56224,
+			"byteOffset":112448,
 			"target":34962
 		},
 		{
 			"buffer":0,
 			"byteLength":30720,
-			"byteOffset":194352,
+			"byteOffset":168672,
 			"target":34963
 		}
 	],
 	"buffers":[
 		{
-			"byteLength":225072,
+			"byteLength":199392,
 			"uri":"rock_boulder.bin"
 		}
 	]

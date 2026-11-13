@@ -13,6 +13,7 @@ module demo.water;
 import std.math : cos, fabs, sin, sqrt, PI, PI_2;
 
 import engine.app;
+import engine.assets.bmp : loadBmpTexture;
 import engine.assets.gltf : loadGltfMesh;
 import engine.core.log;
 import engine.gpu.buffer;
@@ -302,67 +303,199 @@ private void generateWaterTextures(ref GpuContext gpu,
     mrTex     = Texture.fromPixels(gpu, mr, SZ, SZ);
 }
 
-private void generateRockAndBedTextures(ref GpuContext gpu,
-                                        out Texture rockAlbedoTex,
-                                        out Texture rockNormalTex,
-                                        out Texture bedTex) {
-    enum uint SZ = 256;
-    auto rockA = new ubyte[SZ * SZ * 4];
-    auto rockN = new ubyte[SZ * SZ * 4];
-    auto bedA  = new ubyte[SZ * SZ * 4];
-    auto rockH = new float[SZ * SZ];
+private void buildHeightNormalMap(const(float)[] height, uint sz, float strength, ubyte[] normalOut) pure nothrow @nogc {
+    foreach (y; 0 .. sz) {
+        immutable uint ym = (y + sz - 1) % sz;
+        immutable uint yp = (y + 1) % sz;
+        foreach (x; 0 .. sz) {
+            immutable uint xm = (x + sz - 1) % sz;
+            immutable uint xp = (x + 1) % sz;
+            immutable float dx = (height[y * sz + xp] - height[y * sz + xm]) * strength;
+            immutable float dy = (height[yp * sz + x] - height[ym * sz + x]) * strength;
+            immutable Vec3 n = Vec3(-dx, -dy, 1.0f).normalized();
+            immutable idx = (y * sz + x) * 4;
+            normalOut[idx + 0] = clampByte((n.x * 0.5f + 0.5f) * 255.0f);
+            normalOut[idx + 1] = clampByte((n.y * 0.5f + 0.5f) * 255.0f);
+            normalOut[idx + 2] = clampByte((n.z * 0.5f + 0.5f) * 255.0f);
+            normalOut[idx + 3] = 255;
+        }
+    }
+}
+
+private void generateEnvTextures(ref GpuContext gpu,
+                                 out Texture bedAlbedoTex, out Texture bedNormalTex,
+                                 out Texture bankAlbedoTex, out Texture bankNormalTex,
+                                 out Texture woodAlbedoTex, out Texture woodNormalTex,
+                                 out Texture masonryAlbedoTex, out Texture masonryNormalTex) {
+    enum uint SZ = 512;
+    auto bedA     = new ubyte[SZ * SZ * 4];
+    auto bedN     = new ubyte[SZ * SZ * 4];
+    auto bedH     = new float[SZ * SZ];
+    auto bankA    = new ubyte[SZ * SZ * 4];
+    auto bankN    = new ubyte[SZ * SZ * 4];
+    auto bankH    = new float[SZ * SZ];
+    auto woodA    = new ubyte[SZ * SZ * 4];
+    auto woodN    = new ubyte[SZ * SZ * 4];
+    auto woodH    = new float[SZ * SZ];
+    auto masonryA = new ubyte[SZ * SZ * 4];
+    auto masonryN = new ubyte[SZ * SZ * 4];
+    auto masonryH = new float[SZ * SZ];
 
     foreach (y; 0 .. SZ) {
         immutable float v = cast(float) y / cast(float) SZ;
         foreach (x; 0 .. SZ) {
             immutable float u = cast(float) x / cast(float) SZ;
-            immutable n = fbmPeriodic(u, v, 8, 4);
-            immutable grit = fbmPeriodic(u + 0.13f, v + 0.41f, 24, 2);
-            immutable speckle = fbmPeriodic(u + 0.53f, v + 0.19f, 32, 2);
-            immutable vein = fabs(fbmPeriodic(u + 0.31f, v + 0.77f, 6, 3) - 0.5f) * 2.0f;
-            immutable crevice = vein < 0.20f ? (0.52f + 0.48f * (vein / 0.20f)) : 1.0f;
-
-            immutable hVal = (n * 0.65f + grit * 0.22f + speckle * 0.13f) * (0.72f + 0.28f * crevice);
-            rockH[y * SZ + x] = hVal;
-
             immutable idx = (y * SZ + x) * 4;
-            immutable rockLum = (112.0f + n * 78.0f + (grit - 0.5f) * 38.0f + (speckle - 0.5f) * 30.0f) * crevice;
-            rockA[idx + 0] = clampByte(rockLum * 1.03f);
-            rockA[idx + 1] = clampByte(rockLum * 0.98f);
-            rockA[idx + 2] = clampByte(rockLum * 0.92f);
-            rockA[idx + 3] = 255;
 
-            // Submerged river/seabed sand + pebble mottling
-            immutable pebbles = fbmPeriodic(u + 0.21f, v + 0.67f, 16, 4);
-            immutable bedLum = 82.0f + pebbles * 90.0f;
-            bedA[idx + 0] = clampByte(bedLum * 1.06f);
-            bedA[idx + 1] = clampByte(bedLum * 0.95f);
-            bedA[idx + 2] = clampByte(bedLum * 0.76f);
+            // 1. Riverbed gravel + submerged pebbles (calibrated linear [0.04..0.14])
+            immutable peb1 = fbmPeriodic(u + 0.21f, v + 0.67f, 16, 4);
+            immutable peb2 = fbmPeriodic(u + 0.53f, v + 0.13f, 32, 3);
+            immutable bedMix = peb1 * 0.62f + peb2 * 0.38f;
+            bedH[y * SZ + x] = bedMix;
+            immutable bedLin = 0.042f + bedMix * 0.095f;
+            bedA[idx + 0] = clampByte(bedLin * 1.06f * 255.0f);
+            bedA[idx + 1] = clampByte(bedLin * 0.96f * 255.0f);
+            bedA[idx + 2] = clampByte(bedLin * 0.78f * 255.0f);
             bedA[idx + 3] = 255;
+
+            // 2. Damp mossy forest earth & dark slate gravel for riverbanks ([0.03..0.10])
+            immutable soil = fbmPeriodic(u + 0.11f, v + 0.37f, 12, 4);
+            immutable gravel = fbmPeriodic(u + 0.73f, v + 0.29f, 32, 3);
+            immutable mossPatch = soil > 0.54f ? (soil - 0.54f) * 2.1f : 0.0f;
+            immutable bankElev = soil * 0.55f + gravel * 0.45f;
+            bankH[y * SZ + x] = bankElev;
+            immutable bankDark = 0.036f + bankElev * 0.058f;
+            immutable rSoil = bankDark * 1.08f;
+            immutable gSoil = bankDark * 0.95f;
+            immutable bSoil = bankDark * 0.78f;
+            immutable mp = mossPatch > 1.0f ? 1.0f : mossPatch;
+            bankA[idx + 0] = clampByte((rSoil * (1.0f - mp) + 0.036f * mp) * 255.0f);
+            bankA[idx + 1] = clampByte((gSoil * (1.0f - mp) + 0.068f * mp) * 255.0f);
+            bankA[idx + 2] = clampByte((bSoil * (1.0f - mp) + 0.022f * mp) * 255.0f);
+            bankA[idx + 3] = 255;
+
+            // 3. Weathered timber bridge planks along V (linear [0.05..0.15])
+            immutable int plankIdx = cast(int)(u * 8.0f);
+            immutable float uInPlank = u * 8.0f - cast(float) plankIdx;
+            immutable bool plankSeam = (uInPlank < 0.035f || uInPlank > 0.965f);
+            immutable float grain = sin((u * 48.0f + fbmPeriodic(u + 0.05f * plankIdx, v, 8, 3) * 3.8f) * PI_2) * 0.5f + 0.5f;
+            immutable float plankTone = 0.85f + hash2D(plankIdx, 19) * 0.30f;
+            immutable float woodVal = plankSeam ? 0.12f : (0.45f + grain * 0.55f);
+            woodH[y * SZ + x] = woodVal;
+            immutable float woodLin = (0.052f + woodVal * 0.082f) * plankTone;
+            woodA[idx + 0] = clampByte(woodLin * 1.24f * 255.0f);
+            woodA[idx + 1] = clampByte(woodLin * 0.84f * 255.0f);
+            woodA[idx + 2] = clampByte(woodLin * 0.52f * 255.0f);
+            woodA[idx + 3] = 255;
+
+            // 4. Coursed granite ashlar blocks for bridge abutments & lighthouse trim ([0.05..0.14])
+            immutable int rowIdx = cast(int)(v * 6.0f);
+            immutable float vInRow = v * 6.0f - cast(float) rowIdx;
+            immutable float staggeredU = u + ((rowIdx & 1) != 0 ? 0.5f / 4.0f : 0.0f);
+            immutable float uBlockPos = staggeredU * 4.0f;
+            import std.math : floor;
+            immutable int colIdx = cast(int) floor(uBlockPos);
+            immutable float uInBlock = uBlockPos - floor(uBlockPos);
+            immutable bool mortar = (vInRow < 0.06f || vInRow > 0.94f || uInBlock < 0.045f || uInBlock > 0.955f);
+            immutable float blockSeed = hash2D(colIdx, rowIdx);
+            immutable float stoneGrain = fbmPeriodic(u + blockSeed * 0.3f, v, 24, 3);
+            immutable float mH = mortar ? 0.15f : (0.55f + stoneGrain * 0.45f);
+            masonryH[y * SZ + x] = mH;
+            immutable float mLin = mortar
+                ? 0.045f + stoneGrain * 0.020f
+                : (0.072f + stoneGrain * 0.055f) * (0.85f + blockSeed * 0.30f);
+            masonryA[idx + 0] = clampByte(mLin * 1.03f * 255.0f);
+            masonryA[idx + 1] = clampByte(mLin * 0.99f * 255.0f);
+            masonryA[idx + 2] = clampByte(mLin * 0.94f * 255.0f);
+            masonryA[idx + 3] = 255;
         }
     }
 
-    enum float ROCK_NORMAL_STRENGTH = 2.4f;
-    foreach (y; 0 .. SZ) {
-        immutable uint ym = (y + SZ - 1) % SZ;
-        immutable uint yp = (y + 1) % SZ;
-        foreach (x; 0 .. SZ) {
-            immutable uint xm = (x + SZ - 1) % SZ;
-            immutable uint xp = (x + 1) % SZ;
-            immutable float dx = (rockH[y * SZ + xp] - rockH[y * SZ + xm]) * ROCK_NORMAL_STRENGTH;
-            immutable float dy = (rockH[yp * SZ + x] - rockH[ym * SZ + x]) * ROCK_NORMAL_STRENGTH;
-            immutable Vec3 n = Vec3(-dx, -dy, 1.0f).normalized();
-            immutable idx = (y * SZ + x) * 4;
-            rockN[idx + 0] = clampByte((n.x * 0.5f + 0.5f) * 255.0f);
-            rockN[idx + 1] = clampByte((n.y * 0.5f + 0.5f) * 255.0f);
-            rockN[idx + 2] = clampByte((n.z * 0.5f + 0.5f) * 255.0f);
-            rockN[idx + 3] = 255;
+    buildHeightNormalMap(bedH, SZ, 3.0f, bedN);
+    buildHeightNormalMap(bankH, SZ, 3.4f, bankN);
+    buildHeightNormalMap(woodH, SZ, 3.2f, woodN);
+    buildHeightNormalMap(masonryH, SZ, 3.6f, masonryN);
+
+    bedAlbedoTex     = Texture.fromPixels(gpu, bedA, SZ, SZ);
+    bedNormalTex     = Texture.fromPixels(gpu, bedN, SZ, SZ);
+    bankAlbedoTex    = Texture.fromPixels(gpu, bankA, SZ, SZ);
+    bankNormalTex    = Texture.fromPixels(gpu, bankN, SZ, SZ);
+    woodAlbedoTex    = Texture.fromPixels(gpu, woodA, SZ, SZ);
+    woodNormalTex    = Texture.fromPixels(gpu, woodN, SZ, SZ);
+    masonryAlbedoTex = Texture.fromPixels(gpu, masonryA, SZ, SZ);
+    masonryNormalTex = Texture.fromPixels(gpu, masonryN, SZ, SZ);
+}
+
+private TexMesh buildTiledBedMesh(ref GpuContext gpu) {
+    immutable float h = 16.0f;
+    TexTanVert[] verts = [
+        TexTanVert([-h, -1.15f, -h], [0, 1, 0], [0.0f, 0.0f], [1, 0, 0, -1]),
+        TexTanVert([ h, -1.15f, -h], [0, 1, 0], [8.0f, 0.0f], [1, 0, 0, -1]),
+        TexTanVert([ h, -1.15f,  h], [0, 1, 0], [8.0f, 8.0f], [1, 0, 0, -1]),
+        TexTanVert([-h, -1.15f,  h], [0, 1, 0], [0.0f, 8.0f], [1, 0, 0, -1]),
+    ];
+    ushort[] indices = [0, 2, 1, 0, 3, 2];
+    return TexMesh.fromData(gpu, verts, indices);
+}
+
+/// Sculpted sloping riverbank terrain strip (z in [0..1], scaled/mirrored per side).
+private TexMesh buildRiverBankMesh(ref GpuContext gpu, float zSign) {
+    enum uint NX = 28;
+    enum uint NZ = 10;
+    enum uint SX = NX + 1;
+    enum uint SZ = NZ + 1;
+    auto verts = new TexTanVert[SX * SZ];
+
+    float evalHeight(float x, float tZ) {
+        // Rises organically from -0.85 beneath shoreline boulders to +2.25 up the gorge bank.
+        immutable smooth = tZ * tZ * (3.0f - 2.0f * tZ);
+        immutable baseH = -0.85f + smooth * 3.10f;
+        immutable n1 = valueNoise(x * 0.25f + zSign * 7.3f, tZ * 2.5f + zSign * 3.1f) - 0.5f;
+        immutable n2 = valueNoise(x * 0.65f + 12.1f, tZ * 5.0f + 4.7f) - 0.5f;
+        return baseH + (n1 * 0.72f + n2 * 0.26f) * (0.25f + 0.75f * smooth);
+    }
+
+    foreach (iz; 0 .. SZ) {
+        immutable float tZ = cast(float) iz / cast(float) NZ;
+        immutable float z = zSign * (4.6f + tZ * 11.4f);
+        foreach (ix; 0 .. SX) {
+            immutable float tX = cast(float) ix / cast(float) NX;
+            immutable float x = -16.0f + tX * 32.0f;
+            immutable float y = evalHeight(x, tZ);
+            immutable float eps = 0.25f;
+            immutable float hdx = evalHeight(x + eps, tZ) - evalHeight(x - eps, tZ);
+            immutable float hdz = evalHeight(x, tZ + 0.025f) - evalHeight(x, tZ - 0.025f);
+            immutable float dzStep = zSign * (0.05f * 11.4f);
+            Vec3 n = Vec3(-hdx / (2.0f * eps), 1.0f, -hdz / dzStep).normalized();
+            Vec3 t = Vec3(1.0f, hdx / (2.0f * eps), 0.0f).normalized();
+            t = (t - n * n.dot(t)).normalized();
+            verts[iz * SX + ix] = TexTanVert(
+                [x, y, z],
+                [n.x, n.y, n.z],
+                [tX * 7.0f, tZ * 3.0f],
+                [t.x, t.y, t.z, -1.0f]
+            );
         }
     }
 
-    rockAlbedoTex = Texture.fromPixels(gpu, rockA, SZ, SZ);
-    rockNormalTex = Texture.fromPixels(gpu, rockN, SZ, SZ);
-    bedTex        = Texture.fromPixels(gpu, bedA, SZ, SZ);
+    auto indices = new ushort[NX * NZ * 6];
+    uint ii = 0;
+    foreach (iz; 0 .. NZ) {
+        foreach (ix; 0 .. NX) {
+            immutable ushort a = cast(ushort)(iz * SX + ix);
+            immutable ushort b = cast(ushort)(a + 1);
+            immutable ushort c = cast(ushort)(a + SX);
+            immutable ushort d = cast(ushort)(c + 1);
+            if (zSign > 0.0f) {
+                indices[ii++] = a; indices[ii++] = d; indices[ii++] = b;
+                indices[ii++] = a; indices[ii++] = c; indices[ii++] = d;
+            } else {
+                indices[ii++] = a; indices[ii++] = b; indices[ii++] = d;
+                indices[ii++] = a; indices[ii++] = d; indices[ii++] = c;
+            }
+        }
+    }
+    return TexMesh.fromData(gpu, verts, indices);
 }
 
 private struct RockPlacement {
@@ -532,24 +665,25 @@ private MaterialParams buildWaterParams(bool riverMode, bool useOpenPbr, bool tr
 
 private MaterialParams buildDryRockParams() {
     MaterialParams p;
-    p.baseColor = [0.44f, 0.40f, 0.36f];
+    // Albedo is baked directly in true linear reflectance in rock_*_albedo.bmp.
+    p.baseColor = [1.0f, 0.98f, 0.95f];
     p.baseDiffuseRoughness = 0.85f;
-    p.specularRoughness = 0.76f;
+    p.specularRoughness = 0.95f;
     p.specularIor = 1.52f;
-    p.flags = MaterialFlags.normal;
+    p.flags = MaterialFlags.normal | MaterialFlags.metallicRoughness | MaterialFlags.occlusion;
     return p;
 }
 
 private MaterialParams buildWetRockParams(bool useOpenPbr) {
     MaterialParams p = buildDryRockParams();
     if (useOpenPbr) {
-        p.baseColor = [0.30f, 0.28f, 0.26f];
-        p.baseDiffuseRoughness = 0.65f;
-        p.specularRoughness = 0.28f;
+        p.baseColor = [0.85f, 0.87f, 0.89f];
+        p.baseDiffuseRoughness = 0.60f;
+        p.specularRoughness = 0.48f;
         p.coatWeight = 0.96f;
-        p.coatRoughness = 0.045f;
+        p.coatRoughness = 0.04f;
         p.coatIor = 1.333f;
-        p.coatColor = [0.88f, 0.93f, 0.95f];
+        p.coatColor = [0.88f, 0.93f, 0.96f];
         p.coatDarkening = 1.0f;
     }
     return p;
@@ -557,20 +691,20 @@ private MaterialParams buildWetRockParams(bool useOpenPbr) {
 
 private MaterialParams buildMossRockParams(bool useOpenPbr) {
     MaterialParams p = buildDryRockParams();
-    p.baseColor = [0.24f, 0.27f, 0.19f];
+    p.baseColor = [1.0f, 1.0f, 1.0f];
     if (useOpenPbr) {
-        p.baseDiffuseRoughness = 0.78f;
-        p.specularRoughness = 0.42f;
-        p.coatWeight = 0.72f;
-        p.coatRoughness = 0.08f;
+        p.baseDiffuseRoughness = 0.82f;
+        p.specularRoughness = 0.90f;
+        p.coatWeight = 0.16f;
+        p.coatRoughness = 0.14f;
         p.coatIor = 1.333f;
-        p.coatDarkening = 1.0f;
-        p.fuzzWeight = 0.26f;
-        p.fuzzColor = [0.22f, 0.34f, 0.14f];
-        p.fuzzRoughness = 0.76f;
+        p.coatDarkening = 0.55f;
+        p.fuzzWeight = 0.28f;
+        p.fuzzColor = [0.20f, 0.28f, 0.11f];
+        p.fuzzRoughness = 0.78f;
     } else {
         p.baseDiffuseRoughness = 0.0f;
-        p.specularRoughness = 0.72f;
+        p.specularRoughness = 0.85f;
     }
     return p;
 }
@@ -578,20 +712,66 @@ private MaterialParams buildMossRockParams(bool useOpenPbr) {
 private MaterialParams buildSubmergedRockParams(bool useOpenPbr) {
     MaterialParams p = buildDryRockParams();
     if (useOpenPbr) {
-        p.baseColor = [0.24f, 0.25f, 0.24f];
+        p.baseColor = [0.76f, 0.86f, 0.84f];
         p.baseDiffuseRoughness = 0.55f;
-        p.specularRoughness = 0.20f;
+        p.specularRoughness = 0.38f;
         p.coatWeight = 1.0f;
         p.coatRoughness = 0.03f;
         p.coatIor = 1.333f;
         p.coatColor = [0.72f, 0.90f, 0.88f];
         p.coatDarkening = 1.0f;
     } else {
-        p.baseColor = [0.42f, 0.38f, 0.34f];
+        p.baseColor = [0.82f, 0.80f, 0.76f];
         p.baseDiffuseRoughness = 0.0f;
-        p.specularRoughness = 0.78f;
+        p.specularRoughness = 0.85f;
     }
     return p;
+}
+
+private struct RockTextureSet {
+    Texture albedo, normal, mr, ao;
+    Texture mossAlbedo, mossMr;
+    bool hasMoss;
+
+    @disable this(this);
+
+    static RockTextureSet load(ref GpuContext gpu, string prefix, bool loadMoss) {
+        RockTextureSet s;
+        s.albedo = loadBmpTexture(gpu, prefix ~ "_albedo.bmp");
+        s.normal = loadBmpTexture(gpu, prefix ~ "_normal.bmp");
+        s.mr     = loadBmpTexture(gpu, prefix ~ "_mr.bmp");
+        s.ao     = loadBmpTexture(gpu, prefix ~ "_ao.bmp");
+        s.hasMoss = loadMoss;
+        if (loadMoss) {
+            s.mossAlbedo = loadBmpTexture(gpu, prefix ~ "_moss_albedo.bmp");
+            s.mossMr     = loadBmpTexture(gpu, prefix ~ "_moss_mr.bmp");
+        }
+        return s;
+    }
+
+    void destroy() nothrow @nogc {
+        albedo.destroy();
+        normal.destroy();
+        mr.destroy();
+        ao.destroy();
+        if (hasMoss) {
+            mossAlbedo.destroy();
+            mossMr.destroy();
+        }
+    }
+}
+
+private struct RockMaterialGroup {
+    Material dry, wet, moss, submerged;
+
+    @disable this(this);
+
+    void destroy() nothrow @nogc {
+        dry.destroy();
+        wet.destroy();
+        moss.destroy();
+        submerged.destroy();
+    }
 }
 
 void main() {
@@ -610,8 +790,12 @@ void main() {
     scope(exit) cobbleRockMesh.destroy();
     auto cube = TexMesh.cube(app.gpu);
     scope(exit) cube.destroy();
-    auto quad = TexMesh.quad(app.gpu);
-    scope(exit) quad.destroy();
+    auto bedMesh = buildTiledBedMesh(app.gpu);
+    scope(exit) bedMesh.destroy();
+    auto leftBankMesh = buildRiverBankMesh(app.gpu, -1.0f);
+    scope(exit) leftBankMesh.destroy();
+    auto rightBankMesh = buildRiverBankMesh(app.gpu, 1.0f);
+    scope(exit) rightBankMesh.destroy();
 
     TexTanVert[] waterVerts;
     auto waterMesh = buildWaterMesh(app.gpu, waterVerts);
@@ -631,19 +815,39 @@ void main() {
         waterMrTex.destroy();
     }
 
-    Texture rockAlbedoTex, rockNormalTex, bedTex;
-    generateRockAndBedTextures(app.gpu, rockAlbedoTex, rockNormalTex, bedTex);
+    Texture bedAlbedoTex, bedNormalTex, bankAlbedoTex, bankNormalTex;
+    Texture woodAlbedoTex, woodNormalTex, masonryAlbedoTex, masonryNormalTex;
+    generateEnvTextures(app.gpu,
+                        bedAlbedoTex, bedNormalTex,
+                        bankAlbedoTex, bankNormalTex,
+                        woodAlbedoTex, woodNormalTex,
+                        masonryAlbedoTex, masonryNormalTex);
     scope(exit) {
-        rockAlbedoTex.destroy();
-        rockNormalTex.destroy();
-        bedTex.destroy();
+        bedAlbedoTex.destroy();
+        bedNormalTex.destroy();
+        bankAlbedoTex.destroy();
+        bankNormalTex.destroy();
+        woodAlbedoTex.destroy();
+        woodNormalTex.destroy();
+        masonryAlbedoTex.destroy();
+        masonryNormalTex.destroy();
+    }
+
+    RockTextureSet[3] rockTexSets = [
+        RockTextureSet.load(app.gpu, "assets/models/rock_cliff", true),
+        RockTextureSet.load(app.gpu, "assets/models/rock_boulder", true),
+        RockTextureSet.load(app.gpu, "assets/models/rock_cobble", false),
+    ];
+    scope(exit) {
+        foreach (ref ts; rockTexSets) ts.destroy();
     }
 
     auto layout = scene.materialLayout();
 
     Material makePbrMat(ref Texture albedo, MaterialParams params,
-                        scope Texture* mr = null, scope Texture* nrm = null) @trusted {
-        return Material.create(app.gpu, layout, sampler, albedo, params, mr, nrm, null, null);
+                        scope Texture* mr = null, scope Texture* nrm = null,
+                        scope Texture* ao = null) @trusted {
+        return Material.create(app.gpu, layout, sampler, albedo, params, mr, nrm, ao, null);
     }
 
     bool riverMode = false;
@@ -658,28 +862,66 @@ void main() {
         &waterMrTex, &waterNormalTex);
     scope(exit) waterMat.destroy();
 
-    auto dryRockMat = makePbrMat(rockAlbedoTex, buildDryRockParams(), null, &rockNormalTex);
-    scope(exit) dryRockMat.destroy();
-
-    // Wet shoreline rock: porous stone darkened by water coat (coatDarkening = 1.0)
-    auto wetRockMat = makePbrMat(rockAlbedoTex, buildWetRockParams(useOpenPbr), null, &rockNormalTex);
-    scope(exit) wetRockMat.destroy();
-
-    // Damp mossy canyon / coastal rock using OpenPBR coat + subtle Charlie velvet fuzz
-    auto mossRockMat = makePbrMat(rockAlbedoTex, buildMossRockParams(useOpenPbr), null, &rockNormalTex);
-    scope(exit) mossRockMat.destroy();
-
-    // Submerged wet stone: full water coat & aquatic tint visible through translucent surface
-    auto submergedRockMat = makePbrMat(rockAlbedoTex, buildSubmergedRockParams(useOpenPbr), null, &rockNormalTex);
-    scope(exit) submergedRockMat.destroy();
+    RockMaterialGroup[3] rockMats;
+    foreach (i; 0 .. 3) {
+        rockMats[i].dry = makePbrMat(
+            rockTexSets[i].albedo, buildDryRockParams(),
+            &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
+        rockMats[i].wet = makePbrMat(
+            rockTexSets[i].albedo, buildWetRockParams(useOpenPbr),
+            &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
+        if (rockTexSets[i].hasMoss) {
+            rockMats[i].moss = makePbrMat(
+                rockTexSets[i].mossAlbedo, buildMossRockParams(useOpenPbr),
+                &rockTexSets[i].mossMr, &rockTexSets[i].normal, &rockTexSets[i].ao);
+        } else {
+            rockMats[i].moss = makePbrMat(
+                rockTexSets[i].albedo, buildMossRockParams(useOpenPbr),
+                &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
+        }
+        rockMats[i].submerged = makePbrMat(
+            rockTexSets[i].albedo, buildSubmergedRockParams(useOpenPbr),
+            &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
+    }
+    scope(exit) {
+        foreach (ref mg; rockMats) mg.destroy();
+    }
 
     MaterialParams bedP;
-    bedP.baseColor = [0.48f, 0.42f, 0.32f];
-    bedP.baseDiffuseRoughness = 0.9f;
-    bedP.specularRoughness = 0.85f;
-    auto bedMat = Material.create(
-        app.gpu, layout, sampler, bedTex, bedP, null, null, null, null);
+    bedP.baseColor = [1.0f, 1.0f, 1.0f];
+    bedP.baseDiffuseRoughness = 0.90f;
+    bedP.specularRoughness = 0.78f;
+    bedP.flags = MaterialFlags.normal;
+    auto bedMat = makePbrMat(bedAlbedoTex, bedP, null, &bedNormalTex);
     scope(exit) bedMat.destroy();
+
+    MaterialParams bankP;
+    bankP.baseColor = [1.0f, 1.0f, 1.0f];
+    bankP.baseDiffuseRoughness = 0.92f;
+    bankP.specularRoughness = 0.86f;
+    bankP.flags = MaterialFlags.normal;
+    auto bankMat = makePbrMat(bankAlbedoTex, bankP, null, &bankNormalTex);
+    scope(exit) bankMat.destroy();
+
+    MaterialParams woodP;
+    woodP.baseColor = [1.0f, 1.0f, 1.0f];
+    woodP.baseDiffuseRoughness = 0.72f;
+    woodP.specularRoughness = 0.62f;
+    woodP.coatWeight = 0.20f;
+    woodP.coatRoughness = 0.16f;
+    woodP.coatIor = 1.333f;
+    woodP.coatDarkening = 0.50f;
+    woodP.flags = MaterialFlags.normal;
+    auto woodMat = makePbrMat(woodAlbedoTex, woodP, null, &woodNormalTex);
+    scope(exit) woodMat.destroy();
+
+    MaterialParams masonryP;
+    masonryP.baseColor = [1.0f, 1.0f, 1.0f];
+    masonryP.baseDiffuseRoughness = 0.85f;
+    masonryP.specularRoughness = 0.78f;
+    masonryP.flags = MaterialFlags.normal;
+    auto masonryMat = makePbrMat(masonryAlbedoTex, masonryP, null, &masonryNormalTex);
+    scope(exit) masonryMat.destroy();
 
     // Wooden bridge / lighthouse trim & metallic buoys
     MaterialParams goldBuoyP;
@@ -772,9 +1014,14 @@ void main() {
 
         if (paramsDirty) {
             waterMat.updateParams(app.gpu, buildWaterParams(riverMode, useOpenPbr, transparent));
-            wetRockMat.updateParams(app.gpu, buildWetRockParams(useOpenPbr));
-            mossRockMat.updateParams(app.gpu, buildMossRockParams(useOpenPbr));
-            submergedRockMat.updateParams(app.gpu, buildSubmergedRockParams(useOpenPbr));
+            immutable wetP  = buildWetRockParams(useOpenPbr);
+            immutable mossP = buildMossRockParams(useOpenPbr);
+            immutable subP  = buildSubmergedRockParams(useOpenPbr);
+            foreach (ref mg; rockMats) {
+                mg.wet.updateParams(app.gpu, wetP);
+                mg.moss.updateParams(app.gpu, mossP);
+                mg.submerged.updateParams(app.gpu, subP);
+            }
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
@@ -816,16 +1063,6 @@ void main() {
             }
         }
 
-        // River embankment & bridge geometry transforms
-        immutable Mat4 leftBankMat =
-            Mat4.translation(0.0f, 0.05f, -11.4f)
-            * Mat4.rotationX(0.24f)
-            * Mat4.scaling(32.0f, 1.6f, 11.5f);
-        immutable Mat4 rightBankMat =
-            Mat4.translation(0.0f, 0.05f, 11.4f)
-            * Mat4.rotationX(-0.24f)
-            * Mat4.scaling(32.0f, 1.6f, 11.5f);
-
         // Gather shadow casters (rocks by mesh kind + buoys + bridge/lighthouse)
         const rocks = riverMode ? RIVER_ROCKS : SEA_ROCKS;
         InstanceData[48] cliffCasters;
@@ -851,9 +1088,7 @@ void main() {
         InstanceData[8] structureCasters;
         uint sCount = 0;
         if (riverMode) {
-            // Sloped riverbanks, wooden footbridge, piers, stone abutments, and lantern post
-            structureCasters[sCount++] = InstanceData(leftBankMat.m, Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(rightBankMat.m, Color4.white.toArray());
+            // Wooden footbridge, piers, stone abutments, and lantern post
             structureCasters[sCount++] = InstanceData(
                 (Mat4.translation(-1.5f, 1.35f, 0.0f) * Mat4.scaling(1.8f, 0.28f, 16.2f)).m,
                 Color4.white.toArray());
@@ -966,40 +1201,37 @@ void main() {
         scene.begin(camera);
 
         // 1. Opaque geometry FIRST (submerged bed, riverbanks, rocks, structures, buoys)
-        scene.draw(quad, bedMat, Vec3(0.0f, -1.15f, 0.0f), Vec3(32.0f, 1.0f, 32.0f), Color4.white);
+        scene.draw(bedMesh, bedMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
 
-        void drawRockMesh(ubyte meshKind, ref Material mat, ref const Mat4 model) {
-            if (meshKind == 0)
-                scene.drawMatrix(cliffRockMesh, mat, model, Color4.white);
-            else if (meshKind == 1)
-                scene.drawMatrix(boulderRockMesh, mat, model, Color4.white);
+        void drawRock(ref const RockPlacement rk, ref const Mat4 model) {
+            immutable size_t mi = rk.meshKind < 3 ? rk.meshKind : 1;
+            ref TexMesh mesh = mi == 0 ? cliffRockMesh : (mi == 1 ? boulderRockMesh : cobbleRockMesh);
+            if (rk.kind == 0)
+                scene.drawMatrix(mesh, rockMats[mi].dry, model, Color4.white);
+            else if (rk.kind == 1)
+                scene.drawMatrix(mesh, rockMats[mi].wet, model, Color4.white);
+            else if (rk.kind == 2)
+                scene.drawMatrix(mesh, rockMats[mi].moss, model, Color4.white);
             else
-                scene.drawMatrix(cobbleRockMesh, mat, model, Color4.white);
+                scene.drawMatrix(mesh, rockMats[mi].submerged, model, Color4.white);
         }
 
         foreach (ref rk; rocks) {
             auto model = Mat4.translation(rk.pos.x, rk.pos.y, rk.pos.z)
                        * Mat4.rotationY(rk.rotY)
                        * Mat4.scaling(rk.scale.x, rk.scale.y, rk.scale.z);
-            if (rk.kind == 0)
-                drawRockMesh(rk.meshKind, dryRockMat, model);
-            else if (rk.kind == 1)
-                drawRockMesh(rk.meshKind, wetRockMat, model);
-            else if (rk.kind == 2)
-                drawRockMesh(rk.meshKind, mossRockMat, model);
-            else
-                drawRockMesh(rk.meshKind, submergedRockMat, model);
+            drawRock(rk, model);
         }
 
         if (riverMode) {
-            scene.drawMatrix(cube, dryRockMat, leftBankMat, Color4(0.62f, 0.56f, 0.48f, 1.0f));
-            scene.drawMatrix(cube, dryRockMat, rightBankMat, Color4(0.62f, 0.56f, 0.48f, 1.0f));
-            scene.draw(cube, dryRockMat, Vec3(-1.5f, 1.35f,  0.0f), Vec3(1.8f, 0.28f, 16.2f), Color4(0.55f, 0.36f, 0.22f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f, -4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f,  4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.65f, -7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4(0.70f, 0.68f, 0.65f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.65f,  7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4(0.70f, 0.68f, 0.65f, 1.0f));
-            scene.draw(cube, dryRockMat, Vec3(-0.7f, 1.75f, -5.6f), Vec3(0.16f, 0.65f, 0.16f), Color4(0.40f, 0.26f, 0.16f, 1.0f));
+            scene.draw(leftBankMesh, bankMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
+            scene.draw(rightBankMesh, bankMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
+            scene.draw(cube, woodMat, Vec3(-1.5f, 1.35f,  0.0f), Vec3(1.8f, 0.28f, 16.2f), Color4.white);
+            scene.draw(cube, woodMat, Vec3(-1.5f, 0.10f, -4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.85f, 0.80f, 0.76f, 1.0f));
+            scene.draw(cube, woodMat, Vec3(-1.5f, 0.10f,  4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.85f, 0.80f, 0.76f, 1.0f));
+            scene.draw(cube, masonryMat, Vec3(-1.5f, 0.65f, -7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4.white);
+            scene.draw(cube, masonryMat, Vec3(-1.5f, 0.65f,  7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4.white);
+            scene.draw(cube, woodMat, Vec3(-0.7f, 1.75f, -5.6f), Vec3(0.16f, 0.65f, 0.16f), Color4(0.80f, 0.75f, 0.70f, 1.0f));
             scene.draw(sphere, beaconMat, Vec3(-0.7f, 2.10f, -5.6f), Vec3(0.24f, 0.24f, 0.24f), Color4.white);
         } else {
             scene.draw(cube, lighthouseMat, Vec3(-11.4f, 3.6f, -6.4f), Vec3(1.4f, 5.2f, 1.4f), Color4.white);

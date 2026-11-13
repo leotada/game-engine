@@ -38,35 +38,35 @@
 		{
 			"bufferView":0,
 			"componentType":5126,
-			"count":4320,
+			"count":3755,
 			"max":[
-				1.252741813659668,
-				1.3983454704284668,
-				1.1458330154418945
+				1.0580888986587524,
+				1.237017273902893,
+				1.0053738355636597
 			],
 			"min":[
-				-1.1583080291748047,
-				-0.5986032485961914,
-				-1.0369529724121094
+				-1.0537775754928589,
+				-0.6007041931152344,
+				-0.9992426037788391
 			],
 			"type":"VEC3"
 		},
 		{
 			"bufferView":1,
 			"componentType":5126,
-			"count":4320,
+			"count":3755,
 			"type":"VEC3"
 		},
 		{
 			"bufferView":2,
 			"componentType":5126,
-			"count":4320,
+			"count":3755,
 			"type":"VEC2"
 		},
 		{
 			"bufferView":3,
 			"componentType":5126,
-			"count":4320,
+			"count":3755,
 			"type":"VEC4"
 		},
 		{
@@ -79,38 +79,38 @@
 	"bufferViews":[
 		{
 			"buffer":0,
-			"byteLength":51840,
+			"byteLength":45060,
 			"byteOffset":0,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":51840,
-			"byteOffset":51840,
+			"byteLength":45060,
+			"byteOffset":45060,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":34560,
-			"byteOffset":103680,
+			"byteLength":30040,
+			"byteOffset":90120,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":69120,
-			"byteOffset":138240,
+			"byteLength":60080,
+			"byteOffset":120160,
 			"target":34962
 		},
 		{
 			"buffer":0,
 			"byteLength":30720,
-			"byteOffset":207360,
+			"byteOffset":180240,
 			"target":34963
 		}
 	],
 	"buffers":[
 		{
-			"byteLength":238080,
+			"byteLength":210960,
 			"uri":"rock_cliff.bin"
 		}
 	]
