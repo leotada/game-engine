@@ -64,14 +64,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let pebbleMask = smoothstep(0.54, 0.72, valueNoise2(xz * 4.8));
     let siltNoise  = fbm2(xz * 0.65 + vec2<f32>(11.0, 3.5));
 
-    var sandCol = vec3<f32>(0.36, 0.31, 0.23);
-    var rockCol = vec3<f32>(0.17, 0.16, 0.15);
+    var sandCol = vec3<f32>(0.18, 0.16, 0.12);
+    var rockCol = vec3<f32>(0.09, 0.09, 0.085);
     if (riverMode != 0u) {
-        sandCol = vec3<f32>(0.26, 0.23, 0.18);
-        rockCol = vec3<f32>(0.13, 0.13, 0.12);
+        sandCol = vec3<f32>(0.15, 0.13, 0.10);
+        rockCol = vec3<f32>(0.08, 0.08, 0.075);
     }
-    var baseColor = mix(sandCol, rockCol, pebbleMask * 0.75);
-    baseColor *= 0.80 + 0.40 * siltNoise;
+    var baseColor = mix(sandCol, rockCol, pebbleMask * 0.78);
+    baseColor *= 0.78 + 0.42 * siltNoise;
 
     let rough = clamp(mix(0.84, 0.62, pebbleMask), 0.30, 0.96);
     let NdotV = max(dot(N, V), 0.001);
@@ -143,9 +143,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Animated chromatically dispersed solar caustics gated by direct sun shadow & water channel.
     let caustics = evalCausticsRgb(in.worldPos, sunL, time, riverMode);
     let channelMask = select(1.0, smoothstep(7.2, 4.8, abs(xz.y)), riverMode != 0u);
-    let waveEnergy = 0.72 + 0.28 * wu.params0.y;
-    let causticLight = caustics * sunRad * dirShadow * max(N.y, 0.0) * channelMask * waveEnergy * 0.55;
+    let waveEnergy = 0.65 + 0.35 * wu.params0.y;
+    let causticLight = caustics * sunRad * dirShadow * max(N.y, 0.0) * channelMask * waveEnergy * 0.24;
 
-    let color = max(direct + ambient + causticLight * (0.45 + baseColor), vec3<f32>(0.0));
+    // Physical underwater Beer-Lambert column absorption from bed up to y=0.
+    let bedDepth = max(-in.worldPos.y, 0.05) / max(abs(V.y), 0.30);
+    let sigma = select(vec3<f32>(1.45, 0.52, 0.30), vec3<f32>(1.20, 0.42, 0.48), riverMode != 0u);
+    let bedTrans = exp(-sigma * min(bedDepth, 3.2));
+    let rawColor = max(direct + ambient + causticLight * (0.35 + baseColor), vec3<f32>(0.0));
+    let scatterCol = select(vec3<f32>(0.012, 0.065, 0.115), vec3<f32>(0.018, 0.10, 0.09), riverMode != 0u);
+    let color = mix(scatterCol, rawColor * bedTrans, 0.82);
     return vec4<f32>(color, 1.0);
 }

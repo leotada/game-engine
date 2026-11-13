@@ -140,17 +140,18 @@ fn evalRiverFlowAndWake(xz: vec2<f32>, riverMode: u32, time: f32,
             flow -= dir * dot(flow, dir) * min(falloff, 0.92) * ob.w;
         }
 
-        // Bubbly contact collar right at the rock/pier waterline.
-        let ring = 1.0 - smoothstep(r * 0.58, r * 1.18, dist);
+        // Organic bubbly contact collar right at the rock/pier waterline.
+        let jitter = (valueNoise2(xz * 3.1 + vec2<f32>(time * 0.35, -time * 0.2)) - 0.5) * r * 0.32;
+        let ring = 1.0 - smoothstep(r * 0.45, r * 0.94, dist + jitter);
         contactMask = max(contactMask, ring * ob.w);
 
         // Downstream +X turbulent V-wake behind river obstacles.
-        if (riverMode != 0u && rel.x > -r * 0.25 && rel.x < r * 4.5) {
-            let downT = clamp((rel.x + r * 0.25) / (r * 4.5), 0.0, 1.0);
-            let wakeHalfW = r * (0.65 + downT * 0.95);
-            let zFit = 1.0 - smoothstep(wakeHalfW * 0.35, wakeHalfW, abs(rel.y));
-            let axialFade = (1.0 - downT) * smoothstep(0.0, 0.12, downT + 0.08);
-            wakeMask = max(wakeMask, zFit * axialFade * ob.w * 0.95);
+        if (riverMode != 0u && rel.x > -r * 0.20 && rel.x < r * 4.0) {
+            let downT = clamp((rel.x + r * 0.20) / (r * 4.0), 0.0, 1.0);
+            let wakeHalfW = r * (0.58 + downT * 0.85);
+            let zFit = 1.0 - smoothstep(wakeHalfW * 0.30, wakeHalfW, abs(rel.y));
+            let axialFade = (1.0 - downT) * smoothstep(0.0, 0.14, downT + 0.08);
+            wakeMask = max(wakeMask, zFit * axialFade * ob.w * 0.92);
         }
     }
 
@@ -213,26 +214,26 @@ fn evalCapillaryOffset(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
 fn evalFoamPattern(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
                    crestFactor: f32, obstacleWake: f32, waterDepth: f32,
                    waveScale: f32, riverMode: u32) -> f32 {
-    let fUv1 = xz * 1.65 - flowVel * (time * 0.42);
-    let fUv2 = xz * 4.40 - flowVel * (time * 0.68) + vec2<f32>(5.3, -2.8);
+    let fUv1 = xz * 2.2 - flowVel * (time * 0.45);
+    let fUv2 = xz * 5.8 - flowVel * (time * 0.72) + vec2<f32>(5.3, -2.8);
     let nCoarse = fbm2(fUv1);
-    let nLace   = 1.0 - abs(fbm2(fUv2) * 2.0 - 1.0); // cellular vein filaments
-    let lace    = clamp(nCoarse * 0.52 + pow(nLace, 2.2) * 0.55, 0.0, 1.0);
+    let nLace   = 1.0 - abs(fbm2(fUv2) * 2.0 - 1.0);
+    // Zero constant floor so clear water gaps stay 100% transparent between lacy bubble filaments.
+    let bubbleTex = clamp(nCoarse * 0.62 + pow(nLace, 2.0) * 0.68 - 0.16, 0.0, 1.0);
 
-    // 1. Wave crest whitecaps (stronger in rough/stormy waves).
-    let crestThresh = mix(0.76, 0.55, clamp((waveScale - 0.35) / 1.4, 0.0, 1.0));
-    let crestMask = smoothstep(crestThresh, crestThresh + 0.20, crestFactor)
-                  * clamp(0.45 + 0.65 * waveScale, 0.0, 1.35);
+    // 1. Steep wave crest whitecaps (scarce in calm, breaking in rough/stormy).
+    let crestThresh = mix(0.84, 0.64, clamp((waveScale - 0.35) / 1.4, 0.0, 1.0));
+    let crestMask = smoothstep(crestThresh, crestThresh + 0.15, crestFactor)
+                  * clamp(waveScale * 0.78, 0.0, 1.25);
 
     // 2. Rock & pier wakes / collars.
-    let wakeBoost = smoothstep(0.12, 0.78, obstacleWake);
+    let wakeBoost = smoothstep(0.14, 0.80, obstacleWake);
 
-    // 3. Shoreline / riverbank shallow foam rim.
-    let shoreBand = select(0.0, 1.0 - smoothstep(0.05, 0.46, waterDepth), riverMode != 0u);
-    let oceanShoreEdge = select(smoothstep(-0.35, 0.22, 0.30 - waterDepth), 0.0, riverMode != 0u);
+    // 3. Riverbank shallow shoreline foam rim.
+    let shoreBand = select(0.0, 1.0 - smoothstep(0.04, 0.34, waterDepth), riverMode != 0u);
 
-    let foamEnergy = max(crestMask, max(wakeBoost * 0.95, max(shoreBand * 0.85, oceanShoreEdge * 0.75)));
-    return clamp(smoothstep(0.28, 0.68, foamEnergy * (0.45 + 0.85 * lace)), 0.0, 1.0);
+    let foamEnergy = max(crestMask, max(wakeBoost * 0.95, shoreBand * 0.82));
+    return clamp(smoothstep(0.20, 0.46, foamEnergy * bubbleTex), 0.0, 1.0);
 }
 
 @fragment
@@ -278,15 +279,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let transmittance = exp(-sigma * rayDepth);
 
-    let shallowCol = select(vec3<f32>(0.08, 0.34, 0.38), vec3<f32>(0.10, 0.40, 0.34), riverMode != 0u);
-    let deepCol    = select(vec3<f32>(0.015, 0.09, 0.16), vec3<f32>(0.025, 0.16, 0.14), riverMode != 0u);
+    let shallowCol = select(vec3<f32>(0.03, 0.20, 0.26), vec3<f32>(0.05, 0.24, 0.20), riverMode != 0u);
+    let deepCol    = select(vec3<f32>(0.008, 0.052, 0.115), vec3<f32>(0.015, 0.095, 0.090), riverMode != 0u);
     let waterVolumeCol = mix(deepCol, shallowCol, transmittance.g);
 
     // 4. Crisp lacy procedural foam mask (crest whitecaps + rock/pier wakes + bank wash).
     let foamMask = evalFoamPattern(
         in.worldPos.xz, flowVel, time, in.crestFactor, obstacleWake, verticalDepth, waveScale, riverMode);
 
-    let foamColor = vec3<f32>(0.90, 0.94, 0.96);
+    let foamColor = vec3<f32>(0.92, 0.94, 0.96);
     let baseColor = mix(waterVolumeCol, foamColor, foamMask);
 
     // 5. OpenPBR v1.1 vs Legacy PBR parameter assignment (supports [4] A/B toggle).
@@ -299,7 +300,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let fuzzRough  = 0.68;
     let fuzzE = clamp(0.15 + 0.35 * pow(1.0 - NdotV, 2.0) * fuzzRough, 0.0, 0.95);
 
-    var coatW = select(0.0, 0.92 * (1.0 - foamMask * 0.92), useOpenPbr);
+    var coatW = select(0.0, 0.92 * (1.0 - foamMask), useOpenPbr);
     let coatR = 0.022;
     let coatColor = select(vec3<f32>(0.70, 0.92, 1.00), vec3<f32>(0.76, 0.96, 0.92), riverMode != 0u);
 
@@ -418,11 +419,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         ambient = ambient * fuzzTrans + fuzzIbl;
     }
 
-    // 7. Wave-crest backlit Subsurface Scattering (SSS) under open sky/sun.
-    let backLit = pow(clamp(dot(V, normalize(-sunL + N * 0.48)), 0.0, 1.0), 4.0);
-    let crestThin = clamp(in.worldPos.y * 2.1 + in.crestFactor * 0.45, 0.0, 1.0);
-    let sssTint = select(vec3<f32>(0.10, 0.52, 0.46), vec3<f32>(0.14, 0.56, 0.42), riverMode != 0u);
-    let sss = sssTint * sunRad * (0.25 + 0.75 * dirShadow) * (backLit * 1.45 + 0.18) * crestThin * (1.0 - foamMask) * 0.55;
+    // 7. Subtle backlit wave-crest Subsurface Scattering (SSS) under high peaking ocean swells.
+    let backLit = pow(clamp(dot(V, normalize(-sunL + N * 0.35)), 0.0, 1.0), 6.0);
+    let crestThin = smoothstep(0.14, 0.46, in.worldPos.y + in.crestFactor * 0.16)
+                  * select(1.0, 0.12, riverMode != 0u);
+    let sssTint = select(vec3<f32>(0.02, 0.15, 0.18), vec3<f32>(0.03, 0.16, 0.14), riverMode != 0u);
+    let sss = sssTint * sunRad * (0.15 + 0.85 * dirShadow) * backLit * crestThin * (1.0 - foamMask) * 0.28;
 
     var color = max(direct + ambient + sss, vec3<f32>(0.0));
 
@@ -434,11 +436,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 8. Physical Beer-Lambert absorption + Fresnel reflection + opaque whitecaps.
     var outAlpha = 1.0;
     if (transparent) {
-        let depthAlpha = clamp(1.0 - exp(-rayDepth * 0.62), 0.18, 0.88);
+        let oceanDepthAlpha = clamp(0.32 + 0.60 * (1.0 - exp(-rayDepth * 0.85)), 0.32, 0.92);
+        let riverDepthAlpha = clamp(1.0 - exp(-rayDepth * 0.65), 0.22, 0.86);
+        let depthAlpha = select(oceanDepthAlpha, riverDepthAlpha, riverMode != 0u);
         let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
         let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
         let waterAlpha = mix(depthAlpha, 1.0, viewReflectance * 0.92);
-        outAlpha = mix(waterAlpha, 0.98, foamMask);
+        outAlpha = mix(waterAlpha, 0.97, foamMask);
     }
 
     return vec4<f32>(color, outAlpha);

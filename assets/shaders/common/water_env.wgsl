@@ -62,13 +62,13 @@ fn evalWaterSky(dirIn: vec3<f32>, sunDirIn: vec3<f32>, sunCol: vec3<f32>,
     var zenithCol = vec3<f32>(0.10, 0.29, 0.74);
     var midCol    = vec3<f32>(0.34, 0.58, 0.90);
     var horizCol  = vec3<f32>(0.74, 0.86, 0.97);
-    var groundCol = vec3<f32>(0.05, 0.11, 0.14);
+    var groundCol = vec3<f32>(0.02, 0.08, 0.15);
 
     if (lowSun != 0u) {
         zenithCol = vec3<f32>(0.11, 0.21, 0.44);
         midCol    = vec3<f32>(0.44, 0.49, 0.64);
         horizCol  = vec3<f32>(0.98, 0.62, 0.37);
-        groundCol = vec3<f32>(0.06, 0.08, 0.10);
+        groundCol = vec3<f32>(0.03, 0.06, 0.10);
     }
 
     var sky: vec3<f32>;
@@ -123,18 +123,18 @@ fn evalRiverBedY(xz: vec2<f32>, riverMode: u32,
             bedY = max(bedY, -0.85 + s * 3.10);
         }
     }
-    // Shallow underwater aprons / shoals around emergent boulders and piers.
+    // Gentle localized shoaling right under emergent rocks/piers (keeps real depth everywhere else).
     let cnt = min(obstacleCount, 16u);
     for (var i = 0u; i < cnt; i++) {
         let ob = obstacles[i];
         let d = length(xz - ob.xy);
-        let collar = 1.0 - smoothstep(ob.z * 0.45, ob.z * 1.55, d);
-        bedY = max(bedY, mix(-1.15, -0.14, collar * ob.w));
+        let collar = 1.0 - smoothstep(ob.z * 0.35, ob.z * 1.05, d);
+        bedY = max(bedY, mix(-1.15, -0.48, collar * ob.w));
     }
     return bedY;
 }
 
-/// Dual-layer Voronoi cell-edge caustics (single sample -> sharp light web).
+/// Dual-layer Voronoi cell-edge caustics (single sample -> organic light web).
 fn voronoiCausticLayer(uv: vec2<f32>) -> f32 {
     let i = floor(uv);
     let f = fract(uv);
@@ -155,19 +155,26 @@ fn voronoiCausticLayer(uv: vec2<f32>) -> f32 {
         }
     }
     let edge = sqrt(md2) - sqrt(md1);
-    return pow(clamp(1.0 - edge * 1.45, 0.0, 1.0), 3.6);
+    return pow(clamp(1.0 - edge * 1.55, 0.0, 1.0), 2.4);
 }
 
 /// Chromatically dispersed RGB solar caustics projected onto submerged terrain.
 fn evalCausticsRgb(worldPos: vec3<f32>, sunDir: vec3<f32>, time: f32, riverMode: u32) -> vec3<f32> {
     let refractShift = (sunDir.xz / max(abs(sunDir.y) + 0.35, 0.35)) * (-worldPos.y * 0.55);
-    let flow = select(vec2<f32>(time * 0.22, time * 0.14),
-                      vec2<f32>(-time * 0.92, sin(time * 0.7) * 0.10),
+    let flow = select(vec2<f32>(time * 0.24, time * 0.16),
+                      vec2<f32>(-time * 0.95, sin(time * 0.7) * 0.10),
                       riverMode != 0u);
-    let baseUv = (worldPos.xz + refractShift) * 0.78 + flow;
-    let uv2    = (worldPos.xz + refractShift) * 1.16 - flow * vec2<f32>(0.65, 1.15);
+    let p = worldPos.xz + refractShift;
+    // Smooth organic wave distortion breaks rigid straight Voronoi cell walls.
+    let warp = vec2<f32>(
+        sin(p.y * 1.35 + time * 1.25) + cos(p.x * 0.85 - time * 0.90),
+        cos(p.x * 1.30 - time * 1.10) + sin(p.y * 0.90 + time * 0.80)
+    ) * 0.28;
 
-    let disp = vec2<f32>(0.022, 0.015);
+    let baseUv = (p + warp) * 1.75 + flow;
+    let uv2    = (p - warp * 0.7) * 2.55 - flow * vec2<f32>(0.65, 1.15);
+
+    let disp = vec2<f32>(0.032, 0.022);
     let cR = 0.55 * voronoiCausticLayer(baseUv + disp) + 0.45 * voronoiCausticLayer(uv2 - disp);
     let cG = 0.55 * voronoiCausticLayer(baseUv)        + 0.45 * voronoiCausticLayer(uv2);
     let cB = 0.55 * voronoiCausticLayer(baseUv - disp) + 0.45 * voronoiCausticLayer(uv2 + disp);

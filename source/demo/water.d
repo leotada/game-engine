@@ -470,7 +470,7 @@ private StaticMesh32 buildWaterGridMesh32(ref GpuContext gpu) {
 }
 
 private StaticMesh32 buildBedQuad32(ref GpuContext gpu) {
-    immutable float h = 16.0f;
+    immutable float h = WATER_HALF;
     TexVert[4] verts = [
         TexVert([-h, -1.15f, -h], [0, 1, 0], [0.0f, 0.0f]),
         TexVert([ h, -1.15f, -h], [0, 1, 0], [8.0f, 0.0f]),
@@ -626,7 +626,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
     }
     foreach (ref rk; rocks) {
         if (rk.kind != 1 || obsCount >= 16) continue;
-        // Approximate emergent boulder footprint radius from mesh scale.
+        // Approximate emergent boulder waterline radius from mesh scale.
         immutable r = 0.34f * (rk.scale.x + rk.scale.z) * 0.5f;
         wu.obstacles[obsCount++] = [rk.pos.x, rk.pos.z, r, 1.0f];
     }
@@ -929,14 +929,74 @@ private struct RockMaterialGroup {
     }
 }
 
+private void writeCaptureBmp(string path, const(ubyte)[] rgba, uint w, uint h) @trusted {
+    import std.stdio : File;
+    immutable uint rowBytes = (w * 3 + 3) & ~3u;
+    immutable uint imgBytes = rowBytes * h;
+    immutable uint fileSize = 54 + imgBytes;
+    ubyte[54] hdr = 0;
+    hdr[0] = 'B'; hdr[1] = 'M';
+    hdr[2] = cast(ubyte)(fileSize & 0xFF);
+    hdr[3] = cast(ubyte)((fileSize >> 8) & 0xFF);
+    hdr[4] = cast(ubyte)((fileSize >> 16) & 0xFF);
+    hdr[5] = cast(ubyte)((fileSize >> 24) & 0xFF);
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18] = cast(ubyte)(w & 0xFF);
+    hdr[19] = cast(ubyte)((w >> 8) & 0xFF);
+    hdr[20] = cast(ubyte)((w >> 16) & 0xFF);
+    hdr[21] = cast(ubyte)((w >> 24) & 0xFF);
+    hdr[22] = cast(ubyte)(h & 0xFF);
+    hdr[23] = cast(ubyte)((h >> 8) & 0xFF);
+    hdr[24] = cast(ubyte)((h >> 16) & 0xFF);
+    hdr[25] = cast(ubyte)((h >> 24) & 0xFF);
+    hdr[26] = 1;
+    hdr[28] = 24;
+    hdr[34] = cast(ubyte)(imgBytes & 0xFF);
+    hdr[35] = cast(ubyte)((imgBytes >> 8) & 0xFF);
+    hdr[36] = cast(ubyte)((imgBytes >> 16) & 0xFF);
+    hdr[37] = cast(ubyte)((imgBytes >> 24) & 0xFF);
+
+    auto f = File(path, "wb");
+    f.rawWrite(hdr[]);
+    auto row = new ubyte[rowBytes];
+    foreach_reverse (y; 0 .. h) {
+        row[] = 0;
+        const size_t srcBase = cast(size_t) y * w * 4;
+        foreach (x; 0 .. w) {
+            const size_t s = srcBase + cast(size_t) x * 4;
+            const size_t d = cast(size_t) x * 3;
+            row[d + 0] = rgba[s + 2];
+            row[d + 1] = rgba[s + 1];
+            row[d + 2] = rgba[s + 0];
+        }
+        f.rawWrite(row);
+    }
+}
+
 void main(string[] args) {
     uint maxFrames = 0;
+    bool initRiver = false;
+    bool initLowSun = true;
+    bool initHud = true;
+    string capturePath;
     foreach (a; args[1 .. $]) {
         import std.algorithm : startsWith;
         import std.conv : to;
         if (a.startsWith("--frames=")) {
             maxFrames = a[9 .. $].to!uint;
+        } else if (a == "--river") {
+            initRiver = true;
+        } else if (a == "--noon") {
+            initLowSun = false;
+        } else if (a == "--no-hud") {
+            initHud = false;
+        } else if (a.startsWith("--capture=")) {
+            capturePath = a[10 .. $];
         }
+    }
+    if (capturePath.length > 0 && maxFrames == 0) {
+        maxFrames = 3;
     }
     auto app = App.create("OpenPBR Water Showcase — Ocean & River", W, H);
 
@@ -1003,8 +1063,8 @@ void main(string[] args) {
         return Material.create(app.gpu, layout, sampler, albedo, params, mr, nrm, ao, null);
     }
 
-    bool riverMode = false;
-    bool lowSun = true;
+    bool riverMode = initRiver;
+    bool lowSun = initLowSun;
     bool useOpenPbr = true;
     int waveLevel = 1; // 0 = calm, 1 = moderate, 2 = stormy
     bool transparent = true;
@@ -1121,15 +1181,16 @@ void main(string[] args) {
     auto text = TextRenderer.create(app.gpu, W, H);
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
-    bool showHud = true;
+    bool showHud = initHud;
 
     info("OpenPBR Water Showcase — [1] Ocean [2] River [3] Sun [4] OpenPBR A/B [5] Waves [6] Opacity [F1] HUD");
 
-    float time = 0.0f;
+    float time = capturePath.length > 0 ? 1.8f : 0.0f;
     uint frameNum = 0;
     while (app.running()) {
         if (maxFrames > 0 && frameNum >= maxFrames) break;
         frameNum++;
+        immutable bool captureThisFrame = capturePath.length > 0 && frameNum == maxFrames;
         app.pollEvents();
         immutable float dt = fps.tick();
         time += dt;
@@ -1437,7 +1498,17 @@ void main(string[] args) {
             text.drawText(frame, "[F1] Show Controls HUD", 16, 14, 2);
         }
 
+        if (captureThisFrame) {
+            app.renderer.requestCapture();
+        }
         app.endFrame(frame);
+        if (captureThisFrame) {
+            uint cw, ch;
+            auto px = app.renderer.readCapture(cw, ch);
+            if (px.length > 0) {
+                writeCaptureBmp(capturePath, px, cw, ch);
+            }
+        }
     }
 
     app.destroy();
