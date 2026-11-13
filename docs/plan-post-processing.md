@@ -95,5 +95,5 @@ Quality and anti-firefly notes:
 ## References
 
 - `source/engine/gpu/renderer.d`, `post.d`, `shadow.d`, `pipeline.d`
-- [plan-pbr.md](plan-pbr.md) — internal HDR unlocks unclamped IBL reflections
+- [plan-openpbr.md](plan-openpbr.md) — internal HDR unlocks unclamped IBL reflections
 - [graphics.md](graphics.md)

@@ -2,7 +2,7 @@
 
 > **Status:** Landed through M9 on 2026-11-02. M10 (GPU cluster LOD) is optional and not started. Decisions D1–D4 are in §12; the progress log is §11. · **Upstream:** [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) **v1.3** commit `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (`MESHOPTIMIZER_VERSION 1030`, released 2026-09-25) · **License:** MIT (© 2016-2026 Arseny Kapoulkine), text in [third-party-licenses.md](third-party-licenses.md)
 >
-> Related: [graphics.md](graphics.md) · [plan-pbr.md](plan-pbr.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [jph-port-plan.md](jph-port-plan.md) (lessons learned) · [roadmap.md](roadmap.md)
+> Related: [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [jph-port-plan.md](jph-port-plan.md) (lessons learned) · [roadmap.md](roadmap.md)
 
 This document is the plan for rewriting meshoptimizer, a C++ mesh-processing library, as a native D package inside the engine. It does not bind to the C++ library. The port is incremental, with one commit per phase. Each phase has a validation gate against the upstream library, and each delivered module is wired into the engine's asset pipeline as soon as it is ready. A module is not left unused until the end of the project.
 

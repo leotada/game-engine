@@ -445,7 +445,7 @@ Gizmos use a `lineList` topology with overlay depth (always visible). The debug 
 
 ### Shadows
 
-`Scene3DTextured` supports directional, point, and spot shadow maps with 3×3 PCF filtering ([plan-pbr.md](plan-pbr.md), [plan-openpbr.md](plan-openpbr.md)).
+`Scene3DTextured` supports directional, point, and spot shadow maps with 3×3 PCF filtering ([plan-openpbr.md](plan-openpbr.md)).
 
 ```d
 import engine.gpu.shadow :
@@ -511,7 +511,7 @@ app.input   // InputState — keyboard/mouse state
 | Draw 3D objects with textures | `Scene3DTextured` + `TexMesh` + `Material` |
 | Parent/child transforms (solar systems, rigs) | `SceneGraph` |
 | Orbit / fly / first-person camera | `engine.scene.controllers` |
-| Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-pbr.md](plan-pbr.md) |
+| Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-openpbr.md](plan-openpbr.md) |
 | Physics (Box3D) | `engine.physics` — [physics-quickstart.md](physics-quickstart.md) |
 | Load BMP or glTF from disk | `engine.assets.bmp`, `engine.assets.gltf` |
 | Play WAV sound effects | `engine.audio` |

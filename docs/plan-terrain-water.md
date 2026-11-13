@@ -62,4 +62,4 @@ This is a focused level authoring tool, not a sprawling AAA procedural world gen
 
 - [plan-editor-ux.md](plan-editor-ux.md)
 - [plan-physics-api.md](plan-physics-api.md)
-- [plan-pbr.md](plan-pbr.md)
+- [plan-openpbr.md](plan-openpbr.md)

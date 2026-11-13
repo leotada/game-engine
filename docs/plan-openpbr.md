@@ -1,33 +1,33 @@
-# Plan: Real-Time OpenPBR Surface v1.1 Shading Model
+# Plan: Real-Time OpenPBR Surface v1.1, IBL & Shadows
 
-> **Status:** Done (`OPBR-1`–`OPBR-5`) · Priority: High · See [roadmap.md](roadmap.md)
+> **Status:** Phase 1 Done (`PBR-0`–`5`, `OPBR-1`–`5`) · Phase 2 Pending (`OPBR-6`–`9`) · Priority: Medium · See [roadmap.md](roadmap.md)
 
 ## Objective
 
-Replace the initial glTF 2.0 metallic-roughness shading model ([plan-pbr.md](plan-pbr.md)) with a **clean, canonical Real-Time OpenPBR Surface (v1.1) shading architecture** ([ASWF OpenPBR Specification](https://github.com/AcademySoftwareFoundation/OpenPBR)) in the engine's single-pass `rgba16Float` HDR WebGPU forward renderer (`Scene3DTextured`). Because the engine is in active development, we prioritize a clean, idiomatic OpenPBR data model and shader formulation over legacy struct field compatibility.
+Unified rendering plan combining the engine's physically-based lighting foundation (`PBR-0`–`PBR-5`, formerly `plan-pbr.md`: PCF shadow mapping, procedural split-sum IBL, `@group(1)`/`@group(2)` resource layout, `rgba16Float` HDR output) with the canonical **Real-Time OpenPBR Surface v1.1** shading architecture ([ASWF OpenPBR Specification](https://github.com/AcademySoftwareFoundation/OpenPBR)) and its remaining multi-pass extensions (`OPBR-6`–`OPBR-9`).
+
+Because the engine is in active development, we prioritize a clean, idiomatic OpenPBR data model and shader formulation over legacy struct field compatibility.
 
 ## Current State
 
-- **Material GPU UBO & Bind Group:** [`source/engine/graphics/material.d`](../source/engine/graphics/material.d) — 32-byte `MaterialParams` (`baseColorFactor`, `metallic`, `roughness`, `flags`, `_pad`) bound at `@group(1) @binding(0)` alongside 1 sampler and 5 texture views (`albedo`, `metallicRoughness`, `normal`, `occlusion`, `emissive`) with 1×1 default fallback textures (`MaterialDefaults`).
-- **Pipeline Layout:** [`source/engine/gpu/pipeline.d`](../source/engine/gpu/pipeline.d) — `MATERIAL_PARAMS_SIZE = 32`, `createTexturedPipeline3D` builds standard (stride 32) and tangent (`MESH_TANGENT`, stride 48) pipelines.
-- **Shaders:** [`assets/shaders/textured3d_pbr.wgsl`](../assets/shaders/textured3d_pbr.wgsl) and [`assets/shaders/common/pbr_brdf.wgsl`](../assets/shaders/common/pbr_brdf.wgsl) — single-scattering isotropic Cook-Torrance GGX, Lambertian diffuse, Schlick Fresnel with fixed `0.04` dielectric $F_0$, and split-sum IBL.
-- **IBL Precomputation:** [`source/engine/gpu/ibl.d`](../source/engine/gpu/ibl.d) — `IblEnvironment` generates a 64² procedural sky cubemap, 16² irradiance cubemap, 5-mip GGX specular cubemap, and a 128² `rgba8Unorm` BRDF LUT (`generateBrdfLut`) where only channels `R` and `G` are populated (`B = 0`, `A = 255`).
-- **Assets & Scene Serialization:**
-  - [`source/engine/assets/gltf.d`](../source/engine/assets/gltf.d) — parses `pbrMetallicRoughness`, `normalTexture`, `occlusionTexture`, `emissiveTexture`, `emissiveFactor`; ignores `extensions`.
-  - [`source/engine/assets/asset_file.d`](../source/engine/assets/asset_file.d) — `AssetMaterialSlot` stores only `baseColor`, `metallic`, `roughness`, `albedo`, `flags`.
-  - [`source/engine/scene/scene_file.d`](../source/engine/scene/scene_file.d), [`source/engine/editor/components.d`](../source/engine/editor/components.d), [`source/engine/editor/scene_load.d`](../source/engine/editor/scene_load.d), [`source/engine/editor/inspector.d`](../source/engine/editor/inspector.d), [`source/editor/panels/inspector.d`](../source/editor/panels/inspector.d) — `MaterialOverride` and `SceneMaterialData` expose only `baseColor`, `metallic`, `roughness`, `flags`.
+- **Delivered (Phase 0 & Phase 1 — `PBR-0`–`5`, `OPBR-1`–`5`):**
+  - **Material GPU UBO & Bind Group:** [`source/engine/graphics/material.d`](../source/engine/graphics/material.d) — 144-byte (`9 × vec4f`) canonical OpenPBR `MaterialParams` POD struct bound at `@group(1) @binding(0)` alongside 1 sampler and 5 texture views (`albedo`, `metallicRoughness`, `normal`, `occlusion`, `emissive`) with 1×1 default fallback textures (`MaterialDefaults`).
+  - **Pipeline Layout:** [`source/engine/gpu/pipeline.d`](../source/engine/gpu/pipeline.d) — `MATERIAL_PARAMS_SIZE = 144`, `createTexturedPipeline3D` builds standard (stride 32) and tangent (`MESH_TANGENT`, stride 48) pipelines.
+  - **Shaders:** [`assets/shaders/textured3d_pbr.wgsl`](../assets/shaders/textured3d_pbr.wgsl) and [`assets/shaders/common/pbr_brdf.wgsl`](../assets/shaders/common/pbr_brdf.wgsl) — single-pass OpenPBR Surface v1.1 (Fujii Oren-Nayar diffuse, dielectric IOR under coat, $F_{82}$-tint conductor Fresnel, anisotropic & multi-scattering GGX, Airy thin-film iridescence, coat absorption/darkening/roughening, Charlie/Ashikhmin fuzz, emission) with directional/point/spot PCF shadows and IBL.
+  - **Shadow Map & IBL Precomputation:** [`source/engine/gpu/shadow.d`](../source/engine/gpu/shadow.d) + [`source/engine/gpu/ibl.d`](../source/engine/gpu/ibl.d) — 3×3 PCF shadows, 64² procedural sky cubemap, 16² irradiance cubemap, 5-mip GGX specular cubemap, and 128² `rgba8Unorm` 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo) bound at `@group(2)`.
+  - **Assets, Scene & Editor:** [`source/engine/assets/gltf.d`](../source/engine/assets/gltf.d) (`KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}`), [`source/engine/assets/asset_file.d`](../source/engine/assets/asset_file.d), [`source/engine/scene/scene_file.d`](../source/engine/scene/scene_file.d), [`source/engine/editor/`](../source/engine/editor/), and 4×5 showcase in [`source/demo/pbr.d`](../source/demo/pbr.d).
+- **Pending (Phase 2 — `OPBR-6`–`9`):** Per-pixel layer texture maps (coat/fuzz/anisotropy/thin-film), multi-pass refractive transmission (`transmission_weight`), subsurface scattering & thin-walled translucency (`subsurface_weight`), and local reflection probes / SSR.
 
 ## Out of Scope
 
-- **Multi-pass Refractive Transmission (`transmission_weight`):** Screen-space refraction (opaque HDR color copy + mip pyramid + dispersion) is deferred until a game project requires refractive glass/water volumes.
-- **Volumetric / Screen-Space Subsurface Scattering (`subsurface_weight`):** Separable SSS blur passes or path-traced random-walk SSS are excluded to keep the forward pass single-pass, simple, and allocation-free.
 - **MaterialX / OpenUSD XML/USDA Parsers:** Authoring and import use the engine's native `*.asset.json` / `*.scene.json` formats and glTF 2.0 `KHR_materials_*` extensions.
+- **Volumetric Hair / Fur Strand Shaders (Marschner / Kajiya-Kay):** Covered only if a dedicated hair/grooming system is added later.
+- **Path-Traced Global Illumination:** Lighting remains real-time rasterized + IBL + local probes/SSR.
 
 ## Dependencies
 
-- Completed [plan-pbr.md](plan-pbr.md) (HDR forward pipeline, PCF shadows, IBL `@group(2)`).
-- Completed [plan-post-processing.md](plan-post-processing.md) (`rgba16Float` target, Karis bloom, ACES tone mapping, FXAA).
-- Completed [plan-meshoptimizer.md](plan-meshoptimizer.md) M8 (MikkTSpace tangent generation for anisotropic GGX and normal mapping).
+- **Post-Processing:** [plan-post-processing.md](plan-post-processing.md) (`rgba16Float` HDR offscreen target, Karis bloom, ACES tone mapping, FXAA).
+- **Mesh Optimization:** [plan-meshoptimizer.md](plan-meshoptimizer.md) M8 (MikkTSpace tangent generation for anisotropic GGX and normal mapping).
 
 ## Technical Design
 
@@ -153,7 +153,18 @@ static assert(isPod!MaterialParams);
 
 ## Phases
 
-### OPBR-1 — Canonical `MaterialParams` UBO & Call-Site Migration
+### Phase 0 — Foundation: Shadows, Split-Sum IBL & glTF Pipeline (`PBR-0`–`PBR-5`, Done)
+
+Consolidated from the original metallic-roughness + IBL + shadow plan (`plan-pbr.md`):
+
+- [x] **PBR-0 — Shadowed Lit (PCF):** Sample `shadow.depthView` + comparison sampler (3×3 PCF) across directional, point, and spot lights (`Scene3DTextured.setLighting`).
+- [x] **PBR-1 & PBR-2 — Material Bind Group & Direct BRDF:** `@group(1)` `Material` bind group with 1×1 default fallback textures (`MaterialDefaults`) and HDR `rgba16Float` output.
+- [x] **PBR-3 — Image-Based Lighting (IBL):** Procedural sky cubemap (64²), irradiance cubemap (16²), 5-mip prefiltered GGX specular cubemap, and 128² BRDF LUT bound at `@group(2)` (`IblEnvironment`).
+- [x] **PBR-4 & PBR-5 — glTF Loader & Scene Integration:** `loadGltfPbr` in `source/engine/assets/gltf.d`, `Scene3DTextured.setLighting` / `setEnvironment`, and `pbr` demo.
+
+### Phase 1 — Single-Pass OpenPBR Surface v1.1 (`OPBR-1`–`OPBR-5`, Done)
+
+#### OPBR-1 — Canonical `MaterialParams` UBO & Call-Site Migration
 
 - [x] Replace the 32-byte `MaterialParams` with the 144-byte OpenPBR POD struct in `source/engine/graphics/material.d` and update `MATERIAL_PARAMS_SIZE = 144` in `source/engine/gpu/pipeline.d`.
 - [x] Update all call sites across `gltf.d`, `demo/editor.d`, `demo/pbr.d`, `demo/golf.d`, and `source/editor/`.
@@ -188,17 +199,48 @@ static assert(isPod!MaterialParams);
 
 **DoD:** `dub build --config=pbr`, `dub run --config=editor -- --headless-frames=600 --assert-no-gc`, and `dub run --config=player -- --headless-frames=600 --assert-no-gc` pass with zero GC allocations in the frame loop.
 
+### Phase 2 — Multi-Pass Slabs, Layer Textures & Local Reflections (`OPBR-6`–`OPBR-9`, Pending)
+
+#### OPBR-6 — Per-Pixel Layer Texture Maps (Coat, Fuzz, Anisotropy & Thin-Film)
+
+- [ ] Extend `Material` (`@group(1)`) with packed layer texture channels (`coatWeight`/`Roughness`, `coatNormal`, `fuzzColor`/`Roughness`, `anisotropyDirection`/`Strength`, `thinFilmThickness`) using 1×1 default fallbacks when omitted.
+- [ ] Parse `clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`, `sheenColorTexture`, `sheenRoughnessTexture`, `anisotropyTexture`, and `iridescenceThicknessTexture` in `source/engine/assets/gltf.d`.
+
+**DoD:** glTF 2.0 assets with per-pixel clearcoat, sheen, anisotropy, or iridescence textures render with spatially varying slab parameters and zero GC allocations.
+
+#### OPBR-7 — Multi-Pass Refractive Transmission (`transmission_weight`)
+
+- [ ] Add an opaque HDR scene color copy + roughness mip pyramid pass in `Renderer` / `Scene3DTextured` before transmissive draw calls, with back-to-front sorting for transmissive batches.
+- [ ] Add OpenPBR transmission & volume absorption fields (`transmissionWeight`, `transmissionColor`, `transmissionDepth`, `transmissionDispersion`) and parse `KHR_materials_transmission`, `KHR_materials_volume`, and `KHR_materials_dispersion`.
+- [ ] Sample the mip-mapped opaque scene texture in `textured3d_pbr.wgsl` using IOR-refracted screen-space UVs, roughness-driven mip selection, Beer-Lambert absorption, and optional RGB dispersion.
+
+**DoD:** Rough and smooth glass, water, and transmissive glTF models refract background geometry with physically plausible IOR distortion, blur, and volume tint.
+
+#### OPBR-8 — Subsurface Scattering & Thin-Walled Translucency (`subsurface_weight`)
+
+- [ ] Implement single-pass thin-walled diffuse transmission (foliage, cloth, paper, lampshades) using back-face lighting + shadow map thickness attenuation (`KHR_materials_diffuse_transmission`).
+- [ ] Implement separable Screen-Space / Pre-Integrated Subsurface Scattering (`subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceAnisotropy`) for dense scattering media (skin, wax, marble, jade).
+
+**DoD:** Back-lit foliage/cloth and close-up skin/wax/jade materials render with diffuse translucency and subsurface color bleeding while keeping the frame loop `@nogc`.
+
+#### OPBR-9 — Local Reflection Probes & Screen-Space Reflections (SSR)
+
+- [ ] Add localized parallax-corrected cubemap reflection probes (`ReflectionProbe` component) and optional hierarchical depth-buffer SSR in the HDR pipeline.
+- [ ] Blend SSR / local probe specular radiance with the `@group(2)` sky IBL cubemap based on screen-edge fade and roughness.
+
+**DoD:** Smooth metallic, clearcoated, and dielectric surfaces reflect neighboring scene geometry with seamless fallback to the environment cubemap.
+
 ## Acceptance Criteria
 
 1. `MaterialParams` and `MaterialOverride` use canonical OpenPBR v1.1 parameter names and pass `isPod!T` and `dub run --config=lint`.
 2. Direct lighting and IBL evaluate all single-pass OpenPBR slabs (Base/Oren-Nayar, Specular/F82/Anisotropy/Multi-scattering, Thin-Film, Coat, Fuzz, Emission) with energy-conserving slab attenuation.
 3. glTF 2.0 files using `KHR_materials_*` extensions populate the corresponding OpenPBR fields automatically.
 4. Zero GC allocations in the frame loop (`--headless-frames=600 --assert-no-gc` passes on both `editor` and `player`).
+5. (Phase 2) Per-pixel layer textures, multi-pass refractive transmission, SSS/thin-translucency, and SSR/local reflection probes integrate into the HDR pipeline without frame-loop GC allocations.
 
 ## References
 
 - [ASWF OpenPBR Specification](https://github.com/AcademySoftwareFoundation/OpenPBR)
 - [graphics.md](graphics.md)
-- [plan-pbr.md](plan-pbr.md)
 - [plan-post-processing.md](plan-post-processing.md)
 - [plan-meshoptimizer.md](plan-meshoptimizer.md)

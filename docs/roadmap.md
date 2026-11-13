@@ -15,8 +15,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (P5 mesh deferred) | Gameplay foundation; `pong3d` demo, etc. |
 | 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
 | 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **In Progress** | Compiler card-marking across Linux/Win/Android/macOS/iOS |
-| 3 | PBR + shadow sampling | [plan-pbr.md](plan-pbr.md) | **Done** (PBR-0–5) | Textured path: GGX + IBL + PCF; `pbr` demo |
-| 3b | OpenPBR Surface shading model | [plan-openpbr.md](plan-openpbr.md) | **Done** (`OPBR-1`–`5`) | Canonical single-pass OpenPBR v1.1 (Base/Oren-Nayar, Specular IOR/Anisotropy, F82 Conductor, Multi-scattering GGX, Coat, Fuzz/Sheen, Thin-Film) |
+| 3 | OpenPBR Surface v1.1 + IBL + Shadows | [plan-openpbr.md](plan-openpbr.md) | **Phase 1 Done** (`PBR-0–5`, `OPBR-1–5`); **Phase 2 Pending** (`OPBR-6–9`) | Single-pass OpenPBR v1.1 + IBL + PCF done; remaining: per-pixel layer maps (`OPBR-6`), refractive transmission (`OPBR-7`), SSS/translucency (`OPBR-8`), local probes/SSR (`OPBR-9`) |
 | 4 | Post-processing | [plan-post-processing.md](plan-post-processing.md) | **Done** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
 | 6 | Scene editor / level design | [plan-editor-ux.md](plan-editor-ux.md) | **Done** (v1) | `dub run --config=editor`; multi-light with shadows; hull+mesh; asset DB; multi-select + undo |
@@ -30,7 +29,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 
 - **steadygc (#2b):** Direct compiler card barrier (`-version=Symgc_cards`) and custom runtime integration across all 5 engine target platforms; pairs with engine's `Pod!T` DOD storage (`BlkAttr.NO_SCAN`) for sub-millisecond GC pauses.
 - **PBR + Post:** Scene renders into `rgba16float`; bloom + ACES + FXAA detailed in [`plan-post-processing.md`](plan-post-processing.md). Swapchain presentation remains SDR.
-- **OpenPBR Surface (#3b):** Replaces the minimal glTF 2.0 metallic-roughness `MaterialParams` struct with canonical 144-byte OpenPBR v1.1 parameters and layered single-pass WGSL slabs (`plan-openpbr.md`), reusing the existing `@group(2)` BRDF LUT channel `B` for Charlie sheen with zero extra texture bindings.
+- **OpenPBR Surface (#3):** Phase 1 (`PBR-0–5`, `OPBR-1–5`) is complete — 144-byte OpenPBR v1.1 `MaterialParams`, layered single-pass WGSL slabs, PCF shadows, and 3-channel GGX + Charlie BRDF LUT (`plan-openpbr.md`). Phase 2 (`OPBR-6–9`) covers per-pixel layer texture maps, multi-pass refractive transmission, SSS/thin-translucency, and local reflection probes / SSR.
 - **Hot-Reload before Parallel ECS:** Day-to-day productivity boost; parallelism addresses scaling, but does not unblock gameplay content creation.
 - **Terrain/Water (#7) after Scene Editor (#6):** Reuses picking, asset database, serialization, and gizmos; Box3D heightfield unblocks terrain collision.
 - **Rendering Evolution (GFX Backlog):** Editor v1 ships Forward rendering with shadow caster limits (`MAX_POINT_SHADOW_CASTERS`). Future evolution: **Static Shadow Caching** (cubemap reuse for static lights) and **Clustered Forward Rendering** (WGPU Compute) for light scaling.
