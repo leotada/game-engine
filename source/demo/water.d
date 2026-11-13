@@ -10,9 +10,10 @@
 /// (layer texture maps, multi-pass refraction, SSS, local reflection probes/SSR).
 module demo.water;
 
-import std.math : cos, fabs, floor, sin, sqrt, PI, PI_2;
+import std.math : cos, fabs, sin, sqrt, PI, PI_2;
 
 import engine.app;
+import engine.assets.gltf : loadGltfMesh;
 import engine.core.log;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
@@ -216,233 +217,6 @@ private void fillWaterGridVertices(TexTanVert[] verts, float time, bool riverMod
     }
 }
 
-/// Deterministic 3D hash noise in [0, 1] for procedural rock shaping.
-private float hash31(int ix, int iy, int iz, uint seed) pure nothrow @nogc {
-    uint n = cast(uint) ix * 374761393u
-           + cast(uint) iy * 668265263u
-           + cast(uint) iz * 2147483647u
-           + seed * 1597334677u;
-    n = (n ^ (n >> 13)) * 1274126177u;
-    return cast(float)((n ^ (n >> 16)) & 0x00FFFFFFu) / 16777215.0f;
-}
-
-private float valueNoise3D(float x, float y, float z, uint seed) pure nothrow @nogc {
-    immutable fx = floor(x);
-    immutable fy = floor(y);
-    immutable fz = floor(z);
-    immutable ix = cast(int) fx;
-    immutable iy = cast(int) fy;
-    immutable iz = cast(int) fz;
-
-    immutable tx = x - fx;
-    immutable ty = y - fy;
-    immutable tz = z - fz;
-    immutable ux = tx * tx * (3.0f - 2.0f * tx);
-    immutable uy = ty * ty * (3.0f - 2.0f * ty);
-    immutable uz = tz * tz * (3.0f - 2.0f * tz);
-
-    immutable c000 = hash31(ix,     iy,     iz,     seed);
-    immutable c100 = hash31(ix + 1, iy,     iz,     seed);
-    immutable c010 = hash31(ix,     iy + 1, iz,     seed);
-    immutable c110 = hash31(ix + 1, iy + 1, iz,     seed);
-    immutable c001 = hash31(ix,     iy,     iz + 1, seed);
-    immutable c101 = hash31(ix + 1, iy,     iz + 1, seed);
-    immutable c011 = hash31(ix,     iy + 1, iz + 1, seed);
-    immutable c111 = hash31(ix + 1, iy + 1, iz + 1, seed);
-
-    immutable x00 = c000 + (c100 - c000) * ux;
-    immutable x10 = c010 + (c110 - c010) * ux;
-    immutable x01 = c001 + (c101 - c001) * ux;
-    immutable x11 = c011 + (c111 - c011) * ux;
-
-    immutable y0 = x00 + (x10 - x00) * uy;
-    immutable y1 = x01 + (x11 - x01) * uy;
-    return y0 + (y1 - y0) * uz;
-}
-
-private float ridgeFbm3D(Vec3 p, uint seed) pure nothrow @nogc {
-    float sum = 0.0f;
-    float amp = 0.55f;
-    float norm = 0.0f;
-    Vec3 q = p;
-    foreach (oct; 0 .. 3) {
-        immutable n = valueNoise3D(q.x, q.y, q.z, seed + cast(uint) oct * 101u);
-        immutable ridge = 1.0f - fabs(n * 2.0f - 1.0f);
-        sum += (ridge * ridge * 0.65f + n * 0.35f) * amp;
-        norm += amp;
-        q = Vec3(q.x * 2.07f + 3.1f, q.y * 2.07f + 1.7f, q.z * 2.07f + 2.3f);
-        amp *= 0.48f;
-    }
-    return sum / norm;
-}
-
-private struct RockShape {
-    Vec3[14] planeNormals;
-    float[14] planeDists;
-    uint seed;
-    float facetStrength;
-    float strataStrength;
-    float cragStrength;
-    float bottomFlatten;
-}
-
-private RockShape makeRockShape(uint seed, float facetStrength, float strataStrength,
-                                float cragStrength, float bottomFlatten) pure nothrow @nogc {
-    immutable float diag = 0.57735027f; // 1 / sqrt(3)
-    immutable Vec3[14] baseDirs = [
-        Vec3( 1.0f,  0.0f,  0.0f), Vec3(-1.0f,  0.0f,  0.0f),
-        Vec3( 0.0f,  1.0f,  0.0f), Vec3( 0.0f, -1.0f,  0.0f),
-        Vec3( 0.0f,  0.0f,  1.0f), Vec3( 0.0f,  0.0f, -1.0f),
-        Vec3( diag,  diag,  diag), Vec3(-diag,  diag,  diag),
-        Vec3( diag, -diag,  diag), Vec3(-diag, -diag,  diag),
-        Vec3( diag,  diag, -diag), Vec3(-diag,  diag, -diag),
-        Vec3( diag, -diag, -diag), Vec3(-diag, -diag, -diag),
-    ];
-
-    RockShape s;
-    s.seed = seed;
-    s.facetStrength = facetStrength;
-    s.strataStrength = strataStrength;
-    s.cragStrength = cragStrength;
-    s.bottomFlatten = bottomFlatten;
-
-    foreach (i; 0 .. 14) {
-        immutable jx = (hash31(cast(int) i, 3, 17, seed) - 0.5f) * 0.68f;
-        immutable jy = (hash31(cast(int) i, 9, 29, seed) - 0.5f) * 0.68f;
-        immutable jz = (hash31(cast(int) i, 15, 41, seed) - 0.5f) * 0.68f;
-        s.planeNormals[i] = Vec3(baseDirs[i].x + jx, baseDirs[i].y + jy, baseDirs[i].z + jz).normalized();
-        s.planeDists[i] = 0.74f + hash31(cast(int) i, 23, 53, seed) * 0.24f;
-    }
-    return s;
-}
-
-private Vec3 evaluateRockSurface(Vec3 dir, ref const RockShape shape) pure nothrow @nogc {
-    float maxRatio = 0.25f;
-    float secondRatio = 0.0f;
-    foreach (i; 0 .. 14) {
-        immutable float proj = dir.dot(shape.planeNormals[i]);
-        if (proj > 0.0f) {
-            immutable float ratio = proj / shape.planeDists[i];
-            if (ratio > maxRatio) {
-                secondRatio = maxRatio;
-                maxRatio = ratio;
-            } else if (ratio > secondRatio) {
-                secondRatio = ratio;
-            }
-        }
-    }
-
-    // Intersecting planar facets create crisp fracture faces with subtle edge bevel
-    immutable float polyR = 1.0f / maxRatio;
-    immutable float edgeBlend = (maxRatio - secondRatio) < 0.06f
-        ? (0.06f - (maxRatio - secondRatio)) * 0.75f
-        : 0.0f;
-    float facetWeight = shape.facetStrength * 1.85f;
-    if (facetWeight > 1.0f) facetWeight = 1.0f;
-    float r = (1.0f + (polyR - 1.0f) * facetWeight) * (1.0f - edgeBlend);
-
-    // Macro asymmetry, stepped sedimentary strata, and 3D ridge/crevice fractures
-    immutable float macroN = valueNoise3D(dir.x * 1.35f, dir.y * 1.35f, dir.z * 1.35f, shape.seed + 31u) - 0.5f;
-    immutable float crag = ridgeFbm3D(Vec3(dir.x * 2.6f, dir.y * 2.6f, dir.z * 2.6f), shape.seed);
-    immutable float chip = valueNoise3D(dir.x * 5.6f, dir.y * 5.6f, dir.z * 5.6f, shape.seed + 97u) - 0.5f;
-    immutable float strataArg = dir.y * 10.5f + dir.x * 2.1f + macroN * 2.4f;
-    immutable float strataWave = sin(strataArg);
-    immutable float strataStep = strataWave > 0.0f ? strataWave * 0.55f : strataWave * 1.15f;
-
-    r *= (1.0f + macroN * 0.22f
-               + (crag - 0.5f) * shape.cragStrength
-               + chip * (shape.cragStrength * 0.24f)
-               + strataStep * shape.strataStrength);
-
-    Vec3 pos = Vec3(dir.x * r, dir.y * r, dir.z * r);
-    // Ground the rock base slightly flat and wide so outcrops sit naturally in the bed
-    if (pos.y < -0.22f) {
-        immutable float depth = -0.22f - pos.y;
-        pos.y = -0.22f - depth * (1.0f - shape.bottomFlatten);
-        immutable float flare = 1.0f + depth * shape.bottomFlatten * 0.20f;
-        pos.x *= flare;
-        pos.z *= flare;
-    }
-    return pos;
-}
-
-private TexMesh buildRockMesh(ref GpuContext gpu, uint slices, uint stacks, uint seed,
-                              float facetStrength, float strataStrength,
-                              float cragStrength, float bottomFlatten) {
-    immutable shape = makeRockShape(seed, facetStrength, strataStrength, cragStrength, bottomFlatten);
-    immutable uint stride = slices + 1;
-    auto verts = new TexTanVert[(stacks + 1) * stride];
-    auto indices = new ushort[slices * stacks * 6];
-
-    enum float EPS = 0.015f;
-
-    foreach (row; 0 .. stacks + 1) {
-        immutable float v = cast(float) row / cast(float) stacks;
-        immutable float theta = v * PI;
-        immutable float st = sin(theta);
-        immutable float ct = cos(theta);
-
-        foreach (col; 0 .. stride) {
-            immutable float u = cast(float) col / cast(float) slices;
-            immutable float phi = (col == slices) ? 0.0f : u * 2.0f * PI;
-            immutable float cp = cos(phi);
-            immutable float sp = sin(phi);
-
-            immutable Vec3 dir = Vec3(st * cp, ct, st * sp).normalized();
-            immutable Vec3 phiVec = Vec3(-sp, 0.0f, cp);
-            immutable Vec3 thetaVec = Vec3(ct * cp, -st, ct * sp);
-
-            immutable Vec3 p = evaluateRockSurface(dir, shape);
-            immutable Vec3 dPhiP = evaluateRockSurface((dir + phiVec * EPS).normalized(), shape);
-            immutable Vec3 dPhiM = evaluateRockSurface((dir - phiVec * EPS).normalized(), shape);
-            immutable Vec3 dThetaP = evaluateRockSurface((dir + thetaVec * EPS).normalized(), shape);
-            immutable Vec3 dThetaM = evaluateRockSurface((dir - thetaVec * EPS).normalized(), shape);
-
-            immutable Vec3 dpPhi = dPhiP - dPhiM;
-            immutable Vec3 dpTheta = dThetaP - dThetaM;
-
-            Vec3 nRaw = dpPhi.cross(dpTheta);
-            Vec3 n = nRaw.dot(nRaw) > 1e-8f ? nRaw.normalized() : dir;
-            if (n.dot(dir) < 0.0f) n = n * -1.0f;
-
-            Vec3 tRaw = dpPhi - n * n.dot(dpPhi);
-            Vec3 t;
-            if (tRaw.dot(tRaw) > 1e-8f) {
-                t = tRaw.normalized();
-            } else {
-                immutable Vec3 upAxis = fabs(n.y) < 0.9f ? Vec3(0.0f, 1.0f, 0.0f) : Vec3(1.0f, 0.0f, 0.0f);
-                t = upAxis.cross(n).normalized();
-            }
-
-            immutable uint idx = row * stride + col;
-            verts[idx] = TexTanVert(
-                [p.x, p.y, p.z],
-                [n.x, n.y, n.z],
-                [u * 2.0f, v * 2.0f],
-                [t.x, t.y, t.z, 1.0f]
-            );
-        }
-    }
-
-    uint ii = 0;
-    foreach (row; 0 .. stacks) {
-        foreach (col; 0 .. slices) {
-            immutable ushort a = cast(ushort)(row * stride + col);
-            immutable ushort b = cast(ushort)(a + 1);
-            immutable ushort c = cast(ushort)(a + stride);
-            immutable ushort d = cast(ushort)(c + 1);
-            // Counter-clockwise winding viewed from outside (+dir)
-            indices[ii++] = a;
-            indices[ii++] = b;
-            indices[ii++] = d;
-            indices[ii++] = a;
-            indices[ii++] = d;
-            indices[ii++] = c;
-        }
-    }
-    return TexMesh.fromData(gpu, verts, indices);
-}
-
 private TexMesh buildWaterMesh(ref GpuContext gpu, out TexTanVert[] cpuVerts) {
     immutable uint stride = WATER_GRID + 1;
     cpuVerts = new TexTanVert[stride * stride];
@@ -544,18 +318,23 @@ private void generateRockAndBedTextures(ref GpuContext gpu,
             immutable float u = cast(float) x / cast(float) SZ;
             immutable n = fbmPeriodic(u, v, 8, 4);
             immutable grit = fbmPeriodic(u + 0.13f, v + 0.41f, 24, 2);
-            rockH[y * SZ + x] = n * 0.75f + grit * 0.25f;
+            immutable speckle = fbmPeriodic(u + 0.53f, v + 0.19f, 32, 2);
+            immutable vein = fabs(fbmPeriodic(u + 0.31f, v + 0.77f, 6, 3) - 0.5f) * 2.0f;
+            immutable crevice = vein < 0.20f ? (0.52f + 0.48f * (vein / 0.20f)) : 1.0f;
+
+            immutable hVal = (n * 0.65f + grit * 0.22f + speckle * 0.13f) * (0.72f + 0.28f * crevice);
+            rockH[y * SZ + x] = hVal;
 
             immutable idx = (y * SZ + x) * 4;
-            immutable rockLum = 135.0f + n * 75.0f + (grit - 0.5f) * 30.0f;
-            rockA[idx + 0] = clampByte(rockLum * 1.02f);
-            rockA[idx + 1] = clampByte(rockLum * 0.99f);
-            rockA[idx + 2] = clampByte(rockLum * 0.94f);
+            immutable rockLum = (112.0f + n * 78.0f + (grit - 0.5f) * 38.0f + (speckle - 0.5f) * 30.0f) * crevice;
+            rockA[idx + 0] = clampByte(rockLum * 1.03f);
+            rockA[idx + 1] = clampByte(rockLum * 0.98f);
+            rockA[idx + 2] = clampByte(rockLum * 0.92f);
             rockA[idx + 3] = 255;
 
             // Submerged river/seabed sand + pebble mottling
             immutable pebbles = fbmPeriodic(u + 0.21f, v + 0.67f, 16, 4);
-            immutable bedLum = 90.0f + pebbles * 95.0f;
+            immutable bedLum = 82.0f + pebbles * 90.0f;
             bedA[idx + 0] = clampByte(bedLum * 1.06f);
             bedA[idx + 1] = clampByte(bedLum * 0.95f);
             bedA[idx + 2] = clampByte(bedLum * 0.76f);
@@ -563,7 +342,7 @@ private void generateRockAndBedTextures(ref GpuContext gpu,
         }
     }
 
-    enum float ROCK_NORMAL_STRENGTH = 4.0f;
+    enum float ROCK_NORMAL_STRENGTH = 2.4f;
     foreach (y; 0 .. SZ) {
         immutable uint ym = (y + SZ - 1) % SZ;
         immutable uint yp = (y + 1) % SZ;
@@ -594,60 +373,85 @@ private struct RockPlacement {
     ubyte meshKind; // 0 = cliff, 1 = boulder, 2 = cobble
 }
 
-private enum RockPlacement[22] SEA_ROCKS = [
+private enum RockPlacement[34] SEA_ROCKS = [
     // Shoreline rocky headland along -X and +Z edge (wet near waterline, dry higher up)
-    RockPlacement(Vec3(-11.5f, -0.35f, -6.5f), Vec3(3.6f, 1.4f, 3.2f), 0.3f, 1, 1),
-    RockPlacement(Vec3(-12.2f,  0.65f, -6.8f), Vec3(2.8f, 1.6f, 2.5f), 1.1f, 0, 0),
-    RockPlacement(Vec3(-10.8f, -0.45f, -2.5f), Vec3(3.2f, 1.2f, 3.8f), 0.8f, 1, 1),
-    RockPlacement(Vec3(-12.0f,  0.55f, -2.0f), Vec3(2.5f, 1.4f, 2.9f), 2.2f, 0, 0),
-    RockPlacement(Vec3(-11.2f, -0.30f,  2.5f), Vec3(3.8f, 1.5f, 3.4f), 1.6f, 1, 1),
-    RockPlacement(Vec3(-12.3f,  0.80f,  3.1f), Vec3(2.7f, 1.7f, 2.6f), 0.4f, 0, 0),
-    RockPlacement(Vec3(-10.4f, -0.40f,  7.5f), Vec3(4.0f, 1.3f, 3.5f), 2.7f, 1, 1),
-    RockPlacement(Vec3(-12.0f,  0.90f,  8.0f), Vec3(3.0f, 2.0f, 2.8f), 1.9f, 2, 0),
+    RockPlacement(Vec3(-11.4f, -0.35f, -6.5f), Vec3(3.4f, 1.35f, 3.1f), 0.3f, 1, 1),
+    RockPlacement(Vec3(-12.3f,  0.75f, -6.9f), Vec3(2.9f, 1.80f, 2.5f), 1.1f, 0, 0),
+    RockPlacement(Vec3(-10.7f, -0.42f, -2.4f), Vec3(3.1f, 1.15f, 3.6f), 0.8f, 1, 1),
+    RockPlacement(Vec3(-12.1f,  0.65f, -1.9f), Vec3(2.6f, 1.55f, 2.8f), 2.2f, 0, 0),
+    RockPlacement(Vec3(-11.1f, -0.32f,  2.6f), Vec3(3.6f, 1.45f, 3.2f), 1.6f, 1, 1),
+    RockPlacement(Vec3(-12.4f,  0.88f,  3.2f), Vec3(2.8f, 1.85f, 2.7f), 0.4f, 0, 0),
+    RockPlacement(Vec3(-10.2f, -0.38f,  7.4f), Vec3(3.7f, 1.25f, 3.4f), 2.7f, 1, 1),
+    RockPlacement(Vec3(-12.0f,  0.95f,  8.1f), Vec3(3.1f, 2.10f, 2.8f), 1.9f, 2, 0),
+    RockPlacement(Vec3(-12.6f,  0.25f, -10.2f), Vec3(2.9f, 1.60f, 2.6f), 0.9f, 0, 0),
+    RockPlacement(Vec3(-9.8f,  -0.45f, -9.8f), Vec3(2.6f, 1.10f, 2.4f), 2.4f, 1, 1),
+    RockPlacement(Vec3(-9.2f,  -0.48f,  4.8f), Vec3(2.2f, 0.95f, 2.0f), 1.3f, 1, 1),
+    RockPlacement(Vec3(-9.5f,  -0.50f,  0.2f), Vec3(2.0f, 0.90f, 2.1f), 0.5f, 1, 1),
     // Sea stack / offshore wet reefs
-    RockPlacement(Vec3(  7.8f, -0.25f, -7.2f), Vec3(2.6f, 1.3f, 2.4f), 0.5f, 1, 0),
-    RockPlacement(Vec3(  8.3f,  0.55f, -7.4f), Vec3(1.8f, 1.3f, 1.6f), 1.8f, 0, 0),
-    RockPlacement(Vec3( -4.2f, -0.55f,  6.4f), Vec3(2.2f, 1.0f, 2.0f), 1.2f, 1, 1),
-    // Submerged boulders visible through translucent water
-    RockPlacement(Vec3( -2.8f, -0.95f, -2.4f), Vec3(2.2f, 0.7f, 1.8f), 0.6f, 3, 2),
-    RockPlacement(Vec3(  1.6f, -0.92f,  2.8f), Vec3(2.5f, 0.8f, 2.1f), 2.1f, 3, 2),
-    RockPlacement(Vec3(  4.5f, -1.00f, -1.2f), Vec3(1.9f, 0.6f, 1.7f), 1.4f, 3, 2),
-    RockPlacement(Vec3( -6.2f, -0.88f,  1.2f), Vec3(2.4f, 0.75f, 2.0f), 0.9f, 3, 2),
-    RockPlacement(Vec3(  0.2f, -1.05f, -4.8f), Vec3(2.8f, 0.65f, 2.2f), 2.5f, 3, 2),
-    RockPlacement(Vec3(  5.2f, -0.90f,  5.0f), Vec3(2.1f, 0.70f, 1.9f), 0.2f, 3, 2),
-    RockPlacement(Vec3( -7.8f, -0.85f, -4.8f), Vec3(1.8f, 0.75f, 1.6f), 1.7f, 3, 2),
-    RockPlacement(Vec3(  2.5f, -0.96f, -6.5f), Vec3(2.3f, 0.68f, 2.0f), 2.8f, 3, 2),
-    RockPlacement(Vec3( -1.5f, -0.98f,  5.6f), Vec3(2.0f, 0.65f, 1.8f), 1.0f, 3, 2),
-    RockPlacement(Vec3(  8.8f, -0.86f,  1.5f), Vec3(2.6f, 0.80f, 2.2f), 0.4f, 3, 2),
-    RockPlacement(Vec3( -5.0f, -0.92f, -7.2f), Vec3(2.1f, 0.72f, 1.9f), 2.3f, 3, 2),
+    RockPlacement(Vec3(  7.8f, -0.25f, -7.2f), Vec3(2.6f, 1.35f, 2.4f), 0.5f, 1, 0),
+    RockPlacement(Vec3(  8.3f,  0.65f, -7.4f), Vec3(1.8f, 1.50f, 1.6f), 1.8f, 0, 0),
+    RockPlacement(Vec3(  9.2f, -0.45f, -6.5f), Vec3(1.9f, 0.95f, 1.8f), 2.9f, 1, 1),
+    RockPlacement(Vec3( -4.2f, -0.52f,  6.4f), Vec3(2.2f, 1.00f, 2.0f), 1.2f, 1, 1),
+    RockPlacement(Vec3( -5.1f, -0.60f,  7.4f), Vec3(1.6f, 0.85f, 1.5f), 2.6f, 1, 1),
+    // Submerged boulders visible through translucent water (rendered with wet coat)
+    RockPlacement(Vec3( -2.8f, -0.88f, -2.4f), Vec3(2.0f, 0.72f, 1.7f), 0.6f, 3, 2),
+    RockPlacement(Vec3(  1.6f, -0.86f,  2.8f), Vec3(2.3f, 0.78f, 1.9f), 2.1f, 3, 2),
+    RockPlacement(Vec3(  4.5f, -0.92f, -1.2f), Vec3(1.8f, 0.64f, 1.6f), 1.4f, 3, 2),
+    RockPlacement(Vec3( -6.2f, -0.82f,  1.2f), Vec3(2.2f, 0.76f, 1.8f), 0.9f, 3, 1),
+    RockPlacement(Vec3(  0.2f, -0.94f, -4.8f), Vec3(2.5f, 0.68f, 2.0f), 2.5f, 3, 2),
+    RockPlacement(Vec3(  5.2f, -0.84f,  5.0f), Vec3(2.0f, 0.70f, 1.8f), 0.2f, 3, 2),
+    RockPlacement(Vec3( -7.8f, -0.78f, -4.8f), Vec3(1.8f, 0.76f, 1.6f), 1.7f, 3, 1),
+    RockPlacement(Vec3(  2.5f, -0.89f, -6.5f), Vec3(2.2f, 0.68f, 1.9f), 2.8f, 3, 2),
+    RockPlacement(Vec3( -1.5f, -0.91f,  5.6f), Vec3(1.9f, 0.65f, 1.7f), 1.0f, 3, 2),
+    RockPlacement(Vec3(  8.8f, -0.82f,  1.5f), Vec3(2.4f, 0.80f, 2.0f), 0.4f, 3, 1),
+    RockPlacement(Vec3( -5.0f, -0.86f, -7.2f), Vec3(2.0f, 0.72f, 1.8f), 2.3f, 3, 2),
+    RockPlacement(Vec3( -0.9f, -0.88f,  0.9f), Vec3(1.6f, 0.60f, 1.4f), 1.1f, 3, 2),
+    RockPlacement(Vec3(  3.1f, -0.87f, -2.6f), Vec3(1.7f, 0.66f, 1.5f), 2.0f, 3, 2),
+    RockPlacement(Vec3( -4.4f, -0.83f,  3.2f), Vec3(1.8f, 0.68f, 1.5f), 0.7f, 3, 2),
+    RockPlacement(Vec3(  6.4f, -0.88f, -3.9f), Vec3(2.1f, 0.66f, 1.8f), 1.5f, 3, 2),
+    RockPlacement(Vec3( -8.2f, -0.80f,  5.5f), Vec3(1.9f, 0.72f, 1.7f), 2.9f, 3, 1),
+    RockPlacement(Vec3(  1.2f, -0.90f,  6.8f), Vec3(1.8f, 0.62f, 1.6f), 0.8f, 3, 2),
 ];
 
-private enum RockPlacement[22] RIVER_ROCKS = [
-    // Left riverbank (-Z side, flowing along +X)
-    RockPlacement(Vec3(-9.5f, -0.20f, -6.5f), Vec3(4.5f, 1.3f, 2.8f), 0.2f, 1, 1),
-    RockPlacement(Vec3(-9.5f,  0.75f, -8.5f), Vec3(5.2f, 1.8f, 3.2f), 0.5f, 2, 0),
-    RockPlacement(Vec3(-3.5f, -0.25f, -6.2f), Vec3(4.8f, 1.2f, 2.6f), 1.1f, 1, 1),
-    RockPlacement(Vec3(-3.2f,  0.80f, -8.4f), Vec3(5.0f, 1.9f, 3.0f), 0.1f, 2, 1),
-    RockPlacement(Vec3( 3.2f, -0.22f, -6.4f), Vec3(4.6f, 1.25f, 2.8f), 2.0f, 1, 1),
-    RockPlacement(Vec3( 3.8f,  0.85f, -8.6f), Vec3(5.4f, 2.0f, 3.4f), 0.8f, 2, 0),
-    RockPlacement(Vec3( 9.5f, -0.20f, -6.5f), Vec3(4.8f, 1.3f, 2.9f), 1.4f, 1, 1),
-    RockPlacement(Vec3( 9.5f,  0.80f, -8.5f), Vec3(5.2f, 1.8f, 3.2f), 2.4f, 2, 1),
-    // Right riverbank (+Z side)
-    RockPlacement(Vec3(-9.0f, -0.22f,  6.5f), Vec3(4.8f, 1.3f, 2.9f), 2.8f, 1, 1),
-    RockPlacement(Vec3(-9.0f,  0.80f,  8.5f), Vec3(5.4f, 1.9f, 3.3f), 1.2f, 2, 0),
-    RockPlacement(Vec3(-2.5f, -0.24f,  6.2f), Vec3(4.5f, 1.2f, 2.6f), 0.6f, 1, 1),
-    RockPlacement(Vec3(-2.8f,  0.78f,  8.4f), Vec3(5.0f, 1.8f, 3.1f), 2.1f, 2, 1),
-    RockPlacement(Vec3( 4.0f, -0.22f,  6.4f), Vec3(4.9f, 1.25f, 2.8f), 1.8f, 1, 1),
-    RockPlacement(Vec3( 4.2f,  0.85f,  8.5f), Vec3(5.3f, 1.95f, 3.2f), 0.4f, 2, 0),
-    RockPlacement(Vec3( 9.8f, -0.20f,  6.5f), Vec3(4.6f, 1.3f, 2.8f), 2.5f, 1, 1),
-    RockPlacement(Vec3( 9.8f,  0.80f,  8.6f), Vec3(5.0f, 1.85f, 3.1f), 1.0f, 2, 1),
-    // Mid-stream wet boulders & submerged riverbed cobbles
-    RockPlacement(Vec3(-5.0f, -0.25f,  1.8f), Vec3(2.0f, 1.0f, 1.8f), 0.7f, 1, 1),
-    RockPlacement(Vec3( 4.6f, -0.30f, -2.0f), Vec3(2.2f, 0.95f, 1.9f), 1.9f, 1, 1),
-    RockPlacement(Vec3(-1.5f, -0.82f, -1.6f), Vec3(2.4f, 0.6f, 1.9f), 0.4f, 3, 2),
-    RockPlacement(Vec3( 1.2f, -0.80f,  1.8f), Vec3(2.1f, 0.55f, 1.8f), 2.3f, 3, 2),
-    RockPlacement(Vec3( 7.2f, -0.84f,  0.2f), Vec3(2.5f, 0.60f, 2.0f), 1.3f, 3, 2),
-    RockPlacement(Vec3(-7.6f, -0.82f, -0.4f), Vec3(2.2f, 0.58f, 1.8f), 2.7f, 3, 2),
+private enum RockPlacement[34] RIVER_ROCKS = [
+    // Left canyon bank (-Z side, flowing along +X) — naturally staggered boulders & ledges
+    RockPlacement(Vec3(-11.2f, -0.22f, -6.2f), Vec3(3.1f, 1.10f, 2.5f), 0.35f, 1, 1),
+    RockPlacement(Vec3(-10.8f,  0.62f, -8.8f), Vec3(3.6f, 1.65f, 2.9f), 1.10f, 2, 0),
+    RockPlacement(Vec3( -7.4f, -0.28f, -5.9f), Vec3(2.6f, 0.95f, 2.2f), 2.15f, 1, 1),
+    RockPlacement(Vec3( -6.8f,  0.48f, -8.3f), Vec3(3.2f, 1.35f, 2.6f), 0.65f, 2, 1),
+    RockPlacement(Vec3( -3.6f,  0.85f,-10.2f), Vec3(3.8f, 1.85f, 3.0f), 1.85f, 0, 0),
+    RockPlacement(Vec3(  1.6f, -0.24f, -6.1f), Vec3(2.9f, 1.05f, 2.3f), 1.40f, 1, 1),
+    RockPlacement(Vec3(  2.5f,  0.65f, -8.7f), Vec3(3.9f, 1.75f, 3.1f), 2.75f, 2, 0),
+    RockPlacement(Vec3(  6.2f, -0.30f, -6.4f), Vec3(2.5f, 0.90f, 2.2f), 0.85f, 1, 1),
+    RockPlacement(Vec3(  8.8f,  0.55f, -8.5f), Vec3(3.5f, 1.55f, 2.8f), 1.95f, 2, 0),
+    RockPlacement(Vec3( 11.4f, -0.20f, -6.7f), Vec3(3.0f, 1.15f, 2.5f), 2.45f, 1, 1),
+    // Right canyon bank (+Z side)
+    RockPlacement(Vec3(-10.9f, -0.25f,  6.5f), Vec3(2.9f, 1.05f, 2.4f), 2.60f, 1, 1),
+    RockPlacement(Vec3(-10.2f,  0.72f,  9.0f), Vec3(3.9f, 1.75f, 3.2f), 0.45f, 2, 0),
+    RockPlacement(Vec3( -6.5f, -0.22f,  6.0f), Vec3(2.7f, 0.98f, 2.2f), 1.25f, 1, 1),
+    RockPlacement(Vec3( -5.8f,  0.52f,  8.6f), Vec3(3.3f, 1.45f, 2.7f), 2.95f, 2, 1),
+    RockPlacement(Vec3( -2.8f,  0.90f, 10.4f), Vec3(3.6f, 1.90f, 2.9f), 0.90f, 0, 0),
+    RockPlacement(Vec3(  1.9f, -0.26f,  6.3f), Vec3(2.8f, 1.00f, 2.3f), 1.75f, 1, 1),
+    RockPlacement(Vec3(  3.4f,  0.68f,  8.9f), Vec3(3.7f, 1.80f, 3.0f), 0.30f, 2, 0),
+    RockPlacement(Vec3(  7.1f, -0.28f,  5.8f), Vec3(2.6f, 0.92f, 2.1f), 2.20f, 1, 1),
+    RockPlacement(Vec3(  9.2f,  0.58f,  8.6f), Vec3(3.4f, 1.55f, 2.8f), 1.15f, 2, 0),
+    RockPlacement(Vec3( 11.5f, -0.20f,  6.4f), Vec3(3.1f, 1.15f, 2.6f), 0.55f, 1, 1),
+    // Mid-stream wet boulders breaking rapids
+    RockPlacement(Vec3( -8.5f, -0.28f,  1.6f), Vec3(2.1f, 1.05f, 1.8f), 0.70f, 1, 0),
+    RockPlacement(Vec3( -5.2f, -0.34f, -1.9f), Vec3(1.8f, 0.90f, 1.6f), 2.35f, 1, 1),
+    RockPlacement(Vec3(  3.8f, -0.32f, -1.4f), Vec3(2.2f, 0.96f, 1.9f), 1.85f, 1, 1),
+    RockPlacement(Vec3(  8.4f, -0.26f,  1.5f), Vec3(2.3f, 1.08f, 2.0f), 0.25f, 1, 0),
+    // Submerged riverbed cobbles & stones (wet water coat clearly visible underwater)
+    RockPlacement(Vec3( -9.4f, -0.78f, -1.5f), Vec3(2.0f, 0.62f, 1.7f), 1.10f, 3, 2),
+    RockPlacement(Vec3( -6.4f, -0.82f,  2.9f), Vec3(1.7f, 0.58f, 1.5f), 2.60f, 3, 2),
+    RockPlacement(Vec3( -3.4f, -0.76f,  0.8f), Vec3(2.2f, 0.66f, 1.8f), 0.45f, 3, 2),
+    RockPlacement(Vec3( -2.0f, -0.80f, -2.5f), Vec3(1.9f, 0.60f, 1.6f), 1.90f, 3, 1),
+    RockPlacement(Vec3(  0.6f, -0.74f,  1.9f), Vec3(2.3f, 0.68f, 1.9f), 2.30f, 3, 2),
+    RockPlacement(Vec3(  1.2f, -0.82f, -0.4f), Vec3(1.6f, 0.54f, 1.4f), 0.80f, 3, 2),
+    RockPlacement(Vec3(  2.9f, -0.78f,  3.6f), Vec3(2.0f, 0.64f, 1.7f), 1.45f, 3, 2),
+    RockPlacement(Vec3(  5.6f, -0.80f,  0.6f), Vec3(2.4f, 0.65f, 1.9f), 2.85f, 3, 1),
+    RockPlacement(Vec3(  6.8f, -0.84f, -3.2f), Vec3(1.8f, 0.56f, 1.6f), 0.35f, 3, 2),
+    RockPlacement(Vec3( 10.2f, -0.76f, -0.6f), Vec3(2.1f, 0.62f, 1.8f), 1.65f, 3, 2),
 ];
 
 private struct OrbitState {
@@ -726,6 +530,70 @@ private MaterialParams buildWaterParams(bool riverMode, bool useOpenPbr, bool tr
     return p;
 }
 
+private MaterialParams buildDryRockParams() {
+    MaterialParams p;
+    p.baseColor = [0.44f, 0.40f, 0.36f];
+    p.baseDiffuseRoughness = 0.85f;
+    p.specularRoughness = 0.76f;
+    p.specularIor = 1.52f;
+    p.flags = MaterialFlags.normal;
+    return p;
+}
+
+private MaterialParams buildWetRockParams(bool useOpenPbr) {
+    MaterialParams p = buildDryRockParams();
+    if (useOpenPbr) {
+        p.baseColor = [0.30f, 0.28f, 0.26f];
+        p.baseDiffuseRoughness = 0.65f;
+        p.specularRoughness = 0.28f;
+        p.coatWeight = 0.96f;
+        p.coatRoughness = 0.045f;
+        p.coatIor = 1.333f;
+        p.coatColor = [0.88f, 0.93f, 0.95f];
+        p.coatDarkening = 1.0f;
+    }
+    return p;
+}
+
+private MaterialParams buildMossRockParams(bool useOpenPbr) {
+    MaterialParams p = buildDryRockParams();
+    p.baseColor = [0.24f, 0.27f, 0.19f];
+    if (useOpenPbr) {
+        p.baseDiffuseRoughness = 0.78f;
+        p.specularRoughness = 0.42f;
+        p.coatWeight = 0.72f;
+        p.coatRoughness = 0.08f;
+        p.coatIor = 1.333f;
+        p.coatDarkening = 1.0f;
+        p.fuzzWeight = 0.26f;
+        p.fuzzColor = [0.22f, 0.34f, 0.14f];
+        p.fuzzRoughness = 0.76f;
+    } else {
+        p.baseDiffuseRoughness = 0.0f;
+        p.specularRoughness = 0.72f;
+    }
+    return p;
+}
+
+private MaterialParams buildSubmergedRockParams(bool useOpenPbr) {
+    MaterialParams p = buildDryRockParams();
+    if (useOpenPbr) {
+        p.baseColor = [0.24f, 0.25f, 0.24f];
+        p.baseDiffuseRoughness = 0.55f;
+        p.specularRoughness = 0.20f;
+        p.coatWeight = 1.0f;
+        p.coatRoughness = 0.03f;
+        p.coatIor = 1.333f;
+        p.coatColor = [0.72f, 0.90f, 0.88f];
+        p.coatDarkening = 1.0f;
+    } else {
+        p.baseColor = [0.42f, 0.38f, 0.34f];
+        p.baseDiffuseRoughness = 0.0f;
+        p.specularRoughness = 0.78f;
+    }
+    return p;
+}
+
 void main() {
     auto app = App.create("OpenPBR Water Showcase — Ocean & River", W, H);
 
@@ -734,11 +602,11 @@ void main() {
 
     auto sphere = TexMesh.sphere(app.gpu, 32, 16);
     scope(exit) sphere.destroy();
-    auto cliffRockMesh = buildRockMesh(app.gpu, 44, 28, 1337u, 0.42f, 0.14f, 0.28f, 0.55f);
+    auto cliffRockMesh = loadGltfMesh(app.gpu, "assets/models/rock_cliff.gltf");
     scope(exit) cliffRockMesh.destroy();
-    auto boulderRockMesh = buildRockMesh(app.gpu, 36, 22, 4201u, 0.38f, 0.08f, 0.32f, 0.65f);
+    auto boulderRockMesh = loadGltfMesh(app.gpu, "assets/models/rock_boulder.gltf");
     scope(exit) boulderRockMesh.destroy();
-    auto cobbleRockMesh = buildRockMesh(app.gpu, 28, 18, 9007u, 0.26f, 0.04f, 0.20f, 0.72f);
+    auto cobbleRockMesh = loadGltfMesh(app.gpu, "assets/models/rock_cobble.gltf");
     scope(exit) cobbleRockMesh.destroy();
     auto cube = TexMesh.cube(app.gpu);
     scope(exit) cube.destroy();
@@ -790,32 +658,20 @@ void main() {
         &waterMrTex, &waterNormalTex);
     scope(exit) waterMat.destroy();
 
-    MaterialParams dryRockP;
-    dryRockP.baseColor = [0.46f, 0.43f, 0.39f];
-    dryRockP.baseDiffuseRoughness = 0.85f;
-    dryRockP.specularRoughness = 0.78f;
-    dryRockP.specularIor = 1.52f;
-    dryRockP.flags = MaterialFlags.normal;
-    auto dryRockMat = makePbrMat(rockAlbedoTex, dryRockP, null, &rockNormalTex);
+    auto dryRockMat = makePbrMat(rockAlbedoTex, buildDryRockParams(), null, &rockNormalTex);
     scope(exit) dryRockMat.destroy();
 
-    // Wet shoreline rock: same stone albedo darkened physically by water coat (coatDarkening = 1.0)
-    MaterialParams wetRockP = dryRockP;
-    wetRockP.coatWeight = 0.95f;
-    wetRockP.coatRoughness = 0.04f;
-    wetRockP.coatIor = 1.333f;
-    wetRockP.coatDarkening = 1.0f;
-    auto wetRockMat = makePbrMat(rockAlbedoTex, wetRockP, null, &rockNormalTex);
+    // Wet shoreline rock: porous stone darkened by water coat (coatDarkening = 1.0)
+    auto wetRockMat = makePbrMat(rockAlbedoTex, buildWetRockParams(useOpenPbr), null, &rockNormalTex);
     scope(exit) wetRockMat.destroy();
 
-    // Mossy canyon / coastal rock using Charlie velvet fuzz
-    MaterialParams mossRockP = dryRockP;
-    mossRockP.baseColor = [0.24f, 0.31f, 0.18f];
-    mossRockP.fuzzWeight = 0.78f;
-    mossRockP.fuzzColor = [0.28f, 0.56f, 0.18f];
-    mossRockP.fuzzRoughness = 0.78f;
-    auto mossRockMat = makePbrMat(rockAlbedoTex, mossRockP, null, &rockNormalTex);
+    // Damp mossy canyon / coastal rock using OpenPBR coat + subtle Charlie velvet fuzz
+    auto mossRockMat = makePbrMat(rockAlbedoTex, buildMossRockParams(useOpenPbr), null, &rockNormalTex);
     scope(exit) mossRockMat.destroy();
+
+    // Submerged wet stone: full water coat & aquatic tint visible through translucent surface
+    auto submergedRockMat = makePbrMat(rockAlbedoTex, buildSubmergedRockParams(useOpenPbr), null, &rockNormalTex);
+    scope(exit) submergedRockMat.destroy();
 
     MaterialParams bedP;
     bedP.baseColor = [0.48f, 0.42f, 0.32f];
@@ -916,6 +772,9 @@ void main() {
 
         if (paramsDirty) {
             waterMat.updateParams(app.gpu, buildWaterParams(riverMode, useOpenPbr, transparent));
+            wetRockMat.updateParams(app.gpu, buildWetRockParams(useOpenPbr));
+            mossRockMat.updateParams(app.gpu, buildMossRockParams(useOpenPbr));
+            submergedRockMat.updateParams(app.gpu, buildSubmergedRockParams(useOpenPbr));
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
@@ -932,34 +791,46 @@ void main() {
             : Vec3(1.0f, 0.98f, 0.94f);
         immutable float sunIntensity = lowSun ? 3.8f : 3.2f;
 
-        immutable spotPos = riverMode ? Vec3(0.0f, 5.2f, 0.0f) : Vec3(-11.2f, 6.8f, -6.2f);
-        immutable spotTarget = Vec3(0.0f, 0.0f, 0.0f);
+        immutable spotPos = riverMode ? Vec3(-0.7f, 2.30f, -5.6f) : Vec3(-11.2f, 6.8f, -6.2f);
+        immutable spotTarget = riverMode ? Vec3(0.4f, -0.2f, 1.0f) : Vec3(0.0f, 0.0f, 0.0f);
         immutable spotDir = (spotTarget - spotPos).normalized();
         immutable lightVP = directionalLightVP(sunDir, Vec3(0, 0, 0), 20.0f);
         immutable spotVP = spotLightVPFromCone(spotPos, spotDir, 45.0f, 0.2f, 28.0f);
 
-        // Compute floating buoy transforms from wave height + surface normal
+        // Compute floating buoy transforms from wave height + surface normal (ocean mode)
         immutable float[2][3] buoyXZ = [
             [-2.2f, -1.5f],
             [ 3.4f,  1.8f],
             [ 0.5f,  4.2f],
         ];
         Mat4[3] buoyModels;
-        foreach (i, xz; buoyXZ) {
-            immutable w = sampleGerstner(xz[0], xz[1], time, riverMode, waveScale);
-            immutable pitchX = -w.normal.z * 0.55f;
-            immutable rollZ  =  w.normal.x * 0.55f;
-            buoyModels[i] = Mat4.translation(w.position.x, w.position.y + 0.10f, w.position.z)
-                          * Mat4.rotationZ(rollZ)
-                          * Mat4.rotationX(pitchX)
-                          * Mat4.scaling(0.85f, 0.85f, 0.85f);
+        if (!riverMode) {
+            foreach (i, xz; buoyXZ) {
+                immutable w = sampleGerstner(xz[0], xz[1], time, riverMode, waveScale);
+                immutable pitchX = -w.normal.z * 0.55f;
+                immutable rollZ  =  w.normal.x * 0.55f;
+                buoyModels[i] = Mat4.translation(w.position.x, w.position.y + 0.10f, w.position.z)
+                              * Mat4.rotationZ(rollZ)
+                              * Mat4.rotationX(pitchX)
+                              * Mat4.scaling(0.85f, 0.85f, 0.85f);
+            }
         }
+
+        // River embankment & bridge geometry transforms
+        immutable Mat4 leftBankMat =
+            Mat4.translation(0.0f, 0.05f, -11.4f)
+            * Mat4.rotationX(0.24f)
+            * Mat4.scaling(32.0f, 1.6f, 11.5f);
+        immutable Mat4 rightBankMat =
+            Mat4.translation(0.0f, 0.05f, 11.4f)
+            * Mat4.rotationX(-0.24f)
+            * Mat4.scaling(32.0f, 1.6f, 11.5f);
 
         // Gather shadow casters (rocks by mesh kind + buoys + bridge/lighthouse)
         const rocks = riverMode ? RIVER_ROCKS : SEA_ROCKS;
-        InstanceData[32] cliffCasters;
-        InstanceData[32] boulderCasters;
-        InstanceData[32] cobbleCasters;
+        InstanceData[48] cliffCasters;
+        InstanceData[48] boulderCasters;
+        InstanceData[48] cobbleCasters;
         uint cliffCount = 0;
         uint boulderCount = 0;
         uint cobbleCount = 0;
@@ -977,18 +848,29 @@ void main() {
             else
                 cobbleCasters[cobbleCount++] = inst;
         }
-        InstanceData[6] structureCasters;
+        InstanceData[8] structureCasters;
         uint sCount = 0;
         if (riverMode) {
-            // Simple timber/stone footbridge spanning the river at x = -1.5
+            // Sloped riverbanks, wooden footbridge, piers, stone abutments, and lantern post
+            structureCasters[sCount++] = InstanceData(leftBankMat.m, Color4.white.toArray());
+            structureCasters[sCount++] = InstanceData(rightBankMat.m, Color4.white.toArray());
             structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 1.35f, 0.0f) * Mat4.scaling(1.8f, 0.28f, 15.0f)).m,
+                (Mat4.translation(-1.5f, 1.35f, 0.0f) * Mat4.scaling(1.8f, 0.28f, 16.2f)).m,
                 Color4.white.toArray());
             structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.10f, -4.6f) * Mat4.scaling(0.6f, 2.6f, 0.6f)).m,
+                (Mat4.translation(-1.5f, 0.10f, -4.6f) * Mat4.scaling(0.55f, 2.6f, 0.55f)).m,
                 Color4.white.toArray());
             structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.10f,  4.6f) * Mat4.scaling(0.6f, 2.6f, 0.6f)).m,
+                (Mat4.translation(-1.5f, 0.10f,  4.6f) * Mat4.scaling(0.55f, 2.6f, 0.55f)).m,
+                Color4.white.toArray());
+            structureCasters[sCount++] = InstanceData(
+                (Mat4.translation(-1.5f, 0.65f, -7.8f) * Mat4.scaling(2.3f, 1.25f, 1.8f)).m,
+                Color4.white.toArray());
+            structureCasters[sCount++] = InstanceData(
+                (Mat4.translation(-1.5f, 0.65f,  7.8f) * Mat4.scaling(2.3f, 1.25f, 1.8f)).m,
+                Color4.white.toArray());
+            structureCasters[sCount++] = InstanceData(
+                (Mat4.translation(-0.7f, 1.75f, -5.6f) * Mat4.scaling(0.16f, 0.65f, 0.16f)).m,
                 Color4.white.toArray());
         } else {
             // Coastal headland lighthouse tower
@@ -998,8 +880,10 @@ void main() {
         }
 
         InstanceData[3] buoyCasters;
-        foreach (i; 0 .. 3)
-            buoyCasters[i] = InstanceData(buoyModels[i].m, Color4.white.toArray());
+        if (!riverMode) {
+            foreach (i; 0 .. 3)
+                buoyCasters[i] = InstanceData(buoyModels[i].m, Color4.white.toArray());
+        }
 
         // Directional shadow pass
         bool firstDirShadow = true;
@@ -1024,9 +908,11 @@ void main() {
         updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, structureCasters[0 .. sCount]);
         submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
                          cube, shadowInstanceBuf, sCount, firstDirShadow);
-        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, buoyCasters[]);
-        submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                         sphere, shadowInstanceBuf, 3, false);
+        if (!riverMode) {
+            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, buoyCasters[]);
+            submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
+                             sphere, shadowInstanceBuf, 3, false);
+        }
 
         // Spot shadow pass
         bool firstSpotShadow = true;
@@ -1079,7 +965,7 @@ void main() {
 
         scene.begin(camera);
 
-        // 1. Opaque geometry FIRST (submerged bed, pebbles, shoreline rocks, structures, buoys)
+        // 1. Opaque geometry FIRST (submerged bed, riverbanks, rocks, structures, buoys)
         scene.draw(quad, bedMat, Vec3(0.0f, -1.15f, 0.0f), Vec3(32.0f, 1.0f, 32.0f), Color4.white);
 
         void drawRockMesh(ubyte meshKind, ref Material mat, ref const Mat4 model) {
@@ -1102,22 +988,26 @@ void main() {
             else if (rk.kind == 2)
                 drawRockMesh(rk.meshKind, mossRockMat, model);
             else
-                drawRockMesh(rk.meshKind, bedMat, model);
+                drawRockMesh(rk.meshKind, submergedRockMat, model);
         }
 
         if (riverMode) {
-            scene.draw(cube, dryRockMat, Vec3(-1.5f, 1.35f, 0.0f), Vec3(1.8f, 0.28f, 15.0f), Color4(0.55f, 0.36f, 0.22f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f, -4.6f), Vec3(0.6f, 2.6f, 0.6f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
-            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f,  4.6f), Vec3(0.6f, 2.6f, 0.6f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
-            scene.draw(sphere, beaconMat, Vec3(0.0f, 2.0f, -6.2f), Vec3(0.35f, 0.35f, 0.35f), Color4.white);
+            scene.drawMatrix(cube, dryRockMat, leftBankMat, Color4(0.62f, 0.56f, 0.48f, 1.0f));
+            scene.drawMatrix(cube, dryRockMat, rightBankMat, Color4(0.62f, 0.56f, 0.48f, 1.0f));
+            scene.draw(cube, dryRockMat, Vec3(-1.5f, 1.35f,  0.0f), Vec3(1.8f, 0.28f, 16.2f), Color4(0.55f, 0.36f, 0.22f, 1.0f));
+            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f, -4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
+            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.10f,  4.6f), Vec3(0.55f, 2.6f, 0.55f), Color4(0.45f, 0.30f, 0.20f, 1.0f));
+            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.65f, -7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4(0.70f, 0.68f, 0.65f, 1.0f));
+            scene.draw(cube, wetRockMat, Vec3(-1.5f, 0.65f,  7.8f), Vec3(2.3f, 1.25f, 1.8f), Color4(0.70f, 0.68f, 0.65f, 1.0f));
+            scene.draw(cube, dryRockMat, Vec3(-0.7f, 1.75f, -5.6f), Vec3(0.16f, 0.65f, 0.16f), Color4(0.40f, 0.26f, 0.16f, 1.0f));
+            scene.draw(sphere, beaconMat, Vec3(-0.7f, 2.10f, -5.6f), Vec3(0.24f, 0.24f, 0.24f), Color4.white);
         } else {
             scene.draw(cube, lighthouseMat, Vec3(-11.4f, 3.6f, -6.4f), Vec3(1.4f, 5.2f, 1.4f), Color4.white);
             scene.draw(sphere, beaconMat, Vec3(-11.4f, 6.5f, -6.4f), Vec3(0.75f, 0.75f, 0.75f), Color4.white);
+            scene.drawMatrix(sphere, goldBuoyMat, buoyModels[0], Color4.white);
+            scene.drawMatrix(sphere, filmBuoyMat, buoyModels[1], Color4.white);
+            scene.drawMatrix(sphere, goldBuoyMat, buoyModels[2], Color4.white);
         }
-
-        scene.drawMatrix(sphere, goldBuoyMat, buoyModels[0], Color4.white);
-        scene.drawMatrix(sphere, filmBuoyMat, buoyModels[1], Color4.white);
-        scene.drawMatrix(sphere, goldBuoyMat, buoyModels[2], Color4.white);
 
         // 2. Animated Gerstner water surface LAST so Fresnel alpha blends over submerged scene
         scene.draw(waterMesh, waterMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);

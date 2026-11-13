@@ -156,7 +156,7 @@ fn coatRoughenBase(baseRoughness: f32, coatRoughness: f32, coatWeight: f32) -> f
     return mix(baseRoughness, widened, clamp(coatWeight, 0.0, 1.0));
 }
 
-/// OpenPBR coat internal-reflection darkening on substrate albedo.
+/// OpenPBR coat internal-reflection darkening + porous substrate wetting.
 fn applyCoatDarkening(albedo: vec3<f32>, coatIor: f32, coatWeight: f32, coatDarkening: f32) -> vec3<f32> {
     let factor = clamp(coatWeight * coatDarkening, 0.0, 1.0);
     if (factor <= 0.001) {
@@ -164,8 +164,9 @@ fn applyCoatDarkening(albedo: vec3<f32>, coatIor: f32, coatWeight: f32, coatDark
     }
     let f0 = dielectricF0Scalar(coatIor);
     let kr = clamp(1.0 - (1.0 - f0) / max(coatIor * coatIor, 1.001), 0.0, 0.99);
-    let darkened = (albedo * (1.0 - kr)) / max(vec3<f32>(1.0) - albedo * kr, vec3<f32>(0.01));
-    return mix(albedo, darkened, factor);
+    let internalDark = (albedo * (1.0 - kr)) / max(vec3<f32>(1.0) - albedo * kr, vec3<f32>(0.01));
+    let porousWet = pow(max(internalDark, vec3<f32>(0.001)), vec3<f32>(1.25)) * 0.62;
+    return mix(albedo, porousWet, factor);
 }
 
 fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {

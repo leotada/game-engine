@@ -279,7 +279,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
         let coatRefl = reflect(-V, N);
         let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
-        let coatSpecIbl = coatPrefiltered * (Fc_ibl * coatLut.r + coatLut.g) * ao;
+        let f90Coat = max(1.0 - coatR, f0Coat.x);
+        let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * coatW;
+        let horizonOcclusion = clamp(coatRefl.y * 0.65 + 0.55, 0.18, 1.0);
+        let coatSpecIbl = coatPrefiltered * coatEnvBrdf * horizonOcclusion * ao;
         let coatTransIbl = mix(
             vec3<f32>(1.0),
             pow(max(mat.coatColor, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV, 0.05))),
