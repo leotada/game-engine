@@ -677,14 +677,14 @@ private MaterialParams buildDryRockParams() {
 private MaterialParams buildWetRockParams(bool useOpenPbr) {
     MaterialParams p = buildDryRockParams();
     if (useOpenPbr) {
-        p.baseColor = [0.85f, 0.87f, 0.89f];
-        p.baseDiffuseRoughness = 0.60f;
-        p.specularRoughness = 0.48f;
-        p.coatWeight = 0.96f;
-        p.coatRoughness = 0.04f;
+        p.baseColor = [0.95f, 0.96f, 0.98f];
+        p.baseDiffuseRoughness = 0.65f;
+        p.specularRoughness = 0.52f;
+        p.coatWeight = 0.90f;
+        p.coatRoughness = 0.065f;
         p.coatIor = 1.333f;
-        p.coatColor = [0.88f, 0.93f, 0.96f];
-        p.coatDarkening = 1.0f;
+        p.coatColor = [0.90f, 0.94f, 0.97f];
+        p.coatDarkening = 0.72f;
     }
     return p;
 }
@@ -695,10 +695,10 @@ private MaterialParams buildMossRockParams(bool useOpenPbr) {
     if (useOpenPbr) {
         p.baseDiffuseRoughness = 0.82f;
         p.specularRoughness = 0.90f;
-        p.coatWeight = 0.16f;
-        p.coatRoughness = 0.14f;
+        p.coatWeight = 0.12f;
+        p.coatRoughness = 0.24f;
         p.coatIor = 1.333f;
-        p.coatDarkening = 0.55f;
+        p.coatDarkening = 0.45f;
         p.fuzzWeight = 0.28f;
         p.fuzzColor = [0.20f, 0.28f, 0.11f];
         p.fuzzRoughness = 0.78f;
@@ -712,16 +712,16 @@ private MaterialParams buildMossRockParams(bool useOpenPbr) {
 private MaterialParams buildSubmergedRockParams(bool useOpenPbr) {
     MaterialParams p = buildDryRockParams();
     if (useOpenPbr) {
-        p.baseColor = [0.76f, 0.86f, 0.84f];
+        p.baseColor = [0.88f, 0.96f, 0.94f];
         p.baseDiffuseRoughness = 0.55f;
-        p.specularRoughness = 0.38f;
-        p.coatWeight = 1.0f;
-        p.coatRoughness = 0.03f;
+        p.specularRoughness = 0.42f;
+        p.coatWeight = 0.95f;
+        p.coatRoughness = 0.05f;
         p.coatIor = 1.333f;
-        p.coatColor = [0.72f, 0.90f, 0.88f];
-        p.coatDarkening = 1.0f;
+        p.coatColor = [0.76f, 0.92f, 0.90f];
+        p.coatDarkening = 0.72f;
     } else {
-        p.baseColor = [0.82f, 0.80f, 0.76f];
+        p.baseColor = [0.88f, 0.86f, 0.82f];
         p.baseDiffuseRoughness = 0.0f;
         p.specularRoughness = 0.85f;
     }
