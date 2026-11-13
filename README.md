@@ -58,6 +58,7 @@ source/
     ├── game.d             # Crystal Collector 3D — high-level API demo
     ├── showcase.d         # Solar system — scene graph + textured materials
     ├── pbr.d              # OpenPBR Surface v1.1 + IBL + shadow PCF demo
+    ├── water.d            # OpenPBR Ocean & River water showcase (Gerstner waves + IBL)
     ├── editor.d           # Scene editor (gizmos, hierarchy, scene I/O)
     ├── pong3d.d           # Physics gameplay demo (Box3D)
     └── golf.d             # Par 3 — drag, Magnus lift, gusting wind
@@ -205,6 +206,9 @@ dub build --config=showcase
 # Build the OpenPBR Surface v1.1 + IBL demo
 dub build --config=pbr
 
+# Build the OpenPBR Ocean & River water showcase
+dub build --config=water
+
 # Build the scene editor
 dub build --config=editor
 
@@ -223,6 +227,7 @@ dub run --config=benchmark
 dub run --config=game
 dub run --config=showcase
 dub run --config=pbr
+dub run --config=water
 dub run --config=editor
 dub run --config=pong3d
 dub run --config=golf
@@ -300,6 +305,14 @@ Single-pass **OpenPBR Surface v1.1** 4×5 sphere showcase (Fujii Oren-Nayar diel
 
 ```bash
 dub run --config=pbr
+```
+
+### OpenPBR Water Showcase
+
+Interactive Ocean (`[1]`) and Mountain River (`[2]`) Gerstner-wave water testbed demonstrating single-pass OpenPBR v1.1 capabilities (physical IOR `1.333`, dual specular + clearcoat liquid film, anisotropic flow, crest fuzz, wet vs. dry shoreline darkening, Fresnel opacity over submerged riverbed, floating $F_{82}$ / thin-film buoys, and PCF shadows) alongside live A/B toggles for evaluating `OPBR-6`–`OPBR-9` evolution.
+
+```bash
+dub run --config=water
 ```
 
 ### Scene Editor

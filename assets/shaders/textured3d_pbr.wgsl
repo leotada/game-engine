@@ -269,11 +269,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Coat IBL
     var totalEmission = emissive;
+    var coatFresnelMax = 0.0;
     if (mat.coatWeight > 0.001) {
         let coatW = clamp(mat.coatWeight, 0.0, 1.0);
         let coatR = clamp(mat.coatRoughness, 0.04, 1.0);
         let f0Coat = vec3<f32>(dielectricF0Scalar(mat.coatIor));
         let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, coatR) * coatW;
+        coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
         let coatRefl = reflect(-V, N);
         let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
@@ -298,5 +300,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = direct + ambient + totalEmission;
     color = max(color, vec3<f32>(0.0));
-    return vec4<f32>(color, albedoSample.a * mat.geometryOpacity);
+    let rawAlpha = clamp(albedoSample.a * mat.geometryOpacity, 0.0, 1.0);
+    let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
+    let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
+    let outAlpha = select(rawAlpha, mix(rawAlpha, 1.0, viewReflectance), rawAlpha < 0.999);
+    return vec4<f32>(color, outAlpha);
 }

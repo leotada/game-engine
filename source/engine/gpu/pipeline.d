@@ -104,8 +104,17 @@ Pipeline3D createPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) 
     ];
 
     // Fragment state
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;
@@ -205,8 +214,17 @@ Pipeline3D createColoredPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceF
     ];
 
     // Fragment state
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;
@@ -494,8 +512,17 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         },
     ];
 
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;
@@ -567,8 +594,17 @@ private WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUSha
         },
     ];
 
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;
@@ -628,8 +664,17 @@ bool reloadColoredPipeline3D(ref Pipeline3D pipe, WGPUDevice device, WGPUTexture
         },
     ];
 
+    WGPUBlendState blendState;
+    blendState.color.operation = WGPUBlendOperation.add;
+    blendState.color.srcFactor = WGPUBlendFactor.srcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation.add;
+    blendState.alpha.srcFactor = WGPUBlendFactor.one;
+    blendState.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
+    colorTarget.blend = &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;

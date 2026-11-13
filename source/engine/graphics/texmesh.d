@@ -132,6 +132,15 @@ struct TexMesh {
         }
     }
 
+    /// Update vertex buffer contents in-place without reallocating GPU memory.
+    void updateVertices(V)(ref GpuContext gpu, scope const(V)[] verts) nothrow @nogc
+    if (is(V == TexVert) || is(V == TexTanVert)) {
+        assert(verts.length * V.sizeof == vertexBufSize && V.sizeof == vertexStride);
+        () @trusted {
+            updateBuffer(gpu.getQueue(), vertexBuffer, verts.ptr, verts.length * V.sizeof);
+        }();
+    }
+
     /**
      * Shadow draw of the coarser LOD (`colorLod + 1`).
      * `useLodRange` selects `indexBuffer` at `first`. Otherwise the caller

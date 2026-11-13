@@ -318,6 +318,9 @@ dub run --config=showcase
 # OpenPBR Surface v1.1 validation (4×5 spheres + IBL + glTF cube)
 dub run --config=pbr
 
+# OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)
+dub run --config=water
+
 # Visual editor (gizmos + debug overlay + shadows + docking)
 dub run --config=editor
 
