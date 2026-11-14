@@ -5,6 +5,7 @@ import bindings.sdl3;
 import bindings.wgpu;
 import engine.platform.window;
 import engine.platform.input;
+import engine.platform.gamepad;
 import engine.gpu.context;
 import engine.gpu.renderer;
 import engine.gpu.post : PostSettings;
@@ -67,6 +68,9 @@ struct App {
 
     /// Per-frame scratch arena; reset at end of every frame.
     ref FrameArena arena() return nothrow @nogc { return frameArena; }
+
+    /// Connected SDL3 gamepads (owned by `input`).
+    ref Gamepads gamepads() return nothrow @nogc { return input.gamepads; }
 
     /// Post-processing settings (exposure, bloom, FXAA).
     ref PostSettings post() return nothrow @nogc {
@@ -148,6 +152,7 @@ struct App {
 
     void destroy() {
         if (!window.valid()) return;
+        input.destroy();
         renderer.destroy();
         gpu.destroy();
         window.destroy();

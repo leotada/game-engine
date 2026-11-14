@@ -303,6 +303,12 @@
             "mainSourceFile": "source/demo/ui_gallery.d"
         },
         {
+            "name": "gamepad",
+            "targetType": "executable",
+            "targetName": "game-engine-gamepad",
+            "mainSourceFile": "source/demo/gamepad.d"
+        },
+        {
             "name": "ecs-bench",
             "targetType": "executable",
             "targetName": "game-engine-ecs-bench",

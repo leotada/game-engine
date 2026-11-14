@@ -128,7 +128,7 @@ struct UiGalleryDemo {
         statusLbl = label(tree, rightCol, "Nenhum clique registrado ainda.", theme.colors.textDim);
     }
 
-    void update(in InputState input, float dt, float screenW, float screenH) {
+    void update(ref const InputState input, float dt, float screenW, float screenH) {
         queue.clear();
         inputCtx.update(tree, queue, input, dt);
 

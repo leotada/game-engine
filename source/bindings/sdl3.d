@@ -12,14 +12,20 @@ nothrow:
 alias SDL_Window = void;
 alias SDL_PropertiesID = uint;
 alias SDL_WindowID = uint;
+alias SDL_Joystick = void;
+alias SDL_Gamepad = void;
+alias SDL_JoystickID = uint;
 
 // ---------------------------------------------------------------------------
 // Init flags
 // ---------------------------------------------------------------------------
 enum : uint {
-    SDL_INIT_VIDEO  = 0x0000_0020,
-    SDL_INIT_AUDIO  = 0x0000_0010,
-    SDL_INIT_EVENTS = 0x0000_4000,
+    SDL_INIT_AUDIO    = 0x0000_0010,
+    SDL_INIT_VIDEO    = 0x0000_0020,
+    SDL_INIT_JOYSTICK = 0x0000_0200,
+    SDL_INIT_HAPTIC   = 0x0000_1000,
+    SDL_INIT_GAMEPAD  = 0x0000_2000,
+    SDL_INIT_EVENTS   = 0x0000_4000,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +82,20 @@ enum : uint {
     SDL_EVENT_MOUSE_BUTTON_DOWN      = 0x401,
     SDL_EVENT_MOUSE_BUTTON_UP        = 0x402,
     SDL_EVENT_MOUSE_WHEEL            = 0x403,
+
+    // Gamepad events (SDL_events.h)
+    SDL_EVENT_GAMEPAD_AXIS_MOTION          = 0x650,
+    SDL_EVENT_GAMEPAD_BUTTON_DOWN          = 0x651,
+    SDL_EVENT_GAMEPAD_BUTTON_UP            = 0x652,
+    SDL_EVENT_GAMEPAD_ADDED                = 0x653,
+    SDL_EVENT_GAMEPAD_REMOVED              = 0x654,
+    SDL_EVENT_GAMEPAD_REMAPPED             = 0x655,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN        = 0x656,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION      = 0x657,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_UP          = 0x658,
+    SDL_EVENT_GAMEPAD_SENSOR_UPDATE        = 0x659,
+    SDL_EVENT_GAMEPAD_UPDATE_COMPLETE      = 0x65A,
+    SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED = 0x65B,
 
     // Drop events
     SDL_EVENT_DROP_FILE              = 0x1000,
@@ -245,6 +265,37 @@ struct SDL_DropEvent {
     const(char)* data;
 }
 
+struct SDL_GamepadAxisEvent {
+    uint type;
+    uint reserved;
+    ulong timestamp;
+    SDL_JoystickID which;
+    ubyte axis;
+    ubyte padding1;
+    ubyte padding2;
+    ubyte padding3;
+    short value;
+    ushort padding4;
+}
+
+struct SDL_GamepadButtonEvent {
+    uint type;
+    uint reserved;
+    ulong timestamp;
+    SDL_JoystickID which;
+    ubyte button;
+    bool down;
+    ubyte padding1;
+    ubyte padding2;
+}
+
+struct SDL_GamepadDeviceEvent {
+    uint type;
+    uint reserved;
+    ulong timestamp;
+    SDL_JoystickID which;
+}
+
 struct SDL_Rect {
     int x, y, w, h;
 }
@@ -257,9 +308,14 @@ union SDL_Event {
     SDL_MouseWheelEvent wheel;
     SDL_WindowEvent window;
     SDL_TextInputEvent text;
+    SDL_GamepadDeviceEvent gdevice;
+    SDL_GamepadAxisEvent gaxis;
+    SDL_GamepadButtonEvent gbutton;
     SDL_DropEvent drop;
     ubyte[128] padding;
 }
+
+static assert(SDL_Event.sizeof == 128);
 
 // ---------------------------------------------------------------------------
 // Window property names (Wayland / X11)
@@ -394,3 +450,106 @@ bool SDL_ResumeAudioStreamDevice(SDL_AudioStream* stream);
 bool SDL_PauseAudioStreamDevice(SDL_AudioStream* stream);
 bool SDL_ClearAudioStream(SDL_AudioStream* stream);
 int  SDL_GetAudioStreamQueued(SDL_AudioStream* stream);
+
+// ---------------------------------------------------------------------------
+// Subsystem control
+// ---------------------------------------------------------------------------
+bool SDL_InitSubSystem(uint flags);
+void SDL_QuitSubSystem(uint flags);
+uint SDL_WasInit(uint flags);
+
+// ---------------------------------------------------------------------------
+// Gamepad & Joystick (SDL_gamepad.h / SDL_joystick.h)
+// ---------------------------------------------------------------------------
+enum short SDL_JOYSTICK_AXIS_MAX = 32767;
+enum short SDL_JOYSTICK_AXIS_MIN = -32768;
+
+enum SDL_JoystickConnectionState : int {
+    SDL_JOYSTICK_CONNECTION_INVALID  = -1,
+    SDL_JOYSTICK_CONNECTION_UNKNOWN  = 0,
+    SDL_JOYSTICK_CONNECTION_WIRED    = 1,
+    SDL_JOYSTICK_CONNECTION_WIRELESS = 2,
+}
+
+enum SDL_GamepadType : int {
+    SDL_GAMEPAD_TYPE_UNKNOWN = 0,
+    SDL_GAMEPAD_TYPE_STANDARD,
+    SDL_GAMEPAD_TYPE_XBOX360,
+    SDL_GAMEPAD_TYPE_XBOXONE,
+    SDL_GAMEPAD_TYPE_PS3,
+    SDL_GAMEPAD_TYPE_PS4,
+    SDL_GAMEPAD_TYPE_PS5,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR,
+    SDL_GAMEPAD_TYPE_GAMECUBE,
+    SDL_GAMEPAD_TYPE_COUNT,
+}
+
+enum SDL_GamepadButton : int {
+    SDL_GAMEPAD_BUTTON_INVALID = -1,
+    SDL_GAMEPAD_BUTTON_SOUTH,
+    SDL_GAMEPAD_BUTTON_EAST,
+    SDL_GAMEPAD_BUTTON_WEST,
+    SDL_GAMEPAD_BUTTON_NORTH,
+    SDL_GAMEPAD_BUTTON_BACK,
+    SDL_GAMEPAD_BUTTON_GUIDE,
+    SDL_GAMEPAD_BUTTON_START,
+    SDL_GAMEPAD_BUTTON_LEFT_STICK,
+    SDL_GAMEPAD_BUTTON_RIGHT_STICK,
+    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_DPAD_UP,
+    SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+    SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+    SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+    SDL_GAMEPAD_BUTTON_MISC1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_TOUCHPAD,
+    SDL_GAMEPAD_BUTTON_MISC2,
+    SDL_GAMEPAD_BUTTON_MISC3,
+    SDL_GAMEPAD_BUTTON_MISC4,
+    SDL_GAMEPAD_BUTTON_MISC5,
+    SDL_GAMEPAD_BUTTON_MISC6,
+    SDL_GAMEPAD_BUTTON_COUNT,
+}
+
+enum SDL_GamepadAxis : int {
+    SDL_GAMEPAD_AXIS_INVALID = -1,
+    SDL_GAMEPAD_AXIS_LEFTX,
+    SDL_GAMEPAD_AXIS_LEFTY,
+    SDL_GAMEPAD_AXIS_RIGHTX,
+    SDL_GAMEPAD_AXIS_RIGHTY,
+    SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
+    SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
+    SDL_GAMEPAD_AXIS_COUNT,
+}
+
+bool SDL_HasGamepad();
+SDL_JoystickID* SDL_GetGamepads(int* count);
+bool SDL_IsGamepad(SDL_JoystickID instance_id);
+SDL_Gamepad* SDL_OpenGamepad(SDL_JoystickID instance_id);
+void SDL_CloseGamepad(SDL_Gamepad* gamepad);
+SDL_Gamepad* SDL_GetGamepadFromID(SDL_JoystickID instance_id);
+SDL_Gamepad* SDL_GetGamepadFromPlayerIndex(int player_index);
+SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad* gamepad);
+const(char)* SDL_GetGamepadName(SDL_Gamepad* gamepad);
+const(char)* SDL_GetGamepadNameForID(SDL_JoystickID instance_id);
+SDL_GamepadType SDL_GetGamepadType(SDL_Gamepad* gamepad);
+SDL_GamepadType SDL_GetRealGamepadType(SDL_Gamepad* gamepad);
+int SDL_GetGamepadPlayerIndex(SDL_Gamepad* gamepad);
+bool SDL_SetGamepadPlayerIndex(SDL_Gamepad* gamepad, int player_index);
+ushort SDL_GetGamepadVendor(SDL_Gamepad* gamepad);
+ushort SDL_GetGamepadProduct(SDL_Gamepad* gamepad);
+bool SDL_GamepadConnected(SDL_Gamepad* gamepad);
+bool SDL_GamepadHasAxis(SDL_Gamepad* gamepad, SDL_GamepadAxis axis);
+short SDL_GetGamepadAxis(SDL_Gamepad* gamepad, SDL_GamepadAxis axis);
+bool SDL_GamepadHasButton(SDL_Gamepad* gamepad, SDL_GamepadButton button);
+bool SDL_GetGamepadButton(SDL_Gamepad* gamepad, SDL_GamepadButton button);
+bool SDL_RumbleGamepad(SDL_Gamepad* gamepad, ushort low_frequency_rumble, ushort high_frequency_rumble, uint duration_ms);
+bool SDL_RumbleGamepadTriggers(SDL_Gamepad* gamepad, ushort left_rumble, ushort right_rumble, uint duration_ms);
+void SDL_UpdateGamepads();

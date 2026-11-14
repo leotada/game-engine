@@ -100,7 +100,7 @@ struct PlayMode {
     void step(
         ref SceneWorld world,
         ref PhysicsWorld physics,
-        in InputState input,
+        ref InputState input,
         float dt,
         ref HotReloadManager hotReload
     ) {
@@ -147,7 +147,7 @@ struct PlayMode {
     void update(
         ref SceneWorld world,
         ref PhysicsWorld physics,
-        in InputState input,
+        ref InputState input,
         float dt,
         ref HotReloadManager hotReload
     ) {
@@ -158,13 +158,14 @@ struct PlayMode {
     private void tickFrame(
         ref SceneWorld world,
         ref PhysicsWorld physics,
-        in InputState input,
+        ref InputState input,
         float dt,
         ref HotReloadManager hotReload
     ) @trusted {
         playTime += dt;
         scriptCtx.world = &world;
         scriptCtx.input = &input;
+        scriptCtx.gamepads = &input.gamepads;
         scriptCtx.dt = dt;
         scriptCtx.totalTime = playTime;
 

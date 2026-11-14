@@ -1,11 +1,12 @@
 /// High-level camera controllers: orbit, fly, first-person.
-/// Each controller mutates a `Camera` based on keyboard/mouse input.
+/// Each controller mutates a `Camera` based on keyboard, mouse, and gamepad input.
 /// Gameplay-layer code — allowed to use the GC, but none is needed here.
 module engine.scene.controllers;
 
 import std.math : sin, cos, PI, PI_2;
 
-import engine.math.vec : Vec3;
+import engine.math.vec : Vec2, Vec3;
+import engine.platform.gamepad : PadButton;
 import engine.platform.input : InputState, Key;
 import engine.scene.camera : Camera;
 
@@ -31,6 +32,10 @@ struct OrbitCamera {
     float rotateSpeed = 1.8f;   // radians per second via arrow keys
     float zoomSpeed = 8.0f;     // units per second via W/S
     float mouseSensitivity = 0.004f;
+    float padRotateSpeed = 2.2f; // radians per second via right stick
+    float padZoomSpeed = 10.0f;  // units per second via LT (out) / RT (in)
+    uint  padSlot = 0;
+    bool  useGamepad = true;
 
     static OrbitCamera create(Vec3 target, float distance, float yaw = 0, float pitch = 0.5f) {
         OrbitCamera c;
@@ -43,7 +48,7 @@ struct OrbitCamera {
 
     /// Drive the orbit from input + dt; write the result back into `camera`.
     /// Left/Right arrows rotate yaw, Up/Down tilt pitch, W/S zoom in/out.
-    /// Right-mouse-drag also rotates (mouseDX → yaw, mouseDY → pitch).
+    /// Right-mouse-drag and gamepad right stick also rotate; LT/RT zoom out/in.
     void update(ref const InputState input, float dt, ref Camera camera) {
         if (input.keyDown(Key.left))  yaw   -= rotateSpeed * dt;
         if (input.keyDown(Key.right)) yaw   += rotateSpeed * dt;
@@ -55,6 +60,13 @@ struct OrbitCamera {
 
         yaw   += input.mdx() * mouseSensitivity;
         pitch -= input.mdy() * mouseSensitivity;
+
+        if (useGamepad && input.padConnected(padSlot)) {
+            immutable Vec2 rs = input.padRightStick(padSlot);
+            yaw      += rs.x * padRotateSpeed * dt;
+            pitch    -= rs.y * padRotateSpeed * 0.6f * dt;
+            distance += (input.padLeftTrigger(padSlot) - input.padRightTrigger(padSlot)) * padZoomSpeed * dt;
+        }
 
         pitch    = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
         distance = clamp(distance, minDistance, maxDistance);
@@ -80,6 +92,9 @@ struct FlyCamera {
     float moveSpeed = 6.0f;
     float sprintMultiplier = 3.0f;
     float mouseSensitivity = 0.008f;
+    float padLookSpeed = 2.2f;
+    uint  padSlot = 0;
+    bool  useGamepad = true;
 
     static FlyCamera create(Vec3 start, float yaw = -cast(float) PI_2, float pitch = 0) {
         FlyCamera c;
@@ -106,9 +121,18 @@ struct FlyCamera {
     void update(ref const InputState input, float dt, ref Camera camera) {
         yaw   += input.mdx() * mouseSensitivity;
         pitch -= input.mdy() * mouseSensitivity;
-        pitch  = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
 
-        immutable float mul = input.keyDown(Key.lshift) ? sprintMultiplier : 1.0f;
+        immutable bool padActive = useGamepad && input.padConnected(padSlot);
+        if (padActive) {
+            immutable Vec2 rs = input.padRightStick(padSlot);
+            yaw   += rs.x * padLookSpeed * dt;
+            pitch -= rs.y * padLookSpeed * dt;
+        }
+        pitch = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
+
+        immutable bool padSprint = padActive &&
+            (input.padDown(PadButton.leftStick, padSlot) || input.padDown(PadButton.a, padSlot));
+        immutable float mul = (input.keyDown(Key.lshift) || padSprint) ? sprintMultiplier : 1.0f;
         immutable speed = moveSpeed * mul * dt;
         immutable f = forward();
         immutable r = right();
@@ -121,8 +145,20 @@ struct FlyCamera {
         if (input.keyDown(Key.space)) move.y += 1;
         if (input.keyDown(Key.lctrl)) move.y -= 1;
 
-        if (move.lengthSquared() > EPS)
-            position = position + move.normalized() * speed;
+        if (padActive) {
+            immutable Vec2 ls = input.padLeftStick(padSlot);
+            move = move + r * ls.x - f * ls.y;
+            if (input.padDown(PadButton.rb, padSlot)) move.y += 1.0f;
+            if (input.padDown(PadButton.lb, padSlot)) move.y -= 1.0f;
+        }
+
+        immutable float moveLenSq = move.lengthSquared();
+        if (moveLenSq > 1.0f) {
+            move = move.normalized();
+        }
+        if (moveLenSq > EPS * EPS) {
+            position = position + move * speed;
+        }
 
         camera.lookAt(position, position + forward());
     }
@@ -136,6 +172,9 @@ struct FirstPersonCamera {
     float yaw   = 0;
     float pitch = 0;
     float mouseSensitivity = 0.003f;
+    float padSensitivity = 2.2f;
+    uint  padSlot = 0;
+    bool  useGamepad = true;
 
     static FirstPersonCamera create(float yaw = 0, float pitch = 0) {
         FirstPersonCamera c;
@@ -148,11 +187,55 @@ struct FirstPersonCamera {
         return Vec3(cos(pitch) * cos(yaw), sin(pitch), cos(pitch) * sin(yaw));
     }
 
-    /// Update look direction and point `camera` from `eyePosition` forward.
+    /// Update look direction from mouse delta and point `camera` from `eyePosition` forward.
     void update(ref const InputState input, Vec3 eyePosition, ref Camera camera) {
+        update(input, 0.0f, eyePosition, camera);
+    }
+
+    /// Update look direction from mouse delta and gamepad right stick, scaled by `dt`.
+    void update(ref const InputState input, float dt, Vec3 eyePosition, ref Camera camera) {
         yaw   += input.mdx() * mouseSensitivity;
         pitch -= input.mdy() * mouseSensitivity;
+        if (useGamepad && dt > 0.0f && input.padConnected(padSlot)) {
+            immutable Vec2 rs = input.padRightStick(padSlot);
+            yaw   += rs.x * padSensitivity * dt;
+            pitch -= rs.y * padSensitivity * dt;
+        }
         pitch  = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
         camera.lookAt(eyePosition, eyePosition + forward());
     }
+}
+
+@safe unittest {
+    import bindings.sdl3;
+
+    InputState input;
+    input.gamepads.pads[0].connected = true;
+    input.gamepads.pads[0].id = 1;
+
+    SDL_Event ev = SDL_Event.init;
+    ev.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    ev.gaxis.which = 1;
+    ev.gaxis.axis = SDL_GamepadAxis.SDL_GAMEPAD_AXIS_RIGHTX;
+    ev.gaxis.value = 32767;
+    input.processEvent(ev);
+
+    Camera cam;
+    auto orbit = OrbitCamera.create(Vec3(0, 0, 0), 10.0f);
+    immutable float yaw0 = orbit.yaw;
+    orbit.update(input, 0.5f, cam);
+    assert(orbit.yaw > yaw0);
+
+    auto fp = FirstPersonCamera.create();
+    immutable float fpYaw0 = fp.yaw;
+    fp.update(input, 0.5f, Vec3(0, 1.8f, 0), cam);
+    assert(fp.yaw > fpYaw0);
+
+    ev.gaxis.axis = SDL_GamepadAxis.SDL_GAMEPAD_AXIS_LEFTY;
+    ev.gaxis.value = -32768; // push left stick forward
+    input.processEvent(ev);
+    auto fly = FlyCamera.create(Vec3(0, 5, 10));
+    immutable float z0 = fly.position.z;
+    fly.update(input, 0.5f, cam);
+    assert(fly.position.z < z0);
 }

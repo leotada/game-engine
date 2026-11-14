@@ -1,5 +1,5 @@
 /// Crystal Collector v2 — character controller, push-levers, and crystal cages.
-/// WASD: move  Space: jump  Arrows: camera  Esc: quit
+/// WASD/LS: move  Space/A: jump  Arrows/RS: camera  Esc: quit
 module demo.game;
 
 import std.format : format;
@@ -16,8 +16,9 @@ import engine.graphics.mesh : Mesh;
 import engine.graphics.types : Color4;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
-import engine.math.vec : Vec3;
+import engine.math.vec : Vec2, Vec3;
 import engine.physics;
+import engine.platform.gamepad : PadButton;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
 import engine.scene.scene3d : Scene3D;
@@ -457,6 +458,8 @@ void main() {
     float cameraAngle = 0.0f;
     float playerYaw = 0.0f;
     int lives = 3;
+    int prevScore = 0;
+    int prevStations = 0;
     float invulnTimer = 0.0f;
     float accumulator = 0.0f;
     GameState gameState = GameState.playing;
@@ -465,6 +468,7 @@ void main() {
         app.pollEvents();
         immutable rawDt = fps.tick();
         immutable float dt = rawDt > 0.1f ? 0.1f : rawDt;
+        immutable int padSlot = app.input.firstPad();
 
         if (app.input.keyPressed(Key.escape))
             break;
@@ -473,11 +477,27 @@ void main() {
             cameraAngle -= CAMERA_ROT_SPEED * dt;
         if (app.input.keyDown(Key.right))
             cameraAngle += CAMERA_ROT_SPEED * dt;
+        if (padSlot >= 0) {
+            immutable uint slot = cast(uint) padSlot;
+            immutable Vec2 rs = app.input.padRightStick(slot);
+            cameraAngle += rs.x * CAMERA_ROT_SPEED * 1.4f * dt;
+            if (app.input.padDown(PadButton.dpadLeft, slot))
+                cameraAngle -= CAMERA_ROT_SPEED * dt;
+            if (app.input.padDown(PadButton.dpadRight, slot))
+                cameraAngle += CAMERA_ROT_SPEED * dt;
+        }
 
-        if ((gameState == GameState.won || gameState == GameState.lost) &&
-            app.input.keyPressed(Key.space)) {
+        immutable bool padRestart = padSlot >= 0 && (
+            ((gameState == GameState.won || gameState == GameState.lost) &&
+                app.input.padPressed(PadButton.a, cast(uint) padSlot)) ||
+            app.input.padPressed(PadButton.menu, cast(uint) padSlot)
+        );
+        if (((gameState == GameState.won || gameState == GameState.lost) &&
+             app.input.keyPressed(Key.space)) || padRestart) {
             gameState = GameState.playing;
             lives = 3;
+            prevScore = 0;
+            prevStations = 0;
             invulnTimer = 0.0f;
             resetLevel(player, playerProxy, ctx, enemies);
         }
@@ -492,6 +512,14 @@ void main() {
             if (app.input.keyDown(Key.d)) wishDir = wishDir + camRight;
             if (app.input.keyDown(Key.a)) wishDir = wishDir - camRight;
             jumpPressed = app.input.keyPressed(Key.space);
+
+            if (padSlot >= 0) {
+                immutable uint slot = cast(uint) padSlot;
+                immutable Vec2 ls = app.input.padLeftStick(slot);
+                wishDir = wishDir + camRight * ls.x - camForward * ls.y;
+                if (app.input.padPressed(PadButton.a, slot))
+                    jumpPressed = true;
+            }
 
             immutable wlen = wishDir.x * wishDir.x + wishDir.z * wishDir.z;
             if (wlen > 1e-6f)
@@ -519,6 +547,17 @@ void main() {
             accumulator -= PHYS_STEP;
             ++subSteps;
         }
+
+        if (padSlot >= 0) {
+            immutable uint slot = cast(uint) padSlot;
+            if (ctx.stationsOn > prevStations) {
+                app.gamepads.rumble(slot, 0.65f, 0.45f, 180);
+            } else if (ctx.score > prevScore) {
+                app.gamepads.rumble(slot, 0.35f, 0.60f, 100);
+            }
+        }
+        prevScore = ctx.score;
+        prevStations = ctx.stationsOn;
 
         if (gameState == GameState.playing) {
             foreach (ref e; enemies) {
@@ -552,6 +591,11 @@ void main() {
                     if (hitDist < HIT_RADIUS) {
                         lives -= 1;
                         invulnTimer = INVULN_TIME;
+                        if (padSlot >= 0) {
+                            immutable uint slot = cast(uint) padSlot;
+                            app.gamepads.rumble(slot, 0.90f, 0.50f, 300);
+                            app.gamepads.rumbleTriggers(slot, 0.75f, 0.75f, 200);
+                        }
                         if (lives <= 0) {
                             gameState = GameState.lost;
                         } else {
@@ -663,13 +707,13 @@ void main() {
 
         if (gameState == GameState.won) {
             textRenderer.drawText(frame, "YOU WIN!", SCREEN_W / 2 - 80, SCREEN_H / 2 - 30, 4);
-            textRenderer.drawText(frame, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
+            textRenderer.drawText(frame, "Press SPACE or A to restart", SCREEN_W / 2 - 180, SCREEN_H / 2 + 30, 2);
         } else if (gameState == GameState.lost) {
             textRenderer.drawText(frame, "GAME OVER", SCREEN_W / 2 - 90, SCREEN_H / 2 - 30, 4);
-            textRenderer.drawText(frame, "Press SPACE to restart", SCREEN_W / 2 - 160, SCREEN_H / 2 + 30, 2);
+            textRenderer.drawText(frame, "Press SPACE or A to restart", SCREEN_W / 2 - 180, SCREEN_H / 2 + 30, 2);
         } else {
             textRenderer.drawText(frame,
-                "WASD:move  Space:jump  Push each colored lever into its slot to open the cage",
+                "WASD/LS:move  Space/A:jump  Arrows/RS:cam  Push levers to open cages",
                 10, SCREEN_H - 30, 2);
         }
 

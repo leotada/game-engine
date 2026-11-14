@@ -67,7 +67,7 @@ struct UiInputContext {
     }
 
     /// Update input interactions and populate event queue.
-    void update(ref UiTree tree, ref UiEventQueue queue, in InputState input, float dt) nothrow @nogc {
+    void update(ref UiTree tree, ref UiEventQueue queue, ref const InputState input, float dt) nothrow @nogc {
         immutable float mx = input.mx;
         immutable float my = input.my;
 

@@ -1,7 +1,9 @@
-/// Per-frame keyboard & mouse input tracking built on SDL3 events.
+/// Per-frame keyboard, mouse & gamepad input tracking built on SDL3 events.
 module engine.platform.input;
 
 import bindings.sdl3;
+import engine.math.vec : Vec2;
+import engine.platform.gamepad;
 import core.stdc.stdio : fprintf, stderr;
 
 @safe:
@@ -96,6 +98,15 @@ struct InputState {
     private char[128] _textBuf;
     private uint _textLen = 0;
 
+    Gamepads gamepads;
+
+    @disable this(this);
+
+    /// Explicitly close all open gamepad handles (also runs in `Gamepads.~this`).
+    void destroy() nothrow @nogc {
+        gamepads.closeAll();
+    }
+
     /// Call once per frame before polling events.
     ///
     /// Press/release edges survive this call when `keepEdgesForNextFrame`
@@ -114,6 +125,7 @@ struct InputState {
         _wheelX = 0;
         _wheelY = 0;
         _textLen = 0;
+        gamepads.beginFrame();
     }
 
     /// Keep edges set after this frame's update so the next `beginFrame`
@@ -121,6 +133,7 @@ struct InputState {
     /// already consumed (just before the swapchain wait).
     void keepEdgesForNextFrame() nothrow @nogc {
         keepEdges = true;
+        gamepads.keepEdgesForNextFrame();
     }
 
     void clearKeyEdges() nothrow @nogc {
@@ -133,6 +146,10 @@ struct InputState {
         mouseReleasedEdge[] = false;
     }
 
+    void clearGamepadEdges() nothrow @nogc {
+        gamepads.clearEdges();
+    }
+
     bool hasPendingEdges() const nothrow @nogc {
         foreach (i; 0 .. MAX_KEYS) {
             if (keyPressedEdge[i] || keyReleasedEdge[i]) return true;
@@ -140,6 +157,7 @@ struct InputState {
         foreach (i; 1 .. MAX_MOUSE_BUTTONS) {
             if (mousePressedEdge[i] || mouseReleasedEdge[i]) return true;
         }
+        if (gamepads.hasPendingEdges()) return true;
         return false;
     }
 
@@ -221,6 +239,14 @@ struct InputState {
                 () @trusted { fprintf(stderr, "[INPUT] SDL_EVENT_WINDOW_CLOSE_REQUESTED received\n"); }();
                 _quit = true;
                 break;
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            case SDL_EVENT_GAMEPAD_ADDED:
+            case SDL_EVENT_GAMEPAD_REMOVED:
+            case SDL_EVENT_GAMEPAD_REMAPPED:
+                gamepads.processEvent(ev);
+                break;
             default:
                 break;
         }
@@ -263,6 +289,36 @@ struct InputState {
     bool shiftDown() const nothrow @nogc { return keyDown(Key.lshift) || keyDown(Key.rshift); }
     /// True if Alt is currently pressed.
     bool altDown() const nothrow @nogc { return keyDown(Key.lalt) || keyDown(Key.ralt); }
+
+    // -----------------------------------------------------------------------
+    // Gamepad (Xbox / standard controller) convenience queries
+    // -----------------------------------------------------------------------
+
+    bool padConnected(uint slot = 0) const pure nothrow @nogc { return gamepads.isConnected(slot); }
+    uint padCount() const pure nothrow @nogc { return gamepads.connectedCount(); }
+    int firstPad() const pure nothrow @nogc { return gamepads.firstConnectedSlot(); }
+    const(GamepadState)* pad(uint slot = 0) const return pure nothrow @nogc { return gamepads.pad(slot); }
+
+    bool padDown(PadButton b, uint slot = 0) const pure nothrow @nogc { return gamepads.buttonDown(b, slot); }
+    bool padPressed(PadButton b, uint slot = 0) const pure nothrow @nogc { return gamepads.buttonPressed(b, slot); }
+    bool padUp(PadButton b, uint slot = 0) const pure nothrow @nogc { return gamepads.buttonUp(b, slot); }
+
+    Vec2 padLeftStick(uint slot = 0) const pure nothrow @nogc { return gamepads.leftStick(slot); }
+    Vec2 padRightStick(uint slot = 0) const pure nothrow @nogc { return gamepads.rightStick(slot); }
+    float padLeftTrigger(uint slot = 0) const pure nothrow @nogc { return gamepads.leftTrigger(slot); }
+    float padRightTrigger(uint slot = 0) const pure nothrow @nogc { return gamepads.rightTrigger(slot); }
+
+    bool padRumble(uint slot, float lowFreq, float highFreq, uint durationMs) nothrow @nogc {
+        return gamepads.rumble(slot, lowFreq, highFreq, durationMs);
+    }
+
+    bool padRumbleTriggers(uint slot, float left, float right, uint durationMs) nothrow @nogc {
+        return gamepads.rumbleTriggers(slot, left, right, durationMs);
+    }
+
+    void stopPadRumble(uint slot = 0) nothrow @nogc {
+        gamepads.stopRumble(slot);
+    }
 }
 
 private void pushButton(ref InputState s, uint type, ubyte button) @trusted {

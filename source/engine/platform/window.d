@@ -34,7 +34,7 @@ struct Window {
         // that capture does a wl_display round-trip. Nested with the wgpu
         // present wait, the round-trip stalls the frame for a few seconds.
         SDL_SetHint("SDL_MOUSE_AUTO_CAPTURE", "0");
-        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
             err("SDL_Init failed");
             assert(false);
         }

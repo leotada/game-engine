@@ -28,7 +28,7 @@ enum EditorAction : ubyte {
 /// `textFieldFocused` suppresses letter and Delete shortcuts so typing in a
 /// name field does not change the gizmo, focus the camera, or delete.
 /// Ctrl+S, Ctrl+O, Ctrl+N, Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, and Ctrl+P still run.
-EditorAction pollShortcuts(in InputState input, bool textFieldFocused = false) nothrow @nogc {
+EditorAction pollShortcuts(ref const InputState input, bool textFieldFocused = false) nothrow @nogc {
     immutable bool ctrl = input.ctrlDown();
     immutable bool shift = input.shiftDown();
 

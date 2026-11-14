@@ -4,6 +4,7 @@ module engine.script.context;
 import engine.ecs.store : EntityId;
 import engine.ecs.scene_world : SceneWorld;
 import engine.platform.input : InputState;
+import engine.platform.gamepad : Gamepads;
 
 @safe:
 
@@ -11,6 +12,7 @@ struct ScriptContext {
     EntityId entity = EntityId.max;
     SceneWorld* world = null;
     const(InputState)* input = null;
+    Gamepads* gamepads = null;
     float dt = 0.0f;
     double totalTime = 0.0;
 

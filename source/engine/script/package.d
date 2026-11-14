@@ -12,4 +12,6 @@ public import engine.ecs.store : EntityId;
 public import engine.ecs.scene_world : SceneWorld;
 public import engine.scene.graph : Transform;
 public import engine.platform.input : Key, MouseButton, InputState;
+public import engine.platform.gamepad :
+    PadButton, GamepadState, GamepadType, Gamepads, MAX_GAMEPADS, gamepadTypeName;
 public import engine.core.strings : StringId;
