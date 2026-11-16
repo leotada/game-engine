@@ -79,6 +79,8 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         rockChop += boost * select(0.20, 0.38, riverMode != 0u);
     }
 
+    let waveSet = 0.78 + 0.28 * sin(time * 0.68 - x * 0.12 + z * 0.15);
+
     var p = vec3<f32>(x, 0.0, z);
     var dPdx = vec3<f32>(1.0, 0.0, 0.0);
     var dPdz = vec3<f32>(0.0, 0.0, 1.0);
@@ -91,7 +93,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         let dirZ = wa.y;
         let k = (2.0 * PI) / max(wa.z, 0.1);
         let c = sqrt(9.81 / k) * wb.y;
-        let a = wa.w * waveScale * bankMask * rockChop * distAtten;
+        let a = wa.w * waveScale * bankMask * rockChop * distAtten * waveSet;
         let q = wb.x;
 
         let phase = k * (dirX * x + dirZ * z) - k * c * time;

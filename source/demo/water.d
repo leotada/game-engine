@@ -158,11 +158,12 @@ private WaveSample sampleGerstner(float x, float z, float time, bool riverMode, 
         }
     }
 
+    immutable float waveSet = 0.78f + 0.28f * sin(time * 0.68f - x * 0.12f + z * 0.15f);
     float heightAccum = 0.0f;
     foreach (ref w; waves) {
         immutable k = (2.0f * cast(float) PI) / w.wavelength;
         immutable c = sqrt(9.81f / k) * w.speedScale;
-        immutable a = w.amplitude * waveScale * bankMask;
+        immutable a = w.amplitude * waveScale * bankMask * waveSet;
         immutable q = w.steepness;
         immutable phase = k * (w.dirX * x + w.dirZ * z) - k * c * time;
         immutable sn = sin(phase);
