@@ -62,7 +62,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         x = x0 * skirtScale;
         z = z0 * skirtScale;
         localStep = 0.146 * (skirtScale + r0 * (11.0 / 0.28) * dSdT);
-        distAtten = 1.0 - smoothstep(20.0, 90.0, length(vec2<f32>(x, z))) * 0.90;
+        distAtten = 1.0 - smoothstep(45.0, 145.0, length(vec2<f32>(x, z))) * 0.78;
     }
 
     var bankMask = 1.0;
@@ -201,17 +201,23 @@ fn evalRiverFlowAndWake(xz: vec2<f32>, riverMode: u32, time: f32,
     return vec3<f32>(flow.x, flow.y, clamp(max(contactMask, wakeMask), 0.0, 1.0));
 }
 
-/// Multi-scale animated procedural ocean swells + capillary wavelets filtered per-octave
-/// against the exact screen-space world pixel footprint (`pxFootprint`).
+/// Multi-scale animated procedural ocean swells + organic FBM wavelets filtered anisotropically
+/// per octave against the screen-space world pixel footprint (`pxGradX`, `pxGradY`).
+/// Returns `vec3(slope.x, slope.y, farCrestFactor)`.
 fn evalCapillaryOffset(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
-                       riverMode: u32, waveScale: f32, pxFootprint: f32) -> vec2<f32> {
+                       riverMode: u32, waveScale: f32,
+                       pxGradX: vec2<f32>, pxGradY: vec2<f32>) -> vec3<f32> {
     var dH = vec2<f32>(0.0);
+    var farCrest = 0.0;
+    let pxFootprint = clamp(max(length(pxGradX), length(pxGradY)), 0.004, 18.0);
+    let pxIso = clamp(sqrt(max(length(pxGradX) * length(pxGradY), 1e-6)), 0.004, 10.0);
+    let aaScale = mix(pxIso, pxFootprint, 0.35);
 
     if (riverMode != 0u) {
         // Dual-phase flow advection prevents UV stretch while preserving directional current.
-        let riverAA = 1.0 - smoothstep(0.10, 0.45, pxFootprint);
+        let riverAA = 1.0 - smoothstep(0.18, 0.75, aaScale);
         if (riverAA <= 0.002) {
-            return dH;
+            return vec3<f32>(0.0);
         }
         let phaseDur = 2.6;
         let p0 = fract(time / phaseDur);
@@ -234,62 +240,76 @@ fn evalCapillaryOffset(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
         let gB = vec2<f32>(fBx - fB, fBz - fB) / e;
         dH = mix(gA, gB, blendW) * (0.042 + 0.025 * waveScale) * riverAA;
     } else {
-        // 1. Domain-warped, group-modulated swells (2.7 m .. 14.5 m) so crests curve and
-        //    break into overlapping wave groups instead of forming straight lines.
+        // 1. Wide-spectrum domain-warped swells (2.6 m .. 36.0 m) filtered anisotropically along
+        //    each wave's direction so waves roll continuously across the entire ocean expanse.
         let warpDisp = vec2<f32>(
-            fbm2(xz * 0.14 + vec2<f32>(time * 0.06, -time * 0.04)) - 0.5,
-            fbm2(xz * 0.14 + vec2<f32>(-time * 0.05, time * 0.07) + vec2<f32>(5.4, 2.9)) - 0.5
-        ) * 3.2;
+            fbm2(xz * 0.11 + vec2<f32>(time * 0.05, -time * 0.04)) - 0.5,
+            fbm2(xz * 0.11 + vec2<f32>(-time * 0.04, time * 0.06) + vec2<f32>(5.4, 2.9)) - 0.5
+        ) * 3.8;
         let xzSw = xz + warpDisp;
 
-        let dirs = array<vec2<f32>, 4>(
+        let dirs = array<vec2<f32>, 6>(
             vec2<f32>( 0.89,  0.45),
-            vec2<f32>(-0.52,  0.85),
-            vec2<f32>( 0.37, -0.93),
-            vec2<f32>(-0.84, -0.54)
+            vec2<f32>(-0.42,  0.91),
+            vec2<f32>( 0.58, -0.81),
+            vec2<f32>(-0.87, -0.49),
+            vec2<f32>( 0.29,  0.96),
+            vec2<f32>(-0.64, -0.77)
         );
-        let lens   = array<f32, 4>(14.2, 8.6, 5.1, 2.7);
-        let speeds = array<f32, 4>(1.15, 1.45, 1.9, 2.5);
-        let amps   = array<f32, 4>(0.042, 0.030, 0.022, 0.012);
+        let lens   = array<f32, 6>(36.0, 22.0, 13.8, 8.2, 4.9, 2.6);
+        let speeds = array<f32, 6>(0.85, 1.02, 1.22, 1.48, 1.85, 2.40);
+        let amps   = array<f32, 6>(0.095, 0.072, 0.056, 0.042, 0.030, 0.017);
 
-        let macroBias = smoothstep(8.0, 24.0, length(xz));
-        for (var i = 0; i < 4; i++) {
+        let macroBias = smoothstep(8.0, 26.0, length(xz));
+        var crestSum = 0.0;
+        var crestWeight = 0.0;
+        for (var i = 0; i < 6; i++) {
             let lambda = lens[i];
-            let octAA = 1.0 - smoothstep(lambda * 0.16, lambda * 0.48, pxFootprint);
+            let dirFoot = clamp(max(abs(dot(pxGradX, dirs[i])), abs(dot(pxGradY, dirs[i]))), 0.004, 18.0);
+            let octAA = 1.0 - smoothstep(lambda * 0.22, lambda * 0.62, dirFoot);
             if (octAA > 0.002) {
                 let freq = 6.2831853 / lambda;
-                let distHandover = select(1.0, mix(0.24, 1.0, macroBias), i < 2);
-                let packetEnv = 0.35 + 0.85 * valueNoise2(xz * 0.17 + vec2<f32>(f32(i) * 4.3, -time * 0.08));
+                let distHandover = select(1.0, mix(0.28, 1.0, macroBias), i < 3);
+                let packetEnv = 0.35 + 0.85 * valueNoise2(xz * 0.14 + vec2<f32>(f32(i) * 4.3, -time * 0.07));
                 let wPhase = dot(xzSw, dirs[i]) * freq - time * speeds[i]
-                           + valueNoise2(xz * (freq * 0.32) + vec2<f32>(time * 0.22, f32(i) * 2.1)) * 2.8;
-                let ds = cos(wPhase) * freq * amps[i] * packetEnv * octAA * distHandover;
+                           + valueNoise2(xz * (freq * 0.26) + vec2<f32>(time * 0.18, f32(i) * 2.1)) * 2.8;
+                let cs = cos(wPhase);
+                let ds = cs * freq * amps[i] * packetEnv * octAA * distHandover;
                 dH += dirs[i] * ds;
+                if (i >= 1 && i <= 4) {
+                    let peak = max(sin(wPhase), 0.0) * packetEnv;
+                    crestSum += peak * octAA * macroBias;
+                    crestWeight += 1.0;
+                }
             }
         }
+        if (crestWeight > 0.0) {
+            farCrest = clamp((crestSum / crestWeight) * 1.15, 0.0, 1.0);
+        }
 
-        // 2. Chaotic multi-scale organic FBM wavelets (non-periodic) for broken wind chop & shimmer.
-        let aaMid = 1.0 - smoothstep(0.24, 0.85, pxFootprint);
+        // 2. Chaotic multi-scale organic FBM wavelets (non-periodic) across mid & near ocean.
+        let aaMid = 1.0 - smoothstep(0.45, 1.85, aaScale);
         if (aaMid > 0.002) {
-            let e1 = 0.08;
-            let uv1 = xz * 0.68 + vec2<f32>(-time * 0.22, -time * 0.14);
+            let e1 = 0.09;
+            let uv1 = xz * 0.56 + vec2<f32>(-time * 0.20, -time * 0.13);
             let n0 = fbm2(uv1);
             let nx = fbm2(uv1 + vec2<f32>(e1, 0.0));
             let nz = fbm2(uv1 + vec2<f32>(0.0, e1));
-            dH += vec2<f32>(nx - n0, nz - n0) / e1 * (0.045 * aaMid);
+            dH += vec2<f32>(nx - n0, nz - n0) / e1 * (0.058 * aaMid);
         }
-        let aaFine = 1.0 - smoothstep(0.08, 0.34, pxFootprint);
+        let aaFine = 1.0 - smoothstep(0.14, 0.58, aaScale);
         if (aaFine > 0.002) {
-            let e2 = 0.04;
-            let uv2 = xz * 1.85 + vec2<f32>(time * 0.28, -time * 0.33) + vec2<f32>(9.1, 4.7);
+            let e2 = 0.045;
+            let uv2 = xz * 1.75 + vec2<f32>(time * 0.26, -time * 0.30) + vec2<f32>(9.1, 4.7);
             let m0 = fbm2(uv2);
             let mx = fbm2(uv2 + vec2<f32>(e2, 0.0));
             let mz = fbm2(uv2 + vec2<f32>(0.0, e2));
-            dH += vec2<f32>(mx - m0, mz - m0) / e2 * (0.022 * aaFine);
+            dH += vec2<f32>(mx - m0, mz - m0) / e2 * (0.026 * aaFine);
         }
 
         dH *= 0.65 + 0.45 * waveScale;
     }
-    return dH;
+    return vec3<f32>(dH.x, dH.y, farCrest);
 }
 
 /// Evaluates lacy multi-scale organic sea-foam coverage in [0, 1].
@@ -345,12 +365,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let inSimBox = smoothstep(halfSpan, halfSpan - 1.5, max(abs(in.worldPos.x), abs(in.worldPos.z)));
     let simData = textureSampleLevel(waterSimMap, sceneLinearSampler, simUv, 0.0) * inSimBox;
 
-    let pxFootprint = clamp(max(length(dpdx(in.worldPos.xz)), length(dpdy(in.worldPos.xz))), 0.004, 18.0);
+    let pxGradX = dpdx(in.worldPos.xz);
+    let pxGradY = dpdy(in.worldPos.xz);
+    let pxFootprint = clamp(max(length(pxGradX), length(pxGradY)), 0.004, 18.0);
+    let pxIso = clamp(sqrt(max(length(pxGradX) * length(pxGradY), 1e-6)), 0.004, 10.0);
 
     // 2. Procedural ocean swells & capillary normals + pixel-filtered JONSWAP compute slopes.
-    let simAA = 1.0 - smoothstep(0.18, 0.65, pxFootprint);
-    let slope = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale, pxFootprint)
-              + simData.xy * (0.42 * simAA);
+    let simAA = 1.0 - smoothstep(0.22, 0.85, mix(pxIso, pxFootprint, 0.35));
+    let capRes = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale, pxGradX, pxGradY);
+    let slope = capRes.xy + simData.xy * (0.42 * simAA);
+    let combinedCrest = max(in.crestFactor, capRes.z * (1.0 - smoothstep(55.0, 110.0, camDist)));
 
     let N_macro = normalize(in.worldNormal);
     let N = normalize(N_macro + vec3<f32>(-slope.x, 0.0, -slope.y));
@@ -422,7 +446,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 4. Crisp lacy procedural foam mask (crest whitecaps + geometry contacts + wakes + WTR-6 advected foam).
     let foamMask = evalFoamPattern(
-        in.worldPos.xz, flowVel, time, in.crestFactor, max(obstacleWake, geomContact), simData.b,
+        in.worldPos.xz, flowVel, time, combinedCrest, max(obstacleWake, geomContact), simData.b,
         verticalDepth, waveScale, riverMode);
 
     let foamColor = vec3<f32>(0.92, 0.94, 0.96);
@@ -640,7 +664,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 7. Subtle backlit wave-crest Subsurface Scattering (SSS) under high peaking ocean swells.
     let backLit = pow(clamp(dot(V, normalize(-sunL + N * 0.35)), 0.0, 1.0), 6.0);
-    let crestThin = smoothstep(0.14, 0.46, in.worldPos.y + in.crestFactor * 0.16)
+    let crestThin = smoothstep(0.14, 0.46, in.worldPos.y + combinedCrest * 0.16)
                   * select(1.0, 0.12, riverMode != 0u);
     let sssTint = select(vec3<f32>(0.02, 0.15, 0.18), vec3<f32>(0.03, 0.16, 0.14), riverMode != 0u);
     let sss = sssTint * sunRad * (0.15 + 0.85 * dirShadow) * backLit * crestThin * (1.0 - foamMask) * 0.28;
@@ -666,11 +690,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         outAlpha = mix(waterAlpha, 0.97, foamMask);
     }
 
-    // Horizon haze reaching 1.0 well inside the 168 m ocean boundary so no square edge ever shows.
+    // Horizon haze kept well out toward the edge (114..144 m) so waves cover the full water expanse.
     let radialDist = length(in.worldPos.xz);
     let fogFactor = select(
-        max(smoothstep(42.0, 134.0, camDist), smoothstep(98.0, 140.0, radialDist)),
-        smoothstep(22.0, 62.0, camDist) * 0.35,
+        max(smoothstep(78.0, 152.0, camDist), smoothstep(114.0, 144.0, radialDist)),
+        smoothstep(24.0, 65.0, camDist) * 0.32,
         riverMode != 0u
     );
     let fogCol = evalWaterSky(normalize(-toCam), sunL, frame.dirLight.color, lowSun, time);
