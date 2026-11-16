@@ -73,7 +73,9 @@ fn sampleDirShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f
             shadow += textureSampleCompare(dirShadowMap, shadowSampler, uv + offset, depth - bias);
         }
     }
-    return shadow / 9.0;
+    return mix(1.0, shadow / 9.0,
+        smoothstep(0.0, 0.08, uv.x) * smoothstep(1.0, 0.92, uv.x)
+      * smoothstep(0.0, 0.08, uv.y) * smoothstep(1.0, 0.92, uv.y));
 }
 
 fn cubeRefDepth(fragToLight: vec3<f32>, nearP: f32, farP: f32) -> f32 {
@@ -145,7 +147,9 @@ fn sampleSpotMapPCF(tex: texture_depth_2d, lightVP: mat4x4<f32>,
             shadow += textureSampleCompare(tex, shadowSampler, uv + offset, depth - bias);
         }
     }
-    return shadow / 9.0;
+    return mix(1.0, shadow / 9.0,
+        smoothstep(0.0, 0.08, uv.x) * smoothstep(1.0, 0.92, uv.x)
+      * smoothstep(0.0, 0.08, uv.y) * smoothstep(1.0, 0.92, uv.y));
 }
 
 fn sampleSpotShadowPCF(slot: i32, lightVP: mat4x4<f32>, worldPos: vec3<f32>,

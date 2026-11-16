@@ -27,7 +27,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
     let riverMode = wu.flags0.x;
-    let bedScale = select(11.0, 1.0, riverMode != 0u);
+    let bedScale = select(10.5, 1.0, riverMode != 0u);
     let pos = vec3<f32>(v.position.x * bedScale, v.position.y, v.position.z * bedScale);
     var out: VertexOutput;
     out.worldPos = pos;
