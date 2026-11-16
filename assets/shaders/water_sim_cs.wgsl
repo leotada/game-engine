@@ -23,31 +23,40 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / 256.0;
     let xz = (uv - vec2<f32>(0.5)) * span;
 
-    // 1. Directional JONSWAP short-chop wave spectrum (12 modes, non-repeating spread).
+    // 1. Domain-warped directional JONSWAP short-chop wave spectrum (16 modes, wide spread,
+    //    spatially localized wave packets so chop never forms rigid parallel grooves).
+    let warpVec = vec2<f32>(
+        fbm2(xz * 0.24 + vec2<f32>(time * 0.05, -time * 0.04)) - 0.5,
+        fbm2(xz * 0.24 + vec2<f32>(-time * 0.04, time * 0.05) + vec2<f32>(7.3, 4.1)) - 0.5
+    ) * 1.65;
+    let xzSim = xz + warpVec;
+
     var slopeX = 0.0;
     var slopeZ = 0.0;
     var crestAccum = 0.0;
     let goldenAngle = 2.39996323;
     let windBias = select(vec2<f32>(0.76, 0.48), vec2<f32>(0.94, 0.12), riverMode != 0u);
-    for (var m = 0u; m < 12u; m++) {
+    let spreadGain = select(0.92, 0.65, riverMode != 0u);
+    let windPull = select(0.28, 0.55, riverMode != 0u);
+    for (var m = 0u; m < 16u; m++) {
         let fm = f32(m);
         let theta = fm * goldenAngle + 0.35;
-        let dirRaw = vec2<f32>(cos(theta), sin(theta)) * 0.55 + windBias * 0.65;
+        let dirRaw = vec2<f32>(cos(theta), sin(theta)) * spreadGain + windBias * windPull;
         let dir = normalize(dirRaw);
-        // Wavenumber progression k from 1.8 to 18.0 rad/m (wavelength ~3.5m down to ~0.35m).
-        let k = 1.8 * pow(1.23, fm);
+        // Wavenumber progression k from 1.15 to 12.8 rad/m with smooth broad peak.
+        let k = 1.15 * pow(1.175, fm);
         let omega = sqrt(9.81 * k);
-        // JONSWAP-like energy peak weighting.
-        let kp = 4.2;
+        let kp = 2.8;
         let rel = kp / k;
-        let specAmp = 0.011 * waveScale * pow(k / 1.8, -1.35) * exp(-1.25 * rel * rel);
-        let phase = dot(xz, dir) * k - omega * time + fm * 1.37;
+        let specAmp = 0.0052 * waveScale * pow(k / 1.15, -1.15) * exp(-0.55 * rel * rel);
+        let groupEnv = 0.42 + 0.78 * valueNoise2(xz * 0.22 + vec2<f32>(fm * 2.13, -time * 0.09));
+        let phase = dot(xzSim, dir) * k - omega * time + fm * 1.73;
         let cs = cos(phase);
         let sn = sin(phase);
-        let dH = k * specAmp * cs;
+        let dH = k * specAmp * groupEnv * cs;
         slopeX += dir.x * dH;
         slopeZ += dir.y * dH;
-        crestAccum += max(sn, 0.0) * (specAmp * 28.0);
+        crestAccum += max(sn, 0.0) * (specAmp * groupEnv * 36.0);
     }
 
     // 2. Tangential flow velocity deflected around channel obstacles.

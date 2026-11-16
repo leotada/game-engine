@@ -102,7 +102,11 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
     }
 
     let rockChop = select(1.20, 1.38, isRiver);
-    let waveSet = 0.78 + 0.28 * sin(time * 0.68 - worldPos.x * 0.12 + worldPos.z * 0.15);
+    let waveSet = 0.68
+                + 0.26 * sin(time * 0.62 - worldPos.x * 0.13 + worldPos.z * 0.16)
+                + 0.18 * cos(time * 0.41 + worldPos.x * 0.19 + worldPos.z * 0.11);
+    let phaseWarp = 0.85 * sin(worldPos.x * 0.21 - worldPos.z * 0.17 + time * 0.29)
+                  + 0.55 * cos(worldPos.x * 0.14 + worldPos.z * 0.25 - time * 0.22);
     let scale = waveScale * bankMask * rockChop * waveSet;
 
     var dispXZ = vec2<f32>(0.0);
@@ -110,7 +114,7 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
         let k = 6.2831853 / lens[i];
         let c = sqrt(9.81 / k) * spds[i];
         let a = amps[i] * scale;
-        let phase = k * dot(dirs[i], worldPos.xz) - k * c * time;
+        let phase = k * dot(dirs[i], worldPos.xz) - k * c * time + phaseWarp * min(k * 0.45, 1.0);
         dispXZ += (stps[i] * a) * dirs[i] * cos(phase);
     }
 
@@ -120,7 +124,7 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
         let k = 6.2831853 / lens[i];
         let c = sqrt(9.81 / k) * spds[i];
         let a = amps[i] * scale;
-        y += a * sin(k * dot(dirs[i], xz) - k * c * time);
+        y += a * sin(k * dot(dirs[i], xz) - k * c * time + phaseWarp * min(k * 0.45, 1.0));
     }
 
     return y;

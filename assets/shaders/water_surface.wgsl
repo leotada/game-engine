@@ -84,7 +84,11 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         rockChop += boost * select(0.20, 0.38, riverMode != 0u);
     }
 
-    let waveSet = 0.78 + 0.28 * sin(time * 0.68 - x * 0.12 + z * 0.15);
+    let waveSet = 0.68
+                + 0.26 * sin(time * 0.62 - x * 0.13 + z * 0.16)
+                + 0.18 * cos(time * 0.41 + x * 0.19 + z * 0.11);
+    let phaseWarp = 0.85 * sin(x * 0.21 - z * 0.17 + time * 0.29)
+                  + 0.55 * cos(x * 0.14 + z * 0.25 - time * 0.22);
 
     var p = vec3<f32>(x, 0.0, z);
     var dPdx = vec3<f32>(1.0, 0.0, 0.0);
@@ -107,7 +111,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         let a = wa.w * waveScale * bankMask * rockChop * distAtten * waveSet * nyquistFade;
         let q = wb.x;
 
-        let phase = k * (dirX * x + dirZ * z) - k * c * time;
+        let phase = k * (dirX * x + dirZ * z) - k * c * time + phaseWarp * min(k * 0.45, 1.0);
         let sn = sin(phase);
         let cs = cos(phase);
 
@@ -230,34 +234,59 @@ fn evalCapillaryOffset(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
         let gB = vec2<f32>(fBx - fB, fBz - fB) / e;
         dH = mix(gA, gB, blendW) * (0.042 + 0.025 * waveScale) * riverAA;
     } else {
-        // 6 non-harmonic crossing swells + capillary ripples so far ocean stays crisp per-pixel
-        // without repeating lattice artifacts or vertex aliasing.
-        let dirs = array<vec2<f32>, 6>(
+        // 1. Domain-warped, group-modulated swells (2.7 m .. 14.5 m) so crests curve and
+        //    break into overlapping wave groups instead of forming straight lines.
+        let warpDisp = vec2<f32>(
+            fbm2(xz * 0.14 + vec2<f32>(time * 0.06, -time * 0.04)) - 0.5,
+            fbm2(xz * 0.14 + vec2<f32>(-time * 0.05, time * 0.07) + vec2<f32>(5.4, 2.9)) - 0.5
+        ) * 3.2;
+        let xzSw = xz + warpDisp;
+
+        let dirs = array<vec2<f32>, 4>(
             vec2<f32>( 0.89,  0.45),
             vec2<f32>(-0.52,  0.85),
-            vec2<f32>( 0.31, -0.95),
-            vec2<f32>(-0.91, -0.41),
-            vec2<f32>( 0.67, -0.74),
-            vec2<f32>(-0.18,  0.98)
+            vec2<f32>( 0.37, -0.93),
+            vec2<f32>(-0.84, -0.54)
         );
-        let lens   = array<f32, 6>(13.5, 7.8, 4.3, 2.1, 0.95, 0.44);
-        let speeds = array<f32, 6>(1.15, 1.45, 1.9, 2.5, 3.4, 4.7);
-        let amps   = array<f32, 6>(0.046, 0.034, 0.025, 0.017, 0.011, 0.006);
+        let lens   = array<f32, 4>(14.2, 8.6, 5.1, 2.7);
+        let speeds = array<f32, 4>(1.15, 1.45, 1.9, 2.5);
+        let amps   = array<f32, 4>(0.042, 0.030, 0.022, 0.012);
 
-        let gust = 0.72 + 0.45 * valueNoise2(xz * 0.085 + vec2<f32>(time * 0.09, -time * 0.06));
         let macroBias = smoothstep(8.0, 24.0, length(xz));
-        for (var i = 0; i < 6; i++) {
+        for (var i = 0; i < 4; i++) {
             let lambda = lens[i];
             let octAA = 1.0 - smoothstep(lambda * 0.16, lambda * 0.48, pxFootprint);
             if (octAA > 0.002) {
                 let freq = 6.2831853 / lambda;
-                let distHandover = select(1.0, mix(0.22, 1.0, macroBias), i < 2);
-                let wPhase = dot(xz, dirs[i]) * freq - time * speeds[i];
-                let warp = valueNoise2(xz * (freq * 0.24) + vec2<f32>(time * 0.25, 1.7 + f32(i))) * 1.4 * octAA;
-                let ds = cos(wPhase + warp) * freq * amps[i] * gust * octAA * distHandover;
+                let distHandover = select(1.0, mix(0.24, 1.0, macroBias), i < 2);
+                let packetEnv = 0.35 + 0.85 * valueNoise2(xz * 0.17 + vec2<f32>(f32(i) * 4.3, -time * 0.08));
+                let wPhase = dot(xzSw, dirs[i]) * freq - time * speeds[i]
+                           + valueNoise2(xz * (freq * 0.32) + vec2<f32>(time * 0.22, f32(i) * 2.1)) * 2.8;
+                let ds = cos(wPhase) * freq * amps[i] * packetEnv * octAA * distHandover;
                 dH += dirs[i] * ds;
             }
         }
+
+        // 2. Chaotic multi-scale organic FBM wavelets (non-periodic) for broken wind chop & shimmer.
+        let aaMid = 1.0 - smoothstep(0.24, 0.85, pxFootprint);
+        if (aaMid > 0.002) {
+            let e1 = 0.08;
+            let uv1 = xz * 0.68 + vec2<f32>(-time * 0.22, -time * 0.14);
+            let n0 = fbm2(uv1);
+            let nx = fbm2(uv1 + vec2<f32>(e1, 0.0));
+            let nz = fbm2(uv1 + vec2<f32>(0.0, e1));
+            dH += vec2<f32>(nx - n0, nz - n0) / e1 * (0.045 * aaMid);
+        }
+        let aaFine = 1.0 - smoothstep(0.08, 0.34, pxFootprint);
+        if (aaFine > 0.002) {
+            let e2 = 0.04;
+            let uv2 = xz * 1.85 + vec2<f32>(time * 0.28, -time * 0.33) + vec2<f32>(9.1, 4.7);
+            let m0 = fbm2(uv2);
+            let mx = fbm2(uv2 + vec2<f32>(e2, 0.0));
+            let mz = fbm2(uv2 + vec2<f32>(0.0, e2));
+            dH += vec2<f32>(mx - m0, mz - m0) / e2 * (0.022 * aaFine);
+        }
+
         dH *= 0.65 + 0.45 * waveScale;
     }
     return dH;
