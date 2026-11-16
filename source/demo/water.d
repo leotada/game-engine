@@ -21,7 +21,7 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
-import engine.gpu.shaders : skyDomeShaderSource, causticsBedShaderSource, waterSurfaceShaderSource;
+import engine.gpu.shaders : skyDomeShaderSource, causticsBedShaderSource, waterSurfaceShaderSource, waterSimCsShaderSource;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
@@ -249,23 +249,33 @@ private void drawNonIndexed(ref FrameContext frame, uint vertexCount) nothrow @n
 /// Custom sky-dome, procedural caustics bed, and GPU-Gerstner water pipelines
 /// rendered directly inside the single HDR scene pass without modifying Renderer.
 private struct WaterShaderPipelines {
+    enum uint SIM_RES = 256;
+
     WGPUBindGroupLayout waterBgLayout;
     WGPUBindGroupLayout waterSurfaceBgLayout;
+    WGPUBindGroupLayout simBgLayout;
     WGPUPipelineLayout  skyPipeLayout;
     WGPUPipelineLayout  pbrPipeLayout;
     WGPUPipelineLayout  waterPipeLayout;
+    WGPUPipelineLayout  simPipeLayout;
     WGPUShaderModule    skyMod;
     WGPUShaderModule    bedMod;
     WGPUShaderModule    waterMod;
+    WGPUShaderModule    simCsMod;
     WGPURenderPipeline  skyPipe;
     WGPURenderPipeline  bedPipe;
     WGPURenderPipeline  waterPipe;
+    WGPUComputePipeline simPipe;
     WGPUBuffer          ubo;
     WGPUBindGroup       waterBg;
     WGPUSampler         sceneSampler;
     WGPUTexture         dummyColorTex;
     WGPUTextureView     dummyColorView;
-    WGPUBindGroup       waterSurfaceBg;
+    WGPUTexture[2]      simTex;
+    WGPUTextureView[2]  simView;
+    WGPUBindGroup[2]    simBg;
+    uint                simPingPong = 0;
+    WGPUBindGroup[2]    waterSurfaceBg;
     WGPUTextureView     cachedColorView;
     WGPUTextureView     cachedDepthView;
 
@@ -289,7 +299,7 @@ private struct WaterShaderPipelines {
         bglDesc.entries = &bgle;
         p.waterBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &bglDesc);
 
-        WGPUBindGroupLayoutEntry[4] sEntries;
+        WGPUBindGroupLayoutEntry[5] sEntries;
         sEntries[0].binding = 0;
         sEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
         sEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -305,11 +315,39 @@ private struct WaterShaderPipelines {
         sEntries[3].binding = 3;
         sEntries[3].visibility = WGPUShaderStage.fragment;
         sEntries[3].sampler.type = WGPUSamplerBindingType.filtering;
+        sEntries[4].binding = 4;
+        sEntries[4].visibility = WGPUShaderStage.fragment;
+        sEntries[4].texture.sampleType = WGPUTextureSampleType.float_;
+        sEntries[4].texture.viewDimension = WGPUTextureViewDimension.dim2D;
 
         WGPUBindGroupLayoutDescriptor sbglDesc;
-        sbglDesc.entryCount = 4;
+        sbglDesc.entryCount = 5;
         sbglDesc.entries = sEntries.ptr;
         p.waterSurfaceBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &sbglDesc);
+
+        // WTR-6 compute layout: UBO + prevSimTex + simSampler + nextSimTex (rgba16float write)
+        WGPUBindGroupLayoutEntry[4] csEntries;
+        csEntries[0].binding = 0;
+        csEntries[0].visibility = WGPUShaderStage.compute;
+        csEntries[0].buffer.type = WGPUBufferBindingType.uniform;
+        csEntries[0].buffer.minBindingSize = WaterUniforms.sizeof;
+        csEntries[1].binding = 1;
+        csEntries[1].visibility = WGPUShaderStage.compute;
+        csEntries[1].texture.sampleType = WGPUTextureSampleType.float_;
+        csEntries[1].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+        csEntries[2].binding = 2;
+        csEntries[2].visibility = WGPUShaderStage.compute;
+        csEntries[2].sampler.type = WGPUSamplerBindingType.filtering;
+        csEntries[3].binding = 3;
+        csEntries[3].visibility = WGPUShaderStage.compute;
+        csEntries[3].storageTexture.access = WGPUStorageTextureAccess.writeOnly;
+        csEntries[3].storageTexture.format = WGPUTextureFormat.rgba16Float;
+        csEntries[3].storageTexture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+        WGPUBindGroupLayoutDescriptor csBglDesc;
+        csBglDesc.entryCount = 4;
+        csBglDesc.entries = csEntries.ptr;
+        p.simBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &csBglDesc);
 
         WGPUSamplerDescriptor sampDesc;
         sampDesc.addressModeU = WGPUAddressMode.clampToEdge;
@@ -336,6 +374,21 @@ private struct WaterShaderPipelines {
             p.dummyColorView = wgpuTextureCreateView(p.dummyColorTex, &dvd);
         }
 
+        // 256x256 rgba16Float ping-pong simulation textures (JONSWAP slope + advected foam)
+        foreach (i; 0 .. 2) {
+            WGPUTextureDescriptor std;
+            std.usage = WGPUTextureUsage.textureBinding | WGPUTextureUsage.storageBinding;
+            std.dimension = WGPUTextureDimension.dim2D;
+            std.size = WGPUExtent3D(SIM_RES, SIM_RES, 1);
+            std.format = WGPUTextureFormat.rgba16Float;
+            p.simTex[i] = wgpuDeviceCreateTexture(dev, &std);
+            if (p.simTex[i] is null) fatal("Failed to allocate WTR-6 water simulation texture");
+            WGPUTextureViewDescriptor svd;
+            svd.format = WGPUTextureFormat.rgba16Float;
+            svd.dimension = WGPUTextureViewDimension.dim2D;
+            p.simView[i] = wgpuTextureCreateView(p.simTex[i], &svd);
+        }
+
         WGPUBindGroupLayout[2] skyLayouts = [frameLayout, p.waterBgLayout];
         WGPUPipelineLayoutDescriptor skyPlDesc;
         skyPlDesc.bindGroupLayoutCount = 2;
@@ -354,8 +407,38 @@ private struct WaterShaderPipelines {
         surfPlDesc.bindGroupLayouts = surfLayouts.ptr;
         p.waterPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &surfPlDesc);
 
+        WGPUPipelineLayoutDescriptor simPlDesc;
+        simPlDesc.bindGroupLayoutCount = 1;
+        simPlDesc.bindGroupLayouts = &p.simBgLayout;
+        p.simPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &simPlDesc);
+
         p.ubo = createUniformBuffer(dev, WaterUniforms.sizeof);
         p.waterBg = createUniformBindGroup(dev, p.waterBgLayout, p.ubo, WaterUniforms.sizeof);
+
+        // simBg[0]: read simView[0], write simView[1]; simBg[1]: read simView[1], write simView[0].
+        foreach (i; 0 .. 2) {
+            WGPUBindGroupEntry[4] ce;
+            ce[0].binding = 0; ce[0].buffer = p.ubo; ce[0].offset = 0; ce[0].size = WaterUniforms.sizeof;
+            ce[1].binding = 1; ce[1].textureView = p.simView[i];
+            ce[2].binding = 2; ce[2].sampler = p.sceneSampler;
+            ce[3].binding = 3; ce[3].textureView = p.simView[i ^ 1];
+            WGPUBindGroupDescriptor cbgd;
+            cbgd.layout = p.simBgLayout;
+            cbgd.entryCount = 4;
+            cbgd.entries = ce.ptr;
+            p.simBg[i] = wgpuDeviceCreateBindGroup(dev, &cbgd);
+        }
+
+        p.simCsMod = createShaderModule(dev, waterSimCsShaderSource.ptr);
+        if (p.simCsMod is null) fatal("Failed to compile water_sim_cs.wgsl");
+        {
+            WGPUComputePipelineDescriptor cpd;
+            cpd.layout = p.simPipeLayout;
+            cpd.compute.module_ = p.simCsMod;
+            cpd.compute.entryPoint = wgpuStringView("cs_main");
+            p.simPipe = wgpuDeviceCreateComputePipeline(dev, &cpd);
+            if (p.simPipe is null) fatal("Failed to create WTR-6 water simulation compute pipeline");
+        }
 
         p.skyMod   = createShaderModule(dev, skyDomeShaderSource.ptr);
         p.bedMod   = createShaderModule(dev, causticsBedShaderSource.ptr);
@@ -481,40 +564,72 @@ private struct WaterShaderPipelines {
         return p;
     }
 
+    void stepSimulation(ref GpuContext gpu) nothrow @nogc @trusted {
+        auto dev = gpu.getDevice();
+        auto q = gpu.getQueue();
+        WGPUCommandEncoderDescriptor ced;
+        auto enc = wgpuDeviceCreateCommandEncoder(dev, &ced);
+        WGPUComputePassDescriptor cpd;
+        auto pass = wgpuCommandEncoderBeginComputePass(enc, &cpd);
+        wgpuComputePassEncoderSetPipeline(pass, simPipe);
+        wgpuComputePassEncoderSetBindGroup(pass, 0, simBg[simPingPong], 0, null);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, SIM_RES / 8, SIM_RES / 8, 1);
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass);
+        WGPUCommandBufferDescriptor cbd;
+        auto cmd = wgpuCommandEncoderFinish(enc, &cbd);
+        wgpuCommandEncoderRelease(enc);
+        wgpuQueueSubmit(q, 1, &cmd);
+        wgpuCommandBufferRelease(cmd);
+        simPingPong ^= 1u;
+    }
+
     void updateSurfaceBindGroup(WGPUDevice dev, WGPUTextureView colorView, WGPUTextureView depthView) nothrow @nogc @trusted {
         if (colorView is null || depthView is null) return;
-        if (waterSurfaceBg !is null && cachedColorView is colorView && cachedDepthView is depthView) return;
-        releaseBindGroup(waterSurfaceBg);
-        WGPUBindGroupEntry[4] e;
-        e[0].binding = 0; e[0].buffer = ubo; e[0].offset = 0; e[0].size = WaterUniforms.sizeof;
-        e[1].binding = 1; e[1].textureView = colorView;
-        e[2].binding = 2; e[2].textureView = depthView;
-        e[3].binding = 3; e[3].sampler = sceneSampler;
-        WGPUBindGroupDescriptor bgd;
-        bgd.layout = waterSurfaceBgLayout;
-        bgd.entryCount = 4;
-        bgd.entries = e.ptr;
-        waterSurfaceBg = wgpuDeviceCreateBindGroup(dev, &bgd);
+        if (waterSurfaceBg[0] !is null && cachedColorView is colorView && cachedDepthView is depthView) return;
+        foreach (i; 0 .. 2) {
+            releaseBindGroup(waterSurfaceBg[i]);
+            WGPUBindGroupEntry[5] e;
+            e[0].binding = 0; e[0].buffer = ubo; e[0].offset = 0; e[0].size = WaterUniforms.sizeof;
+            e[1].binding = 1; e[1].textureView = colorView;
+            e[2].binding = 2; e[2].textureView = depthView;
+            e[3].binding = 3; e[3].sampler = sceneSampler;
+            e[4].binding = 4; e[4].textureView = simView[i];
+            WGPUBindGroupDescriptor bgd;
+            bgd.layout = waterSurfaceBgLayout;
+            bgd.entryCount = 5;
+            bgd.entries = e.ptr;
+            waterSurfaceBg[i] = wgpuDeviceCreateBindGroup(dev, &bgd);
+        }
         cachedColorView = colorView;
         cachedDepthView = depthView;
     }
 
     void destroy() nothrow @nogc @trusted {
+        if (simPipe !is null)              { wgpuComputePipelineRelease(simPipe); simPipe = null; }
+        if (simCsMod !is null)             { wgpuShaderModuleRelease(simCsMod); simCsMod = null; }
         if (waterPipe !is null)            { wgpuRenderPipelineRelease(waterPipe); waterPipe = null; }
         if (bedPipe !is null)              { wgpuRenderPipelineRelease(bedPipe); bedPipe = null; }
         if (skyPipe !is null)              { wgpuRenderPipelineRelease(skyPipe); skyPipe = null; }
         if (waterMod !is null)             { wgpuShaderModuleRelease(waterMod); waterMod = null; }
         if (bedMod !is null)               { wgpuShaderModuleRelease(bedMod); bedMod = null; }
         if (skyMod !is null)               { wgpuShaderModuleRelease(skyMod); skyMod = null; }
-        releaseBindGroup(waterSurfaceBg);
+        foreach (i; 0 .. 2) {
+            releaseBindGroup(waterSurfaceBg[i]);
+            releaseBindGroup(simBg[i]);
+            if (simView[i] !is null) { wgpuTextureViewRelease(simView[i]); simView[i] = null; }
+            if (simTex[i] !is null)  { wgpuTextureRelease(simTex[i]); simTex[i] = null; }
+        }
         releaseBindGroup(waterBg);
         if (dummyColorView !is null)       { wgpuTextureViewRelease(dummyColorView); dummyColorView = null; }
         if (dummyColorTex !is null)        { wgpuTextureRelease(dummyColorTex); dummyColorTex = null; }
         if (sceneSampler !is null)         { wgpuSamplerRelease(sceneSampler); sceneSampler = null; }
         destroyBuffer(ubo); ubo = null;
+        if (simPipeLayout !is null)        { wgpuPipelineLayoutRelease(simPipeLayout); simPipeLayout = null; }
         if (waterPipeLayout !is null)      { wgpuPipelineLayoutRelease(waterPipeLayout); waterPipeLayout = null; }
         if (pbrPipeLayout !is null)        { wgpuPipelineLayoutRelease(pbrPipeLayout); pbrPipeLayout = null; }
         if (skyPipeLayout !is null)        { wgpuPipelineLayoutRelease(skyPipeLayout); skyPipeLayout = null; }
+        if (simBgLayout !is null)          { wgpuBindGroupLayoutRelease(simBgLayout); simBgLayout = null; }
         if (waterSurfaceBgLayout !is null) { wgpuBindGroupLayoutRelease(waterSurfaceBgLayout); waterSurfaceBgLayout = null; }
         if (waterBgLayout !is null)        { wgpuBindGroupLayoutRelease(waterBgLayout); waterBgLayout = null; }
         cachedColorView = null;
@@ -1114,8 +1229,9 @@ void main(string[] args) {
         initHud = false;
         benchSync = true;
         maxFrames = WARMUP_FRAMES + benchFrames;
-    } else if (capturePath.length > 0 && maxFrames == 0) {
-        maxFrames = 3;
+    } else if (capturePath.length > 0) {
+        initImmediate = true;
+        if (maxFrames == 0) maxFrames = 3;
     }
     auto app = App.create(
         "OpenPBR Water Showcase — Ocean & River",
@@ -1382,10 +1498,19 @@ void main(string[] args) {
             }
             auto curWoodP = woodP;
             auto curMasP = masonryP;
+            auto curBankP = bankP;
+            if (propWaterFx) {
+                curBankP.coatWeight = 0.72f;
+                curBankP.coatRoughness = 0.10f;
+                curBankP.coatIor = 1.333f;
+                curBankP.coatDarkening = 0.55f;
+            }
             applyWaterFx(curWoodP);
             applyWaterFx(curMasP);
+            applyWaterFx(curBankP);
             woodMat.updateParams(app.gpu, curWoodP);
             masonryMat.updateParams(app.gpu, curMasP);
+            bankMat.updateParams(app.gpu, curBankP);
         }
 
         orbit.update(app.input, dt, camera);
@@ -1552,6 +1677,19 @@ void main(string[] args) {
         spotMaps[0] = &spotShadow;
         scene.setLights(lights, &dirShadow, pointMaps, spotMaps);
 
+        // Pre-frame water UBO upload + WTR-6 compute simulation pass (JONSWAP + ping-pong advected foam)
+        immutable bool enableRefraction = !noWater && renderStage >= 2;
+        immutable bool enableSsr        = !noWater && renderStage >= 3 && ssrEnabled;
+        auto wu = packWaterUniforms(
+            camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun,
+            enableRefraction, enableSsr, rocks[]);
+        () @trusted {
+            updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);
+        }();
+        if (!noWater && renderStage >= 3) {
+            waterPipes.stepSimulation(app.gpu);
+        }
+
         immutable bgCol = lowSun
             ? Color4(0.16f, 0.12f, 0.11f, 1.0f)
             : Color4(0.24f, 0.38f, 0.56f, 1.0f);
@@ -1604,15 +1742,6 @@ void main(string[] args) {
         // 2. Water environment draws in the HDR frame pass:
         //    (a) sky dome behind geometry, (b) riverbed with caustics,
         //    (c) optional Renderer.snapshotOpaque + optical water surface
-        immutable bool enableRefraction = !noWater && renderStage >= 2;
-        immutable bool enableSsr        = !noWater && renderStage >= 3 && ssrEnabled;
-        auto wu = packWaterUniforms(
-            camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun,
-            enableRefraction, enableSsr, rocks[]);
-        () @trusted {
-            updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);
-        }();
-
         frame.setBindGroup(0, scene.frameGroup());
         frame.setBindGroup(1, waterPipes.waterBg);
 
@@ -1641,7 +1770,7 @@ void main(string[] args) {
                 );
             }
             frame.setBindGroup(0, scene.frameGroup());
-            frame.setBindGroup(1, waterPipes.waterSurfaceBg);
+            frame.setBindGroup(1, waterPipes.waterSurfaceBg[waterPipes.simPingPong]);
             frame.setBindGroup(2, scene.iblGroup());
             frame.setPipeline(waterPipes.waterPipe);
             frame.setVertexBuffer(0, waterGrid.vbuf, waterGrid.vSize);
@@ -1650,6 +1779,7 @@ void main(string[] args) {
         }
 
         app.resolvePost(frame);
+        if (!frame.valid) continue;
 
         if (benchFrames == 0) {
             text.beginFrame();

@@ -143,13 +143,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
     let ambient = irradiance * baseColor * 0.85;
 
-    // Animated chromatically dispersed solar caustics gated by direct sun shadow & water channel.
+    // Animated softly diffused solar caustics gated by direct sun shadow & depth focus.
     let caustics = evalCausticsRgb(in.worldPos, sunL, time, riverMode);
     let channelMask = select(1.0, smoothstep(7.2, 4.8, abs(xz.y)), riverMode != 0u);
+    let depthFocus = smoothstep(0.20, 0.85, max(-in.worldPos.y, 0.0));
     let waveEnergy = 0.65 + 0.35 * wu.params0.y;
-    let causticLight = caustics * sunRad * dirShadow * max(N.y, 0.0) * channelMask * waveEnergy * 0.24;
+    let caustGain = select(0.18, 0.09, riverMode != 0u);
+    let causticLight = caustics * sunRad * dirShadow * max(N.y, 0.0) * channelMask * depthFocus * waveEnergy * caustGain;
 
-    let rawColor = max(direct + ambient + causticLight * (0.35 + baseColor), vec3<f32>(0.0));
+    let rawColor = max(direct + ambient + causticLight * baseColor, vec3<f32>(0.0));
     if (wu.counts.z != 0u) {
         // Defer full Beer-Lambert column absorption to water_surface.wgsl when screen-space
         // refraction is enabled so seabed and submerged rocks share identical water tinting.

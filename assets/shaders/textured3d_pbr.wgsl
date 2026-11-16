@@ -53,61 +53,53 @@ const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
 const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
-const FLAG_WATER_CAUSTICS: u32 = 16u;
+const FLAG_WATER_WETLINE: u32 = 16u;
 const FLAG_WATER_RIVER: u32 = 32u;
 
 #include "common/pbr_brdf.wgsl"
 
-fn propHash22(p: vec2<f32>) -> vec2<f32> {
-    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
-}
-
-fn propVoronoiCaustic(uv: vec2<f32>) -> f32 {
-    let i = floor(uv);
-    let f = fract(uv);
-    var md1 = 8.0;
-    var md2 = 8.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
-            let g = vec2<f32>(f32(x), f32(y));
-            let o = 0.5 + 0.42 * sin(propHash22(i + g) * 6.283185 + vec2<f32>(0.0, 1.57));
-            let r = g + o - f;
-            let d = dot(r, r);
-            if (d < md1) {
-                md2 = md1;
-                md1 = d;
-            } else if (d < md2) {
-                md2 = d;
-            }
+/// Evaluates exact 6-octave Gerstner vertical elevation matching OCEAN_WAVES / RIVER_WAVES in water.d.
+fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
+    var bankMask = 1.0;
+    if (isRiver) {
+        let az = abs(worldPos.z);
+        if (az > 4.5) {
+            let t = clamp((az - 4.5) / 3.5, 0.0, 1.0);
+            bankMask = 1.0 - t * 0.85;
         }
     }
-    return pow(clamp(1.0 - (sqrt(md2) - sqrt(md1)) * 1.55, 0.0, 1.0), 2.4);
-}
 
-fn evalPropWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
-    let freq = select(0.75, 1.35, isRiver);
-    let amp = select(0.16, 0.055, isRiver) * waveScale;
-    return amp * sin(worldPos.x * freq - time * 2.1 + worldPos.z * 0.45)
-         + amp * 0.55 * cos(worldPos.z * (freq * 1.15) + time * 1.6);
-}
-
-fn evalPropWaterCaustics(worldPos: vec3<f32>, sunL: vec3<f32>, time: f32, isRiver: bool) -> vec3<f32> {
-    let refractShift = (sunL.xz / max(abs(sunL.y) + 0.35, 0.35)) * (max(-worldPos.y, 0.0) * 0.45);
-    let flow = select(vec2<f32>(time * 0.24, time * 0.16), vec2<f32>(-time * 0.95, sin(time * 0.7) * 0.10), isRiver);
-    let p = worldPos.xz + refractShift;
-    let warp = vec2<f32>(
-        sin(p.y * 1.35 + time * 1.25) + cos(p.x * 0.85 - time * 0.90),
-        cos(p.x * 1.30 - time * 1.10) + sin(p.y * 0.90 + time * 0.80)
-    ) * 0.26;
-    let uv1 = (p + warp) * 1.75 + flow;
-    let uv2 = (p - warp * 0.7) * 2.55 - flow * vec2<f32>(0.65, 1.15);
-    let disp = vec2<f32>(0.032, 0.022);
-    let cR = 0.55 * propVoronoiCaustic(uv1 + disp) + 0.45 * propVoronoiCaustic(uv2 - disp);
-    let cG = 0.55 * propVoronoiCaustic(uv1)        + 0.45 * propVoronoiCaustic(uv2);
-    let cB = 0.55 * propVoronoiCaustic(uv1 - disp) + 0.45 * propVoronoiCaustic(uv2 + disp);
-    return vec3<f32>(cR, cG, cB);
+    var y = 0.0;
+    if (isRiver) {
+        let dirs = array<vec2<f32>, 6>(
+            vec2<f32>(0.96, 0.28), vec2<f32>(0.92, -0.39), vec2<f32>(0.78, 0.62),
+            vec2<f32>(0.85, -0.52), vec2<f32>(0.99, 0.14), vec2<f32>(0.72, -0.69)
+        );
+        let lens = array<f32, 6>(4.4, 3.1, 2.1, 1.45, 0.95, 0.68);
+        let amps = array<f32, 6>(0.075, 0.055, 0.038, 0.024, 0.014, 0.009);
+        let spds = array<f32, 6>(1.65, 1.80, 1.95, 2.15, 2.30, 2.45);
+        for (var i = 0u; i < 6u; i++) {
+            let k = 6.2831853 / lens[i];
+            let c = sqrt(9.81 / k) * spds[i];
+            let a = amps[i] * waveScale * bankMask;
+            y += a * sin(k * dot(dirs[i], worldPos.xz) - k * c * time);
+        }
+    } else {
+        let dirs = array<vec2<f32>, 6>(
+            vec2<f32>(0.86, 0.51), vec2<f32>(0.42, -0.91), vec2<f32>(-0.68, 0.73),
+            vec2<f32>(0.96, -0.28), vec2<f32>(-0.22, -0.97), vec2<f32>(0.61, 0.79)
+        );
+        let lens = array<f32, 6>(9.5, 6.2, 4.1, 2.7, 1.8, 1.15);
+        let amps = array<f32, 6>(0.24, 0.14, 0.08, 0.045, 0.025, 0.015);
+        let spds = array<f32, 6>(1.00, 1.15, 1.25, 1.35, 1.50, 1.65);
+        for (var i = 0u; i < 6u; i++) {
+            let k = 6.2831853 / lens[i];
+            let c = sqrt(9.81 / k) * spds[i];
+            let a = amps[i] * waveScale * bankMask;
+            y += a * sin(k * dot(dirs[i], worldPos.xz) - k * c * time);
+        }
+    }
+    return y;
 }
 
 struct VertexInput {
@@ -201,7 +193,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let V = normalize(frame.cameraPos - in.worldPos);
     let NdotV = max(dot(N, V), 0.001);
 
-    let effectiveRoughness = coatRoughenBase(roughness, mat.coatRoughness, mat.coatWeight);
+    let enableWaterFx = (mat.flags & FLAG_WATER_WETLINE) != 0u;
+    let waterIsRiver = (mat.flags & FLAG_WATER_RIVER) != 0u;
+    let waterTime = mat._pad0;
+    let waterScale = max(mat._pad1, 0.01);
+    var coatW = mat.coatWeight;
+    var coatR = mat.coatRoughness;
+    var coatDark = mat.coatDarkening;
+    var coatCol = mat.coatColor;
+    var effectiveRoughness = coatRoughenBase(roughness, mat.coatRoughness, mat.coatWeight);
+
+    if (enableWaterFx) {
+        let waterSurfY = evalExactWaveY(in.worldPos, waterTime, waterScale, waterIsRiver);
+        let wetNoise = (fract(sin(dot(in.worldPos.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
+        let wetBand = 1.0 - smoothstep(waterSurfY - 0.025, waterSurfY + 0.035 + wetNoise, in.worldPos.y);
+        // Strictly overwrite coat & darkening above the waterline so dry emergent rocks stay matte.
+        coatW = mat.coatWeight * wetBand;
+        coatDark = mat.coatDarkening * wetBand;
+        coatR = mix(0.35, mat.coatRoughness, wetBand);
+        coatCol = mix(vec3<f32>(1.0), mix(mat.coatColor, vec3<f32>(0.84, 0.94, 0.95), 0.55), wetBand);
+        let dryRough = clamp(max(roughness, 0.88), 0.04, 1.0);
+        let wetRough = coatRoughenBase(clamp(roughness * 0.62, 0.04, 1.0), coatR, coatW);
+        effectiveRoughness = mix(dryRough, wetRough, wetBand);
+    }
+
     let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, effectiveRoughness)).rgb;
     let directionalAlbedo = lutBase.r + lutBase.g;
 
@@ -209,26 +224,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (mat.fuzzWeight > 0.001) {
         let fuzzR = clamp(mat.fuzzRoughness, 0.04, 1.0);
         fuzzE = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, fuzzR)).b;
-    }
-
-    let enableWaterFx = (mat.flags & FLAG_WATER_CAUSTICS) != 0u;
-    let waterIsRiver = (mat.flags & FLAG_WATER_RIVER) != 0u;
-    let waterTime = mat._pad0;
-    let waterScale = max(mat._pad1, 0.01);
-    var waterSurfY = -999.0;
-    var coatW = mat.coatWeight;
-    var coatR = mat.coatRoughness;
-    var coatDark = mat.coatDarkening;
-    var coatCol = mat.coatColor;
-    if (enableWaterFx) {
-        waterSurfY = evalPropWaveY(in.worldPos, waterTime, waterScale, waterIsRiver);
-        if (in.worldPos.y < waterSurfY + 0.28) {
-            let wetBand = 1.0 - smoothstep(waterSurfY - 0.04, waterSurfY + 0.28, in.worldPos.y);
-            coatW = max(coatW, wetBand * 0.88);
-            coatR = min(coatR, mix(0.24, 0.055, wetBand));
-            coatDark = max(coatDark, wetBand * 0.68);
-            coatCol = mix(coatCol, vec3<f32>(0.84, 0.94, 0.95), wetBand * 0.65);
-        }
     }
 
     var pbrIn: OpenPbrEvalInput;
@@ -269,12 +264,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
         }
         direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
-        if (enableWaterFx && in.worldPos.y < waterSurfY) {
-            let subDepth = clamp(waterSurfY - in.worldPos.y, 0.0, 3.0);
-            let cRgb = evalPropWaterCaustics(in.worldPos, L, waterTime, waterIsRiver);
-            let caustAtten = shadow * max(dot(N, L), 0.05) * exp(-subDepth * 0.72) * smoothstep(0.0, 0.06, subDepth);
-            direct += baseColor * cRgb * radiance * caustAtten * 0.85;
-        }
     }
 
     // --- Point lights ---

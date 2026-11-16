@@ -722,6 +722,27 @@ struct WGPUVertexState {
     const(WGPUVertexBufferLayout)* buffers;
 }
 
+struct WGPUProgrammableStageDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUShaderModule module_;
+    WGPUStringView entryPoint;
+    size_t constantCount = 0;
+    const(void)* constants;
+}
+
+struct WGPUComputePipelineDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    WGPUPipelineLayout layout;
+    WGPUProgrammableStageDescriptor compute;
+}
+
+struct WGPUComputePassDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    const(void)* timestampWrites;
+}
+
 struct WGPUPrimitiveState {
     WGPUChainedStruct* nextInChain;
     WGPUPrimitiveTopology topology = WGPUPrimitiveTopology.undefined;
@@ -957,6 +978,7 @@ WGPUQueue wgpuDeviceGetQueue(WGPUDevice device);
 WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, const(WGPUCommandEncoderDescriptor)* descriptor);
 WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const(WGPUShaderModuleDescriptor)* descriptor);
 WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, const(WGPURenderPipelineDescriptor)* descriptor);
+WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, const(WGPUComputePipelineDescriptor)* descriptor);
 WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, const(WGPUBufferDescriptor)* descriptor);
 WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, const(WGPUPipelineLayoutDescriptor)* descriptor);
 WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, const(WGPUTextureDescriptor)* descriptor);
@@ -1000,6 +1022,7 @@ void wgpuTextureViewRelease(WGPUTextureView view);
 void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder encoder, const(WGPUImageCopyTexture)* source, const(WGPUImageCopyBuffer)* destination, const(WGPUExtent3D)* copySize);
 void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder encoder, const(WGPUImageCopyTexture)* source, const(WGPUImageCopyTexture)* destination, const(WGPUExtent3D)* copySize);
 WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder encoder, const(WGPURenderPassDescriptor)* descriptor);
+WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder encoder, const(WGPUComputePassDescriptor)* descriptor);
 WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder encoder, const(WGPUCommandBufferDescriptor)* descriptor);
 void wgpuCommandEncoderAddRef(WGPUCommandEncoder encoder);
 void wgpuCommandEncoderRelease(WGPUCommandEncoder encoder);
@@ -1035,6 +1058,16 @@ void wgpuShaderModuleRelease(WGPUShaderModule module_);
 // RenderPipeline
 void wgpuRenderPipelineAddRef(WGPURenderPipeline pipeline);
 void wgpuRenderPipelineRelease(WGPURenderPipeline pipeline);
+
+// ComputePipeline
+void wgpuComputePipelineRelease(WGPUComputePipeline pipeline);
+
+// ComputePassEncoder
+void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder encoder, WGPUComputePipeline pipeline);
+void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder encoder, uint groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const(uint)* dynamicOffsets);
+void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder encoder, uint workgroupCountX, uint workgroupCountY, uint workgroupCountZ);
+void wgpuComputePassEncoderEnd(WGPUComputePassEncoder encoder);
+void wgpuComputePassEncoderRelease(WGPUComputePassEncoder encoder);
 
 // PipelineLayout
 void wgpuPipelineLayoutAddRef(WGPUPipelineLayout layout);

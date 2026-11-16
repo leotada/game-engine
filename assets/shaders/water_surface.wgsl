@@ -14,6 +14,7 @@
 @group(1) @binding(1) var sceneColorMap: texture_2d<f32>;
 @group(1) @binding(2) var sceneDepthMap: texture_depth_2d;
 @group(1) @binding(3) var sceneLinearSampler: sampler;
+@group(1) @binding(4) var waterSimMap: texture_2d<f32>;
 
 @group(2) @binding(0) var irradianceMap: texture_cube<f32>;
 @group(2) @binding(1) var specularMap: texture_cube<f32>;
@@ -235,28 +236,28 @@ fn evalCapillaryOffset(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
 
 /// Evaluates lacy multi-scale organic sea-foam coverage in [0, 1].
 fn evalFoamPattern(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
-                   crestFactor: f32, obstacleWake: f32, waterDepth: f32,
-                   waveScale: f32, riverMode: u32) -> f32 {
+                   crestFactor: f32, obstacleWake: f32, advectedFoam: f32,
+                   waterDepth: f32, waveScale: f32, riverMode: u32) -> f32 {
     let fUv1 = xz * 2.2 - flowVel * (time * 0.45);
     let fUv2 = xz * 5.8 - flowVel * (time * 0.72) + vec2<f32>(5.3, -2.8);
     let nCoarse = fbm2(fUv1);
     let nLace   = 1.0 - abs(fbm2(fUv2) * 2.0 - 1.0);
     // Zero constant floor so clear water gaps stay 100% transparent between lacy bubble filaments.
-    let bubbleTex = clamp(nCoarse * 0.62 + pow(nLace, 2.0) * 0.68 - 0.16, 0.0, 1.0);
+    let bubbleTex = clamp(nCoarse * 0.56 + pow(nLace, 2.2) * 0.65 - 0.18, 0.0, 1.0);
 
     // 1. Steep wave crest whitecaps (scarce in calm, breaking in rough/stormy).
     let crestThresh = mix(0.84, 0.64, clamp((waveScale - 0.35) / 1.4, 0.0, 1.0));
     let crestMask = smoothstep(crestThresh, crestThresh + 0.15, crestFactor)
                   * clamp(waveScale * 0.78, 0.0, 1.25);
 
-    // 2. Rock & pier wakes / collars.
-    let wakeBoost = smoothstep(0.14, 0.80, obstacleWake);
+    // 2. Rock & pier wakes / collars + persistent advected compute foam.
+    let wakeBoost = max(smoothstep(0.16, 0.85, obstacleWake), advectedFoam * 0.82);
 
     // 3. Riverbank shallow shoreline foam rim.
-    let shoreBand = select(0.0, 1.0 - smoothstep(0.04, 0.34, waterDepth), riverMode != 0u);
+    let shoreBand = select(0.0, 1.0 - smoothstep(0.02, 0.18, waterDepth), riverMode != 0u);
 
-    let foamEnergy = max(crestMask, max(wakeBoost * 0.95, shoreBand * 0.82));
-    return clamp(smoothstep(0.20, 0.46, foamEnergy * bubbleTex), 0.0, 1.0);
+    let foamEnergy = max(crestMask, max(wakeBoost * 0.88, shoreBand * 0.74));
+    return clamp(smoothstep(0.22, 0.54, foamEnergy * bubbleTex), 0.0, 1.0);
 }
 
 @fragment
@@ -276,13 +277,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let camDist = length(toCam);
     let V = toCam / max(camDist, 1e-4);
 
-    // 1. Analytical river streamline flow + obstacle contact/wake signals.
+    // 1. Analytical river streamline flow + obstacle contact/wake signals + WTR-6 compute state.
     let flowWake = evalRiverFlowAndWake(in.worldPos.xz, riverMode, time, wu.obstacles, wu.counts.x);
     let flowVel = flowWake.xy;
     let obstacleWake = flowWake.z;
 
-    // 2. Procedural capillary normal perturbation with distance anti-aliasing + roughness AA.
-    let rawSlope = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale);
+    let halfSpan = max(wu.camUp.w, 14.0);
+    let simUv = clamp(in.worldPos.xz / (halfSpan * 2.0) + vec2<f32>(0.5), vec2<f32>(0.002), vec2<f32>(0.998));
+    let inSimBox = smoothstep(halfSpan, halfSpan - 1.5, max(abs(in.worldPos.x), abs(in.worldPos.z)));
+    let simData = textureSampleLevel(waterSimMap, sceneLinearSampler, simUv, 0.0) * inSimBox;
+
+    // 2. Procedural capillary normal perturbation + JONSWAP compute slopes + distance AA.
+    let rawSlope = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale)
+                 + simData.xy * 0.42;
     let aaAtten = 1.0 / (1.0 + camDist * 0.065 + camDist * camDist * 0.0045);
     let slope = rawSlope * aaAtten;
 
@@ -300,7 +307,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var refractedBg = vec3<f32>(0.0);
     var rawRayThickness = rayDepth;
+    var chosenRayZ = rayDepth;
     var geomContact = 0.0;
+    var bgValidGeo = false;
     let depthDims = vec2<i32>(textureDimensions(sceneDepthMap, 0));
     let dimsF = vec2<f32>(depthDims);
     let baseUv = in.clipPos.xy / max(dimsF, vec2<f32>(1.0));
@@ -322,7 +331,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Reject refracted pixels belonging to foreground geometry sitting above the water surface.
         let validRefr = refrLinZ >= waterLinZ - 0.02;
         let finalUv = select(baseUv, refrUv, validRefr);
-        let chosenRayZ = select(rawRayThickness, max(refrLinZ - waterLinZ, 0.0), validRefr);
+        let finalRawDepth = select(rawBgDepth, refrRawDepth, validRefr);
+        bgValidGeo = finalRawDepth < 0.9995;
+        chosenRayZ = select(rawRayThickness, max(refrLinZ - waterLinZ, 0.0), validRefr);
         rayDepth = min(chosenRayZ, 6.0);
 
         // Subtle chromatic dispersion across R/G/B refraction offsets in clear shallows.
@@ -333,9 +344,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         refractedBg = max(vec3<f32>(cR, cG, cB), vec3<f32>(0.0));
 
         // Geometry-exact 3D shoreline contact band hugging emergent rocks, piers, and embankments
-        // (strictly 0..8-11 cm at the true surface intersection so deeper submerged boulders stay clear).
-        let shoreBandDepth = select(0.08, 0.11, riverMode != 0u);
-        geomContact = (1.0 - smoothstep(0.005, shoreBandDepth, verticalDepth)) * select(0.86, 0.95, riverMode != 0u);
+        // (narrow 5.5-7.5 cm intersection broken by bubble pattern so it never looks painted on).
+        let shoreBandDepth = select(0.055, 0.075, riverMode != 0u);
+        geomContact = (1.0 - smoothstep(0.004, shoreBandDepth, verticalDepth)) * select(0.62, 0.68, riverMode != 0u);
     }
 
     // Absorption coefficients: red absorbs fastest, blue/cyan travels deepest.
@@ -350,9 +361,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let deepCol    = select(vec3<f32>(0.008, 0.052, 0.115), vec3<f32>(0.015, 0.095, 0.090), riverMode != 0u);
     let waterVolumeCol = mix(deepCol, shallowCol, transmittance.g);
 
-    // 4. Crisp lacy procedural foam mask (crest whitecaps + geometry contacts + wakes).
+    // 4. Crisp lacy procedural foam mask (crest whitecaps + geometry contacts + wakes + WTR-6 advected foam).
     let foamMask = evalFoamPattern(
-        in.worldPos.xz, flowVel, time, in.crestFactor, max(obstacleWake, geomContact), verticalDepth, waveScale, riverMode);
+        in.worldPos.xz, flowVel, time, in.crestFactor, max(obstacleWake, geomContact), simData.b,
+        verticalDepth, waveScale, riverMode);
 
     let foamColor = vec3<f32>(0.92, 0.94, 0.96);
     let bodyScatterWeight = select(vec3<f32>(1.0), vec3<f32>(1.0) - transmittance * 0.72, enableRefraction);
@@ -411,6 +423,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             dirShadow = sampleDirShadowPCF(in.worldPos, N, sunL);
         }
         direct += evalOpenPbrDirect(pbrIn, sunL, sunRad) * dirShadow;
+
+        // Soft submerged-only caustics on underwater rocks and bridge piers (impossible above water
+        // because they operate strictly on refracted behind-water geometry pixels).
+        if (enableRefraction && bgValidGeo) {
+            let underPos = in.worldPos - V * chosenRayZ;
+            let onPropMask = smoothstep(bedY + 0.06, bedY + 0.26, underPos.y)
+                           * smoothstep(0.10, 0.48, verticalDepth);
+            if (onPropMask > 0.001) {
+                let propC = evalCausticsRgb(underPos, sunL, time, riverMode);
+                let propCaustGain = select(0.18, 0.09, riverMode != 0u);
+                let subAtten = dirShadow * exp(-verticalDepth * 0.85) * onPropMask * propCaustGain;
+                refractedBg += refractedBg * propC * sunRad * subAtten;
+            }
+        }
     }
 
     let sc = min(frame.spotCount, 4u);
@@ -460,8 +486,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (enableSsr && R.y > 0.025 && camDist < 34.0) {
         let maxDist = 14.0;
         let stepLen = maxDist / 16.0;
-        let ign = fract(52.9829189 * fract(dot(in.clipPos.xy, vec2<f32>(0.06711056, 0.00583715))));
-        var tPrev = 0.10 + stepLen * 0.45 * ign;
+        var tPrev = 0.12;
         for (var s = 0; s < 16; s++) {
             let tCur = tPrev + stepLen;
             let rayP = in.worldPos + R * tCur;

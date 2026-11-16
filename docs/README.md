@@ -29,7 +29,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-animation.md](plan-animation.md) | Pending | Skeletal animation + glTF skinning (#5) |
 | [plan-editor-ux.md](plan-editor-ux.md) | Delivered (v1) | Full scene editor UX (#6) |
 | [plan-terrain-water.md](plan-terrain-water.md) | Pending | Terrain and water editor (#7) |
-| [plan-water-realism.md](plan-water-realism.md) | Implemented (`WTR-0–5`, `WTR-6` partial; compute FFT deferred) | Realistic water optical pipeline (`snapshotOpaque`, refraction, SSR, prop caustics, horizon skirt) + Before/After benchmarks |
+| [plan-water-realism.md](plan-water-realism.md) | Implemented (`WTR-0–6`) | Realistic water optical pipeline (`snapshotOpaque`, refraction, SSR, submerged caustics, horizon skirt, `256×256` JONSWAP + advected foam compute sim) + Before/After benchmarks |
 | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | In Progress (Shaders done) | Asset and data hot-reload (#8) |
 | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Pending | Parallel system scheduler (#9) |
 | [plan-networking.md](plan-networking.md) | Pending | Multiplayer primitives (#10) |
