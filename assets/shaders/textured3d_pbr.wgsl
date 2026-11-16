@@ -58,17 +58,22 @@ const FLAG_WATER_RIVER: u32 = 32u;
 
 #include "common/pbr_brdf.wgsl"
 
-/// Evaluates 6-octave Gerstner vertical elevation (with horizontal pullback, near-rock chop,
-/// and kinetic crest splash/surge) matching OCEAN_WAVES / RIVER_WAVES in water.d.
-fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
-    var bankMask = 1.0;
-    if (isRiver) {
-        let az = abs(worldPos.z);
-        if (az > 4.5) {
-            let t = clamp((az - 4.5) / 3.5, 0.0, 1.0);
-            bankMask = 1.0 - t * 0.85;
-        }
+fn evalRiverBankMask(worldPos: vec3<f32>, isRiver: bool) -> f32 {
+    if (!isRiver) {
+        return 1.0;
     }
+    let az = abs(worldPos.z);
+    if (az <= 4.5) {
+        return 1.0;
+    }
+    let t = clamp((az - 4.5) / 3.5, 0.0, 1.0);
+    return 1.0 - t * 0.85;
+}
+
+/// Evaluates exact 6-octave Gerstner vertical elevation (with horizontal pullback and near-rock
+/// chop) matching OCEAN_WAVES / RIVER_WAVES in water_surface.wgsl.
+fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
+    let bankMask = evalRiverBankMask(worldPos, isRiver);
 
     var dirs: array<vec2<f32>, 6>;
     var lens: array<f32, 6>;
@@ -97,12 +102,7 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
     }
 
     let rockChop = select(1.20, 1.38, isRiver);
-    let surge = select(
-        1.0,
-        1.0 + 0.22 * sin(time * 1.15 - worldPos.x * 0.35 + worldPos.z * 0.5),
-        isRiver
-    );
-    let scale = waveScale * bankMask * rockChop * surge;
+    let scale = waveScale * bankMask * rockChop;
 
     var dispXZ = vec2<f32>(0.0);
     for (var i = 0u; i < 6u; i++) {
@@ -122,34 +122,38 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
         y += a * sin(k * dot(dirs[i], xz) - k * c * time);
     }
 
-    let splashRunUp = max(y, 0.0) * select(0.38, 0.45, isRiver) + select(0.04, 0.05, isRiver);
-    return y + splashRunUp;
+    return y;
 }
 
-/// Evaluates temporal water-contact wetness [filmWet, poreWet] over the last ~5 seconds so
-/// rock touched by recent waves stays dark/glossy while drying gradually and dry tops stay matte.
+/// Evaluates water wetness [filmWet, poreWet]:
+/// 1. Submerged / instantaneous contact (`y <= yNow`) strictly at or below the exact 3D water mesh.
+/// 2. Stationary wave-wash zone above the current trough (`y <= highWaterY`) determined by the
+///    time-independent wave crest envelope (`recentPeakScale`, which decays over ~5 s in water.d),
+///    so wetness on exposed rock never undulates or moves like shadows when water is not touching it.
 fn evalRecentWaterWetness(worldPos: vec3<f32>, time: f32, curScale: f32, recentPeakScale: f32,
                           isRiver: bool, wetNoise: f32) -> vec2<f32> {
+    let bankMask = evalRiverBankMask(worldPos, isRiver);
+
+    // 1. Exact instantaneous water surface height (strictly at/below the 3D water mesh).
     let yNow = evalExactWaveY(worldPos, time, curScale, isRiver);
-    let nowMask = 1.0 - smoothstep(yNow - 0.025, yNow + 0.025 + wetNoise, worldPos.y);
-    var filmWet = nowMask;
-    var poreWet = nowMask;
+    let submergedMask = 1.0 - smoothstep(yNow - 0.015, yNow + 0.008, worldPos.y);
 
-    let dtStep = 0.42;
-    for (var s = 1u; s <= 12u; s++) {
-        let age = f32(s) * dtStep;
-        let pastScale = mix(curScale, recentPeakScale, clamp(age / 1.5, 0.0, 1.0));
-        let yPast = evalExactWaveY(worldPos, time - age, pastScale, isRiver);
-        let hitMask = 1.0 - smoothstep(yPast - 0.02, yPast + 0.035 + wetNoise, worldPos.y);
+    // 2. Stationary high-water wave-wash envelope on the rock (ZERO time-oscillating sine waves
+    //    above water, so the wet watermark on exposed stone stays 100% still on the rock).
+    let crestEnv = select(0.32, 0.16, isRiver) * recentPeakScale * bankMask;
+    let highWaterY = crestEnv + wetNoise * 1.6;
 
-        let fd = clamp(1.0 - age / 3.4, 0.0, 1.0);
-        let pd = clamp(1.0 - age / 5.04, 0.0, 1.0);
-        let filmCurve = fd * fd * (3.0 - 2.0 * fd);
-        let poreCurve = pd * pd * (3.0 - 2.0 * pd);
+    // Normalized height within the stationary wave-wash zone: 0 at/below trough, 1 at high-water mark.
+    let troughY = -crestEnv * 0.65;
+    let hNorm = clamp((worldPos.y - troughY) / max(highWaterY - troughY, 0.02), 0.0, 1.0);
+    let inWashZone = 1.0 - smoothstep(highWaterY - 0.03, highWaterY + 0.03, worldPos.y);
 
-        filmWet = max(filmWet, hitMask * filmCurve * 0.94);
-        poreWet = max(poreWet, hitMask * poreCurve * 0.96);
-    }
+    // Glossy liquid film sits in the lower wash zone; dark porous dampness reaches highWaterY.
+    let washFilm = (1.0 - smoothstep(0.0, 0.68, hNorm)) * inWashZone * 0.88;
+    let washPore = (1.0 - smoothstep(0.15, 1.0, hNorm)) * inWashZone * 0.94;
+
+    let filmWet = max(submergedMask, washFilm);
+    let poreWet = max(submergedMask, washPore);
     return vec2<f32>(filmWet, poreWet);
 }
 
