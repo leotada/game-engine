@@ -58,7 +58,8 @@ const FLAG_WATER_RIVER: u32 = 32u;
 
 #include "common/pbr_brdf.wgsl"
 
-/// Evaluates exact 6-octave Gerstner vertical elevation matching OCEAN_WAVES / RIVER_WAVES in water.d.
+/// Evaluates 6-octave Gerstner vertical elevation (with horizontal pullback, near-rock chop,
+/// and kinetic crest splash/surge) matching OCEAN_WAVES / RIVER_WAVES in water.d.
 fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
     var bankMask = 1.0;
     if (isRiver) {
@@ -69,37 +70,87 @@ fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool)
         }
     }
 
-    var y = 0.0;
+    var dirs: array<vec2<f32>, 6>;
+    var lens: array<f32, 6>;
+    var amps: array<f32, 6>;
+    var stps: array<f32, 6>;
+    var spds: array<f32, 6>;
+
     if (isRiver) {
-        let dirs = array<vec2<f32>, 6>(
+        dirs = array<vec2<f32>, 6>(
             vec2<f32>(0.96, 0.28), vec2<f32>(0.92, -0.39), vec2<f32>(0.78, 0.62),
             vec2<f32>(0.85, -0.52), vec2<f32>(0.99, 0.14), vec2<f32>(0.72, -0.69)
         );
-        let lens = array<f32, 6>(4.4, 3.1, 2.1, 1.45, 0.95, 0.68);
-        let amps = array<f32, 6>(0.075, 0.055, 0.038, 0.024, 0.014, 0.009);
-        let spds = array<f32, 6>(1.65, 1.80, 1.95, 2.15, 2.30, 2.45);
-        for (var i = 0u; i < 6u; i++) {
-            let k = 6.2831853 / lens[i];
-            let c = sqrt(9.81 / k) * spds[i];
-            let a = amps[i] * waveScale * bankMask;
-            y += a * sin(k * dot(dirs[i], worldPos.xz) - k * c * time);
-        }
+        lens = array<f32, 6>(4.4, 3.1, 2.1, 1.45, 0.95, 0.68);
+        amps = array<f32, 6>(0.075, 0.055, 0.038, 0.024, 0.014, 0.009);
+        stps = array<f32, 6>(0.40, 0.42, 0.44, 0.38, 0.34, 0.28);
+        spds = array<f32, 6>(1.65, 1.80, 1.95, 2.15, 2.30, 2.45);
     } else {
-        let dirs = array<vec2<f32>, 6>(
+        dirs = array<vec2<f32>, 6>(
             vec2<f32>(0.86, 0.51), vec2<f32>(0.42, -0.91), vec2<f32>(-0.68, 0.73),
             vec2<f32>(0.96, -0.28), vec2<f32>(-0.22, -0.97), vec2<f32>(0.61, 0.79)
         );
-        let lens = array<f32, 6>(9.5, 6.2, 4.1, 2.7, 1.8, 1.15);
-        let amps = array<f32, 6>(0.24, 0.14, 0.08, 0.045, 0.025, 0.015);
-        let spds = array<f32, 6>(1.00, 1.15, 1.25, 1.35, 1.50, 1.65);
-        for (var i = 0u; i < 6u; i++) {
-            let k = 6.2831853 / lens[i];
-            let c = sqrt(9.81 / k) * spds[i];
-            let a = amps[i] * waveScale * bankMask;
-            y += a * sin(k * dot(dirs[i], worldPos.xz) - k * c * time);
-        }
+        lens = array<f32, 6>(9.5, 6.2, 4.1, 2.7, 1.8, 1.15);
+        amps = array<f32, 6>(0.24, 0.14, 0.08, 0.045, 0.025, 0.015);
+        stps = array<f32, 6>(0.52, 0.48, 0.44, 0.40, 0.35, 0.30);
+        spds = array<f32, 6>(1.00, 1.15, 1.25, 1.35, 1.50, 1.65);
     }
-    return y;
+
+    let rockChop = select(1.20, 1.38, isRiver);
+    let surge = select(
+        1.0,
+        1.0 + 0.22 * sin(time * 1.15 - worldPos.x * 0.35 + worldPos.z * 0.5),
+        isRiver
+    );
+    let scale = waveScale * bankMask * rockChop * surge;
+
+    var dispXZ = vec2<f32>(0.0);
+    for (var i = 0u; i < 6u; i++) {
+        let k = 6.2831853 / lens[i];
+        let c = sqrt(9.81 / k) * spds[i];
+        let a = amps[i] * scale;
+        let phase = k * dot(dirs[i], worldPos.xz) - k * c * time;
+        dispXZ += (stps[i] * a) * dirs[i] * cos(phase);
+    }
+
+    let xz = worldPos.xz - dispXZ;
+    var y = 0.0;
+    for (var i = 0u; i < 6u; i++) {
+        let k = 6.2831853 / lens[i];
+        let c = sqrt(9.81 / k) * spds[i];
+        let a = amps[i] * scale;
+        y += a * sin(k * dot(dirs[i], xz) - k * c * time);
+    }
+
+    let splashRunUp = max(y, 0.0) * select(0.38, 0.45, isRiver) + select(0.04, 0.05, isRiver);
+    return y + splashRunUp;
+}
+
+/// Evaluates temporal water-contact wetness [filmWet, poreWet] over the last ~5 seconds so
+/// rock touched by recent waves stays dark/glossy while drying gradually and dry tops stay matte.
+fn evalRecentWaterWetness(worldPos: vec3<f32>, time: f32, curScale: f32, recentPeakScale: f32,
+                          isRiver: bool, wetNoise: f32) -> vec2<f32> {
+    let yNow = evalExactWaveY(worldPos, time, curScale, isRiver);
+    let nowMask = 1.0 - smoothstep(yNow - 0.025, yNow + 0.025 + wetNoise, worldPos.y);
+    var filmWet = nowMask;
+    var poreWet = nowMask;
+
+    let dtStep = 0.42;
+    for (var s = 1u; s <= 12u; s++) {
+        let age = f32(s) * dtStep;
+        let pastScale = mix(curScale, recentPeakScale, clamp(age / 1.5, 0.0, 1.0));
+        let yPast = evalExactWaveY(worldPos, time - age, pastScale, isRiver);
+        let hitMask = 1.0 - smoothstep(yPast - 0.02, yPast + 0.035 + wetNoise, worldPos.y);
+
+        let fd = clamp(1.0 - age / 3.4, 0.0, 1.0);
+        let pd = clamp(1.0 - age / 5.04, 0.0, 1.0);
+        let filmCurve = fd * fd * (3.0 - 2.0 * fd);
+        let poreCurve = pd * pd * (3.0 - 2.0 * pd);
+
+        filmWet = max(filmWet, hitMask * filmCurve * 0.94);
+        poreWet = max(poreWet, hitMask * poreCurve * 0.96);
+    }
+    return vec2<f32>(filmWet, poreWet);
 }
 
 struct VertexInput {
@@ -196,25 +247,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let enableWaterFx = (mat.flags & FLAG_WATER_WETLINE) != 0u;
     let waterIsRiver = (mat.flags & FLAG_WATER_RIVER) != 0u;
     let waterTime = mat._pad0;
-    let waterScale = max(mat._pad1, 0.01);
+    let packedScale = mat._pad1;
+    let waterScale = select(max(packedScale, 0.01), max(floor(packedScale) * 0.001, 0.01), packedScale >= 10.0);
+    let recentPeakScale = select(waterScale, max(fract(packedScale) * 4.0, waterScale), packedScale >= 10.0);
     var coatW = mat.coatWeight;
     var coatR = mat.coatRoughness;
+    var coatIor = mat.coatIor;
     var coatDark = mat.coatDarkening;
     var coatCol = mat.coatColor;
     var effectiveRoughness = coatRoughenBase(roughness, mat.coatRoughness, mat.coatWeight);
 
     if (enableWaterFx) {
-        let waterSurfY = evalExactWaveY(in.worldPos, waterTime, waterScale, waterIsRiver);
         let wetNoise = (fract(sin(dot(in.worldPos.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
-        let wetBand = 1.0 - smoothstep(waterSurfY - 0.025, waterSurfY + 0.035 + wetNoise, in.worldPos.y);
-        // Strictly overwrite coat & darkening above the waterline so dry emergent rocks stay matte.
-        coatW = mat.coatWeight * wetBand;
-        coatDark = mat.coatDarkening * wetBand;
-        coatR = mix(0.35, mat.coatRoughness, wetBand);
-        coatCol = mix(vec3<f32>(1.0), mix(mat.coatColor, vec3<f32>(0.84, 0.94, 0.95), 0.55), wetBand);
+        let wetState = evalRecentWaterWetness(in.worldPos, waterTime, waterScale, recentPeakScale, waterIsRiver, wetNoise);
+        let filmWet = wetState.x;
+        let poreWet = wetState.y;
+        let anyWet = max(filmWet, poreWet);
+        // Apply water-film coat + damp darkening where waves touched within ~5 s; keep dry stone matte.
+        coatW = max(mat.coatWeight, 0.92) * filmWet;
+        coatDark = max(mat.coatDarkening, 0.76) * poreWet;
+        coatR = mix(0.38, min(mat.coatRoughness, 0.055), filmWet);
+        coatIor = mix(mat.coatIor, 1.333, anyWet);
+        coatCol = mix(vec3<f32>(1.0), mix(mat.coatColor, vec3<f32>(0.84, 0.94, 0.95), 0.55), poreWet);
         let dryRough = clamp(max(roughness, 0.88), 0.04, 1.0);
-        let wetRough = coatRoughenBase(clamp(roughness * 0.62, 0.04, 1.0), coatR, coatW);
-        effectiveRoughness = mix(dryRough, wetRough, wetBand);
+        let dampRough = clamp(roughness * 0.58, 0.04, 1.0);
+        let wetRough = coatRoughenBase(mix(dryRough, dampRough, poreWet), coatR, coatW);
+        effectiveRoughness = mix(dryRough, wetRough, max(filmWet, poreWet * 0.65));
     }
 
     let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, effectiveRoughness)).rgb;
@@ -242,7 +300,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.coatWeight = coatW;
     pbrIn.coatColor = coatCol;
     pbrIn.coatRoughness = coatR;
-    pbrIn.coatIor = mat.coatIor;
+    pbrIn.coatIor = coatIor;
     pbrIn.coatDarkening = coatDark;
     pbrIn.fuzzWeight = mat.fuzzWeight;
     pbrIn.fuzzColor = mat.fuzzColor;
@@ -306,7 +364,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // --- IBL ---
     let f0Dielectric = dielectricF0UnderCoat(
-        mat.specularIor, mat.coatIor, coatW, mat.specularWeight, mat.specularColor
+        mat.specularIor, coatIor, coatW, mat.specularWeight, mat.specularColor
     );
     let f0Base = mix(f0Dielectric, baseColor, metalness);
     var F_ibl = fresnelSchlickRoughness(NdotV, f0Base, effectiveRoughness);
@@ -316,7 +374,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness);
-    let baseAlbedoIbl = applyCoatDarkening(baseColor, mat.coatIor, coatW, coatDark);
+    let baseAlbedoIbl = applyCoatDarkening(baseColor, coatIor, coatW, coatDark);
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
     let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
 
@@ -342,7 +400,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (coatW > 0.001) {
         let cW = clamp(coatW, 0.0, 1.0);
         let cR = clamp(coatR, 0.04, 1.0);
-        let f0Coat = vec3<f32>(dielectricF0Scalar(mat.coatIor));
+        let f0Coat = vec3<f32>(dielectricF0Scalar(coatIor));
         let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, cR) * cW;
         coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, cR)).rg;

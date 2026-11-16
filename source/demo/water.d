@@ -9,7 +9,7 @@
 /// atmospheric sky dome with drifting clouds and sun corona.
 module demo.water;
 
-import std.math : cos, fabs, sin, sqrt, tan, PI, PI_2;
+import std.math : cos, fabs, floor, sin, sqrt, tan, PI, PI_2;
 
 import bindings.wgpu;
 import engine.app;
@@ -1434,6 +1434,7 @@ void main(string[] args) {
     size_t gcEndBytes = 0;
 
     float time = capturePath.length > 0 ? 1.8f : 0.0f;
+    float wetMemoryScale = 1.0f;
     uint frameNum = 0;
     while (app.running()) {
         if (maxFrames > 0 && frameNum >= maxFrames) break;
@@ -1472,26 +1473,38 @@ void main(string[] args) {
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
+        if (waveScale >= wetMemoryScale) {
+            wetMemoryScale = waveScale;
+        } else {
+            wetMemoryScale -= dt * 0.28f;
+            if (wetMemoryScale < waveScale) wetMemoryScale = waveScale;
+        }
         immutable bool propWaterFx = !noWater && renderStage >= 3;
 
         if (paramsDirty || propWaterFx) {
             immutable uint waterFlagBits = propWaterFx
                 ? (MaterialFlags.waterWetCaustics | (riverMode ? MaterialFlags.waterRiverMode : 0u))
                 : 0u;
+            immutable float memFrac = wetMemoryScale * 0.25f;
+            immutable float clampedMem = memFrac < 0.001f ? 0.001f : (memFrac > 0.999f ? 0.999f : memFrac);
+            immutable float packedPad1 = floor(waveScale * 1000.0f + 0.5f) + clampedMem;
             void applyWaterFx(ref MaterialParams p) {
                 p.flags |= waterFlagBits;
                 if (propWaterFx) {
                     p._pad0 = time;
-                    p._pad1 = waveScale;
+                    p._pad1 = packedPad1;
                 }
             }
+            auto dryP  = buildDryRockParams();
             auto wetP  = buildWetRockParams(useOpenPbr);
             auto mossP = buildMossRockParams(useOpenPbr);
             auto subP  = buildSubmergedRockParams(useOpenPbr);
+            applyWaterFx(dryP);
             applyWaterFx(wetP);
             applyWaterFx(mossP);
             applyWaterFx(subP);
             foreach (ref mg; rockMats) {
+                mg.dry.updateParams(app.gpu, dryP);
                 mg.wet.updateParams(app.gpu, wetP);
                 mg.moss.updateParams(app.gpu, mossP);
                 mg.submerged.updateParams(app.gpu, subP);
