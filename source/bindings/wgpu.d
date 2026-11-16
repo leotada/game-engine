@@ -998,6 +998,7 @@ void wgpuTextureViewRelease(WGPUTextureView view);
 
 // CommandEncoder
 void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder encoder, const(WGPUImageCopyTexture)* source, const(WGPUImageCopyBuffer)* destination, const(WGPUExtent3D)* copySize);
+void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder encoder, const(WGPUImageCopyTexture)* source, const(WGPUImageCopyTexture)* destination, const(WGPUExtent3D)* copySize);
 WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder encoder, const(WGPURenderPassDescriptor)* descriptor);
 WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder encoder, const(WGPUCommandBufferDescriptor)* descriptor);
 void wgpuCommandEncoderAddRef(WGPUCommandEncoder encoder);

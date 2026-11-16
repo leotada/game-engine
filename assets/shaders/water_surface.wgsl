@@ -11,6 +11,9 @@
 #include "common/water_env.wgsl"
 
 @group(1) @binding(0) var<uniform> wu: WaterUniforms;
+@group(1) @binding(1) var sceneColorMap: texture_2d<f32>;
+@group(1) @binding(2) var sceneDepthMap: texture_depth_2d;
+@group(1) @binding(3) var sceneLinearSampler: sampler;
 
 @group(2) @binding(0) var irradianceMap: texture_cube<f32>;
 @group(2) @binding(1) var specularMap: texture_cube<f32>;
@@ -39,8 +42,22 @@ fn vs_main(v: VertexInput) -> VertexOutput {
     let riverMode = wu.flags0.x;
     let waveCount = min(wu.counts.y, 6u);
 
-    let x = v.position.x;
-    let z = v.position.z;
+    let x0 = v.position.x;
+    let z0 = v.position.z;
+
+    // WTR-5: Expand outer skirt toward the atmospheric horizon in Ocean mode while keeping
+    // high vertex density in the 28m interaction zone around rocks, buoys, and shoreline.
+    var x = x0;
+    var z = z0;
+    var distAtten = 1.0;
+    if (riverMode == 0u) {
+        let cheb = max(abs(v.uv.x - 0.5), abs(v.uv.y - 0.5)) * 2.0;
+        let tSkirt = clamp((cheb - 0.72) / 0.28, 0.0, 1.0);
+        let skirtScale = mix(1.0, 10.714, tSkirt * tSkirt * tSkirt);
+        x = x0 * skirtScale;
+        z = z0 * skirtScale;
+        distAtten = 1.0 - smoothstep(18.0, 125.0, length(vec2<f32>(x, z))) * 0.92;
+    }
 
     var bankMask = 1.0;
     if (riverMode != 0u) {
@@ -73,7 +90,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         let dirZ = wa.y;
         let k = (2.0 * PI) / max(wa.z, 0.1);
         let c = sqrt(9.81 / k) * wb.y;
-        let a = wa.w * waveScale * bankMask * rockChop;
+        let a = wa.w * waveScale * bankMask * rockChop * distAtten;
         let q = wb.x;
 
         let phase = k * (dirX * x + dirZ * z) - k * c * time;
@@ -103,11 +120,16 @@ fn vs_main(v: VertexInput) -> VertexOutput {
     var T = normalize(dPdx);
     T = normalize(T - N * dot(N, T));
 
+    // WTR-6: Gerstner surface Jacobian captures horizontal wave-crest compression/folding.
+    let jacobian = dPdx.x * dPdz.z - dPdx.z * dPdz.x;
+    let foldCrest = clamp((0.88 - jacobian) * 1.35, 0.0, 1.0);
+    let waveCrest = crestAccum / max(f32(waveCount), 1.0);
+
     var out: VertexOutput;
     out.worldPos = p;
     out.worldNormal = N;
     out.worldTangent = T;
-    out.crestFactor = crestAccum / max(f32(waveCount), 1.0);
+    out.crestFactor = clamp(max(waveCrest, foldCrest), 0.0, 1.0);
     out.baseXZ = vec2<f32>(x, z);
     out.clipPos = frame.viewProj * vec4<f32>(p, 1.0);
     return out;
@@ -145,13 +167,14 @@ fn evalRiverFlowAndWake(xz: vec2<f32>, riverMode: u32, time: f32,
         let ring = 1.0 - smoothstep(r * 0.45, r * 0.94, dist + jitter);
         contactMask = max(contactMask, ring * ob.w);
 
-        // Downstream +X turbulent V-wake behind river obstacles.
-        if (riverMode != 0u && rel.x > -r * 0.20 && rel.x < r * 4.0) {
-            let downT = clamp((rel.x + r * 0.20) / (r * 4.0), 0.0, 1.0);
-            let wakeHalfW = r * (0.58 + downT * 0.85);
-            let zFit = 1.0 - smoothstep(wakeHalfW * 0.30, wakeHalfW, abs(rel.y));
+        // Downstream +X turbulent V-wake + oscillating vortex ripples behind river obstacles.
+        if (riverMode != 0u && rel.x > -r * 0.20 && rel.x < r * 4.8) {
+            let downT = clamp((rel.x + r * 0.20) / (r * 4.8), 0.0, 1.0);
+            let wakeHalfW = r * (0.58 + downT * 0.92);
+            let vRipple = 0.72 + 0.28 * sin(rel.x * 5.2 - abs(rel.y) * 4.0 - time * 6.5);
+            let zFit = 1.0 - smoothstep(wakeHalfW * 0.28, wakeHalfW, abs(rel.y));
             let axialFade = (1.0 - downT) * smoothstep(0.0, 0.14, downT + 0.08);
-            wakeMask = max(wakeMask, zFit * axialFade * ob.w * 0.92);
+            wakeMask = max(wakeMask, zFit * axialFade * ob.w * 0.92 * vRipple);
         }
     }
 
@@ -240,10 +263,14 @@ fn evalFoamPattern(xz: vec2<f32>, flowVel: vec2<f32>, time: f32,
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let time       = wu.params0.x;
     let waveScale  = wu.params0.y;
+    let nearZ      = max(wu.params0.z, 0.01);
+    let farZ       = max(wu.params0.w, nearZ + 1.0);
     let riverMode  = wu.flags0.x;
     let useOpenPbr = wu.flags0.y != 0u;
     let transparent = wu.flags0.z != 0u;
     let lowSun     = wu.flags0.w;
+    let enableRefraction = wu.counts.z != 0u;
+    let enableSsr        = wu.counts.w != 0u;
 
     let toCam = frame.cameraPos - in.worldPos;
     let camDist = length(toCam);
@@ -254,9 +281,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let flowVel = flowWake.xy;
     let obstacleWake = flowWake.z;
 
-    // 2. Procedural capillary normal perturbation with distance anti-aliasing.
+    // 2. Procedural capillary normal perturbation with distance anti-aliasing + roughness AA.
     let rawSlope = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale);
-    let aaAtten = 1.0 / (1.0 + camDist * 0.055);
+    let aaAtten = 1.0 / (1.0 + camDist * 0.065 + camDist * camDist * 0.0045);
     let slope = rawSlope * aaAtten;
 
     let N_macro = normalize(in.worldNormal);
@@ -266,10 +293,50 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let B = cross(N, T);
     let NdotV = max(dot(N, V), 0.001);
 
-    // 3. Analytical Beer-Lambert column depth & spectral water absorption.
+    // 3. Column depth, screen-space refraction & Beer-Lambert spectral absorption.
     let bedY = evalRiverBedY(in.worldPos.xz, riverMode, wu.obstacles, wu.counts.x);
-    let verticalDepth = max(in.worldPos.y - bedY, 0.03);
-    let rayDepth = min(verticalDepth / max(abs(V.y), 0.25), 4.5);
+    var verticalDepth = max(in.worldPos.y - bedY, 0.03);
+    var rayDepth = min(verticalDepth / max(abs(V.y), 0.25), 4.5);
+
+    var refractedBg = vec3<f32>(0.0);
+    var rawRayThickness = rayDepth;
+    var geomContact = 0.0;
+    let depthDims = vec2<i32>(textureDimensions(sceneDepthMap, 0));
+    let dimsF = vec2<f32>(depthDims);
+    let baseUv = in.clipPos.xy / max(dimsF, vec2<f32>(1.0));
+    let centerPix = clamp(vec2<i32>(in.clipPos.xy), vec2<i32>(0), depthDims - vec2<i32>(1));
+    let waterLinZ = linearizeDepth(in.clipPos.z, nearZ, farZ);
+
+    if (enableRefraction) {
+        let rawBgDepth = textureLoad(sceneDepthMap, centerPix, 0);
+        let bgLinZ = select(linearizeDepth(rawBgDepth, nearZ, farZ), waterLinZ + 6.0, rawBgDepth >= 0.9995);
+        rawRayThickness = max(bgLinZ - waterLinZ, 0.0);
+        verticalDepth = rawRayThickness * max(abs(V.y), 0.22);
+
+        let refractScale = clamp(rawRayThickness * 0.26, 0.0, 0.036) / max(waterLinZ * 0.14, 0.65);
+        let refrUv = clamp(baseUv + N.xz * refractScale, vec2<f32>(0.002), vec2<f32>(0.998));
+        let refrPix = clamp(vec2<i32>(refrUv * dimsF), vec2<i32>(0), depthDims - vec2<i32>(1));
+        let refrRawDepth = textureLoad(sceneDepthMap, refrPix, 0);
+        let refrLinZ = select(linearizeDepth(refrRawDepth, nearZ, farZ), waterLinZ + 6.0, refrRawDepth >= 0.9995);
+
+        // Reject refracted pixels belonging to foreground geometry sitting above the water surface.
+        let validRefr = refrLinZ >= waterLinZ - 0.02;
+        let finalUv = select(baseUv, refrUv, validRefr);
+        let chosenRayZ = select(rawRayThickness, max(refrLinZ - waterLinZ, 0.0), validRefr);
+        rayDepth = min(chosenRayZ, 6.0);
+
+        // Subtle chromatic dispersion across R/G/B refraction offsets in clear shallows.
+        let uvDelta = (finalUv - baseUv) * 0.08;
+        let cR = textureSampleLevel(sceneColorMap, sceneLinearSampler, clamp(finalUv + uvDelta, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).r;
+        let cG = textureSampleLevel(sceneColorMap, sceneLinearSampler, finalUv, 0.0).g;
+        let cB = textureSampleLevel(sceneColorMap, sceneLinearSampler, clamp(finalUv - uvDelta, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).b;
+        refractedBg = max(vec3<f32>(cR, cG, cB), vec3<f32>(0.0));
+
+        // Geometry-exact 3D shoreline contact band hugging emergent rocks, piers, and embankments
+        // (strictly 0..8-11 cm at the true surface intersection so deeper submerged boulders stay clear).
+        let shoreBandDepth = select(0.08, 0.11, riverMode != 0u);
+        geomContact = (1.0 - smoothstep(0.005, shoreBandDepth, verticalDepth)) * select(0.86, 0.95, riverMode != 0u);
+    }
 
     // Absorption coefficients: red absorbs fastest, blue/cyan travels deepest.
     let sigma = select(
@@ -283,16 +350,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let deepCol    = select(vec3<f32>(0.008, 0.052, 0.115), vec3<f32>(0.015, 0.095, 0.090), riverMode != 0u);
     let waterVolumeCol = mix(deepCol, shallowCol, transmittance.g);
 
-    // 4. Crisp lacy procedural foam mask (crest whitecaps + rock/pier wakes + bank wash).
+    // 4. Crisp lacy procedural foam mask (crest whitecaps + geometry contacts + wakes).
     let foamMask = evalFoamPattern(
-        in.worldPos.xz, flowVel, time, in.crestFactor, obstacleWake, verticalDepth, waveScale, riverMode);
+        in.worldPos.xz, flowVel, time, in.crestFactor, max(obstacleWake, geomContact), verticalDepth, waveScale, riverMode);
 
     let foamColor = vec3<f32>(0.92, 0.94, 0.96);
-    let baseColor = mix(waterVolumeCol, foamColor, foamMask);
+    let bodyScatterWeight = select(vec3<f32>(1.0), vec3<f32>(1.0) - transmittance * 0.72, enableRefraction);
+    let baseColor = mix(waterVolumeCol * bodyScatterWeight, foamColor, foamMask);
 
     // 5. OpenPBR v1.1 vs Legacy PBR parameter assignment (supports [4] A/B toggle).
     var roughness = select(0.08, select(0.075, 0.12, riverMode != 0u), useOpenPbr);
-    roughness = clamp(mix(roughness, 0.84, foamMask), 0.025, 0.95);
+    let distRoughBoost = (1.0 - aaAtten) * 0.22;
+    roughness = clamp(mix(roughness + distRoughBoost, 0.84, foamMask), 0.025, 0.95);
     let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, roughness)).rg;
     let directionalAlbedo = lutBase.r + lutBase.g;
 
@@ -383,7 +452,73 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let R = reflect(-V, iblNormal);
     let mip = roughness * SPECULAR_MIPS;
     let iblSpec = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
-    let procSky = evalWaterSky(R, sunL, frame.dirLight.color, lowSun, time);
+    var procSky = evalWaterSky(R, sunL, frame.dirLight.color, lowSun, time);
+
+    // WTR-4: Screen-Space Reflections raymarch against opaque snapshot color & depth.
+    var ssrColor = vec3<f32>(0.0);
+    var ssrWeight = 0.0;
+    if (enableSsr && R.y > 0.025 && camDist < 34.0) {
+        let maxDist = 14.0;
+        let stepLen = maxDist / 16.0;
+        let ign = fract(52.9829189 * fract(dot(in.clipPos.xy, vec2<f32>(0.06711056, 0.00583715))));
+        var tPrev = 0.10 + stepLen * 0.45 * ign;
+        for (var s = 0; s < 16; s++) {
+            let tCur = tPrev + stepLen;
+            let rayP = in.worldPos + R * tCur;
+            if (rayP.y < 0.02) {
+                tPrev = tCur;
+                continue;
+            }
+            let clip = frame.viewProj * vec4<f32>(rayP, 1.0);
+            if (clip.w <= 0.05) {
+                break;
+            }
+            let ndc = clip.xyz / clip.w;
+            let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+            if (uv.x <= 0.002 || uv.x >= 0.998 || uv.y <= 0.002 || uv.y >= 0.998 || ndc.z <= 0.0 || ndc.z >= 1.0) {
+                break;
+            }
+            let sPix = clamp(vec2<i32>(uv * dimsF), vec2<i32>(0), depthDims - vec2<i32>(1));
+            let sRawZ = textureLoad(sceneDepthMap, sPix, 0);
+            if (sRawZ < 0.9992) {
+                let sceneLin = linearizeDepth(sRawZ, nearZ, farZ);
+                let rayLin = linearizeDepth(ndc.z, nearZ, farZ);
+                let diff = rayLin - sceneLin;
+                if (diff > 0.02 && diff < (0.28 + 0.05 * tCur)) {
+                    // 3-step binary refinement between tPrev and tCur.
+                    var lo = tPrev;
+                    var hi = tCur;
+                    var bestUv = uv;
+                    for (var b = 0; b < 3; b++) {
+                        let mid = (lo + hi) * 0.5;
+                        let mClip = frame.viewProj * vec4<f32>(in.worldPos + R * mid, 1.0);
+                        let mNdc = mClip.xyz / max(mClip.w, 0.05);
+                        let mUv = clamp(vec2<f32>(mNdc.x * 0.5 + 0.5, 0.5 - mNdc.y * 0.5), vec2<f32>(0.002), vec2<f32>(0.998));
+                        let mPix = clamp(vec2<i32>(mUv * dimsF), vec2<i32>(0), depthDims - vec2<i32>(1));
+                        let mRawZ = textureLoad(sceneDepthMap, mPix, 0);
+                        let mSceneLin = linearizeDepth(mRawZ, nearZ, farZ);
+                        let mRayLin = linearizeDepth(mNdc.z, nearZ, farZ);
+                        if (mRayLin > mSceneLin && mRawZ < 0.9992) {
+                            hi = mid;
+                            bestUv = mUv;
+                        } else {
+                            lo = mid;
+                        }
+                    }
+                    ssrColor = max(textureSampleLevel(sceneColorMap, sceneLinearSampler, bestUv, 0.0).rgb, vec3<f32>(0.0));
+                    let edgeFade = smoothstep(0.0, 0.10, min(bestUv.x, 1.0 - bestUv.x))
+                                 * smoothstep(0.0, 0.12, min(bestUv.y, 1.0 - bestUv.y));
+                    let roughFade = 1.0 - smoothstep(0.10, 0.45, roughness);
+                    let distFade = (1.0 - smoothstep(8.0, maxDist, tCur)) * (1.0 - smoothstep(22.0, 34.0, camDist));
+                    ssrWeight = edgeFade * roughFade * distFade * (1.0 - foamMask);
+                    break;
+                }
+            }
+            tPrev = tCur;
+        }
+    }
+    procSky = mix(procSky, ssrColor, ssrWeight);
+
     // Low-roughness liquid reflects sharp procedural sky & sun disc; rough foam falls back to IBL.
     let prefiltered = mix(procSky, iblSpec, clamp(roughness * 1.4, 0.0, 0.85));
     let E_o = clamp(directionalAlbedo, 0.05, 1.0);
@@ -398,7 +533,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         coatFresnelMax = Fc_ibl.r;
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
         let coatRefl = reflect(-V, N);
-        let coatSky = evalWaterSky(coatRefl, sunL, frame.dirLight.color, lowSun, time);
+        let coatSky = mix(evalWaterSky(coatRefl, sunL, frame.dirLight.color, lowSun, time), ssrColor, ssrWeight * 0.92);
         let coatIblSpec = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
         let coatEnv = mix(coatSky, coatIblSpec, 0.12);
         let f90Coat = max(1.0 - coatR, f0Coat.x);
@@ -426,24 +561,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sssTint = select(vec3<f32>(0.02, 0.15, 0.18), vec3<f32>(0.03, 0.16, 0.14), riverMode != 0u);
     let sss = sssTint * sunRad * (0.15 + 0.85 * dirShadow) * backLit * crestThin * (1.0 - foamMask) * 0.28;
 
+    let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
+    let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
+
     var color = max(direct + ambient + sss, vec3<f32>(0.0));
-
-    // Gentle distant horizon haze blending seamlessly into sky_dome.
-    let fogFactor = smoothstep(20.0, 56.0, camDist) * 0.35;
-    let fogCol = evalWaterSky(normalize(-toCam), sunL, frame.dirLight.color, lowSun, time);
-    color = mix(color, fogCol, fogFactor);
-
-    // 8. Physical Beer-Lambert absorption + Fresnel reflection + opaque whitecaps.
     var outAlpha = 1.0;
-    if (transparent) {
+
+    if (enableRefraction && transparent) {
+        // Real Single-Layer Water optical composition: attenuated refracted scene behind surface,
+        // with Fresnel sky/SSR reflection & foam layered on top and 3cm meniscus edge feathering.
+        let refrVis = (1.0 - viewReflectance * 0.85) * (1.0 - foamMask);
+        color += refractedBg * transmittance * refrVis;
+        outAlpha = clamp(smoothstep(0.0, 0.03, rawRayThickness), 0.0, 1.0);
+        outAlpha = max(outAlpha, foamMask);
+    } else if (transparent) {
         let oceanDepthAlpha = clamp(0.32 + 0.60 * (1.0 - exp(-rayDepth * 0.85)), 0.32, 0.92);
         let riverDepthAlpha = clamp(1.0 - exp(-rayDepth * 0.65), 0.22, 0.86);
         let depthAlpha = select(oceanDepthAlpha, riverDepthAlpha, riverMode != 0u);
-        let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
-        let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
         let waterAlpha = mix(depthAlpha, 1.0, viewReflectance * 0.92);
         outAlpha = mix(waterAlpha, 0.97, foamMask);
     }
+
+    // Gentle distant horizon haze blending seamlessly into sky_dome (extended ocean reach in WTR-5).
+    let fogFactor = select(
+        smoothstep(26.0, 115.0, camDist) * 0.92,
+        smoothstep(20.0, 56.0, camDist) * 0.35,
+        riverMode != 0u
+    );
+    let fogCol = evalWaterSky(normalize(-toCam), sunL, frame.dirLight.color, lowSun, time);
+    color = mix(color, fogCol, fogFactor);
 
     return vec4<f32>(color, outAlpha);
 }

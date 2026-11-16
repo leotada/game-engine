@@ -4,6 +4,8 @@ module engine.gpu.renderer;
 import bindings.wgpu;
 import engine.gpu.context;
 import engine.gpu.post : PostProcessor, PostSettings, SCENE_COLOR_FORMAT;
+import engine.gpu.shader : createShaderModule;
+import engine.gpu.shaders : depthCopyShaderSource;
 import engine.graphics.types : Color4;
 import engine.core.log;
 
@@ -28,6 +30,17 @@ struct Renderer {
     // Frame capture (screenshots for verification): readback buffer filled during endFrame.
     private WGPUBuffer captureBuf;
     private uint captureStride, captureW, captureH;
+    // Lazy opt-in opaque snapshot (HDR color copy + depth32Float resolve for water/transmission).
+    private bool snapshotActive = false;
+    private WGPUTexture        opaqueColorTex;
+    private WGPUTextureView    opaqueColorView_;
+    private WGPUTexture        opaqueDepthTex;
+    private WGPUTextureView    opaqueDepthView_;
+    private WGPUShaderModule   depthCopySM;
+    private WGPUBindGroupLayout depthCopyBGL;
+    private WGPUPipelineLayout depthCopyPL;
+    private WGPURenderPipeline depthCopyPipe;
+    private WGPUBindGroup      depthCopyBG;
 
     @disable this(this);
 
@@ -66,7 +79,7 @@ struct Renderer {
         // Depth
         {
             WGPUTextureDescriptor desc;
-            desc.usage     = WGPUTextureUsage.renderAttachment;
+            desc.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
             desc.dimension = WGPUTextureDimension.dim2D;
             desc.size      = WGPUExtent3D(w, h, 1);
             desc.format    = WGPUTextureFormat.depth24Plus;
@@ -74,13 +87,14 @@ struct Renderer {
             WGPUTextureViewDescriptor viewDesc;
             viewDesc.format    = WGPUTextureFormat.depth24Plus;
             viewDesc.dimension = WGPUTextureViewDimension.dim2D;
+            viewDesc.aspect    = WGPUTextureAspect.depthOnly;
             depthView = wgpuTextureCreateView(depthTexture, &viewDesc);
         }
 
         // HDR color
         {
             WGPUTextureDescriptor desc;
-            desc.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
+            desc.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding | WGPUTextureUsage.copySrc;
             desc.dimension = WGPUTextureDimension.dim2D;
             desc.size      = WGPUExtent3D(w, h, 1);
             desc.format    = SCENE_COLOR_FORMAT;
@@ -92,10 +106,189 @@ struct Renderer {
             hdrView = wgpuTextureCreateView(hdrTexture, &viewDesc);
         }
 
+        if (snapshotActive) {
+            createSnapshotTargets(w, h);
+        }
+
         post.resize(w, h);
     }
 
+    private void createSnapshotTargets(uint w, uint h) nothrow @nogc @trusted {
+        releaseSnapshotTargets();
+        if (w == 0 || h == 0) return;
+
+        {
+            WGPUTextureDescriptor td;
+            td.usage     = WGPUTextureUsage.copyDst | WGPUTextureUsage.textureBinding;
+            td.dimension = WGPUTextureDimension.dim2D;
+            td.size      = WGPUExtent3D(w, h, 1);
+            td.format    = SCENE_COLOR_FORMAT;
+            opaqueColorTex = wgpuDeviceCreateTexture(device, &td);
+            if (opaqueColorTex is null) fatal("Opaque color snapshot texture creation failed");
+            WGPUTextureViewDescriptor vd;
+            vd.format    = SCENE_COLOR_FORMAT;
+            vd.dimension = WGPUTextureViewDimension.dim2D;
+            opaqueColorView_ = wgpuTextureCreateView(opaqueColorTex, &vd);
+        }
+
+        {
+            WGPUTextureDescriptor td;
+            td.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
+            td.dimension = WGPUTextureDimension.dim2D;
+            td.size      = WGPUExtent3D(w, h, 1);
+            td.format    = WGPUTextureFormat.depth32Float;
+            opaqueDepthTex = wgpuDeviceCreateTexture(device, &td);
+            if (opaqueDepthTex is null) fatal("Opaque depth snapshot texture creation failed");
+            WGPUTextureViewDescriptor vd;
+            vd.format    = WGPUTextureFormat.depth32Float;
+            vd.dimension = WGPUTextureViewDimension.dim2D;
+            vd.aspect    = WGPUTextureAspect.depthOnly;
+            opaqueDepthView_ = wgpuTextureCreateView(opaqueDepthTex, &vd);
+        }
+
+        if (depthCopyBGL !is null && depthView !is null) {
+            WGPUBindGroupEntry bge;
+            bge.binding = 0;
+            bge.textureView = depthView;
+            WGPUBindGroupDescriptor bgd;
+            bgd.layout = depthCopyBGL;
+            bgd.entryCount = 1;
+            bgd.entries = &bge;
+            depthCopyBG = wgpuDeviceCreateBindGroup(device, &bgd);
+        }
+    }
+
+    private void releaseSnapshotTargets() nothrow @nogc @trusted {
+        if (depthCopyBG !is null)      { wgpuBindGroupRelease(depthCopyBG); depthCopyBG = null; }
+        if (opaqueDepthView_ !is null) { wgpuTextureViewRelease(opaqueDepthView_); opaqueDepthView_ = null; }
+        if (opaqueDepthTex !is null)   { wgpuTextureRelease(opaqueDepthTex); opaqueDepthTex = null; }
+        if (opaqueColorView_ !is null) { wgpuTextureViewRelease(opaqueColorView_); opaqueColorView_ = null; }
+        if (opaqueColorTex !is null)   { wgpuTextureRelease(opaqueColorTex); opaqueColorTex = null; }
+    }
+
+    private void ensureOpaqueSnapshot() nothrow @nogc @trusted {
+        if (depthCopyPipe is null) {
+            WGPUBindGroupLayoutEntry bgle;
+            bgle.binding = 0;
+            bgle.visibility = WGPUShaderStage.fragment;
+            bgle.texture.sampleType = WGPUTextureSampleType.depth;
+            bgle.texture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+            WGPUBindGroupLayoutDescriptor bgld;
+            bgld.entryCount = 1;
+            bgld.entries = &bgle;
+            depthCopyBGL = wgpuDeviceCreateBindGroupLayout(device, &bgld);
+
+            WGPUPipelineLayoutDescriptor pld;
+            pld.bindGroupLayoutCount = 1;
+            pld.bindGroupLayouts = &depthCopyBGL;
+            depthCopyPL = wgpuDeviceCreatePipelineLayout(device, &pld);
+
+            static immutable string depthCopySrc = depthCopyShaderSource;
+            depthCopySM = createShaderModule(device, depthCopySrc);
+            if (depthCopySM is null) fatal("Failed to compile depth_copy.wgsl");
+
+            WGPUFragmentState fs;
+            fs.module_ = depthCopySM;
+            fs.entryPoint = wgpuStringView("fs_main");
+            fs.targetCount = 0;
+            fs.targets = null;
+
+            WGPUDepthStencilState ds;
+            ds.format = WGPUTextureFormat.depth32Float;
+            ds.depthWriteEnabled = WGPUOptionalBool.true_;
+            ds.depthCompare = WGPUCompareFunction.always;
+
+            WGPURenderPipelineDescriptor pd;
+            pd.layout = depthCopyPL;
+            pd.vertex.module_ = depthCopySM;
+            pd.vertex.entryPoint = wgpuStringView("vs_main");
+            pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+            pd.primitive.frontFace = WGPUFrontFace.ccw;
+            pd.primitive.cullMode = WGPUCullMode.none;
+            pd.depthStencil = &ds;
+            pd.fragment = &fs;
+            pd.multisample.count = 1;
+            pd.multisample.mask = ~0u;
+            depthCopyPipe = wgpuDeviceCreateRenderPipeline(device, &pd);
+            if (depthCopyPipe is null) fatal("Failed to create depth copy pipeline");
+        }
+        snapshotActive = true;
+        if (opaqueColorTex is null && rtW > 0 && rtH > 0) {
+            createSnapshotTargets(rtW, rtH);
+        }
+    }
+
+    /// Snapshot the current opaque HDR color and depth buffers for subsequent
+    /// refractive/SSR draws, then reopen the HDR pass with loadOp = load.
+    void snapshotOpaque(ref FrameContext frame) nothrow @nogc @trusted {
+        if (!frame.valid || frame.postResolved) return;
+        ensureOpaqueSnapshot();
+        if (opaqueColorTex is null || opaqueDepthView_ is null || depthCopyBG is null) return;
+
+        wgpuRenderPassEncoderEnd(frame.pass);
+        wgpuRenderPassEncoderRelease(frame.pass);
+        frame.pass = null;
+
+        {
+            WGPUImageCopyTexture src;
+            src.texture = hdrTexture;
+            WGPUImageCopyTexture dst;
+            dst.texture = opaqueColorTex;
+            immutable copySz = WGPUExtent3D(rtW, rtH, 1);
+            wgpuCommandEncoderCopyTextureToTexture(frame.encoder, &src, &dst, &copySz);
+        }
+
+        {
+            WGPURenderPassDepthStencilAttachment dAtt;
+            dAtt.view = opaqueDepthView_;
+            dAtt.depthLoadOp = WGPULoadOp.clear;
+            dAtt.depthStoreOp = WGPUStoreOp.store;
+            dAtt.depthClearValue = 1.0f;
+
+            WGPURenderPassDescriptor rpd;
+            rpd.colorAttachmentCount = 0;
+            rpd.colorAttachments = null;
+            rpd.depthStencilAttachment = &dAtt;
+
+            auto dPass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &rpd);
+            wgpuRenderPassEncoderSetPipeline(dPass, depthCopyPipe);
+            wgpuRenderPassEncoderSetBindGroup(dPass, 0, depthCopyBG, 0, null);
+            wgpuRenderPassEncoderDraw(dPass, 3, 1, 0, 0);
+            wgpuRenderPassEncoderEnd(dPass);
+            wgpuRenderPassEncoderRelease(dPass);
+        }
+
+        WGPURenderPassColorAttachment colorAtt;
+        colorAtt.view       = hdrView;
+        colorAtt.loadOp     = WGPULoadOp.load;
+        colorAtt.storeOp    = WGPUStoreOp.store;
+        colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+
+        WGPURenderPassDepthStencilAttachment depthAtt;
+        depthAtt.view            = depthView;
+        depthAtt.depthLoadOp     = WGPULoadOp.load;
+        depthAtt.depthStoreOp    = WGPUStoreOp.store;
+
+        WGPURenderPassDescriptor passDesc;
+        passDesc.colorAttachmentCount = 1;
+        passDesc.colorAttachments     = &colorAtt;
+        passDesc.depthStencilAttachment = &depthAtt;
+        frame.pass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &passDesc);
+    }
+
+    WGPUTextureView opaqueColorView() nothrow @nogc @trusted {
+        ensureOpaqueSnapshot();
+        return opaqueColorView_;
+    }
+
+    WGPUTextureView opaqueDepthView() nothrow @nogc @trusted {
+        ensureOpaqueSnapshot();
+        return opaqueDepthView_;
+    }
+
     private void releaseSceneTargets() nothrow @nogc @trusted {
+        releaseSnapshotTargets();
         if (depthView !is null)    { wgpuTextureViewRelease(depthView); depthView = null; }
         if (depthTexture !is null) { wgpuTextureRelease(depthTexture); depthTexture = null; }
         if (hdrView !is null)      { wgpuTextureViewRelease(hdrView); hdrView = null; }
@@ -292,8 +485,13 @@ struct Renderer {
         createSceneTargets(w, h);
     }
 
-    void destroy() nothrow @nogc {
+    void destroy() nothrow @nogc @trusted {
         releaseSceneTargets();
+        if (depthCopyPipe !is null) { wgpuRenderPipelineRelease(depthCopyPipe); depthCopyPipe = null; }
+        if (depthCopyPL !is null)   { wgpuPipelineLayoutRelease(depthCopyPL); depthCopyPL = null; }
+        if (depthCopyBGL !is null)  { wgpuBindGroupLayoutRelease(depthCopyBGL); depthCopyBGL = null; }
+        if (depthCopySM !is null)   { wgpuShaderModuleRelease(depthCopySM); depthCopySM = null; }
+        snapshotActive = false;
         if (postOwned) {
             post.destroy();
             postOwned = false;

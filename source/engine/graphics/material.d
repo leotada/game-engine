@@ -19,6 +19,8 @@ enum MaterialFlags : uint {
     normal             = 1 << 1,
     occlusion          = 1 << 2,
     emissive           = 1 << 3,
+    waterWetCaustics   = 1 << 4,
+    waterRiverMode     = 1 << 5,
 }
 
 /// Canonical OpenPBR Surface v1.1 uniform block matching WGSL `MaterialParams` (144 bytes = 9 × vec4<f32>).

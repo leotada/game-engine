@@ -26,10 +26,13 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
+    let riverMode = wu.flags0.x;
+    let bedScale = select(11.0, 1.0, riverMode != 0u);
+    let pos = vec3<f32>(v.position.x * bedScale, v.position.y, v.position.z * bedScale);
     var out: VertexOutput;
-    out.worldPos = v.position;
+    out.worldPos = pos;
     out.worldNormal = normalize(v.normal);
-    out.clipPos = frame.viewProj * vec4<f32>(v.position, 1.0);
+    out.clipPos = frame.viewProj * vec4<f32>(pos, 1.0);
     return out;
 }
 
@@ -146,11 +149,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let waveEnergy = 0.65 + 0.35 * wu.params0.y;
     let causticLight = caustics * sunRad * dirShadow * max(N.y, 0.0) * channelMask * waveEnergy * 0.24;
 
-    // Physical underwater Beer-Lambert column absorption from bed up to y=0.
+    let rawColor = max(direct + ambient + causticLight * (0.35 + baseColor), vec3<f32>(0.0));
+    if (wu.counts.z != 0u) {
+        // Defer full Beer-Lambert column absorption to water_surface.wgsl when screen-space
+        // refraction is enabled so seabed and submerged rocks share identical water tinting.
+        let farFade = smoothstep(18.0, 62.0, length(frame.cameraPos.xz - in.worldPos.xz));
+        let scatterCol = select(vec3<f32>(0.012, 0.065, 0.115), vec3<f32>(0.018, 0.10, 0.09), riverMode != 0u);
+        return vec4<f32>(mix(rawColor, scatterCol, farFade * 0.92), 1.0);
+    }
     let bedDepth = max(-in.worldPos.y, 0.05) / max(abs(V.y), 0.30);
     let sigma = select(vec3<f32>(1.45, 0.52, 0.30), vec3<f32>(1.20, 0.42, 0.48), riverMode != 0u);
     let bedTrans = exp(-sigma * min(bedDepth, 3.2));
-    let rawColor = max(direct + ambient + causticLight * (0.35 + baseColor), vec3<f32>(0.0));
     let scatterCol = select(vec3<f32>(0.012, 0.065, 0.115), vec3<f32>(0.018, 0.10, 0.09), riverMode != 0u);
     let color = mix(scatterCol, rawColor * bedTrans, 0.82);
     return vec4<f32>(color, 1.0);

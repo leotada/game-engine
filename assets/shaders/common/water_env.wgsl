@@ -5,13 +5,18 @@ struct WaterUniforms {
     camForward: vec4<f32>,    // xyz = forward, w = tanHalfFov
     camRight: vec4<f32>,      // xyz = right,   w = aspect
     camUp: vec4<f32>,         // xyz = up,      w = waterHalf
-    params0: vec4<f32>,       // x = time, y = waveScale, z = gridSpan, w = seaFloorY
+    params0: vec4<f32>,       // x = time, y = waveScale, z = nearPlane, w = farPlane
     flags0: vec4<u32>,        // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
-    counts: vec4<u32>,        // x = obstacleCount, y = waveCount (6), z = 0, w = 0
+    counts: vec4<u32>,        // x = obstacleCount, y = waveCount (6), z = enableRefraction, w = enableSsr
     wavesA: array<vec4<f32>, 6>,     // dirX, dirZ, wavelength, amplitude
     wavesB: array<vec4<f32>, 6>,     // steepness, speedScale, 0, 0
     obstacles: array<vec4<f32>, 16>, // x, z, radius, strength
 };
+
+/// Reconstructs positive camera-space linear Z from hardware [0, 1] NDC depth.
+fn linearizeDepth(ndcZ: f32, nearZ: f32, farZ: f32) -> f32 {
+    return (nearZ * farZ) / max(farZ - ndcZ * (farZ - nearZ), 1e-4);
+}
 
 fn hash21(p: vec2<f32>) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);

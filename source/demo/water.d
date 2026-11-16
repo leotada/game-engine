@@ -41,7 +41,7 @@ import engine.scene.scene3d_textured : Scene3DTextured;
 
 private enum int W = 1280;
 private enum int H = 720;
-private enum uint WATER_GRID = 160;
+private enum uint WATER_GRID = 192;
 private enum float WATER_HALF = 14.0f;
 
 private struct WaveComponent {
@@ -250,8 +250,10 @@ private void drawNonIndexed(ref FrameContext frame, uint vertexCount) nothrow @n
 /// rendered directly inside the single HDR scene pass without modifying Renderer.
 private struct WaterShaderPipelines {
     WGPUBindGroupLayout waterBgLayout;
+    WGPUBindGroupLayout waterSurfaceBgLayout;
     WGPUPipelineLayout  skyPipeLayout;
     WGPUPipelineLayout  pbrPipeLayout;
+    WGPUPipelineLayout  waterPipeLayout;
     WGPUShaderModule    skyMod;
     WGPUShaderModule    bedMod;
     WGPUShaderModule    waterMod;
@@ -260,6 +262,12 @@ private struct WaterShaderPipelines {
     WGPURenderPipeline  waterPipe;
     WGPUBuffer          ubo;
     WGPUBindGroup       waterBg;
+    WGPUSampler         sceneSampler;
+    WGPUTexture         dummyColorTex;
+    WGPUTextureView     dummyColorView;
+    WGPUBindGroup       waterSurfaceBg;
+    WGPUTextureView     cachedColorView;
+    WGPUTextureView     cachedDepthView;
 
     @disable this(this);
 
@@ -281,6 +289,53 @@ private struct WaterShaderPipelines {
         bglDesc.entries = &bgle;
         p.waterBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &bglDesc);
 
+        WGPUBindGroupLayoutEntry[4] sEntries;
+        sEntries[0].binding = 0;
+        sEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
+        sEntries[0].buffer.type = WGPUBufferBindingType.uniform;
+        sEntries[0].buffer.minBindingSize = WaterUniforms.sizeof;
+        sEntries[1].binding = 1;
+        sEntries[1].visibility = WGPUShaderStage.fragment;
+        sEntries[1].texture.sampleType = WGPUTextureSampleType.float_;
+        sEntries[1].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+        sEntries[2].binding = 2;
+        sEntries[2].visibility = WGPUShaderStage.fragment;
+        sEntries[2].texture.sampleType = WGPUTextureSampleType.depth;
+        sEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+        sEntries[3].binding = 3;
+        sEntries[3].visibility = WGPUShaderStage.fragment;
+        sEntries[3].sampler.type = WGPUSamplerBindingType.filtering;
+
+        WGPUBindGroupLayoutDescriptor sbglDesc;
+        sbglDesc.entryCount = 4;
+        sbglDesc.entries = sEntries.ptr;
+        p.waterSurfaceBgLayout = wgpuDeviceCreateBindGroupLayout(dev, &sbglDesc);
+
+        WGPUSamplerDescriptor sampDesc;
+        sampDesc.addressModeU = WGPUAddressMode.clampToEdge;
+        sampDesc.addressModeV = WGPUAddressMode.clampToEdge;
+        sampDesc.addressModeW = WGPUAddressMode.clampToEdge;
+        sampDesc.magFilter = WGPUFilterMode.linear;
+        sampDesc.minFilter = WGPUFilterMode.linear;
+        sampDesc.mipmapFilter = WGPUMipmapFilterMode.nearest;
+        sampDesc.lodMinClamp = 0.0f;
+        sampDesc.lodMaxClamp = 1.0f;
+        sampDesc.maxAnisotropy = 1;
+        p.sceneSampler = wgpuDeviceCreateSampler(dev, &sampDesc);
+
+        {
+            WGPUTextureDescriptor dtd;
+            dtd.usage = WGPUTextureUsage.textureBinding;
+            dtd.dimension = WGPUTextureDimension.dim2D;
+            dtd.size = WGPUExtent3D(1, 1, 1);
+            dtd.format = WGPUTextureFormat.rgba8Unorm;
+            p.dummyColorTex = wgpuDeviceCreateTexture(dev, &dtd);
+            WGPUTextureViewDescriptor dvd;
+            dvd.format = WGPUTextureFormat.rgba8Unorm;
+            dvd.dimension = WGPUTextureViewDimension.dim2D;
+            p.dummyColorView = wgpuTextureCreateView(p.dummyColorTex, &dvd);
+        }
+
         WGPUBindGroupLayout[2] skyLayouts = [frameLayout, p.waterBgLayout];
         WGPUPipelineLayoutDescriptor skyPlDesc;
         skyPlDesc.bindGroupLayoutCount = 2;
@@ -292,6 +347,12 @@ private struct WaterShaderPipelines {
         pbrPlDesc.bindGroupLayoutCount = 3;
         pbrPlDesc.bindGroupLayouts = pbrLayouts.ptr;
         p.pbrPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &pbrPlDesc);
+
+        WGPUBindGroupLayout[3] surfLayouts = [frameLayout, p.waterSurfaceBgLayout, iblLayout];
+        WGPUPipelineLayoutDescriptor surfPlDesc;
+        surfPlDesc.bindGroupLayoutCount = 3;
+        surfPlDesc.bindGroupLayouts = surfLayouts.ptr;
+        p.waterPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &surfPlDesc);
 
         p.ubo = createUniformBuffer(dev, WaterUniforms.sizeof);
         p.waterBg = createUniformBindGroup(dev, p.waterBgLayout, p.ubo, WaterUniforms.sizeof);
@@ -401,7 +462,7 @@ private struct WaterShaderPipelines {
             depthState.depthCompare = WGPUCompareFunction.less;
 
             WGPURenderPipelineDescriptor desc;
-            desc.layout = p.pbrPipeLayout;
+            desc.layout = p.waterPipeLayout;
             desc.vertex.module_ = p.waterMod;
             desc.vertex.entryPoint = wgpuStringView("vs_main");
             desc.vertex.bufferCount = 1;
@@ -420,18 +481,44 @@ private struct WaterShaderPipelines {
         return p;
     }
 
+    void updateSurfaceBindGroup(WGPUDevice dev, WGPUTextureView colorView, WGPUTextureView depthView) nothrow @nogc @trusted {
+        if (colorView is null || depthView is null) return;
+        if (waterSurfaceBg !is null && cachedColorView is colorView && cachedDepthView is depthView) return;
+        releaseBindGroup(waterSurfaceBg);
+        WGPUBindGroupEntry[4] e;
+        e[0].binding = 0; e[0].buffer = ubo; e[0].offset = 0; e[0].size = WaterUniforms.sizeof;
+        e[1].binding = 1; e[1].textureView = colorView;
+        e[2].binding = 2; e[2].textureView = depthView;
+        e[3].binding = 3; e[3].sampler = sceneSampler;
+        WGPUBindGroupDescriptor bgd;
+        bgd.layout = waterSurfaceBgLayout;
+        bgd.entryCount = 4;
+        bgd.entries = e.ptr;
+        waterSurfaceBg = wgpuDeviceCreateBindGroup(dev, &bgd);
+        cachedColorView = colorView;
+        cachedDepthView = depthView;
+    }
+
     void destroy() nothrow @nogc @trusted {
-        if (waterPipe !is null)     { wgpuRenderPipelineRelease(waterPipe); waterPipe = null; }
-        if (bedPipe !is null)       { wgpuRenderPipelineRelease(bedPipe); bedPipe = null; }
-        if (skyPipe !is null)       { wgpuRenderPipelineRelease(skyPipe); skyPipe = null; }
-        if (waterMod !is null)      { wgpuShaderModuleRelease(waterMod); waterMod = null; }
-        if (bedMod !is null)        { wgpuShaderModuleRelease(bedMod); bedMod = null; }
-        if (skyMod !is null)        { wgpuShaderModuleRelease(skyMod); skyMod = null; }
+        if (waterPipe !is null)            { wgpuRenderPipelineRelease(waterPipe); waterPipe = null; }
+        if (bedPipe !is null)              { wgpuRenderPipelineRelease(bedPipe); bedPipe = null; }
+        if (skyPipe !is null)              { wgpuRenderPipelineRelease(skyPipe); skyPipe = null; }
+        if (waterMod !is null)             { wgpuShaderModuleRelease(waterMod); waterMod = null; }
+        if (bedMod !is null)               { wgpuShaderModuleRelease(bedMod); bedMod = null; }
+        if (skyMod !is null)               { wgpuShaderModuleRelease(skyMod); skyMod = null; }
+        releaseBindGroup(waterSurfaceBg);
         releaseBindGroup(waterBg);
+        if (dummyColorView !is null)       { wgpuTextureViewRelease(dummyColorView); dummyColorView = null; }
+        if (dummyColorTex !is null)        { wgpuTextureRelease(dummyColorTex); dummyColorTex = null; }
+        if (sceneSampler !is null)         { wgpuSamplerRelease(sceneSampler); sceneSampler = null; }
         destroyBuffer(ubo); ubo = null;
-        if (pbrPipeLayout !is null) { wgpuPipelineLayoutRelease(pbrPipeLayout); pbrPipeLayout = null; }
-        if (skyPipeLayout !is null) { wgpuPipelineLayoutRelease(skyPipeLayout); skyPipeLayout = null; }
-        if (waterBgLayout !is null) { wgpuBindGroupLayoutRelease(waterBgLayout); waterBgLayout = null; }
+        if (waterPipeLayout !is null)      { wgpuPipelineLayoutRelease(waterPipeLayout); waterPipeLayout = null; }
+        if (pbrPipeLayout !is null)        { wgpuPipelineLayoutRelease(pbrPipeLayout); pbrPipeLayout = null; }
+        if (skyPipeLayout !is null)        { wgpuPipelineLayoutRelease(skyPipeLayout); skyPipeLayout = null; }
+        if (waterSurfaceBgLayout !is null) { wgpuBindGroupLayoutRelease(waterSurfaceBgLayout); waterSurfaceBgLayout = null; }
+        if (waterBgLayout !is null)        { wgpuBindGroupLayoutRelease(waterBgLayout); waterBgLayout = null; }
+        cachedColorView = null;
+        cachedDepthView = null;
     }
 }
 
@@ -594,6 +681,8 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
                                         bool useOpenPbr,
                                         bool transparent,
                                         bool lowSun,
+                                        bool enableRefraction,
+                                        bool enableSsr,
                                         scope const(RockPlacement)[] rocks) nothrow @nogc {
     WaterUniforms wu;
     immutable fwd = (camera.target - camera.position).normalized();
@@ -604,7 +693,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
     wu.camForward = [fwd.x, fwd.y, fwd.z, tanHalfFov];
     wu.camRight   = [right.x, right.y, right.z, camera.aspect];
     wu.camUp      = [up.x, up.y, up.z, WATER_HALF];
-    wu.params0    = [time, waveScale, WATER_HALF * 2.0f, -1.15f];
+    wu.params0    = [time, waveScale, camera.near, camera.far];
     wu.flags0     = [
         riverMode ? 1u : 0u,
         useOpenPbr ? 1u : 0u,
@@ -630,7 +719,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         immutable r = 0.34f * (rk.scale.x + rk.scale.z) * 0.5f;
         wu.obstacles[obsCount++] = [rk.pos.x, rk.pos.z, r, 1.0f];
     }
-    wu.counts = [obsCount, 6u, 0u, 0u];
+    wu.counts = [obsCount, 6u, enableRefraction ? 1u : 0u, enableSsr ? 1u : 0u];
     return wu;
 }
 
@@ -734,7 +823,7 @@ private enum RockPlacement[34] SEA_ROCKS = [
     RockPlacement(Vec3( -1.5f, -0.91f,  5.6f), Vec3(1.9f, 0.65f, 1.7f), 1.0f, 3, 2),
     RockPlacement(Vec3(  8.8f, -0.82f,  1.5f), Vec3(2.4f, 0.80f, 2.0f), 0.4f, 3, 1),
     RockPlacement(Vec3( -5.0f, -0.86f, -7.2f), Vec3(2.0f, 0.72f, 1.8f), 2.3f, 3, 2),
-    RockPlacement(Vec3( -0.9f, -0.88f,  0.9f), Vec3(1.6f, 0.60f, 1.4f), 1.1f, 3, 2),
+    RockPlacement(Vec3( -0.9f, -0.98f,  0.9f), Vec3(1.6f, 0.60f, 1.4f), 1.1f, 3, 2),
     RockPlacement(Vec3(  3.1f, -0.87f, -2.6f), Vec3(1.7f, 0.66f, 1.5f), 2.0f, 3, 2),
     RockPlacement(Vec3( -4.4f, -0.83f,  3.2f), Vec3(1.8f, 0.68f, 1.5f), 0.7f, 3, 2),
     RockPlacement(Vec3(  6.4f, -0.88f, -3.9f), Vec3(2.1f, 0.66f, 1.8f), 1.5f, 3, 2),
@@ -975,30 +1064,65 @@ private void writeCaptureBmp(string path, const(ubyte)[] rgba, uint w, uint h) @
 }
 
 void main(string[] args) {
+    import core.memory : GC;
+    import core.time : MonoTime;
+    import std.algorithm : sort, startsWith;
+    import std.conv : to;
+    import std.stdio : writefln;
+
     uint maxFrames = 0;
+    uint benchFrames = 0;
+    uint renderStage = 3;
+    uint winW = W;
+    uint winH = H;
     bool initRiver = false;
     bool initLowSun = true;
     bool initHud = true;
+    bool noWater = false;
+    bool initImmediate = false;
+    bool benchSync = false;
     string capturePath;
     foreach (a; args[1 .. $]) {
-        import std.algorithm : startsWith;
-        import std.conv : to;
         if (a.startsWith("--frames=")) {
             maxFrames = a[9 .. $].to!uint;
+        } else if (a.startsWith("--bench=")) {
+            benchFrames = a[8 .. $].to!uint;
+        } else if (a.startsWith("--stage=")) {
+            renderStage = a[8 .. $].to!uint;
         } else if (a == "--river") {
             initRiver = true;
         } else if (a == "--noon") {
             initLowSun = false;
         } else if (a == "--no-hud") {
             initHud = false;
+        } else if (a == "--no-water") {
+            noWater = true;
+        } else if (a == "--immediate") {
+            initImmediate = true;
+        } else if (a == "--bench-sync") {
+            benchSync = true;
+        } else if (a == "--1080p") {
+            winW = 1920;
+            winH = 1080;
         } else if (a.startsWith("--capture=")) {
             capturePath = a[10 .. $];
         }
     }
-    if (capturePath.length > 0 && maxFrames == 0) {
+    enum uint WARMUP_FRAMES = 120;
+    if (benchFrames > 0) {
+        initImmediate = true;
+        initHud = false;
+        benchSync = true;
+        maxFrames = WARMUP_FRAMES + benchFrames;
+    } else if (capturePath.length > 0 && maxFrames == 0) {
         maxFrames = 3;
     }
-    auto app = App.create("OpenPBR Water Showcase — Ocean & River", W, H);
+    auto app = App.create(
+        "OpenPBR Water Showcase — Ocean & River",
+        winW,
+        winH,
+        initImmediate ? WGPUPresentMode.immediate : WGPUPresentMode.fifo
+    );
 
     auto scene = Scene3DTextured.create(app.gpu);
     scope(exit) scene.destroy();
@@ -1068,6 +1192,7 @@ void main(string[] args) {
     bool useOpenPbr = true;
     int waveLevel = 1; // 0 = calm, 1 = moderate, 2 = stormy
     bool transparent = true;
+    bool ssrEnabled = (renderStage >= 3);
 
     RockMaterialGroup[3] rockMats;
     foreach (i; 0 .. 3) {
@@ -1176,23 +1301,37 @@ void main(string[] args) {
     auto spotShadow = SpotShadowMap.create(app.gpu, SPOT_SHADOW_RESOLUTION);
     scope(exit) spotShadow.destroy();
 
-    auto camera = Camera.create(0.85f, W, H);
+    auto camera = Camera.create(0.85f, cast(int) winW, cast(int) winH, 0.1f, 260.0f);
     auto orbit = OrbitState();
-    auto text = TextRenderer.create(app.gpu, W, H);
+    auto text = TextRenderer.create(app.gpu, winW, winH);
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
     bool showHud = initHud;
 
-    info("OpenPBR Water Showcase — [1] Ocean [2] River [3] Sun [4] OpenPBR A/B [5] Waves [6] Opacity [F1] HUD");
+    info("OpenPBR Water Showcase — [1] Ocean [2] River [3] Sun [4] OpenPBR A/B [5] Waves [6] Opacity [7] SSR [F1] HUD");
+
+    double[] benchSamples;
+    if (benchFrames > 0) {
+        benchSamples = new double[benchFrames];
+    }
+    size_t gcStartBytes = 0;
+    size_t gcEndBytes = 0;
 
     float time = capturePath.length > 0 ? 1.8f : 0.0f;
     uint frameNum = 0;
     while (app.running()) {
         if (maxFrames > 0 && frameNum >= maxFrames) break;
+        immutable bool isMeasuredFrame = benchFrames > 0 && frameNum >= WARMUP_FRAMES;
+        immutable uint sampleIdx = frameNum >= WARMUP_FRAMES ? frameNum - WARMUP_FRAMES : 0;
+        if (benchFrames > 0 && frameNum == WARMUP_FRAMES) {
+            gcStartBytes = GC.stats().usedSize;
+        }
         frameNum++;
         immutable bool captureThisFrame = capturePath.length > 0 && frameNum == maxFrames;
+        immutable auto frameStartT = MonoTime.currTime;
         app.pollEvents();
-        immutable float dt = fps.tick();
+        immutable float realDt = fps.tick();
+        immutable float dt = benchFrames > 0 ? (1.0f / 60.0f) : realDt;
         time += dt;
         if (app.input.keyPressed(Key.escape)) break;
 
@@ -1203,6 +1342,7 @@ void main(string[] args) {
         if (app.input.keyPressed(Key.digit4)) { useOpenPbr = !useOpenPbr; paramsDirty = true; }
         if (app.input.keyPressed(Key.digit5)) { waveLevel = (waveLevel + 1) % 3; }
         if (app.input.keyPressed(Key.digit6)) { transparent = !transparent; paramsDirty = true; }
+        if (app.input.keyPressed(Key.digit7)) { ssrEnabled = !ssrEnabled; }
         if (app.input.keyPressed(Key.f1))     { showHud = !showHud; }
         if (app.input.keyPressed(Key.b))      { app.post.bloom = !app.post.bloom; }
         if (app.input.keyPressed(Key.f))      { app.post.fxaa = !app.post.fxaa; }
@@ -1215,18 +1355,38 @@ void main(string[] args) {
             if (app.post.exposure < 0.1f) app.post.exposure = 0.1f;
         }
 
-        if (paramsDirty) {
-            immutable wetP  = buildWetRockParams(useOpenPbr);
-            immutable mossP = buildMossRockParams(useOpenPbr);
-            immutable subP  = buildSubmergedRockParams(useOpenPbr);
+        immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
+        immutable bool propWaterFx = !noWater && renderStage >= 3;
+
+        if (paramsDirty || propWaterFx) {
+            immutable uint waterFlagBits = propWaterFx
+                ? (MaterialFlags.waterWetCaustics | (riverMode ? MaterialFlags.waterRiverMode : 0u))
+                : 0u;
+            void applyWaterFx(ref MaterialParams p) {
+                p.flags |= waterFlagBits;
+                if (propWaterFx) {
+                    p._pad0 = time;
+                    p._pad1 = waveScale;
+                }
+            }
+            auto wetP  = buildWetRockParams(useOpenPbr);
+            auto mossP = buildMossRockParams(useOpenPbr);
+            auto subP  = buildSubmergedRockParams(useOpenPbr);
+            applyWaterFx(wetP);
+            applyWaterFx(mossP);
+            applyWaterFx(subP);
             foreach (ref mg; rockMats) {
                 mg.wet.updateParams(app.gpu, wetP);
                 mg.moss.updateParams(app.gpu, mossP);
                 mg.submerged.updateParams(app.gpu, subP);
             }
+            auto curWoodP = woodP;
+            auto curMasP = masonryP;
+            applyWaterFx(curWoodP);
+            applyWaterFx(curMasP);
+            woodMat.updateParams(app.gpu, curWoodP);
+            masonryMat.updateParams(app.gpu, curMasP);
         }
-
-        immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
 
         orbit.update(app.input, dt, camera);
 
@@ -1403,15 +1563,15 @@ void main(string[] args) {
         // 1. Opaque geometry FIRST (rocks, riverbanks, bridge/lighthouse, buoys)
         void drawRock(ref const RockPlacement rk, ref const Mat4 model) {
             immutable size_t mi = rk.meshKind < 3 ? rk.meshKind : 1;
-            ref TexMesh mesh = mi == 0 ? cliffRockMesh : (mi == 1 ? boulderRockMesh : cobbleRockMesh);
-            if (rk.kind == 0)
-                scene.drawMatrix(mesh, rockMats[mi].dry, model, Color4.white);
-            else if (rk.kind == 1)
-                scene.drawMatrix(mesh, rockMats[mi].wet, model, Color4.white);
-            else if (rk.kind == 2)
-                scene.drawMatrix(mesh, rockMats[mi].moss, model, Color4.white);
-            else
-                scene.drawMatrix(mesh, rockMats[mi].submerged, model, Color4.white);
+            void submit(ref Material mat) {
+                if (mi == 0)      scene.drawMatrix(cliffRockMesh, mat, model, Color4.white);
+                else if (mi == 1) scene.drawMatrix(boulderRockMesh, mat, model, Color4.white);
+                else              scene.drawMatrix(cobbleRockMesh, mat, model, Color4.white);
+            }
+            if (rk.kind == 0)      submit(rockMats[mi].dry);
+            else if (rk.kind == 1) submit(rockMats[mi].wet);
+            else if (rk.kind == 2) submit(rockMats[mi].moss);
+            else                   submit(rockMats[mi].submerged);
         }
 
         foreach (ref rk; rocks) {
@@ -1441,9 +1601,14 @@ void main(string[] args) {
 
         scene.end(frame);
 
-        // 2. Custom single-pass water environment draws in the same HDR frame pass:
-        //    (a) riverbed with shadowed RGB caustics, (b) sky dome behind geometry, (c) GPU-Gerstner water
-        auto wu = packWaterUniforms(camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun, rocks[]);
+        // 2. Water environment draws in the HDR frame pass:
+        //    (a) sky dome behind geometry, (b) riverbed with caustics,
+        //    (c) optional Renderer.snapshotOpaque + optical water surface
+        immutable bool enableRefraction = !noWater && renderStage >= 2;
+        immutable bool enableSsr        = !noWater && renderStage >= 3 && ssrEnabled;
+        auto wu = packWaterUniforms(
+            camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun,
+            enableRefraction, enableSsr, rocks[]);
         () @trusted {
             updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);
         }();
@@ -1460,48 +1625,82 @@ void main(string[] args) {
         frame.setIndexBuffer(bedQuad.ibuf, WGPUIndexFormat.uint16, bedQuad.iSize);
         frame.drawIndexed(bedQuad.indexCount, 1);
 
-        frame.setPipeline(waterPipes.waterPipe);
-        frame.setVertexBuffer(0, waterGrid.vbuf, waterGrid.vSize);
-        frame.setIndexBuffer(waterGrid.ibuf, WGPUIndexFormat.uint16, waterGrid.iSize);
-        frame.drawIndexed(waterGrid.indexCount, 1);
+        if (!noWater) {
+            if (renderStage >= 1) {
+                app.renderer.snapshotOpaque(frame);
+                waterPipes.updateSurfaceBindGroup(
+                    app.gpu.getDevice(),
+                    app.renderer.opaqueColorView(),
+                    app.renderer.opaqueDepthView()
+                );
+            } else {
+                waterPipes.updateSurfaceBindGroup(
+                    app.gpu.getDevice(),
+                    waterPipes.dummyColorView,
+                    dirShadow.depthView
+                );
+            }
+            frame.setBindGroup(0, scene.frameGroup());
+            frame.setBindGroup(1, waterPipes.waterSurfaceBg);
+            frame.setBindGroup(2, scene.iblGroup());
+            frame.setPipeline(waterPipes.waterPipe);
+            frame.setVertexBuffer(0, waterGrid.vbuf, waterGrid.vSize);
+            frame.setIndexBuffer(waterGrid.ibuf, WGPUIndexFormat.uint16, waterGrid.iSize);
+            frame.drawIndexed(waterGrid.indexCount, 1);
+        }
 
         app.resolvePost(frame);
 
-        text.beginFrame();
-        if (showHud) {
-            immutable waveName = waveLevel == 0 ? "Calm" : (waveLevel == 1 ? "Moderate" : "Stormy");
-            immutable sceneName = riverMode ? "Mountain River (Stream)" : "Open Ocean (Beaufort 5)";
-            immutable sunName = lowSun ? "Golden Hour" : "High Noon";
-            immutable shadingName = useOpenPbr
-                ? "Shading: OpenPBR v1.1 (Coat + Aniso + Fuzz + IOR 1.333)"
-                : "Shading: Legacy PBR Baseline (No Coat/Fuzz, IOR 1.5)";
-            immutable waterAlphaName = transparent ? "Fresnel Alpha (Refractive)" : "Opaque (1.0)";
-            immutable tmName = app.post.tonemapMode == 0 ? "ACES" : "Reinhard";
+        if (benchFrames == 0) {
+            text.beginFrame();
+            if (showHud) {
+                immutable waveName = waveLevel == 0 ? "Calm" : (waveLevel == 1 ? "Moderate" : "Stormy");
+                immutable sceneName = riverMode ? "Mountain River (Stream)" : "Open Ocean (Beaufort 5)";
+                immutable sunName = lowSun ? "Golden Hour" : "High Noon";
+                immutable shadingName = useOpenPbr
+                    ? "Shading: OpenPBR v1.1 (Coat + Aniso + Fuzz + IOR 1.333)"
+                    : "Shading: Legacy PBR Baseline (No Coat/Fuzz, IOR 1.5)";
+                immutable waterAlphaName = transparent ? "Refractive Optical" : "Opaque (1.0)";
+                immutable ssrName = enableSsr ? "SSR=ON" : "SSR=OFF";
+                immutable tmName = app.post.tonemapMode == 0 ? "ACES" : "Reinhard";
 
-            text.drawText(frame, app.arena.fmt("OPENPBR WATER SHOWCASE  |  %s", fps.text()), 16, 14, 2);
-            text.drawText(frame, app.arena.fmt("Scene: %s  |  Sun: %s", sceneName, sunName), 16, 34, 2);
-            text.drawText(frame, shadingName, 16, 54, 2);
-            text.drawText(frame, app.arena.fmt("Waves: %s  |  Surface: %s", waveName, waterAlphaName), 16, 74, 2);
-            text.drawText(frame, app.arena.fmt("Post: Bloom=%s  FXAA=%s  TM=%s  Exp=%.2f",
-                          app.post.bloom ? "ON" : "OFF",
-                          app.post.fxaa ? "ON" : "OFF",
-                          tmName, app.post.exposure), 16, 94, 2);
+                text.drawText(frame, app.arena.fmt("OPENPBR WATER SHOWCASE  |  %s", fps.text()), 16, 14, 2);
+                text.drawText(frame, app.arena.fmt("Scene: %s  |  Sun: %s", sceneName, sunName), 16, 34, 2);
+                text.drawText(frame, shadingName, 16, 54, 2);
+                text.drawText(frame, app.arena.fmt("Waves: %s  |  Surface: %s  |  %s", waveName, waterAlphaName, ssrName), 16, 74, 2);
+                text.drawText(frame, app.arena.fmt("Post: Bloom=%s  FXAA=%s  TM=%s  Exp=%.2f",
+                              app.post.bloom ? "ON" : "OFF",
+                              app.post.fxaa ? "ON" : "OFF",
+                              tmName, app.post.exposure), 16, 94, 2);
 
-            text.drawText(frame, "[CONTROLS]", 16, 124, 2);
-            text.drawText(frame, "[1] Ocean Swell            [2] Mountain River", 16, 144, 2);
-            text.drawText(frame, "[3] Toggle Sun Angle       [4] OpenPBR vs Legacy", 16, 164, 2);
-            text.drawText(frame, "[5] Wave State (C/M/S)     [6] Water Alpha/Opaque", 16, 184, 2);
-            text.drawText(frame, "[B] Bloom    [F] FXAA      [G] Tonemap   [+/-] Exposure", 16, 204, 2);
-            text.drawText(frame, "[Drag/Arrows] Orbit        [W/S/Wheel] Zoom  [R] Reset", 16, 224, 2);
-            text.drawText(frame, "[F1] Hide HUD              [ESC] Quit", 16, 244, 2);
-        } else {
-            text.drawText(frame, "[F1] Show Controls HUD", 16, 14, 2);
+                text.drawText(frame, "[CONTROLS]", 16, 124, 2);
+                text.drawText(frame, "[1] Ocean Swell            [2] Mountain River", 16, 144, 2);
+                text.drawText(frame, "[3] Toggle Sun Angle       [4] OpenPBR vs Legacy", 16, 164, 2);
+                text.drawText(frame, "[5] Wave State (C/M/S)     [6] Water Alpha/Opaque   [7] Toggle SSR", 16, 184, 2);
+                text.drawText(frame, "[B] Bloom    [F] FXAA      [G] Tonemap   [+/-] Exposure", 16, 204, 2);
+                text.drawText(frame, "[Drag/Arrows] Orbit        [W/S/Wheel] Zoom  [R] Reset", 16, 224, 2);
+                text.drawText(frame, "[F1] Hide HUD              [ESC] Quit", 16, 244, 2);
+            } else {
+                text.drawText(frame, "[F1] Show Controls HUD", 16, 14, 2);
+            }
         }
 
         if (captureThisFrame) {
             app.renderer.requestCapture();
         }
         app.endFrame(frame);
+        if (benchSync) {
+            () @trusted {
+                wgpuDevicePoll(app.gpu.getDevice(), WGPU_TRUE, null);
+            }();
+        }
+        if (isMeasuredFrame && sampleIdx < benchSamples.length) {
+            immutable auto elapsed = MonoTime.currTime - frameStartT;
+            benchSamples[sampleIdx] = elapsed.total!"hnsecs" / 10_000.0;
+        }
+        if (benchFrames > 0 && frameNum == maxFrames) {
+            gcEndBytes = GC.stats().usedSize;
+        }
         if (captureThisFrame) {
             uint cw, ch;
             auto px = app.renderer.readCapture(cw, ch);
@@ -1509,6 +1708,22 @@ void main(string[] args) {
                 writeCaptureBmp(capturePath, px, cw, ch);
             }
         }
+    }
+
+    if (benchFrames > 0 && benchSamples.length > 0) {
+        sort(benchSamples);
+        double sum = 0.0;
+        foreach (s; benchSamples) sum += s;
+        immutable double avgMs = sum / cast(double) benchSamples.length;
+        immutable double p50Ms = benchSamples[(benchSamples.length * 50) / 100];
+        immutable double p95Ms = benchSamples[(benchSamples.length * 95) / 100];
+        immutable double p99Ms = benchSamples[(benchSamples.length * 99) / 100];
+        immutable double maxMs = benchSamples[$ - 1];
+        immutable double fpsMean = avgMs > 0.0 ? (1000.0 / avgMs) : 0.0;
+        immutable long gcDelta = cast(long) gcEndBytes - cast(long) gcStartBytes;
+        immutable string scenName = noWater ? "No-Water" : (riverMode ? "River" : "Ocean");
+        writefln("BENCH_RESULT scenario=%s res=%ux%u avg_ms=%.3f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f max_ms=%.3f fps=%.1f gc_delta_bytes=%d",
+                 scenName, winW, winH, avgMs, p50Ms, p95Ms, p99Ms, maxMs, fpsMean, gcDelta);
     }
 
     app.destroy();

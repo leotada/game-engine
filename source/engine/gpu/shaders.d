@@ -42,3 +42,4 @@ enum skinnedShaderSource = import("skinned.wgsl");
 enum skyDomeShaderSource = preprocessShader(import("sky_dome.wgsl"), "sky_dome.wgsl").code;
 enum causticsBedShaderSource = preprocessShader(import("caustics_bed.wgsl"), "caustics_bed.wgsl").code;
 enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;
+enum depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;

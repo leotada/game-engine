@@ -53,8 +53,62 @@ const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
 const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
+const FLAG_WATER_CAUSTICS: u32 = 16u;
+const FLAG_WATER_RIVER: u32 = 32u;
 
 #include "common/pbr_brdf.wgsl"
+
+fn propHash22(p: vec2<f32>) -> vec2<f32> {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+fn propVoronoiCaustic(uv: vec2<f32>) -> f32 {
+    let i = floor(uv);
+    let f = fract(uv);
+    var md1 = 8.0;
+    var md2 = 8.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let g = vec2<f32>(f32(x), f32(y));
+            let o = 0.5 + 0.42 * sin(propHash22(i + g) * 6.283185 + vec2<f32>(0.0, 1.57));
+            let r = g + o - f;
+            let d = dot(r, r);
+            if (d < md1) {
+                md2 = md1;
+                md1 = d;
+            } else if (d < md2) {
+                md2 = d;
+            }
+        }
+    }
+    return pow(clamp(1.0 - (sqrt(md2) - sqrt(md1)) * 1.55, 0.0, 1.0), 2.4);
+}
+
+fn evalPropWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
+    let freq = select(0.75, 1.35, isRiver);
+    let amp = select(0.16, 0.055, isRiver) * waveScale;
+    return amp * sin(worldPos.x * freq - time * 2.1 + worldPos.z * 0.45)
+         + amp * 0.55 * cos(worldPos.z * (freq * 1.15) + time * 1.6);
+}
+
+fn evalPropWaterCaustics(worldPos: vec3<f32>, sunL: vec3<f32>, time: f32, isRiver: bool) -> vec3<f32> {
+    let refractShift = (sunL.xz / max(abs(sunL.y) + 0.35, 0.35)) * (max(-worldPos.y, 0.0) * 0.45);
+    let flow = select(vec2<f32>(time * 0.24, time * 0.16), vec2<f32>(-time * 0.95, sin(time * 0.7) * 0.10), isRiver);
+    let p = worldPos.xz + refractShift;
+    let warp = vec2<f32>(
+        sin(p.y * 1.35 + time * 1.25) + cos(p.x * 0.85 - time * 0.90),
+        cos(p.x * 1.30 - time * 1.10) + sin(p.y * 0.90 + time * 0.80)
+    ) * 0.26;
+    let uv1 = (p + warp) * 1.75 + flow;
+    let uv2 = (p - warp * 0.7) * 2.55 - flow * vec2<f32>(0.65, 1.15);
+    let disp = vec2<f32>(0.032, 0.022);
+    let cR = 0.55 * propVoronoiCaustic(uv1 + disp) + 0.45 * propVoronoiCaustic(uv2 - disp);
+    let cG = 0.55 * propVoronoiCaustic(uv1)        + 0.45 * propVoronoiCaustic(uv2);
+    let cB = 0.55 * propVoronoiCaustic(uv1 - disp) + 0.45 * propVoronoiCaustic(uv2 + disp);
+    return vec3<f32>(cR, cG, cB);
+}
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -157,6 +211,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fuzzE = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, fuzzR)).b;
     }
 
+    let enableWaterFx = (mat.flags & FLAG_WATER_CAUSTICS) != 0u;
+    let waterIsRiver = (mat.flags & FLAG_WATER_RIVER) != 0u;
+    let waterTime = mat._pad0;
+    let waterScale = max(mat._pad1, 0.01);
+    var waterSurfY = -999.0;
+    var coatW = mat.coatWeight;
+    var coatR = mat.coatRoughness;
+    var coatDark = mat.coatDarkening;
+    var coatCol = mat.coatColor;
+    if (enableWaterFx) {
+        waterSurfY = evalPropWaveY(in.worldPos, waterTime, waterScale, waterIsRiver);
+        if (in.worldPos.y < waterSurfY + 0.28) {
+            let wetBand = 1.0 - smoothstep(waterSurfY - 0.04, waterSurfY + 0.28, in.worldPos.y);
+            coatW = max(coatW, wetBand * 0.88);
+            coatR = min(coatR, mix(0.24, 0.055, wetBand));
+            coatDark = max(coatDark, wetBand * 0.68);
+            coatCol = mix(coatCol, vec3<f32>(0.84, 0.94, 0.95), wetBand * 0.65);
+        }
+    }
+
     var pbrIn: OpenPbrEvalInput;
     pbrIn.N = N;
     pbrIn.T = T;
@@ -170,11 +244,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.specularColor = mat.specularColor;
     pbrIn.specularIor = mat.specularIor;
     pbrIn.specularAnisotropy = mat.specularAnisotropy;
-    pbrIn.coatWeight = mat.coatWeight;
-    pbrIn.coatColor = mat.coatColor;
-    pbrIn.coatRoughness = mat.coatRoughness;
+    pbrIn.coatWeight = coatW;
+    pbrIn.coatColor = coatCol;
+    pbrIn.coatRoughness = coatR;
     pbrIn.coatIor = mat.coatIor;
-    pbrIn.coatDarkening = mat.coatDarkening;
+    pbrIn.coatDarkening = coatDark;
     pbrIn.fuzzWeight = mat.fuzzWeight;
     pbrIn.fuzzColor = mat.fuzzColor;
     pbrIn.fuzzRoughness = mat.fuzzRoughness;
@@ -195,6 +269,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
         }
         direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
+        if (enableWaterFx && in.worldPos.y < waterSurfY) {
+            let subDepth = clamp(waterSurfY - in.worldPos.y, 0.0, 3.0);
+            let cRgb = evalPropWaterCaustics(in.worldPos, L, waterTime, waterIsRiver);
+            let caustAtten = shadow * max(dot(N, L), 0.05) * exp(-subDepth * 0.72) * smoothstep(0.0, 0.06, subDepth);
+            direct += baseColor * cRgb * radiance * caustAtten * 0.85;
+        }
     }
 
     // --- Point lights ---
@@ -237,7 +317,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // --- IBL ---
     let f0Dielectric = dielectricF0UnderCoat(
-        mat.specularIor, mat.coatIor, mat.coatWeight, mat.specularWeight, mat.specularColor
+        mat.specularIor, mat.coatIor, coatW, mat.specularWeight, mat.specularColor
     );
     let f0Base = mix(f0Dielectric, baseColor, metalness);
     var F_ibl = fresnelSchlickRoughness(NdotV, f0Base, effectiveRoughness);
@@ -247,7 +327,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness);
-    let baseAlbedoIbl = applyCoatDarkening(baseColor, mat.coatIor, mat.coatWeight, mat.coatDarkening);
+    let baseAlbedoIbl = applyCoatDarkening(baseColor, mat.coatIor, coatW, coatDark);
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
     let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
 
@@ -270,23 +350,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Coat IBL
     var totalEmission = emissive;
     var coatFresnelMax = 0.0;
-    if (mat.coatWeight > 0.001) {
-        let coatW = clamp(mat.coatWeight, 0.0, 1.0);
-        let coatR = clamp(mat.coatRoughness, 0.04, 1.0);
+    if (coatW > 0.001) {
+        let cW = clamp(coatW, 0.0, 1.0);
+        let cR = clamp(coatR, 0.04, 1.0);
         let f0Coat = vec3<f32>(dielectricF0Scalar(mat.coatIor));
-        let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, coatR) * coatW;
+        let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, cR) * cW;
         coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
-        let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
+        let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, cR)).rg;
         let coatRefl = reflect(-V, N);
-        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
-        let f90Coat = max(1.0 - coatR, f0Coat.x);
-        let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * coatW;
+        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb;
+        let f90Coat = max(1.0 - cR, f0Coat.x);
+        let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * cW;
         let horizonOcclusion = clamp(coatRefl.y * 0.65 + 0.55, 0.18, 1.0);
         let coatSpecIbl = coatPrefiltered * coatEnvBrdf * horizonOcclusion * ao;
         let coatTransIbl = mix(
             vec3<f32>(1.0),
-            pow(max(mat.coatColor, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV, 0.05))),
-            coatW
+            pow(max(coatCol, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV, 0.05))),
+            cW
         );
         ambient = ambient * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl) + coatSpecIbl;
         totalEmission = totalEmission * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl);
