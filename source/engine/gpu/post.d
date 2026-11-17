@@ -1,9 +1,10 @@
-/// Post-processing: bloom, tone map (ACES/Reinhard), FXAA on an HDR scene RT.
+/// Post-processing: bloom, tone map (ACES/Reinhard/Linear/AgX), FXAA, and
+/// custom fullscreen passes on an HDR scene RT.
 module engine.gpu.post;
 
 import bindings.wgpu;
 import engine.core.log;
-import engine.gpu.buffer : createUniformBuffer, updateBuffer;
+import engine.gpu.buffer : createUniformBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders;
@@ -13,12 +14,22 @@ import engine.gpu.shaders;
 /// Color format for the offscreen scene / HDR post inputs.
 enum WGPUTextureFormat SCENE_COLOR_FORMAT = WGPUTextureFormat.rgba16Float;
 
+/// Insertion point for a custom fullscreen post pass.
+enum PostStage : ubyte {
+    /// Runs on linear HDR color (`SCENE_COLOR_FORMAT`) before bloom & tonemap.
+    beforeTonemap,
+    /// Runs on LDR surface color after tonemap/FXAA and before UI rendering.
+    afterTonemap,
+    /// Runs on LDR surface color after UI rendering (affects HUD as well).
+    afterUi,
+}
+
 /// Runtime toggles for the post stack. Owned by `Renderer`.
 struct PostSettings {
     float exposure = 1.0f;
     bool bloom = true;
     bool fxaa = true;
-    /// 0 = ACES, 1 = Reinhard, 2 = linear (clamp; keeps saturated emissive colors).
+    /// 0 = ACES, 1 = Reinhard, 2 = linear (clamp), 3 = AgX.
     int tonemapMode = 0;
     /// Composite bloom after tone mapping as `1 - (1 - scene)(1 - bloom)`
     /// instead of adding it to the HDR scene before tone mapping.
@@ -28,9 +39,65 @@ struct PostSettings {
     float bloomKnee = 0.7f;
     float bloomStrength = 0.12f;
     float bloomClamp = 8.0f;
+    /// Number of bloom mip levels used (clamped to 3..7).
+    int bloomRadius = 5;
+    /// Post-tonemap color adjustments (1.0 = neutral).
+    float saturation = 1.0f;
+    float contrast = 1.0f;
 }
 
-private enum MAX_BLOOM_MIPS = 5;
+private enum MAX_BLOOM_MIPS = 7;
+private enum MAX_CUSTOM_POST_PASSES = 16;
+
+/// Expand a custom fullscreen fragment WGSL snippet by supplying the shared
+/// fullscreen vertex shader and default `@group(0)` bindings when omitted.
+string composeCustomPostShader(scope const(char)[] wgsl) {
+    import std.algorithm.searching : canFind;
+    import engine.hotreload.shader_source : preprocessShader;
+
+    string src = wgsl.idup;
+    if (src.canFind("#include") || src.canFind("#define")) {
+        auto prep = preprocessShader(src, "custom_post.wgsl");
+        if (prep.success) src = prep.code;
+    }
+
+    string header;
+    if (!src.canFind("@vertex"))
+        header ~= fullscreenVsSource ~ "\n";
+    if (!src.canFind("@group(0)")) {
+        header ~= q{
+struct PostParams {
+    p0: vec4<f32>,
+    p1: vec4<f32>,
+    p2: vec4<f32>,
+    p3: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> params: PostParams;
+@group(0) @binding(1) var srcSamp: sampler;
+@group(0) @binding(2) var srcTex: texture_2d<f32>;
+};
+    }
+    return header.length ? (header ~ "\n" ~ src) : src;
+}
+
+private struct CustomPostPass {
+    uint id = 0;
+    PostStage stage = PostStage.afterTonemap;
+    bool enabled = true;
+    WGPUShaderModule sm;
+    WGPURenderPipeline pipe;
+    WGPUBuffer ubo;
+    ulong uniformBytes = 64;
+
+    void release() nothrow @nogc @trusted {
+        if (pipe !is null) { wgpuRenderPipelineRelease(pipe); pipe = null; }
+        if (sm !is null) { wgpuShaderModuleRelease(sm); sm = null; }
+        destroyBuffer(ubo);
+        ubo = null;
+        id = 0;
+        enabled = false;
+    }
+}
 
 private struct TexRT {
     WGPUTexture texture;
@@ -61,6 +128,11 @@ struct PostProcessor {
 
     private TexRT[MAX_BLOOM_MIPS] bloomMips;
     private TexRT ldrRT; // tonemap output when FXAA is on
+    private TexRT[2] hdrScratchRT;
+    private TexRT[2] ldrScratchRT;
+    private TexRT uiTargetRT;
+    private CustomPostPass[MAX_CUSTOM_POST_PASSES] customPasses;
+    private uint nextCustomPassId = 1;
     private uint bloomLevels = 0;
     private uint width, height;
     private WGPUTextureFormat surfaceFormat;
@@ -93,7 +165,7 @@ struct PostProcessor {
         p.linearSampler = wgpuDeviceCreateSampler(device, &sd);
 
         p.thresholdUBO = createUniformBuffer(device, 16);
-        p.tonemapUBO = createUniformBuffer(device, 16);
+        p.tonemapUBO = createUniformBuffer(device, 32);
 
         p.threshSM = createShaderModule(device, bloomThresholdShaderSource.ptr);
         p.downKarisSM = createShaderModule(device, bloomDownsampleKarisShaderSource.ptr);
@@ -167,16 +239,166 @@ struct PostProcessor {
     private void releaseTargets() nothrow @nogc {
         foreach (ref m; bloomMips) m.release();
         ldrRT.release();
+        foreach (ref s; hdrScratchRT) s.release();
+        foreach (ref s; ldrScratchRT) s.release();
+        uiTargetRT.release();
         bloomLevels = 0;
     }
 
-    /// Run bloom → tone map → FXAA into `surfaceView`. Uses `encoder` (no open pass).
+    /// Add a custom fullscreen post pass at `stage`. Returns a 1-based pass id
+    /// (0 on compile failure or when the pass table is full).
+    uint addPass(scope const(char)[] wgsl, size_t uniformBytes = 64,
+                 PostStage stage = PostStage.afterTonemap) @trusted {
+        if (device is null) return 0;
+        size_t slot = size_t.max;
+        foreach (i, ref cp; customPasses) {
+            if (cp.id == 0) { slot = i; break; }
+        }
+        if (slot == size_t.max) {
+            warn("PostProcessor: custom pass table full (max=", MAX_CUSTOM_POST_PASSES, ")");
+            return 0;
+        }
+
+        immutable ulong alignedUbo = uniformBytes < 16 ? 16 : ((uniformBytes + 15) & ~cast(size_t) 15);
+        immutable fullWgsl = composeCustomPostShader(wgsl);
+        auto sm = createShaderModule(device, fullWgsl, "custom_post");
+        if (sm is null) return 0;
+
+        immutable targetFmt = stage == PostStage.beforeTonemap ? SCENE_COLOR_FORMAT : surfaceFormat;
+        auto pipe = tryMakeFSPipeline(device, threshPL, sm, targetFmt, false);
+        if (pipe is null) {
+            wgpuShaderModuleRelease(sm);
+            return 0;
+        }
+
+        auto ubo = createUniformBuffer(device, alignedUbo);
+        ubyte[256] zeros = 0;
+        if (alignedUbo <= zeros.length)
+            wgpuQueueWriteBuffer(queue, ubo, 0, zeros.ptr, cast(size_t) alignedUbo);
+
+        CustomPostPass p;
+        p.id = nextCustomPassId++;
+        p.stage = stage;
+        p.enabled = true;
+        p.sm = sm;
+        p.pipe = pipe;
+        p.ubo = ubo;
+        p.uniformBytes = alignedUbo;
+        customPasses[slot] = p;
+        return p.id;
+    }
+
+    void updatePassParams(uint id, scope const(void)[] data) nothrow @nogc @trusted {
+        if (id == 0 || data.length == 0) return;
+        foreach (ref cp; customPasses) {
+            if (cp.id == id && cp.ubo !is null) {
+                immutable n = data.length < cp.uniformBytes ? data.length : cast(size_t) cp.uniformBytes;
+                wgpuQueueWriteBuffer(queue, cp.ubo, 0, data.ptr, n);
+                return;
+            }
+        }
+    }
+
+    void setPassEnabled(uint id, bool enabled) nothrow @nogc {
+        if (id == 0) return;
+        foreach (ref cp; customPasses) {
+            if (cp.id == id) { cp.enabled = enabled; return; }
+        }
+    }
+
+    bool reloadPass(uint id, scope const(char)[] wgsl) @trusted {
+        if (id == 0 || device is null) return false;
+        foreach (ref cp; customPasses) {
+            if (cp.id != id) continue;
+            immutable fullWgsl = composeCustomPostShader(wgsl);
+            auto sm = createShaderModule(device, fullWgsl, "reload_custom_post");
+            if (sm is null) return false;
+            immutable targetFmt = cp.stage == PostStage.beforeTonemap ? SCENE_COLOR_FORMAT : surfaceFormat;
+            auto pipe = tryMakeFSPipeline(device, threshPL, sm, targetFmt, false);
+            if (pipe is null) {
+                wgpuShaderModuleRelease(sm);
+                return false;
+            }
+            wgpuRenderPipelineRelease(cp.pipe);
+            wgpuShaderModuleRelease(cp.sm);
+            cp.pipe = pipe;
+            cp.sm = sm;
+            return true;
+        }
+        return false;
+    }
+
+    void removePass(uint id) nothrow @nogc {
+        if (id == 0) return;
+        foreach (ref cp; customPasses) {
+            if (cp.id == id) { cp.release(); return; }
+        }
+    }
+
+    bool hasActiveAfterUiPasses() const nothrow @nogc {
+        foreach (ref cp; customPasses) {
+            if (cp.id != 0 && cp.enabled && cp.stage == PostStage.afterUi)
+                return true;
+        }
+        return false;
+    }
+
+    WGPUTextureView ensureUiTargetView() nothrow @nogc {
+        if (uiTargetRT.view is null && width > 0 && height > 0)
+            uiTargetRT = createRT(width, height, surfaceFormat);
+        return uiTargetRT.view;
+    }
+
+    private uint countActivePasses(PostStage stage) const nothrow @nogc {
+        uint n = 0;
+        foreach (ref cp; customPasses) {
+            if (cp.id != 0 && cp.enabled && cp.stage == stage) n++;
+        }
+        return n;
+    }
+
+    private void ensureHdrScratch() nothrow @nogc {
+        if (width == 0 || height == 0) return;
+        foreach (ref rt; hdrScratchRT) {
+            if (rt.view is null) rt = createRT(width, height, SCENE_COLOR_FORMAT);
+        }
+    }
+
+    private void ensureLdrScratch() nothrow @nogc {
+        if (width == 0 || height == 0) return;
+        foreach (ref rt; ldrScratchRT) {
+            if (rt.view is null) rt = createRT(width, height, surfaceFormat);
+        }
+    }
+
+    /// Run beforeTonemap custom passes → bloom → tone map → FXAA → afterTonemap
+    /// custom passes into `surfaceView`. Uses `encoder` (no open pass).
     void execute(WGPUCommandEncoder encoder,
                  WGPUTextureView hdrView,
                  WGPUTextureView surfaceView) nothrow @nogc @trusted {
         if (width == 0 || height == 0) return;
 
-        immutable useBloom = settings.bloom && bloomLevels > 0;
+        WGPUTextureView sceneHdrIn = hdrView;
+        immutable uint nBefore = countActivePasses(PostStage.beforeTonemap);
+        if (nBefore > 0) {
+            ensureHdrScratch();
+            uint idx = 0;
+            foreach (ref cp; customPasses) {
+                if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.beforeTonemap) continue;
+                auto dst = hdrScratchRT[idx & 1].view;
+                auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, sceneHdrIn);
+                scope(exit) wgpuBindGroupRelease(bg);
+                drawPass(encoder, dst, cp.pipe, bg, true);
+                sceneHdrIn = dst;
+                idx++;
+            }
+        }
+
+        immutable int clampedRadius = settings.bloomRadius < 3
+            ? 3 : (settings.bloomRadius > MAX_BLOOM_MIPS ? MAX_BLOOM_MIPS : settings.bloomRadius);
+        immutable uint activeLevels = bloomLevels < cast(uint) clampedRadius
+            ? bloomLevels : cast(uint) clampedRadius;
+        immutable useBloom = settings.bloom && activeLevels > 0;
         if (useBloom) {
             // Threshold → mip0 (soft knee + bloomClamp)
             {
@@ -187,24 +409,24 @@ struct PostProcessor {
                     0,
                 ];
                 updateBuffer(queue, thresholdUBO, params[]);
-                auto bg = makeUBOTexBG(threshBGL, thresholdUBO, 16, hdrView);
+                auto bg = makeUBOTexBG(threshBGL, thresholdUBO, 16, sceneHdrIn);
                 scope(exit) wgpuBindGroupRelease(bg);
                 drawPass(encoder, bloomMips[0].view, threshPipe, bg, true);
             }
             // First downsample: Karis (firefly suppression)
-            if (bloomLevels > 1) {
+            if (activeLevels > 1) {
                 auto bg = makeSampleBG(sampleBGL, bloomMips[0].view);
                 scope(exit) wgpuBindGroupRelease(bg);
                 drawPass(encoder, bloomMips[1].view, downKarisPipe, bg, true);
             }
             // Further downsamples: box filter
-            foreach (i; 1 .. bloomLevels - 1) {
+            foreach (i; 1 .. activeLevels - 1) {
                 auto bg = makeSampleBG(sampleBGL, bloomMips[i].view);
                 scope(exit) wgpuBindGroupRelease(bg);
                 drawPass(encoder, bloomMips[i + 1].view, downPipe, bg, true);
             }
             // Upsample additive
-            foreach_reverse (i; 0 .. bloomLevels - 1) {
+            foreach_reverse (i; 0 .. activeLevels - 1) {
                 auto bg = makeSampleBG(sampleBGL, bloomMips[i + 1].view);
                 scope(exit) wgpuBindGroupRelease(bg);
                 drawPass(encoder, bloomMips[i].view, upAddPipe, bg, false);
@@ -215,30 +437,78 @@ struct PostProcessor {
         }
 
         float strength = useBloom ? settings.bloomStrength : 0.0f;
-        float[4] tm = [
+        float[8] tm = [
             settings.exposure,
             strength,
             cast(float) settings.tonemapMode,
             settings.bloomScreen ? 1.0f : 0.0f,
+            settings.saturation,
+            settings.contrast,
+            0.0f,
+            0.0f,
         ];
         updateBuffer(queue, tonemapUBO, tm[]);
 
-        auto bloomView = bloomLevels > 0 ? bloomMips[0].view : hdrView;
-        auto tmBG = makeTonemapBG(tonemapBGL, tonemapUBO, hdrView, bloomView);
+        auto bloomView = bloomLevels > 0 ? bloomMips[0].view : sceneHdrIn;
+        auto tmBG = makeTonemapBG(tonemapBGL, tonemapUBO, sceneHdrIn, bloomView);
         scope(exit) wgpuBindGroupRelease(tmBG);
+
+        immutable uint nAfter = countActivePasses(PostStage.afterTonemap);
+        WGPUTextureView ldrTarget = surfaceView;
+        if (nAfter > 0) {
+            ensureLdrScratch();
+            ldrTarget = ldrScratchRT[0].view;
+        }
 
         if (settings.fxaa) {
             drawPass(encoder, ldrRT.view, tonemapPipe, tmBG, true);
             auto fxBG = makeSampleBG(sampleBGL, ldrRT.view);
             scope(exit) wgpuBindGroupRelease(fxBG);
-            drawPass(encoder, surfaceView, fxaaPipe, fxBG, true);
+            drawPass(encoder, ldrTarget, fxaaPipe, fxBG, true);
         } else {
             ensureTonemapSurfacePipe();
-            drawPass(encoder, surfaceView, tonemapToSurfacePipe, tmBG, true);
+            drawPass(encoder, ldrTarget, tonemapToSurfacePipe, tmBG, true);
+        }
+
+        if (nAfter > 0) {
+            WGPUTextureView cur = ldrScratchRT[0].view;
+            uint idx = 0;
+            foreach (ref cp; customPasses) {
+                if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.afterTonemap) continue;
+                immutable bool isLast = (idx + 1 == nAfter);
+                auto dst = isLast ? surfaceView : ldrScratchRT[(idx + 1) & 1].view;
+                auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, cur);
+                scope(exit) wgpuBindGroupRelease(bg);
+                drawPass(encoder, dst, cp.pipe, bg, true);
+                cur = dst;
+                idx++;
+            }
+        }
+    }
+
+    /// Run enabled `afterUi` passes reading `uiTargetRT` and writing to `surfaceView`.
+    void executeAfterUi(WGPUCommandEncoder encoder, WGPUTextureView surfaceView) nothrow @nogc @trusted {
+        if (width == 0 || height == 0 || uiTargetRT.view is null) return;
+        immutable uint nUi = countActivePasses(PostStage.afterUi);
+        if (nUi == 0) return;
+
+        ensureLdrScratch();
+        WGPUTextureView cur = uiTargetRT.view;
+        uint idx = 0;
+        foreach (ref cp; customPasses) {
+            if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.afterUi) continue;
+            immutable bool isLast = (idx + 1 == nUi);
+            auto dst = isLast ? surfaceView : ldrScratchRT[idx & 1].view;
+            auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, cur);
+            scope(exit) wgpuBindGroupRelease(bg);
+            drawPass(encoder, dst, cp.pipe, bg, true);
+            cur = dst;
+            idx++;
         }
     }
 
     void destroy() nothrow @nogc @trusted {
+        foreach (ref cp; customPasses) cp.release();
         releaseTargets();
         if (linearSampler !is null) { wgpuSamplerRelease(linearSampler); linearSampler = null; }
         if (thresholdUBO !is null) { wgpuBufferRelease(thresholdUBO); thresholdUBO = null; }
@@ -349,7 +619,7 @@ struct PostProcessor {
     private WGPUBindGroup makeTonemapBG(WGPUBindGroupLayout layout, WGPUBuffer ubo,
                                         WGPUTextureView scene, WGPUTextureView bloom) nothrow @nogc @trusted {
         WGPUBindGroupEntry[4] e;
-        e[0].binding = 0; e[0].buffer = ubo; e[0].offset = 0; e[0].size = 16;
+        e[0].binding = 0; e[0].buffer = ubo; e[0].offset = 0; e[0].size = 32;
         e[1].binding = 1; e[1].sampler = linearSampler;
         e[2].binding = 2; e[2].textureView = scene;
         e[3].binding = 3; e[3].textureView = bloom;
@@ -398,7 +668,7 @@ struct PostProcessor {
         e[0].binding = 0;
         e[0].visibility = WGPUShaderStage.fragment;
         e[0].buffer.type = WGPUBufferBindingType.uniform;
-        e[0].buffer.minBindingSize = 16;
+        e[0].buffer.minBindingSize = 32;
         e[1].binding = 1;
         e[1].visibility = WGPUShaderStage.fragment;
         e[1].sampler.type = WGPUSamplerBindingType.filtering;
@@ -535,4 +805,28 @@ struct PostProcessor {
         if (pipe is null) fatal("Failed to create post pipeline");
         return pipe;
     }
+}
+
+@safe unittest {
+    import std.algorithm.searching : canFind;
+
+    // 5-line fragment shader automatically gets fullscreen_vs and @group(0).
+    enum vignette = q{
+        @fragment
+        fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+            let c = textureSample(srcTex, srcSamp, uv).rgb;
+            return vec4<f32>(c * params.p0.x, 1.0);
+        }
+    };
+    auto composed = composeCustomPostShader(vignette);
+    assert(composed.canFind("fn vs_main"));
+    assert(composed.canFind("@group(0) @binding(0)"));
+    assert(composed.canFind("fn fs_main"));
+
+    // Defaults remain backward-compatible.
+    PostSettings ps;
+    assert(ps.tonemapMode == 0);
+    assert(ps.bloomRadius == 5);
+    assert(ps.saturation == 1.0f);
+    assert(ps.contrast == 1.0f);
 }

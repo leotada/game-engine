@@ -3,7 +3,7 @@ module engine.gpu.renderer;
 
 import bindings.wgpu;
 import engine.gpu.context;
-import engine.gpu.post : PostProcessor, PostSettings, SCENE_COLOR_FORMAT;
+import engine.gpu.post : PostProcessor, PostSettings, PostStage, SCENE_COLOR_FORMAT;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : depthCopyShaderSource;
 import engine.graphics.types : Color4;
@@ -69,6 +69,33 @@ struct Renderer {
     /// Forward shader hot-reloading to the PostProcessor.
     bool reloadPostShader(scope const(char)[] shaderName, scope const(char)[] newWgsl) nothrow @nogc {
         return post.reloadShader(shaderName, newWgsl);
+    }
+
+    /// Add a custom fullscreen post-processing pass at `stage`.
+    /// Returns a 1-based pass id (0 on compile failure).
+    uint addPostPass(scope const(char)[] wgsl, size_t uniformBytes = 64,
+                     PostStage stage = PostStage.afterTonemap) {
+        return post.addPass(wgsl, uniformBytes, stage);
+    }
+
+    void updatePostPassParams(uint id, scope const(void)[] data) nothrow @nogc {
+        post.updatePassParams(id, data);
+    }
+
+    void updatePostPassParams(T)(uint id, ref const T data) nothrow @nogc @trusted {
+        post.updatePassParams(id, (cast(const(void)*) &data)[0 .. T.sizeof]);
+    }
+
+    void setPostPassEnabled(uint id, bool enabled) nothrow @nogc {
+        post.setPassEnabled(id, enabled);
+    }
+
+    bool reloadPostPass(uint id, scope const(char)[] wgsl) {
+        return post.reloadPass(id, wgsl);
+    }
+
+    void removePostPass(uint id) nothrow @nogc {
+        post.removePass(id);
     }
 
     private void createSceneTargets(uint w, uint h) nothrow @nogc @trusted {
@@ -351,11 +378,15 @@ struct Renderer {
         frame.texture = surfTex.texture;
         frame.view = surfView;
 
-        post.execute(frame.encoder, hdrView, surfView);
+        immutable bool useUiRT = post.hasActiveAfterUiPasses();
+        WGPUTextureView uiDst = useUiRT ? post.ensureUiTargetView() : surfView;
+        if (uiDst is null) uiDst = surfView;
+
+        post.execute(frame.encoder, hdrView, uiDst);
 
         // Present pass for UI (no depth)
         WGPURenderPassColorAttachment colorAtt;
-        colorAtt.view       = surfView;
+        colorAtt.view       = uiDst;
         colorAtt.loadOp     = WGPULoadOp.load;
         colorAtt.storeOp    = WGPUStoreOp.store;
         colorAtt.clearValue = WGPUColor(0, 0, 0, 1);
@@ -379,6 +410,10 @@ struct Renderer {
 
         wgpuRenderPassEncoderEnd(frame.pass);
         wgpuRenderPassEncoderRelease(frame.pass);
+
+        if (post.hasActiveAfterUiPasses()) {
+            post.executeAfterUi(frame.encoder, frame.view);
+        }
 
         if (captureBuf !is null && frame.texture !is null) encodeCapture(frame);
 
