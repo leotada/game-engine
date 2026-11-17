@@ -12,7 +12,7 @@ struct PointLight {
     color: vec3<f32>,
     intensity: f32,
     shadowSlot: i32,
-    _pad0: f32,
+    attenuation: f32,
     _pad1: f32,
     _pad2: f32,
 };
@@ -26,8 +26,8 @@ struct SpotLight {
     innerConeCos: f32,
     outerConeCos: f32,
     shadowSlot: i32,
-    _pad0: f32,
-    _pad1: f32,
+    attenuation: f32,
+    angleAttenuation: f32,
     viewProj: mat4x4<f32>,
 };
 

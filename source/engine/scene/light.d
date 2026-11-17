@@ -91,6 +91,10 @@ struct GpuPointLight {
     Vec3 color = Vec3(1, 1, 1);
     float intensity = 1.0f;
     float range = 10.0f;
+    /// 0 = engine default `(1 - (d/r)^4)^2 / (d^2 + 1)`. Above 0 = Godot-style
+    /// `pow(1 - d/r, attenuation)`: intensity reaches the full `range` and
+    /// ignores inverse-square falloff (1 = linear, >1 = tighter pool).
+    float attenuation = 0.0f;
     bool castShadows = false;
 }
 
@@ -104,6 +108,11 @@ struct GpuSpotLight {
     float innerConeDeg = 15.0f;
     float outerConeDeg = 25.0f;
     Mat4 viewProj = Mat4.identity();
+    /// Same meaning as `GpuPointLight.attenuation`.
+    float attenuation = 0.0f;
+    /// 0 = default `cone^2` cone falloff; above 0 = `cone^angleAttenuation`
+    /// (Godot `spot_attenuation`; below 1 widens the bright core).
+    float angleAttenuation = 0.0f;
     bool castShadows = false;
 }
 

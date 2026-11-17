@@ -103,6 +103,58 @@ struct IblEnvironment {
         return env;
     }
 
+    /// Uniform-color environment (e.g. deep space): every direction reflects
+    /// and diffuses `ambient`, and specular reflections show `reflection`.
+    /// Colors are linear RGB; values above 1 are clamped (8-bit cubemaps).
+    /// Cheap: no sky generation or prefiltering, just the BRDF LUT.
+    static IblEnvironment createSolid(ref GpuContext gpu, WGPUBindGroupLayout layout,
+                                      float[3] ambient, float[3] reflection) @trusted {
+        IblEnvironment env;
+        auto device = gpu.getDevice();
+        auto queue  = gpu.getQueue();
+
+        env.irradianceTex = createSolidCube(device, queue, ambient);
+        env.irradianceView = createCubeView(env.irradianceTex, 0, 1);
+        env.specularTex = createSolidCube(device, queue, reflection);
+        env.specularView = createCubeView(env.specularTex, 0, 1);
+
+        auto lutPixels = generateBrdfLut(IBL_LUT_SIZE);
+        env.brdfLutTex = createLutTexture(device, queue, lutPixels, IBL_LUT_SIZE);
+        WGPUTextureViewDescriptor lutVd;
+        lutVd.format = WGPUTextureFormat.rgba8Unorm;
+        lutVd.dimension = WGPUTextureViewDimension.dim2D;
+        env.brdfLutView = wgpuTextureCreateView(env.brdfLutTex, &lutVd);
+
+        WGPUSamplerDescriptor sd;
+        sd.addressModeU = WGPUAddressMode.clampToEdge;
+        sd.addressModeV = WGPUAddressMode.clampToEdge;
+        sd.addressModeW = WGPUAddressMode.clampToEdge;
+        sd.magFilter = WGPUFilterMode.linear;
+        sd.minFilter = WGPUFilterMode.linear;
+        sd.mipmapFilter = WGPUMipmapFilterMode.linear;
+        sd.lodMinClamp = 0;
+        sd.lodMaxClamp = 0;
+        sd.maxAnisotropy = 1;
+        env.sampler = wgpuDeviceCreateSampler(device, &sd);
+
+        WGPUBindGroupEntry[4] entries;
+        entries[0].binding = 0;
+        entries[0].textureView = env.irradianceView;
+        entries[1].binding = 1;
+        entries[1].textureView = env.specularView;
+        entries[2].binding = 2;
+        entries[2].textureView = env.brdfLutView;
+        entries[3].binding = 3;
+        entries[3].sampler = env.sampler;
+        WGPUBindGroupDescriptor bgd;
+        bgd.layout = layout;
+        bgd.entryCount = 4;
+        bgd.entries = entries.ptr;
+        env.bindGroup = wgpuDeviceCreateBindGroup(device, &bgd);
+        if (env.bindGroup is null) fatal("Failed to create solid IBL bind group");
+        return env;
+    }
+
     void destroy() nothrow @nogc @trusted {
         if (bindGroup !is null) { wgpuBindGroupRelease(bindGroup); bindGroup = null; }
         if (sampler !is null) { wgpuSamplerRelease(sampler); sampler = null; }
@@ -420,6 +472,36 @@ private ubyte toU8(float v) {
 // ---------------------------------------------------------------------------
 // GPU upload
 // ---------------------------------------------------------------------------
+
+/// 1x1 rgba8 cubemap filled with one color.
+private WGPUTexture createSolidCube(WGPUDevice device, WGPUQueue queue, float[3] color) @trusted {
+    WGPUTextureDescriptor td;
+    td.usage = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;
+    td.dimension = WGPUTextureDimension.dim2D;
+    td.size = WGPUExtent3D(1, 1, 6);
+    td.format = WGPUTextureFormat.rgba8Unorm;
+    td.mipLevelCount = 1;
+    auto tex = wgpuDeviceCreateTexture(device, &td);
+    if (tex is null) fatal("Failed to create solid IBL cube texture");
+
+    static ubyte toByte(float v) {
+        immutable c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        return cast(ubyte)(c * 255.0f + 0.5f);
+    }
+    ubyte[4] pixel = [toByte(color[0]), toByte(color[1]), toByte(color[2]), 255];
+    foreach (face; 0 .. 6) {
+        WGPUImageCopyTexture dst;
+        dst.texture = tex;
+        dst.origin = WGPUOrigin3D(0, 0, face);
+        dst.aspect = WGPUTextureAspect.all;
+        WGPUTextureDataLayout dl;
+        dl.bytesPerRow = 4;
+        dl.rowsPerImage = 1;
+        WGPUExtent3D extent = WGPUExtent3D(1, 1, 1);
+        wgpuQueueWriteTexture(queue, &dst, pixel.ptr, pixel.length, &dl, &extent);
+    }
+    return tex;
+}
 
 private WGPUTexture createCubeTexture(WGPUDevice device, uint size, uint mipCount) @trusted {
     WGPUTextureDescriptor td;

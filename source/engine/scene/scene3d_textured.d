@@ -44,7 +44,8 @@ struct GpuPointLightUbo {
     float[3] color = [1, 1, 1];
     float intensity = 1.0f;
     int shadowSlot = -1;
-    float _pad0 = 0, _pad1 = 0, _pad2 = 0;
+    float attenuation = 0.0f;
+    float _pad1 = 0, _pad2 = 0;
 }
 static assert(GpuPointLightUbo.sizeof == 48);
 
@@ -58,7 +59,8 @@ struct GpuSpotLightUbo {
     float innerConeCos = 0.96f;
     float outerConeCos = 0.9f;
     int shadowSlot = -1;
-    float _pad0 = 0, _pad1 = 0;
+    float attenuation = 0.0f;
+    float angleAttenuation = 0.0f;
     float[16] viewProj;
 }
 static assert(GpuSpotLightUbo.sizeof == 128);
@@ -287,6 +289,7 @@ struct Scene3DTextured {
             frameData.points[i].range = pl.range;
             frameData.points[i].color = [pl.color.x, pl.color.y, pl.color.z];
             frameData.points[i].intensity = pl.intensity;
+            frameData.points[i].attenuation = pl.attenuation;
             frameData.points[i].shadowSlot = -1;
             if (!pl.castShadows) continue;
             if (pointShadowUsed >= MAX_POINT_SHADOW_CASTERS
@@ -320,6 +323,8 @@ struct Scene3DTextured {
             frameData.spots[i].range = sl.range;
             frameData.spots[i].direction = [dir.x, dir.y, dir.z];
             frameData.spots[i].intensity = sl.intensity;
+            frameData.spots[i].attenuation = sl.attenuation;
+            frameData.spots[i].angleAttenuation = sl.angleAttenuation;
             frameData.spots[i].color = [sl.color.x, sl.color.y, sl.color.z];
             frameData.spots[i].innerConeCos = cos(innerRad);
             frameData.spots[i].outerConeCos = cos(outerRad);

@@ -476,7 +476,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             continue;
         }
         let L = toLight / dist;
-        let atten = rangeAttenuation(dist, pl.range);
+        let atten = lightAttenuation(dist, pl.range, pl.attenuation);
         let radiance = pl.color * pl.intensity * atten;
         let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
         direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
@@ -498,7 +498,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (cone <= 0.0) {
             continue;
         }
-        let atten = rangeAttenuation(dist, sl.range) * cone * cone;
+        let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+        let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
         let radiance = sl.color * sl.intensity * atten;
         let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
         direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;

@@ -18,7 +18,11 @@ struct PostSettings {
     float exposure = 1.0f;
     bool bloom = true;
     bool fxaa = true;
-    int tonemapMode = 0; // 0 = ACES, 1 = Reinhard
+    /// 0 = ACES, 1 = Reinhard, 2 = linear (clamp; keeps saturated emissive colors).
+    int tonemapMode = 0;
+    /// Composite bloom after tone mapping as `1 - (1 - scene)(1 - bloom)`
+    /// instead of adding it to the HDR scene before tone mapping.
+    bool bloomScreen = false;
     // Visible bloom with Karis/clamp keeping fireflies in check.
     float bloomThreshold = 1.2f;
     float bloomKnee = 0.7f;
@@ -215,7 +219,7 @@ struct PostProcessor {
             settings.exposure,
             strength,
             cast(float) settings.tonemapMode,
-            0,
+            settings.bloomScreen ? 1.0f : 0.0f,
         ];
         updateBuffer(queue, tonemapUBO, tm[]);
 

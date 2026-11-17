@@ -297,6 +297,15 @@ fn evalBRDF(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, albedo: vec3<f32>,
     return evalOpenPbrDirect(inp, L, radiance);
 }
 
+/// Per-light attenuation: `exponent <= 0` keeps the default curve, otherwise
+/// `pow(1 - d/r, exponent)` (reaches the full range, no inverse-square).
+fn lightAttenuation(distance: f32, range: f32, exponent: f32) -> f32 {
+    if (exponent > 0.0) {
+        return pow(clamp(1.0 - distance / max(range, 0.001), 0.0, 1.0), exponent);
+    }
+    return rangeAttenuation(distance, range);
+}
+
 fn rangeAttenuation(distance: f32, range: f32) -> f32 {
     let x = clamp(1.0 - pow(distance / max(range, 0.001), 4.0), 0.0, 1.0);
     return (x * x) / (distance * distance + 1.0);
