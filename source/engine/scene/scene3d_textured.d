@@ -14,16 +14,21 @@ import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
     createSurfacePipelines, createTexturedDrawPipeline, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
 import engine.gpu.renderer : FrameContext, Renderer;
-import engine.gpu.shadow : PointShadowMap, ShadowMap, SpotShadowMap;
+import engine.gpu.shadow :
+    beginShadowPassView, createTexShadowPipeline, endShadowPass,
+    pointLightFaceVPs, PointShadowMap, ShadowMap, SpotShadowMap,
+    spotLightVPFromCone, TexShadowPipeline;
 import engine.graphics.types : Color4;
-import engine.graphics.texmesh : TexMesh;
+import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.graphics.material : Material;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
 import engine.scene.light :
-    LightSet, MAX_POINT_LIGHTS, MAX_POINT_SHADOW_CASTERS,
-    MAX_SPOT_LIGHTS, MAX_SPOT_SHADOW_CASTERS;
+    DIR_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, LightSet,
+    MAX_POINT_LIGHTS, MAX_POINT_SHADOW_CASTERS,
+    MAX_SPOT_LIGHTS, MAX_SPOT_SHADOW_CASTERS,
+    POINT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION;
 
 @safe:
 
@@ -115,7 +120,22 @@ struct Scene3DTextured {
         TexInstanceData[] instances;
         WGPUBuffer instanceBuf;
         size_t     capacity;
+        bool       uploaded = false;
     }
+
+    private enum uint SHADOW_VP_STRIDE = 256;
+    private enum uint MAX_SHADOW_PASS_SLOTS = 1 + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
+    private bool shadowPipeReady = false;
+    private TexShadowPipeline shadowPipe;
+    private WGPUBuffer shadowVpBuf;
+    private WGPUBindGroup shadowVpBg;
+    private ubyte[MAX_SHADOW_PASS_SLOTS * SHADOW_VP_STRIDE] shadowVpStaging;
+    private ShadowMap ownedDirShadow;
+    private bool hasOwnedDirShadow = false;
+    private PointShadowMap[MAX_POINT_SHADOW_CASTERS] ownedPointShadows;
+    private bool[MAX_POINT_SHADOW_CASTERS] hasOwnedPointShadow;
+    private SpotShadowMap[MAX_SPOT_SHADOW_CASTERS] ownedSpotShadows;
+    private bool[MAX_SPOT_SHADOW_CASTERS] hasOwnedSpotShadow;
 
     /// Pipelines for a (surface shader, render state) pair other than the default state.
     private struct PipelineVariant {
@@ -411,7 +431,217 @@ struct Scene3DTextured {
             b.mesh = null;
             b.material = null;
             b.instances = null;
+            b.uploaded = false;
         }
+    }
+
+    /// Render depth shadow passes automatically for all queued `depthWrite`
+    /// batches across any shadow-casting directional, point, or spot lights
+    /// in `lights`. Lazily allocates and reuses internal shadow maps as needed.
+    /// Spot lights with an identity `viewProj` automatically derive one from
+    /// `position`, `direction`, `outerConeDeg`, and `range`.
+    /// Must be called after `begin` / `draw*` and before `end`.
+    void renderShadows(ref FrameContext frame, ref const LightSet lights) @trusted {
+        LightSet resolved = resolveLightsForShadows(lights);
+
+        ShadowMap* dirPtr = null;
+        if (resolved.dirEnabled && resolved.dir.castShadows) {
+            if (!hasOwnedDirShadow) {
+                ownedDirShadow = ShadowMap.createForDevice(device, DIR_SHADOW_RESOLUTION);
+                hasOwnedDirShadow = true;
+            }
+            dirPtr = &ownedDirShadow;
+        }
+
+        PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointPtrs;
+        uint pUsed = 0;
+        foreach (i; 0 .. resolved.pointCount < MAX_POINT_LIGHTS ? resolved.pointCount : MAX_POINT_LIGHTS) {
+            if (!resolved.points[i].castShadows) continue;
+            if (pUsed >= MAX_POINT_SHADOW_CASTERS) break;
+            if (!hasOwnedPointShadow[pUsed]) {
+                immutable farP = resolved.points[i].range > LIGHT_SHADOW_NEAR ? resolved.points[i].range : 25.0f;
+                ownedPointShadows[pUsed] = PointShadowMap.createForDevice(
+                    device, POINT_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, farP);
+                hasOwnedPointShadow[pUsed] = true;
+            } else if (resolved.points[i].range > LIGHT_SHADOW_NEAR) {
+                ownedPointShadows[pUsed].farPlane = resolved.points[i].range;
+            }
+            pointPtrs[pUsed] = &ownedPointShadows[pUsed];
+            pUsed++;
+        }
+
+        SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotPtrs;
+        uint sUsed = 0;
+        foreach (i; 0 .. resolved.spotCount < MAX_SPOT_LIGHTS ? resolved.spotCount : MAX_SPOT_LIGHTS) {
+            if (!resolved.spots[i].castShadows) continue;
+            if (sUsed >= MAX_SPOT_SHADOW_CASTERS) break;
+            if (!hasOwnedSpotShadow[sUsed]) {
+                ownedSpotShadows[sUsed] = SpotShadowMap.createForDevice(device, SPOT_SHADOW_RESOLUTION);
+                hasOwnedSpotShadow[sUsed] = true;
+            }
+            spotPtrs[sUsed] = &ownedSpotShadows[sUsed];
+            sUsed++;
+        }
+
+        renderShadows(frame, resolved, dirPtr, pointPtrs, spotPtrs);
+    }
+
+    /// Automatic batch shadow rendering using caller-provided shadow maps.
+    void renderShadows(ref FrameContext frame,
+                       ref const LightSet lights,
+                       scope ShadowMap* dirShadow,
+                       scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
+                       scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
+        if (!frame.valid || frame.postResolved) return;
+        LightSet resolved = resolveLightsForShadows(lights);
+
+        setLights(resolved, dirShadow, pointShadows, spotShadows);
+        updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
+
+        bool anyCast = (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null);
+        if (!anyCast) {
+            foreach (i; 0 .. frameData.pointCount) {
+                if (pointLightsData[i].shadowSlot >= 0) { anyCast = true; break; }
+            }
+        }
+        if (!anyCast) {
+            foreach (i; 0 .. frameData.spotCount) {
+                if (frameData.spots[i].shadowSlot >= 0) { anyCast = true; break; }
+            }
+        }
+        if (!anyCast) return;
+
+        ensureShadowResources();
+
+        uint casterBatches = 0;
+        foreach (ref b; batches[0 .. batchCount]) {
+            if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
+            ensureBatchUploaded(b);
+            casterBatches++;
+        }
+
+        // Pack all light VP matrices into aligned 256-byte dynamic-offset slots.
+        import core.stdc.string : memcpy;
+        void storeVp(uint slot, ref const float[16] m) {
+            memcpy(shadowVpStaging.ptr + slot * SHADOW_VP_STRIDE, m.ptr, 64);
+        }
+
+        uint maxSlotUsed = 0;
+        if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
+            storeVp(0, resolved.dir.viewProj.m);
+            maxSlotUsed = 1;
+        }
+        foreach (i; 0 .. frameData.pointCount) {
+            immutable int slot = pointLightsData[i].shadowSlot;
+            if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
+            immutable vps = pointLightFaceVPs(
+                resolved.points[i].position,
+                pointShadows[slot].nearPlane,
+                pointShadows[slot].farPlane);
+            foreach (face; 0 .. 6) {
+                immutable uSlot = 1 + cast(uint) slot * 6 + face;
+                storeVp(uSlot, vps[face].m);
+                if (uSlot + 1 > maxSlotUsed) maxSlotUsed = uSlot + 1;
+            }
+        }
+        foreach (i; 0 .. frameData.spotCount) {
+            immutable int slot = frameData.spots[i].shadowSlot;
+            if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
+            immutable uSlot = 1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot;
+            storeVp(uSlot, resolved.spots[i].viewProj.m);
+            if (uSlot + 1 > maxSlotUsed) maxSlotUsed = uSlot + 1;
+        }
+
+        if (maxSlotUsed == 0) return;
+        wgpuQueueWriteBuffer(queue, shadowVpBuf, 0, shadowVpStaging.ptr, maxSlotUsed * SHADOW_VP_STRIDE);
+
+        frame.suspendScenePass();
+        scope(exit) frame.resumeScenePass();
+
+        if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
+            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0);
+        }
+        foreach (i; 0 .. frameData.pointCount) {
+            immutable int slot = pointLightsData[i].shadowSlot;
+            if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
+            foreach (face; 0 .. 6) {
+                encodeShadowView(
+                    frame.encoder,
+                    pointShadows[slot].faceViews[face],
+                    1 + cast(uint) slot * 6 + face,
+                    casterBatches > 0);
+            }
+        }
+        foreach (i; 0 .. frameData.spotCount) {
+            immutable int slot = frameData.spots[i].shadowSlot;
+            if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
+            encodeShadowView(
+                frame.encoder,
+                spotShadows[slot].depthView,
+                1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot,
+                casterBatches > 0);
+        }
+    }
+
+    private static LightSet resolveLightsForShadows(ref const LightSet lights) {
+        LightSet resolved = lights;
+        immutable sc = resolved.spotCount < MAX_SPOT_LIGHTS ? resolved.spotCount : MAX_SPOT_LIGHTS;
+        foreach (i; 0 .. sc) {
+            if (!resolved.spots[i].castShadows) continue;
+            if (resolved.spots[i].viewProj.m == Mat4.init.m) {
+                immutable farP = resolved.spots[i].range > LIGHT_SHADOW_NEAR
+                    ? resolved.spots[i].range : 25.0f;
+                resolved.spots[i].viewProj = spotLightVPFromCone(
+                    resolved.spots[i].position,
+                    resolved.spots[i].direction,
+                    resolved.spots[i].outerConeDeg,
+                    LIGHT_SHADOW_NEAR,
+                    farP);
+            }
+        }
+        return resolved;
+    }
+
+    private void ensureShadowResources() @trusted {
+        if (shadowPipeReady) return;
+        shadowPipe = createTexShadowPipeline(device);
+        shadowVpBuf = createUniformBuffer(device, MAX_SHADOW_PASS_SLOTS * SHADOW_VP_STRIDE);
+
+        WGPUBindGroupEntry bge;
+        bge.binding = 0;
+        bge.buffer  = shadowVpBuf;
+        bge.offset  = 0;
+        bge.size    = 64;
+        WGPUBindGroupDescriptor bgd;
+        bgd.layout     = shadowPipe.bindGroupLayout;
+        bgd.entryCount = 1;
+        bgd.entries    = &bge;
+        shadowVpBg = wgpuDeviceCreateBindGroup(device, &bgd);
+        if (shadowVpBg is null) fatal("Failed to create scene shadow VP bind group");
+        shadowPipeReady = true;
+    }
+
+    private void encodeShadowView(WGPUCommandEncoder encoder, WGPUTextureView targetView,
+                                  uint vpSlot, bool drawBatches) nothrow @nogc @trusted {
+        auto pass = beginShadowPassView(encoder, targetView, /*clear=*/true);
+        if (drawBatches) {
+            immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+            foreach (ref b; batches[0 .. batchCount]) {
+                if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
+                auto p = shadowPipe.pipelineFor(b.mesh.vertexStride, b.material.renderState.doubleSided);
+                wgpuRenderPassEncoderSetPipeline(pass, p);
+                wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass, 1, b.instanceBuf, 0, b.instances.length * TexInstanceData.sizeof);
+                ShadowLodDraw lod = b.mesh.shadowLodDraw();
+                WGPUBuffer indexBuf = lod.useLodRange ? b.mesh.indexBuffer : b.mesh.shadowDrawBuffer();
+                ulong indexBytes = lod.useLodRange ? b.mesh.indexBufSize : b.mesh.shadowDrawBytes();
+                wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, b.mesh.indexFormat, 0, indexBytes);
+                wgpuRenderPassEncoderDrawIndexed(pass, lod.count, cast(uint) b.instances.length, lod.first, 0, 0);
+            }
+        }
+        endShadowPass(pass);
     }
 
     void draw(ref TexMesh mesh, ref Material material,
@@ -461,6 +691,7 @@ struct Scene3DTextured {
                 if (p != pass) continue;
                 if (pass == 1) {
                     b.instances.sort!((x, y) => distSq(x, cam) > distSq(y, cam));
+                    b.uploaded = false;
                     sortFarthest[i] = distSq(b.instances[0], cam);
                 }
                 sortOrder[orderCount++] = cast(uint) i;
@@ -471,7 +702,8 @@ struct Scene3DTextured {
         }
     }
 
-    private void drawBatch(ref FrameContext frame, ref Batch b) @trusted {
+    private void ensureBatchUploaded(ref Batch b) @trusted {
+        if (b.uploaded) return;
         if (b.instances.length > b.capacity) {
             size_t cap = b.capacity;
             while (cap < b.instances.length) cap *= 2;
@@ -480,6 +712,11 @@ struct Scene3DTextured {
             b.capacity = cap;
         }
         updateBuffer(queue, b.instanceBuf, b.instances);
+        b.uploaded = true;
+    }
+
+    private void drawBatch(ref FrameContext frame, ref Batch b) @trusted {
+        ensureBatchUploaded(b);
 
         immutable tangent = b.mesh.vertexStride == 48;
         auto pipe = pipelineFor(b.material.surfaceShader, b.material.renderState, tangent);
@@ -573,6 +810,16 @@ struct Scene3DTextured {
             wgpuTextureRelease(defaultShadowCubeTex);
             defaultShadowCubeTex = null;
         }
+        if (hasOwnedDirShadow) { ownedDirShadow.destroy(); hasOwnedDirShadow = false; }
+        foreach (i; 0 .. MAX_POINT_SHADOW_CASTERS) {
+            if (hasOwnedPointShadow[i]) { ownedPointShadows[i].destroy(); hasOwnedPointShadow[i] = false; }
+        }
+        foreach (i; 0 .. MAX_SPOT_SHADOW_CASTERS) {
+            if (hasOwnedSpotShadow[i]) { ownedSpotShadows[i].destroy(); hasOwnedSpotShadow[i] = false; }
+        }
+        if (shadowVpBg !is null) { wgpuBindGroupRelease(shadowVpBg); shadowVpBg = null; }
+        destroyBuffer(shadowVpBuf); shadowVpBuf = null;
+        if (shadowPipeReady) { shadowPipe.release(); shadowPipeReady = false; }
         pipeline.release();
     }
 
@@ -714,6 +961,25 @@ struct Scene3DTextured {
         batches[batchCount].mesh = &mesh;
         batches[batchCount].material = &material;
         batches[batchCount].instances = null;
+        batches[batchCount].uploaded = false;
         return &batches[batchCount++];
     }
+}
+
+@safe unittest {
+    LightSet ls;
+    ls.spotCount = 2;
+    ls.spots[0].position = Vec3(0, 5, 0);
+    ls.spots[0].direction = Vec3(0, -1, 0);
+    ls.spots[0].range = 40.0f;
+    ls.spots[0].outerConeDeg = 30.0f;
+    ls.spots[0].castShadows = true;
+    // Identity viewProj must be auto-resolved for shadow-casting spots.
+    ls.spots[1].castShadows = true;
+    auto customVP = Mat4.translation(1, 2, 3);
+    ls.spots[1].viewProj = customVP;
+
+    auto resolved = Scene3DTextured.resolveLightsForShadows(ls);
+    assert(resolved.spots[0].viewProj.m != Mat4.identity().m);
+    assert(resolved.spots[1].viewProj.m == customVP.m);
 }

@@ -226,55 +226,38 @@ struct Renderer {
         ensureOpaqueSnapshot();
         if (opaqueColorTex is null || opaqueDepthView_ is null || depthCopyBG is null) return;
 
-        wgpuRenderPassEncoderEnd(frame.pass);
-        wgpuRenderPassEncoderRelease(frame.pass);
-        frame.pass = null;
-
         {
-            WGPUImageCopyTexture src;
-            src.texture = hdrTexture;
-            WGPUImageCopyTexture dst;
-            dst.texture = opaqueColorTex;
-            immutable copySz = WGPUExtent3D(rtW, rtH, 1);
-            wgpuCommandEncoderCopyTextureToTexture(frame.encoder, &src, &dst, &copySz);
+            frame.suspendScenePass();
+            scope(exit) frame.resumeScenePass();
+            {
+                WGPUImageCopyTexture src;
+                src.texture = hdrTexture;
+                WGPUImageCopyTexture dst;
+                dst.texture = opaqueColorTex;
+                immutable copySz = WGPUExtent3D(rtW, rtH, 1);
+                wgpuCommandEncoderCopyTextureToTexture(frame.encoder, &src, &dst, &copySz);
+            }
+
+            {
+                WGPURenderPassDepthStencilAttachment dAtt;
+                dAtt.view = opaqueDepthView_;
+                dAtt.depthLoadOp = WGPULoadOp.clear;
+                dAtt.depthStoreOp = WGPUStoreOp.store;
+                dAtt.depthClearValue = 1.0f;
+
+                WGPURenderPassDescriptor rpd;
+                rpd.colorAttachmentCount = 0;
+                rpd.colorAttachments = null;
+                rpd.depthStencilAttachment = &dAtt;
+
+                auto dPass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &rpd);
+                wgpuRenderPassEncoderSetPipeline(dPass, depthCopyPipe);
+                wgpuRenderPassEncoderSetBindGroup(dPass, 0, depthCopyBG, 0, null);
+                wgpuRenderPassEncoderDraw(dPass, 3, 1, 0, 0);
+                wgpuRenderPassEncoderEnd(dPass);
+                wgpuRenderPassEncoderRelease(dPass);
+            }
         }
-
-        {
-            WGPURenderPassDepthStencilAttachment dAtt;
-            dAtt.view = opaqueDepthView_;
-            dAtt.depthLoadOp = WGPULoadOp.clear;
-            dAtt.depthStoreOp = WGPUStoreOp.store;
-            dAtt.depthClearValue = 1.0f;
-
-            WGPURenderPassDescriptor rpd;
-            rpd.colorAttachmentCount = 0;
-            rpd.colorAttachments = null;
-            rpd.depthStencilAttachment = &dAtt;
-
-            auto dPass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &rpd);
-            wgpuRenderPassEncoderSetPipeline(dPass, depthCopyPipe);
-            wgpuRenderPassEncoderSetBindGroup(dPass, 0, depthCopyBG, 0, null);
-            wgpuRenderPassEncoderDraw(dPass, 3, 1, 0, 0);
-            wgpuRenderPassEncoderEnd(dPass);
-            wgpuRenderPassEncoderRelease(dPass);
-        }
-
-        WGPURenderPassColorAttachment colorAtt;
-        colorAtt.view       = hdrView;
-        colorAtt.loadOp     = WGPULoadOp.load;
-        colorAtt.storeOp    = WGPUStoreOp.store;
-        colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-
-        WGPURenderPassDepthStencilAttachment depthAtt;
-        depthAtt.view            = depthView;
-        depthAtt.depthLoadOp     = WGPULoadOp.load;
-        depthAtt.depthStoreOp    = WGPUStoreOp.store;
-
-        WGPURenderPassDescriptor passDesc;
-        passDesc.colorAttachmentCount = 1;
-        passDesc.colorAttachments     = &colorAtt;
-        passDesc.depthStencilAttachment = &depthAtt;
-        frame.pass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &passDesc);
     }
 
     WGPUTextureView opaqueColorView() nothrow @nogc @trusted {
@@ -331,6 +314,8 @@ struct Renderer {
         FrameContext frame;
         frame.encoder = encoder;
         frame.pass = pass;
+        frame.sceneColorView = hdrView;
+        frame.sceneDepthView = depthView;
         frame.valid = true;
         frame.postResolved = false;
         return frame;
@@ -504,9 +489,43 @@ struct FrameContext {
     WGPUTextureView        view;    // swapchain view after resolvePost
     WGPUCommandEncoder     encoder;
     WGPURenderPassEncoder  pass;
+    WGPUTextureView        sceneColorView;
+    WGPUTextureView        sceneDepthView;
     bool                   valid = false;
     bool                   postResolved = false;
     WGPUSurfaceGetCurrentTextureStatus acquireStatus;
+
+    /// End the active HDR scene pass temporarily so auxiliary depth/compute
+    /// passes can be recorded on `encoder`. Pair with `resumeScenePass`.
+    void suspendScenePass() nothrow @nogc @trusted {
+        if (!valid || postResolved || pass is null) return;
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+        pass = null;
+    }
+
+    /// Reopen the HDR scene pass with `loadOp = load` after `suspendScenePass`.
+    void resumeScenePass() nothrow @nogc @trusted {
+        if (!valid || postResolved || pass !is null) return;
+        if (sceneColorView is null || sceneDepthView is null) return;
+
+        WGPURenderPassColorAttachment colorAtt;
+        colorAtt.view       = sceneColorView;
+        colorAtt.loadOp     = WGPULoadOp.load;
+        colorAtt.storeOp    = WGPUStoreOp.store;
+        colorAtt.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+
+        WGPURenderPassDepthStencilAttachment depthAtt;
+        depthAtt.view            = sceneDepthView;
+        depthAtt.depthLoadOp     = WGPULoadOp.load;
+        depthAtt.depthStoreOp    = WGPUStoreOp.store;
+
+        WGPURenderPassDescriptor passDesc;
+        passDesc.colorAttachmentCount = 1;
+        passDesc.colorAttachments     = &colorAtt;
+        passDesc.depthStencilAttachment = &depthAtt;
+        pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+    }
 
     /// True when the swapchain wait failed and the surface should be reconfigured.
     bool acquireNeedsRecover() const nothrow @nogc pure {

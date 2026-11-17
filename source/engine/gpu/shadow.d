@@ -62,9 +62,12 @@ struct ShadowMap {
     @disable this(this);
 
     static ShadowMap create(ref GpuContext gpu, uint resolution = 2048) @trusted {
+        return createForDevice(gpu.getDevice(), resolution);
+    }
+
+    package(engine) static ShadowMap createForDevice(WGPUDevice device, uint resolution = 2048) @trusted {
         ShadowMap s;
         s.resolution = resolution;
-        auto device = gpu.getDevice();
 
         WGPUTextureDescriptor td;
         td.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
@@ -222,7 +225,7 @@ Mat4 directionalLightVP(Vec3 direction, Vec3 sceneCenter, float sceneRadius) {
 /// (2D shadow map or a single cubemap face).
 WGPURenderPassEncoder beginShadowPassView(WGPUCommandEncoder encoder,
                                           WGPUTextureView depthView,
-                                          bool clear = true) @trusted {
+                                          bool clear = true) nothrow @nogc @trusted {
     WGPURenderPassDepthStencilAttachment depthAtt;
     depthAtt.view            = depthView;
     depthAtt.depthLoadOp     = clear ? WGPULoadOp.clear : WGPULoadOp.load;
@@ -242,7 +245,7 @@ WGPURenderPassEncoder beginShadowPassView(WGPUCommandEncoder encoder,
 /// Pass `clear=false` to accumulate casters across multiple submit/draw calls.
 WGPURenderPassEncoder beginShadowPass(WGPUCommandEncoder encoder,
                                        ref ShadowMap shadow,
-                                       bool clear = true) @trusted {
+                                       bool clear = true) nothrow @nogc @trusted {
     return beginShadowPassView(encoder, shadow.depthView, clear);
 }
 
@@ -290,6 +293,109 @@ private WGPURenderPipeline shadowPipelineFor(ref ShadowPipeline pipe, uint verte
     return vertexStride == 48 ? pipe.pipeline48 : pipe.pipeline;
 }
 
+/// Depth-only pipeline for `Scene3DTextured` batches (`TexInstanceData`, stride 96),
+/// supporting dynamic uniform offsets for multi-pass shadow encoding and
+/// back-face / double-sided culling.
+struct TexShadowPipeline {
+    WGPURenderPipeline  pipe32Back;
+    WGPURenderPipeline  pipe48Back;
+    WGPURenderPipeline  pipe32None;
+    WGPURenderPipeline  pipe48None;
+    WGPUBindGroupLayout bindGroupLayout;
+    WGPUPipelineLayout  pipelineLayout;
+    WGPUShaderModule    shaderModule;
+
+    @disable this(this);
+
+    WGPURenderPipeline pipelineFor(uint vertexStride, bool doubleSided) pure nothrow @nogc {
+        if (doubleSided)
+            return vertexStride == 48 ? pipe48None : pipe32None;
+        return vertexStride == 48 ? pipe48Back : pipe32Back;
+    }
+
+    void release() nothrow @nogc @trusted {
+        void rel(ref WGPURenderPipeline p) {
+            if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
+        }
+        rel(pipe32Back); rel(pipe48Back); rel(pipe32None); rel(pipe48None);
+        if (pipelineLayout !is null)  { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
+        if (bindGroupLayout !is null) { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
+        if (shaderModule !is null)    { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
+    }
+}
+
+TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
+    TexShadowPipeline r;
+    r.shaderModule = createShaderModule(device, shadowDepthShaderSource.ptr);
+    if (r.shaderModule is null) fatal("Tex shadow depth shader compile failed");
+
+    WGPUBindGroupLayoutEntry bgle;
+    bgle.binding = 0;
+    bgle.visibility = WGPUShaderStage.vertex;
+    bgle.buffer.type = WGPUBufferBindingType.uniform;
+    bgle.buffer.hasDynamicOffset = WGPU_TRUE;
+    bgle.buffer.minBindingSize = 64;
+
+    WGPUBindGroupLayoutDescriptor bglDesc;
+    bglDesc.entryCount = 1;
+    bglDesc.entries = &bgle;
+    r.bindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &bglDesc);
+
+    WGPUPipelineLayoutDescriptor plDesc;
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &r.bindGroupLayout;
+    r.pipelineLayout = wgpuDeviceCreatePipelineLayout(device, &plDesc);
+
+    WGPUVertexAttribute[3] vertexAttrs = [
+        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+        { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+    ];
+    WGPUVertexAttribute[5] instanceAttrs = [
+        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
+        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
+        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
+    ];
+
+    WGPURenderPipeline buildPipe(uint vStride, bool doubleSided) {
+        WGPUVertexBufferLayout[2] bufferLayouts = [
+            { arrayStride: vStride, stepMode: WGPUVertexStepMode.vertex,
+              attributeCount: 3, attributes: vertexAttrs.ptr },
+            { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
+              attributeCount: 5, attributes: instanceAttrs.ptr },
+        ];
+        WGPUDepthStencilState depthState;
+        depthState.format            = WGPUTextureFormat.depth32Float;
+        depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+        depthState.depthCompare      = WGPUCompareFunction.less;
+        depthState.depthBias         = 1;
+        depthState.depthBiasSlopeScale = 1.75f;
+        depthState.depthBiasClamp    = 0.0f;
+
+        WGPURenderPipelineDescriptor pd;
+        pd.layout = r.pipelineLayout;
+        pd.vertex.module_ = r.shaderModule;
+        pd.vertex.entryPoint = wgpuStringView("vs_main");
+        pd.vertex.bufferCount = 2;
+        pd.vertex.buffers = bufferLayouts.ptr;
+        pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+        pd.primitive.frontFace = WGPUFrontFace.ccw;
+        pd.primitive.cullMode = doubleSided ? WGPUCullMode.none : WGPUCullMode.back;
+        pd.depthStencil = &depthState;
+        auto pipe = wgpuDeviceCreateRenderPipeline(device, &pd);
+        if (pipe is null) fatal("Tex shadow pipeline creation failed");
+        return pipe;
+    }
+
+    r.pipe32Back = buildPipe(32, false);
+    r.pipe48Back = buildPipe(48, false);
+    r.pipe32None = buildPipe(32, true);
+    r.pipe48None = buildPipe(48, true);
+    return r;
+}
+
 // ---------------------------------------------------------------------------
 // Point light — depth cubemap (6 faces)
 // ---------------------------------------------------------------------------
@@ -311,11 +417,18 @@ struct PointShadowMap {
                                  uint resolution = DEFAULT_POINT_SHADOW_RESOLUTION,
                                  float nearPlane = DEFAULT_SHADOW_NEAR,
                                  float farPlane = 25.0f) @trusted {
+        return createForDevice(gpu.getDevice(), resolution, nearPlane, farPlane);
+    }
+
+    package(engine) static PointShadowMap createForDevice(
+        WGPUDevice device,
+        uint resolution = DEFAULT_POINT_SHADOW_RESOLUTION,
+        float nearPlane = DEFAULT_SHADOW_NEAR,
+        float farPlane = 25.0f) @trusted {
         PointShadowMap s;
         s.resolution = resolution;
         s.nearPlane = nearPlane;
         s.farPlane = farPlane;
-        auto device = gpu.getDevice();
 
         WGPUTextureDescriptor td;
         td.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
