@@ -65,7 +65,7 @@ struct GpuSpotLightUbo {
 }
 static assert(GpuSpotLightUbo.sizeof == 128);
 
-/// CPU mirror of WGSL FrameUniforms (1088 bytes).
+/// CPU mirror of WGSL FrameUniforms (720 bytes).
 struct FrameUniforms {
     float[16] viewProj;
     float[3] cameraPos = [0, 5, 10];
@@ -75,7 +75,10 @@ struct FrameUniforms {
     uint spotCount = 0;
     uint dirEnabled = 1;
     float time = 0.0f;
-    GpuPointLightUbo[MAX_POINT_LIGHTS] points;
+    float iblIntensity = 1.0f;
+    float _padFrame0 = 0.0f;
+    float _padFrame1 = 0.0f;
+    float _padFrame2 = 0.0f;
     GpuSpotLightUbo[MAX_SPOT_LIGHTS] spots;
 }
 static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
@@ -84,6 +87,7 @@ static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
 struct Scene3DTextured {
     private Pipeline3D pipeline;
     private WGPUBuffer frameUniformBuf;
+    private WGPUBuffer pointLightsBuf;
     private WGPUBindGroup frameBindGroup;
     private WGPUBindGroup iblBindGroup;
     private IblEnvironment ownedIbl;
@@ -99,8 +103,9 @@ struct Scene3DTextured {
     private WGPUSampler defaultShadowSampler;
 
     private FrameUniforms frameData;
+    private GpuPointLightUbo[MAX_POINT_LIGHTS] pointLightsData;
 
-    private enum MAX_BATCHES = 64;
+    private enum DEFAULT_MAX_BATCHES = 64;
     /// Initial instance capacity; a batch's buffer doubles when exceeded.
     private enum INITIAL_INSTANCES_PER_BATCH = 512;
 
@@ -128,12 +133,15 @@ struct Scene3DTextured {
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
     private uint surfaceShaderCount = 0;
 
-    private Batch[MAX_BATCHES] batches;
+    private Batch[] batches;
+    private uint[] sortOrder;
+    private float[] sortFarthest;
     private uint batchCount = 0;
 
     @disable this(this);
 
-    static Scene3DTextured create(ref GpuContext gpu) @trusted {
+    static Scene3DTextured create(ref GpuContext gpu, uint maxBatches = DEFAULT_MAX_BATCHES) @trusted {
+        if (maxBatches == 0) maxBatches = DEFAULT_MAX_BATCHES;
         Scene3DTextured s;
         s.device = gpu.getDevice();
         s.queue = gpu.getQueue();
@@ -141,6 +149,8 @@ struct Scene3DTextured {
 
         s.pipeline = createTexturedPipeline3D(device, Renderer.sceneFormat());
         s.frameUniformBuf = createUniformBuffer(device, FRAME_UNIFORMS_SIZE);
+        s.pointLightsBuf = createStorageBuffer(device, MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof);
+        updateBuffer(s.queue, s.pointLightsBuf, s.pointLightsData[]);
 
         s.frameData = FrameUniforms.init;
         s.frameData.viewProj = Mat4.identity().m;
@@ -150,6 +160,7 @@ struct Scene3DTextured {
         s.frameData.dirLight.direction = [0.3f, 1.0f, 0.5f];
         s.frameData.dirLight.viewProj = Mat4.identity().m;
         s.frameData.shadowBias = 0.0004f;
+        s.frameData.iblIntensity = 1.0f;
 
         s.createDefaultShadows(device);
         s.rebuildFrameBindGroup(
@@ -163,6 +174,9 @@ struct Scene3DTextured {
         s.iblBindGroup = s.ownedIbl.bindGroup;
         s.ownsIbl = true;
 
+        s.batches = new Batch[maxBatches];
+        s.sortOrder = new uint[maxBatches];
+        s.sortFarthest = new float[maxBatches];
         foreach (ref b; s.batches) {
             b.instanceBuf = createDynamicVertexBuffer(
                 device, INITIAL_INSTANCES_PER_BATCH * TexInstanceData.sizeof);
@@ -245,6 +259,11 @@ struct Scene3DTextured {
     /// Seconds exposed to shaders as `frame.time`; call before `begin`.
     void setTime(float seconds) nothrow @nogc { frameData.time = seconds; }
 
+    /// Global multiplier for IBL diffuse/specular/coat/fuzz ambient lighting.
+    void setIblIntensity(float intensity) nothrow @nogc {
+        frameData.iblIntensity = intensity < 0.0f ? 0.0f : intensity;
+    }
+
     /// Update multi-light UBO + bind shadow maps for the next draws.
     ///
     /// `dirShadow` may be null (uses a fully-lit placeholder).
@@ -274,9 +293,9 @@ struct Scene3DTextured {
         immutable pc = lights.pointCount > MAX_POINT_LIGHTS
             ? MAX_POINT_LIGHTS : lights.pointCount;
         if (lights.pointCount > MAX_POINT_LIGHTS)
-            warn("Point light UBO overflow: ", lights.pointCount, " > ", MAX_POINT_LIGHTS);
+            warn("Point light buffer overflow: ", lights.pointCount, " > ", MAX_POINT_LIGHTS);
         frameData.pointCount = pc;
-        frameData.points = GpuPointLightUbo.init;
+        pointLightsData = GpuPointLightUbo.init;
 
         WGPUTextureView[MAX_POINT_SHADOW_CASTERS] boundPoints = [
             defaultShadowCubeView, defaultShadowCubeView,
@@ -285,12 +304,12 @@ struct Scene3DTextured {
         uint pointShadowUsed = 0;
         foreach (i; 0 .. pc) {
             immutable pl = lights.points[i];
-            frameData.points[i].position = [pl.position.x, pl.position.y, pl.position.z];
-            frameData.points[i].range = pl.range;
-            frameData.points[i].color = [pl.color.x, pl.color.y, pl.color.z];
-            frameData.points[i].intensity = pl.intensity;
-            frameData.points[i].attenuation = pl.attenuation;
-            frameData.points[i].shadowSlot = -1;
+            pointLightsData[i].position = [pl.position.x, pl.position.y, pl.position.z];
+            pointLightsData[i].range = pl.range;
+            pointLightsData[i].color = [pl.color.x, pl.color.y, pl.color.z];
+            pointLightsData[i].intensity = pl.intensity;
+            pointLightsData[i].attenuation = pl.attenuation;
+            pointLightsData[i].shadowSlot = -1;
             if (!pl.castShadows) continue;
             if (pointShadowUsed >= MAX_POINT_SHADOW_CASTERS
                 || pointShadows[pointShadowUsed] is null) {
@@ -298,10 +317,11 @@ struct Scene3DTextured {
                      MAX_POINT_SHADOW_CASTERS, "); light ", i, " stays unshadowed");
                 continue;
             }
-            frameData.points[i].shadowSlot = cast(int) pointShadowUsed;
+            pointLightsData[i].shadowSlot = cast(int) pointShadowUsed;
             boundPoints[pointShadowUsed] = pointShadows[pointShadowUsed].cubeView;
             pointShadowUsed++;
         }
+        updateBuffer(queue, pointLightsBuf, pointLightsData[]);
 
         immutable sc = lights.spotCount > MAX_SPOT_LIGHTS
             ? MAX_SPOT_LIGHTS : lights.spotCount;
@@ -431,8 +451,6 @@ struct Scene3DTextured {
 
         // Pass 0: depth-writing batches in submission order. Pass 1: alpha
         // batches without depth write, back to front. Pass 2: additive.
-        uint[MAX_BATCHES] order;
-        float[MAX_BATCHES] farthest;
         uint orderCount = 0;
         foreach (pass; 0 .. 3) {
             orderCount = 0;
@@ -443,13 +461,13 @@ struct Scene3DTextured {
                 if (p != pass) continue;
                 if (pass == 1) {
                     b.instances.sort!((x, y) => distSq(x, cam) > distSq(y, cam));
-                    farthest[i] = distSq(b.instances[0], cam);
+                    sortFarthest[i] = distSq(b.instances[0], cam);
                 }
-                order[orderCount++] = cast(uint) i;
+                sortOrder[orderCount++] = cast(uint) i;
             }
             if (pass == 1)
-                order[0 .. orderCount].sort!((x, y) => farthest[x] > farthest[y]);
-            foreach (idx; order[0 .. orderCount]) drawBatch(frame, batches[idx]);
+                sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
+            foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
         }
     }
 
@@ -532,6 +550,8 @@ struct Scene3DTextured {
             frameBindGroup = null;
         }
         destroyBuffer(frameUniformBuf);
+        destroyBuffer(pointLightsBuf);
+        pointLightsBuf = null;
         if (ownsIbl) ownedIbl.destroy();
         if (defaultShadowSampler !is null) {
             wgpuSamplerRelease(defaultShadowSampler);
@@ -647,7 +667,7 @@ struct Scene3DTextured {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
         }
-        WGPUBindGroupEntry[9] entries;
+        WGPUBindGroupEntry[10] entries;
         entries[0].binding = 0;
         entries[0].buffer = frameUniformBuf;
         entries[0].offset = 0;
@@ -668,10 +688,14 @@ struct Scene3DTextured {
         entries[7].textureView = spot0;
         entries[8].binding = 8;
         entries[8].textureView = spot1;
+        entries[9].binding = 9;
+        entries[9].buffer = pointLightsBuf;
+        entries[9].offset = 0;
+        entries[9].size = MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof;
 
         WGPUBindGroupDescriptor desc;
         desc.layout = pipeline.frameBindGroupLayout;
-        desc.entryCount = 9;
+        desc.entryCount = 10;
         desc.entries = entries.ptr;
         frameBindGroup = wgpuDeviceCreateBindGroup(device, &desc);
         if (frameBindGroup is null) fatal("Failed to create frame bind group");
@@ -681,9 +705,9 @@ struct Scene3DTextured {
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.mesh is &mesh && b.material is &material) return &b;
         }
-        if (batchCount >= MAX_BATCHES) {
+        if (batchCount >= batches.length) {
             if (!warnedBatchOverflow)
-                warn("Scene3DTextured: more than ", MAX_BATCHES, " (mesh, material) batches; extra draws are dropped");
+                warn("Scene3DTextured: more than ", batches.length, " (mesh, material) batches; extra draws are dropped");
             warnedBatchOverflow = true;
             return null;
         }

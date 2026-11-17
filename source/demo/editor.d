@@ -285,6 +285,7 @@ void main() {
             }
         }
         scene.setLights(packed, &dirShadow, pointMaps, spotMaps);
+        scene.setIblIntensity(lights.scene.iblIntensity);
 
         auto frame = app.beginFrame(Color4(0.04f, 0.045f, 0.06f, 1));
         if (!frame.valid) continue;

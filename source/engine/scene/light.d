@@ -1,8 +1,8 @@
 /// POD Light component + multi-light / shadow budget constants (GFX-L).
 ///
-/// UBO slots: **1** directional + **8** point + **4** spot.
+/// UBO slots: **1** directional + **4** spot; storage buffer: **32** point.
 /// Shadow casters: **1** dir @ 2048² + up to **4** point cubemaps @ 512²/face
-/// + up to **2** spot maps @ 1024². Exceeding UBO create limits is an error
+/// + up to **2** spot maps @ 1024². Exceeding light limits is an error
 /// (editor/UI); exceeding `castShadows` budget warns and leaves the light lit
 /// without a shadow map.
 ///
@@ -23,8 +23,8 @@ import engine.math.vec : Vec3;
 
 /// Max directional lights in the frame UBO.
 enum uint MAX_DIR_LIGHTS = 1;
-/// Max point lights in the frame UBO.
-enum uint MAX_POINT_LIGHTS = 8;
+/// Max point lights in the frame point-light storage buffer.
+enum uint MAX_POINT_LIGHTS = 32;
 /// Max spot lights in the frame UBO.
 enum uint MAX_SPOT_LIGHTS = 4;
 
@@ -91,11 +91,11 @@ struct GpuPointLight {
     Vec3 color = Vec3(1, 1, 1);
     float intensity = 1.0f;
     float range = 10.0f;
+    bool castShadows = false;
     /// 0 = engine default `(1 - (d/r)^4)^2 / (d^2 + 1)`. Above 0 = Godot-style
     /// `pow(1 - d/r, attenuation)`: intensity reaches the full `range` and
     /// ignores inverse-square falloff (1 = linear, >1 = tighter pool).
     float attenuation = 0.0f;
-    bool castShadows = false;
 }
 
 /// Spot light GPU params. `direction` points along the cone axis (light→scene).
@@ -108,12 +108,12 @@ struct GpuSpotLight {
     float innerConeDeg = 15.0f;
     float outerConeDeg = 25.0f;
     Mat4 viewProj = Mat4.identity();
+    bool castShadows = false;
     /// Same meaning as `GpuPointLight.attenuation`.
     float attenuation = 0.0f;
     /// 0 = default `cone^2` cone falloff; above 0 = `cone^angleAttenuation`
     /// (Godot `spot_attenuation`; below 1 widens the bright core).
     float angleAttenuation = 0.0f;
-    bool castShadows = false;
 }
 
 /// Per-frame light list for the textured PBR path.

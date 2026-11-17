@@ -27,7 +27,7 @@ enum int sceneNoString = -1;
 
 /// Light / shadow budgets — must stay in sync with `engine.scene.light`.
 enum uint SCENE_MAX_DIR_LIGHTS = 1;
-enum uint SCENE_MAX_POINT_LIGHTS = 8;
+enum uint SCENE_MAX_POINT_LIGHTS = 32;
 enum uint SCENE_MAX_SPOT_LIGHTS = 4;
 enum uint SCENE_MAX_DIR_SHADOW_CASTERS = 1;
 enum uint SCENE_MAX_POINT_SHADOW_CASTERS = 4;

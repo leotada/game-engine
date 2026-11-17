@@ -41,7 +41,11 @@ struct FrameUniforms {
     dirEnabled: u32,
     /// Seconds, set by `Scene3DTextured.setTime` (0 when the game never sets it).
     time: f32,
-    points: array<PointLight, 8>,
+    /// Global multiplier for IBL diffuse/specular/coat/fuzz ambient lighting.
+    iblIntensity: f32,
+    _padFrame0: f32,
+    _padFrame1: f32,
+    _padFrame2: f32,
     spots: array<SpotLight, 4>,
 };
 
@@ -54,6 +58,7 @@ struct FrameUniforms {
 @group(0) @binding(6) var pointShadow3: texture_depth_cube;
 @group(0) @binding(7) var spotShadow0: texture_depth_2d;
 @group(0) @binding(8) var spotShadow1: texture_depth_2d;
+@group(0) @binding(9) var<storage, read> pointLights: array<PointLight>;
 
 fn sampleDirShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f32 {
     let NdotL = clamp(dot(normal, L), 0.0, 1.0);

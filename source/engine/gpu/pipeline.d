@@ -371,10 +371,11 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 }
 
 /// Frame uniform size for textured PBR pipeline (multi-light UBO).
-/// Layout must match `textured3dShaderSource` FrameUniforms (1088 bytes):
-/// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts(16)
-/// + PointLight[8](384) + SpotLight[4](512).
-enum FRAME_UNIFORMS_SIZE = 1088;
+/// Layout must match `shadows.wgsl` FrameUniforms (720 bytes):
+/// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts/time(16)
+/// + iblIntensity/pad(16) + SpotLight[4](512).
+/// Point lights live in a separate storage buffer at @binding(9).
+enum FRAME_UNIFORMS_SIZE = 720;
 /// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
 enum MATERIAL_PARAMS_SIZE = 144;
 /// Per-instance data of the textured PBR pipeline (buffer 1, stride 96):
@@ -423,8 +424,8 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D shader module");
     }
 
-    // --- Group 0: Frame UBO + comparison sampler + dir/point/spot shadows ---
-    WGPUBindGroupLayoutEntry[9] frameEntries;
+    // --- Group 0: Frame UBO + comparison sampler + dir/point/spot shadows + point light storage ---
+    WGPUBindGroupLayoutEntry[10] frameEntries;
     frameEntries[0].binding = 0;
     frameEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
     frameEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -453,8 +454,13 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         frameEntries[7 + i].texture.viewDimension = WGPUTextureViewDimension.dim2D;
     }
 
+    frameEntries[9].binding = 9;
+    frameEntries[9].visibility = WGPUShaderStage.fragment;
+    frameEntries[9].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    frameEntries[9].buffer.minBindingSize = 48; // sizeof(PointLight)
+
     WGPUBindGroupLayoutDescriptor frameBglDesc;
-    frameBglDesc.entryCount = 9;
+    frameBglDesc.entryCount = 10;
     frameBglDesc.entries = frameEntries.ptr;
     result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 

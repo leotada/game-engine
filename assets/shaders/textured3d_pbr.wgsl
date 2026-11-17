@@ -477,9 +477,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // --- Point lights ---
-    let pc = min(frame.pointCount, 8u);
+    let pc = min(frame.pointCount, arrayLength(&pointLights));
     for (var i = 0u; i < pc; i++) {
-        let pl = frame.points[i];
+        let pl = pointLights[i];
         let toLight = pl.position - in.worldPos;
         let dist = length(toLight);
         if (dist >= pl.range) {
@@ -526,9 +526,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         F_ibl = mix(F_ibl, fFilmIbl, clamp(mat.thinFilmWeight, 0.0, 1.0));
     }
 
+    let iblScale = max(frame.iblIntensity, 0.0);
     let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness);
     let baseAlbedoIbl = applyCoatDarkening(baseColor, coatIor, coatW, coatDark);
-    let irradiance = textureSample(irradianceMap, iblSampler, N).rgb;
+    let irradiance = textureSample(irradianceMap, iblSampler, N).rgb * iblScale;
     let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
 
     // Anisotropic bent reflection vector for IBL
@@ -541,7 +542,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let R = reflect(-V, iblNormal);
     let mip = effectiveRoughness * SPECULAR_MIPS;
-    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
+    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb * iblScale;
     let E_o = clamp(directionalAlbedo, 0.05, 1.0);
     let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
     let specularIbl = prefiltered * (F_ibl * lutBase.r + lutBase.g) * msScale;
@@ -558,7 +559,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, cR)).rg;
         let coatRefl = reflect(-V, N);
-        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb;
+        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb * iblScale;
         let f90Coat = max(1.0 - cR, f0Coat.x);
         let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * cW;
         let horizonOcclusion = clamp(coatRefl.y * 0.65 + 0.55, 0.18, 1.0);

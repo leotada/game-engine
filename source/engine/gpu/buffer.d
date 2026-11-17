@@ -43,6 +43,17 @@ WGPUBuffer createUniformBuffer(WGPUDevice device, ulong size) nothrow @nogc @tru
     return buf;
 }
 
+WGPUBuffer createStorageBuffer(WGPUDevice device, ulong size) nothrow @nogc @trusted {
+    WGPUBufferDescriptor desc;
+    desc.usage = WGPUBufferUsage.storage | WGPUBufferUsage.copyDst;
+    desc.size  = size;
+    auto buf = wgpuDeviceCreateBuffer(device, &desc);
+    if (buf is null) {
+        err("Failed to create storage buffer");
+    }
+    return buf;
+}
+
 WGPUBuffer createDynamicVertexBuffer(WGPUDevice device, ulong size) nothrow @nogc @trusted {
     WGPUBufferDescriptor desc;
     desc.usage = WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst;

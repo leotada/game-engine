@@ -32,14 +32,26 @@ struct IblEnvironment {
 
     /// Build a procedural sky environment and prefilter it for PBR.
     static IblEnvironment create(ref GpuContext gpu, WGPUBindGroupLayout layout) @trusted {
+        auto envFaces = generateEnvCubemap(IBL_ENV_SIZE);
+        auto env = createFromEnvFaces(gpu, layout, envFaces);
+        info("IBL environment created (", IBL_ENV_SIZE, " env, ",
+             IBL_IRRADIANCE_SIZE, " irradiance, ", IBL_SPECULAR_MIPS, " specular mips)");
+        return env;
+    }
+
+    /// Build a three-stop gradient environment (zenith, horizon, ground) and
+    /// convolve irradiance + GGX specular mips for PBR.
+    static IblEnvironment createGradient(ref GpuContext gpu, WGPUBindGroupLayout layout,
+                                         float[3] zenith, float[3] horizon, float[3] ground) @trusted {
+        auto envFaces = generateGradientCubemap(IBL_ENV_SIZE, zenith, horizon, ground);
+        return createFromEnvFaces(gpu, layout, envFaces);
+    }
+
+    private static IblEnvironment createFromEnvFaces(ref GpuContext gpu, WGPUBindGroupLayout layout,
+                                                     const ubyte[][] envFaces) @trusted {
         IblEnvironment env;
         auto device = gpu.getDevice();
         auto queue  = gpu.getQueue();
-
-        // --- Base env cubemap (CPU procedural sky) ---
-        auto envFaces = generateEnvCubemap(IBL_ENV_SIZE);
-        auto envTex = createCubeTexture(device, IBL_ENV_SIZE, 1);
-        uploadCubeFaces(queue, envTex, envFaces, IBL_ENV_SIZE, 0);
 
         // --- Irradiance ---
         auto irrFaces = convolveIrradiance(envFaces, IBL_ENV_SIZE, IBL_IRRADIANCE_SIZE);
@@ -58,7 +70,32 @@ struct IblEnvironment {
         }
         env.specularView = createCubeView(env.specularTex, 0, IBL_SPECULAR_MIPS);
 
-        // --- BRDF LUT ---
+        finalizeBindGroup(device, queue, layout, env, IBL_SPECULAR_MIPS - 1);
+        return env;
+    }
+
+    /// Uniform-color environment (e.g. deep space): every direction reflects
+    /// and diffuses `ambient`, and specular reflections show `reflection`.
+    /// Colors are linear RGB; values above 1 are clamped (8-bit cubemaps).
+    /// Cheap: no sky generation or prefiltering, just the BRDF LUT.
+    static IblEnvironment createSolid(ref GpuContext gpu, WGPUBindGroupLayout layout,
+                                      float[3] ambient, float[3] reflection) @trusted {
+        IblEnvironment env;
+        auto device = gpu.getDevice();
+        auto queue  = gpu.getQueue();
+
+        env.irradianceTex = createSolidCube(device, queue, ambient);
+        env.irradianceView = createCubeView(env.irradianceTex, 0, 1);
+        env.specularTex = createSolidCube(device, queue, reflection);
+        env.specularView = createCubeView(env.specularTex, 0, 1);
+
+        finalizeBindGroup(device, queue, layout, env, 0);
+        return env;
+    }
+
+    private static void finalizeBindGroup(WGPUDevice device, WGPUQueue queue,
+                                          WGPUBindGroupLayout layout, ref IblEnvironment env,
+                                          uint maxLod) @trusted {
         auto lutPixels = generateBrdfLut(IBL_LUT_SIZE);
         env.brdfLutTex = createLutTexture(device, queue, lutPixels, IBL_LUT_SIZE);
         WGPUTextureViewDescriptor lutVd;
@@ -74,7 +111,7 @@ struct IblEnvironment {
         sd.minFilter = WGPUFilterMode.linear;
         sd.mipmapFilter = WGPUMipmapFilterMode.linear;
         sd.lodMinClamp = 0;
-        sd.lodMaxClamp = cast(float)(IBL_SPECULAR_MIPS - 1);
+        sd.lodMaxClamp = cast(float) maxLod;
         sd.maxAnisotropy = 1;
         env.sampler = wgpuDeviceCreateSampler(device, &sd);
 
@@ -94,65 +131,6 @@ struct IblEnvironment {
         bgd.entries = entries.ptr;
         env.bindGroup = wgpuDeviceCreateBindGroup(device, &bgd);
         if (env.bindGroup is null) fatal("Failed to create IBL bind group");
-
-        // Base env tex only needed during precompute.
-        wgpuTextureRelease(envTex);
-
-        info("IBL environment created (", IBL_ENV_SIZE, " env, ",
-             IBL_IRRADIANCE_SIZE, " irradiance, ", IBL_SPECULAR_MIPS, " specular mips)");
-        return env;
-    }
-
-    /// Uniform-color environment (e.g. deep space): every direction reflects
-    /// and diffuses `ambient`, and specular reflections show `reflection`.
-    /// Colors are linear RGB; values above 1 are clamped (8-bit cubemaps).
-    /// Cheap: no sky generation or prefiltering, just the BRDF LUT.
-    static IblEnvironment createSolid(ref GpuContext gpu, WGPUBindGroupLayout layout,
-                                      float[3] ambient, float[3] reflection) @trusted {
-        IblEnvironment env;
-        auto device = gpu.getDevice();
-        auto queue  = gpu.getQueue();
-
-        env.irradianceTex = createSolidCube(device, queue, ambient);
-        env.irradianceView = createCubeView(env.irradianceTex, 0, 1);
-        env.specularTex = createSolidCube(device, queue, reflection);
-        env.specularView = createCubeView(env.specularTex, 0, 1);
-
-        auto lutPixels = generateBrdfLut(IBL_LUT_SIZE);
-        env.brdfLutTex = createLutTexture(device, queue, lutPixels, IBL_LUT_SIZE);
-        WGPUTextureViewDescriptor lutVd;
-        lutVd.format = WGPUTextureFormat.rgba8Unorm;
-        lutVd.dimension = WGPUTextureViewDimension.dim2D;
-        env.brdfLutView = wgpuTextureCreateView(env.brdfLutTex, &lutVd);
-
-        WGPUSamplerDescriptor sd;
-        sd.addressModeU = WGPUAddressMode.clampToEdge;
-        sd.addressModeV = WGPUAddressMode.clampToEdge;
-        sd.addressModeW = WGPUAddressMode.clampToEdge;
-        sd.magFilter = WGPUFilterMode.linear;
-        sd.minFilter = WGPUFilterMode.linear;
-        sd.mipmapFilter = WGPUMipmapFilterMode.linear;
-        sd.lodMinClamp = 0;
-        sd.lodMaxClamp = 0;
-        sd.maxAnisotropy = 1;
-        env.sampler = wgpuDeviceCreateSampler(device, &sd);
-
-        WGPUBindGroupEntry[4] entries;
-        entries[0].binding = 0;
-        entries[0].textureView = env.irradianceView;
-        entries[1].binding = 1;
-        entries[1].textureView = env.specularView;
-        entries[2].binding = 2;
-        entries[2].textureView = env.brdfLutView;
-        entries[3].binding = 3;
-        entries[3].sampler = env.sampler;
-        WGPUBindGroupDescriptor bgd;
-        bgd.layout = layout;
-        bgd.entryCount = 4;
-        bgd.entries = entries.ptr;
-        env.bindGroup = wgpuDeviceCreateBindGroup(device, &bgd);
-        if (env.bindGroup is null) fatal("Failed to create solid IBL bind group");
-        return env;
     }
 
     void destroy() nothrow @nogc @trusted {
@@ -206,6 +184,35 @@ private Vec3 faceDir(uint face, float u, float v) {
         case 4: return Vec3( u, -v,  1); // +Z
         default: return Vec3(-u, -v, -1); // -Z
     }
+}
+
+private Rgb sampleGradientSky(Vec3 dir, float[3] zenith, float[3] horizon, float[3] ground) {
+    immutable d = dir.normalized();
+    immutable z = Rgb(zenith[0], zenith[1], zenith[2]);
+    immutable h = Rgb(horizon[0], horizon[1], horizon[2]);
+    immutable g = Rgb(ground[0], ground[1], ground[2]);
+    if (d.y >= 0) {
+        return lerp(h, z, clamp01(d.y));
+    }
+    return lerp(h, g, clamp01(-d.y));
+}
+
+private ubyte[][] generateGradientCubemap(uint size, float[3] zenith, float[3] horizon, float[3] ground) {
+    auto faces = new ubyte[][](6);
+    foreach (face; 0 .. 6) {
+        faces[face] = new ubyte[size * size * 4];
+        foreach (y; 0 .. size) foreach (x; 0 .. size) {
+            immutable u = (cast(float) x + 0.5f) / cast(float) size * 2.0f - 1.0f;
+            immutable v = (cast(float) y + 0.5f) / cast(float) size * 2.0f - 1.0f;
+            immutable c = sampleGradientSky(faceDir(face, u, v), zenith, horizon, ground);
+            immutable i = (y * size + x) * 4;
+            faces[face][i + 0] = toU8(c.r);
+            faces[face][i + 1] = toU8(c.g);
+            faces[face][i + 2] = toU8(c.b);
+            faces[face][i + 3] = 255;
+        }
+    }
+    return faces;
 }
 
 private ubyte[][] generateEnvCubemap(uint size) {
@@ -585,4 +592,13 @@ private WGPUTexture createLutTexture(WGPUDevice device, WGPUQueue queue,
     immutable headOn  = (8 * 16 + 15) * 4;
     assert(lut[headOn + 0] > lut[grazing + 0], "GGX scale R should increase toward NdotV=1");
     assert(lut[grazing + 2] >= lut[headOn + 2], "Charlie sheen directional albedo B should not drop at grazing angles");
+
+    // Gradient sky sampling: +Y -> zenith, horizon -> horizon, -Y -> ground.
+    immutable float[3] z = [0.1f, 0.2f, 0.8f];
+    immutable float[3] h = [0.6f, 0.6f, 0.6f];
+    immutable float[3] g = [0.1f, 0.05f, 0.02f];
+    immutable up = sampleGradientSky(Vec3(0, 1, 0), z, h, g);
+    immutable mid = sampleGradientSky(Vec3(1, 0, 0), z, h, g);
+    immutable down = sampleGradientSky(Vec3(0, -1, 0), z, h, g);
+    assert(abs(up.b - 0.8f) < 1e-4f && abs(mid.r - 0.6f) < 1e-4f && abs(down.r - 0.1f) < 1e-4f);
 }

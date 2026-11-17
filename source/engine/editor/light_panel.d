@@ -513,12 +513,22 @@ bool drawScenePanel(W)(
         size_t n = 0;
         void put(char c) { if (n < line.length) line[n++] = c; }
         void putStr(scope const(char)[] s) { foreach (ch; s) put(ch); }
+        void putU(uint v) {
+            char[10] dig = void;
+            size_t nd = 0;
+            if (v == 0) dig[nd++] = '0';
+            else while (v > 0 && nd < dig.length) {
+                dig[nd++] = cast(char)('0' + (v % 10));
+                v /= 10;
+            }
+            foreach_reverse (i; 0 .. nd) put(dig[i]);
+        }
         putStr("dir/pt/sp ");
-        // static caps — no world needed
-        put('1'); put('/'); put('8'); put('/'); put('4');
+        putU(MAX_DIR_LIGHTS); put('/'); putU(MAX_POINT_LIGHTS); put('/'); putU(MAX_SPOT_LIGHTS);
         label(ui, line[0 .. n]);
         n = 0;
-        putStr("sh 1/4/2");
+        putStr("sh ");
+        putU(MAX_DIR_SHADOW_CASTERS); put('/'); putU(MAX_POINT_SHADOW_CASTERS); put('/'); putU(MAX_SPOT_SHADOW_CASTERS);
         label(ui, line[0 .. n]);
     }
     return changed;
