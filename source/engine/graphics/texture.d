@@ -3,6 +3,7 @@
 module engine.graphics.texture;
 
 import bindings.wgpu;
+import bindings.stb_image;
 import engine.gpu.context : GpuContext;
 import engine.core.log;
 
@@ -173,6 +174,65 @@ struct Texture {
         return fromPixels(gpu, rgba, width, height);
     }
 
+    /// Decode PNG/JPG/TGA/BMP/PSD/GIF/HDR image bytes into an RGBA8 buffer via stb_image.
+    static bool decodeImageBytes(
+        const(ubyte)[] bytes,
+        out ubyte[] outRgba,
+        out uint outWidth,
+        out uint outHeight
+    ) @trusted {
+        outRgba = null;
+        outWidth = 0;
+        outHeight = 0;
+        if (bytes.length == 0 || bytes.length > int.max) return false;
+
+        int w = 0, h = 0, comp = 0;
+        stbi_set_flip_vertically_on_load(0);
+        ubyte* decoded = stbi_load_from_memory(bytes.ptr, cast(int) bytes.length, &w, &h, &comp, 4);
+        if (decoded is null || w <= 0 || h <= 0) {
+            if (decoded !is null) stbi_image_free(decoded);
+            err("Image decode failed (stb_image)");
+            return false;
+        }
+        scope(exit) stbi_image_free(decoded);
+
+        immutable size_t total = cast(size_t) w * cast(size_t) h * 4;
+        outRgba = new ubyte[total];
+        outRgba[] = decoded[0 .. total];
+        outWidth = cast(uint) w;
+        outHeight = cast(uint) h;
+        return true;
+    }
+
+    /// Load an image (PNG, JPG, TGA, BMP, etc.) from in-memory file bytes into a GPU Texture.
+    static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes) {
+        ubyte[] rgba;
+        uint w, h;
+        if (!decodeImageBytes(bytes, rgba, w, h)) return Texture.init;
+        return fromPixels(gpu, rgba, w, h);
+    }
+
+    /// Load an image (PNG, JPG, TGA, BMP, etc.) from disk into a GPU Texture.
+    static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path) {
+        import std.file : exists, read;
+        if (!exists(path)) {
+            err("Texture.fromImageFile: file not found");
+            return Texture.init;
+        }
+        try {
+            auto bytes = cast(const(ubyte)[]) () @trusted { return read(path); }();
+            return fromImageBytes(gpu, bytes);
+        } catch (Exception) {
+            err("Texture.fromImageFile: failed to read file");
+            return Texture.init;
+        }
+    }
+
+    /// Opaque UI texture handle compatible with `UiNode.textureHandle`.
+    ulong uiHandle() const nothrow @nogc @trusted {
+        return view is null ? 0 : cast(ulong) cast(size_t) view;
+    }
+
     bool valid() const nothrow @nogc { return texture !is null; }
 
     void destroy() nothrow @nogc @trusted {
@@ -218,4 +278,24 @@ struct Sampler {
     void destroy() nothrow @nogc @trusted {
         if (sampler !is null) { wgpuSamplerRelease(sampler); sampler = null; }
     }
+}
+
+unittest {
+    // Valid 1x1 red RGBA PNG (70 bytes)
+    static immutable ubyte[70] red1x1Png = [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0,
+        0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+        0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    ubyte[] rgba;
+    uint w, h;
+    assert(Texture.decodeImageBytes(red1x1Png, rgba, w, h));
+    assert(w == 1 && h == 1);
+    assert(rgba == [255, 0, 0, 255]);
 }

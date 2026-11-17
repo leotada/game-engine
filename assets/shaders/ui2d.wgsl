@@ -45,7 +45,7 @@ fn vs_ui(in: UiVertexInput) -> UiVertexOutput {
 @fragment
 fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
     if (in.mode < 0.5) {
-        // Mode 0: Solid / Rounded Rectangle with SDF antialiasing
+        // Mode 0: Solid / Rounded Rectangle (or capsule line) with SDF antialiasing
         let halfSize = in.rectParams.xy * 0.5;
         let r = min(in.rectParams.z, min(halfSize.x, halfSize.y));
         let borderW = in.rectParams.w;
@@ -64,16 +64,82 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
         }
         return vec4<f32>(col.rgb, col.a * alpha);
     } else if (in.mode < 1.5) {
-        // Mode 1: Font glyph (R8 alpha mask)
+        // Mode 1: Font glyph (R8 SDF when rectParams.x > 0, else bitmap alpha mask)
         let alphaMask = textureSample(uiTexture, uiSampler, in.uv).r;
-        let finalA = in.color.a * alphaMask;
-        if (finalA <= 0.01) {
+        if (in.rectParams.x > 0.0) {
+            // SDF baked with onedge=180/255 (0.70588235), pixel_dist_scale=36/255 -> 255/36 = 7.0833333
+            let sdPx = (alphaMask - 0.70588235) * 7.0833333 * in.rectParams.x;
+            let fillT = clamp(sdPx + 0.5, 0.0, 1.0);
+            let outlineW = in.rectParams.w;
+            if (outlineW > 0.0) {
+                let outerAlpha = clamp(sdPx + outlineW + 0.5, 0.0, 1.0) * in.borderColor.a;
+                let finalAlpha = mix(outerAlpha, in.color.a, fillT);
+                if (finalAlpha <= 0.005) {
+                    discard;
+                }
+                let finalRgb = mix(in.borderColor.rgb, in.color.rgb, fillT);
+                return vec4<f32>(finalRgb, finalAlpha);
+            }
+            let finalA = in.color.a * fillT;
+            if (finalA <= 0.005) {
+                discard;
+            }
+            return vec4<f32>(in.color.rgb, finalA);
+        } else {
+            let finalA = in.color.a * alphaMask;
+            if (finalA <= 0.01) {
+                discard;
+            }
+            return vec4<f32>(in.color.rgb, finalA);
+        }
+    } else if (in.mode < 2.5) {
+        // Mode 2: RGBA Texture / Image with optional rounded-corner SDF mask
+        let tex = textureSample(uiTexture, uiSampler, in.uv);
+        var outCol = tex * in.color;
+        if (in.rectParams.z > 0.0) {
+            let halfSize = in.rectParams.xy * 0.5;
+            let r = min(in.rectParams.z, min(halfSize.x, halfSize.y));
+            let q = abs(in.localPos) - halfSize + vec2<f32>(r, r);
+            let dist = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+            let alpha = clamp(0.5 - dist, 0.0, 1.0);
+            if (alpha <= 0.0) {
+                discard;
+            }
+            outCol.a = outCol.a * alpha;
+        }
+        return outCol;
+    } else if (in.mode < 3.5) {
+        // Mode 3: Flat solid triangle / polygon
+        if (in.color.a <= 0.001) {
             discard;
         }
-        return vec4<f32>(in.color.rgb, finalA);
+        return in.color;
     } else {
-        // Mode 2: RGBA Texture / Image
-        let tex = textureSample(uiTexture, uiSampler, in.uv);
-        return tex * in.color;
+        // Mode 4: Analytical SDF circle / ring / arc
+        // localPos = pixel offset from center
+        // rectParams = (innerR, outerR, startAngleRad, sweepAngleRad)
+        let r = length(in.localPos);
+        let outerDist = r - in.rectParams.y;
+        let innerDist = in.rectParams.x - r;
+        let radialDist = select(outerDist, max(outerDist, innerDist), in.rectParams.x > 0.0);
+
+        var dist = radialDist;
+        let sweep = abs(in.rectParams.w);
+        if (sweep < 6.283) {
+            let twoPi = 6.2831853;
+            let pi = 3.14159265;
+            let halfSweep = sweep * 0.5;
+            var dAng = atan2(in.localPos.y, in.localPos.x) - (in.rectParams.z + halfSweep);
+            dAng = dAng - twoPi * floor((dAng + pi) / twoPi);
+            let clampedDiff = clamp(abs(dAng) - halfSweep, -1.5707963, 1.5707963);
+            let angDist = r * sin(clampedDiff);
+            dist = max(radialDist, angDist);
+        }
+
+        let alpha = clamp(0.5 - dist, 0.0, 1.0);
+        if (alpha <= 0.0) {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
     }
 }

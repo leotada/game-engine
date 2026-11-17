@@ -41,4 +41,16 @@ extern(C) nothrow @nogc {
         int* xoff, int* yoff
     );
     void stbtt_FreeBitmap(ubyte* bitmap, void* userdata);
+    int stbtt_FindGlyphIndex(const(stbtt_fontinfo)* info, int unicode_codepoint);
+    ubyte* stbtt_GetCodepointSDF(
+        const(stbtt_fontinfo)* info,
+        float scale,
+        int codepoint,
+        int padding,
+        ubyte onedge_value,
+        float pixel_dist_scale,
+        int* width, int* height,
+        int* xoff, int* yoff
+    );
+    void stbtt_FreeSDF(ubyte* bitmap, void* userdata);
 }

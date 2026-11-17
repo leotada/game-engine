@@ -11,14 +11,15 @@ const(char)[] truncateWithEllipsis(
     ref Font font,
     scope const(char)[] input,
     float maxWidth,
-    return scope char[] outBuffer
+    return scope char[] outBuffer,
+    float pixelHeight = 0.0f
 ) nothrow {
     if (input.length == 0 || maxWidth <= 0 || outBuffer.length == 0) {
         return "";
     }
 
     float fullW, fullH;
-    font.measure(input, fullW, fullH);
+    font.measure(input, pixelHeight, fullW, fullH);
     if (fullW <= maxWidth) {
         immutable size_t n = input.length < outBuffer.length ? input.length : outBuffer.length;
         outBuffer[0 .. n] = input[0 .. n];
@@ -26,7 +27,7 @@ const(char)[] truncateWithEllipsis(
     }
 
     float dotW, dotH;
-    font.measure("...", dotW, dotH);
+    font.measure("...", pixelHeight, dotW, dotH);
     if (dotW >= maxWidth) {
         if (outBuffer.length >= 1) {
             outBuffer[0] = '.';
@@ -41,17 +42,8 @@ const(char)[] truncateWithEllipsis(
 
     size_t i = 0;
     while (i < input.length) {
-        immutable ubyte b = cast(ubyte)input[i++];
-        int cp = b;
-        if (b >= 0xC0) {
-            if ((b & 0xE0) == 0xC0 && i < input.length) {
-                cp = ((b & 0x1F) << 6) | (cast(ubyte)input[i++] & 0x3F);
-            } else if ((b & 0xF0) == 0xE0 && i + 1 < input.length) {
-                cp = ((b & 0x0F) << 12) | ((cast(ubyte)input[i++] & 0x3F) << 6) | (cast(ubyte)input[i++] & 0x3F);
-            }
-        }
-
-        Glyph g = font.getGlyph(cp);
+        immutable int cp = Font.decodeUtf8(input, i);
+        Glyph g = font.getGlyph(cp, pixelHeight);
         if (curW + g.advance > avail) {
             break;
         }

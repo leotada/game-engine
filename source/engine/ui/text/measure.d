@@ -14,7 +14,8 @@ void measureTextNodes(ref UiTree tree, UiNodeId id, ref Font font) nothrow {
     auto n = &tree.get(id);
     if (n.textLen > 0 && font.isLoaded) {
         float w = 0, h = 0;
-        font.measure(n.text, w, h);
+        immutable float px = n.style.fontSize > 0 ? n.style.fontSize : font.defaultSize();
+        font.measure(n.text, px, w, h);
         n.textWidth = w;
         n.textHeight = h;
     } else {
