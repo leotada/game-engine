@@ -99,6 +99,10 @@ struct SurfaceIn {
     viewDir: vec3<f32>,
     /// Per-instance `custom` vec4 (see `TexInstanceData`).
     custom: vec4<f32>,
+    /// Length of the model matrix columns: `localPos * objectScale` is the
+    /// position in object-sized units, so procedural patterns keep their
+    /// real-world scale on meshes stretched by the instance transform.
+    objectScale: vec3<f32>,
 };
 
 /// Surface description handed to the standard OpenPBR lighting. A custom
@@ -253,6 +257,7 @@ struct VertexOutput {
     @location(7) localNormal: vec3<f32>,
     @location(8) custom: vec4<f32>,
     @location(9) tintAlpha: f32,
+    @location(10) objectScale: vec3<f32>,
 };
 
 @vertex
@@ -288,6 +293,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.localNormal = in.normal;
     out.custom = in.custom;
     out.tintAlpha = in.tint.a;
+    out.objectScale = vec3<f32>(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
     return out;
 }
 
@@ -342,6 +348,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surfIn.tint = in.tint;
     surfIn.viewDir = V;
     surfIn.custom = in.custom;
+    surfIn.objectScale = in.objectScale;
     var surfBase: SurfaceOut;
     surfBase.baseColor = baseColor;
     surfBase.metalness = metalness;
