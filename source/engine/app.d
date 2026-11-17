@@ -10,6 +10,7 @@ import engine.gpu.context;
 import engine.gpu.renderer;
 import engine.gpu.post : PostSettings;
 import engine.graphics.types : Color4;
+import engine.assets.png : saveRgbaPngZ;
 import engine.core.log;
 import engine.core.arena : FrameArena;
 import engine.core.gc : gcStepFrameSlack, gcDefragment;
@@ -31,6 +32,8 @@ struct App {
     private Duration _targetFrameBudget = 16_666.usecs; // ~60 FPS default
     private uint     _targetFps = 60;
     private Duration _lastFrameElapsed = Duration.zero;
+    private char[256] _pendingShotPath = 0;
+    private bool     _hasPendingShot = false;
 
     @disable this(this);
 
@@ -150,8 +153,29 @@ struct App {
     void requestCapture() nothrow @nogc { renderer.requestCapture(); }
     ubyte[] readCapture(out uint w, out uint h) { return renderer.readCapture(w, h); }
 
+    /// Schedule saving the current frame (after `endFrame()`) to a PNG file via SDL3.
+    bool saveScreenshot(scope const(char)[] path) nothrow @nogc {
+        if (path.length == 0 || path.length >= _pendingShotPath.length) return false;
+        _pendingShotPath[] = 0;
+        _pendingShotPath[0 .. path.length] = path[];
+        _pendingShotPath[path.length] = '\0';
+        _hasPendingShot = true;
+        renderer.requestCapture();
+        return true;
+    }
+
+    private static void pngCaptureSink(const(ubyte)* rgba, uint w, uint h, void* user) nothrow @nogc @trusted {
+        saveRgbaPngZ(cast(const(char)*) user, rgba, w, h);
+    }
+
     void endFrame(ref FrameContext frame) nothrow @nogc {
         renderer.endFrame(frame);
+        if (_hasPendingShot) {
+            _hasPendingShot = false;
+            () @trusted {
+                renderer.consumeCaptureWith(&pngCaptureSink, _pendingShotPath.ptr);
+            }();
+        }
         frameArena.reset();
 
         immutable now = MonoTime.currTime;

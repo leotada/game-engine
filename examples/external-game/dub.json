@@ -1,0 +1,9 @@
+{
+    "name": "external-game-example",
+    "description": "Minimal external game project consuming game-engine as a DUB path dependency",
+    "license": "MIT",
+    "targetType": "executable",
+    "dependencies": {
+        "game-engine": { "path": "../.." }
+    }
+}

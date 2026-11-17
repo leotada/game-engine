@@ -458,11 +458,16 @@ struct Renderer {
 
     /// Returns the captured frame as tightly packed RGBA8 (empty if none was requested or the
     /// format is not 8-bit BGRA/RGBA), then releases the readback buffer. Blocks until the GPU is done.
-    ubyte[] readCapture(out uint width, out uint height) @trusted {
-        if (captureBuf is null) return null;
-        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+    private bool mapCaptureBuffer(
+        out const(ubyte)* mappedPtr,
+        out bool isBgra,
+        out uint w,
+        out uint h,
+        out uint stride
+    ) nothrow @nogc @trusted {
+        if (captureBuf is null) return false;
         static struct Wait { bool done; bool ok; }
-        Wait w;
+        Wait waitState;
         static extern(C) void onMapped(WGPUMapAsyncStatus status, WGPUStringView, void* u1, void*) nothrow @nogc {
             auto p = cast(Wait*) u1;
             p.ok = status == WGPUMapAsyncStatus.success;
@@ -471,34 +476,92 @@ struct Renderer {
         WGPUBufferMapCallbackInfo cb;
         cb.mode = WGPUCallbackMode.allowProcessEvents;
         cb.callback = &onMapped;
-        cb.userdata1 = &w;
+        cb.userdata1 = &waitState;
         wgpuBufferMapAsync(captureBuf, WGPUMapMode.read, 0, cast(size_t) captureStride * captureH, cb);
         foreach (_; 0 .. 1000) {
             wgpuDevicePoll(device, WGPU_TRUE, null);
-            if (w.done) break;
+            if (waitState.done) break;
         }
-        if (!w.ok) { warn("frame capture: buffer map failed"); return null; }
-        immutable bgra = surfaceFormat == WGPUTextureFormat.bgra8Unorm
-                      || surfaceFormat == WGPUTextureFormat.bgra8UnormSrgb;
-        immutable rgba = surfaceFormat == WGPUTextureFormat.rgba8Unorm
-                      || surfaceFormat == WGPUTextureFormat.rgba8UnormSrgb;
-        if (!bgra && !rgba) { warn("frame capture: unsupported surface format"); wgpuBufferUnmap(captureBuf); return null; }
-        auto src = cast(const(ubyte)*) wgpuBufferGetConstMappedRange(captureBuf, 0, cast(size_t) captureStride * captureH);
-        auto outPx = new ubyte[captureW * captureH * 4];
-        foreach (y; 0 .. captureH) {
-            foreach (x; 0 .. captureW) {
-                const px = src + y * captureStride + x * 4;
-                auto o = outPx.ptr + (y * captureW + x) * 4;
+        if (!waitState.ok) return false;
+
+        immutable bool bgra = surfaceFormat == WGPUTextureFormat.bgra8Unorm
+                           || surfaceFormat == WGPUTextureFormat.bgra8UnormSrgb;
+        immutable bool rgba = surfaceFormat == WGPUTextureFormat.rgba8Unorm
+                           || surfaceFormat == WGPUTextureFormat.rgba8UnormSrgb;
+        if (!bgra && !rgba) {
+            wgpuBufferUnmap(captureBuf);
+            return false;
+        }
+        mappedPtr = cast(const(ubyte)*) wgpuBufferGetConstMappedRange(
+            captureBuf, 0, cast(size_t) captureStride * captureH
+        );
+        if (mappedPtr is null) {
+            wgpuBufferUnmap(captureBuf);
+            return false;
+        }
+        isBgra = bgra;
+        w = captureW;
+        h = captureH;
+        stride = captureStride;
+        return true;
+    }
+
+    private static void swizzleCaptureRows(
+        const(ubyte)* src, ubyte* dst, uint w, uint h, uint stride, bool bgra
+    ) nothrow @nogc @trusted {
+        foreach (y; 0 .. h) {
+            foreach (x; 0 .. w) {
+                const px = src + y * stride + x * 4;
+                auto o = dst + (y * w + x) * 4;
                 o[0] = bgra ? px[2] : px[0];
                 o[1] = px[1];
                 o[2] = bgra ? px[0] : px[2];
                 o[3] = 255;
             }
         }
-        wgpuBufferUnmap(captureBuf);
-        width = captureW;
-        height = captureH;
+    }
+
+    ubyte[] readCapture(out uint width, out uint height) @trusted {
+        if (captureBuf is null) return null;
+        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+        const(ubyte)* src = null;
+        bool bgra = false;
+        uint cw = 0, ch = 0, stride = 0;
+        if (!mapCaptureBuffer(src, bgra, cw, ch, stride)) {
+            warn("frame capture: map or format check failed");
+            return null;
+        }
+        scope(exit) wgpuBufferUnmap(captureBuf);
+        auto outPx = new ubyte[cw * ch * 4];
+        swizzleCaptureRows(src, outPx.ptr, cw, ch, stride, bgra);
+        width = cw;
+        height = ch;
         return outPx;
+    }
+
+    /// `@nogc` frame-capture sink using C-heap temporary storage (used by `App.saveScreenshot`).
+    bool consumeCaptureWith(
+        scope void function(const(ubyte)* rgba, uint w, uint h, void* user) nothrow @nogc sink,
+        void* user
+    ) nothrow @nogc @trusted {
+        import core.stdc.stdlib : malloc, free;
+        if (captureBuf is null || sink is null) return false;
+        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+
+        const(ubyte)* src = null;
+        bool bgra = false;
+        uint cw = 0, ch = 0, stride = 0;
+        if (!mapCaptureBuffer(src, bgra, cw, ch, stride)) return false;
+        scope(exit) wgpuBufferUnmap(captureBuf);
+
+        immutable size_t total = cast(size_t) cw * ch * 4;
+        auto rgbaBuf = cast(ubyte*) malloc(total);
+        if (rgbaBuf is null) return false;
+        scope(exit) free(rgbaBuf);
+
+        swizzleCaptureRows(src, rgbaBuf, cw, ch, stride, bgra);
+        sink(rgbaBuf, cw, ch, user);
+        return true;
     }
 
     void resize(uint w, uint h) nothrow @nogc {

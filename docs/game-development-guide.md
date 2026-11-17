@@ -617,3 +617,48 @@ immutable hit = castRayClosest(world, origin, dir, 100.0f);
 - **Delta time** — Use `fps.tick()` return value for frame-independent movement: `pos = pos + velocity * dt`.
 - **GC is allowed** — Game code can freely use dynamic arrays, `format`, closures. The engine core is `@nogc` internally so GC pauses stay minimal.
 - **Multiple meshes** — `Scene3D` batches instances of the same mesh automatically. Drawing 100 cubes at different positions costs one draw call.
+
+---
+
+## Using `game-engine` as an External DUB Dependency
+
+You can live in your own repository outside `game-engine/` and consume the engine as a standard DUB path dependency. Notice [examples/external-game](file:///home/leonardo/Projetos/game-engine/examples/external-game/dub.json):
+
+```json
+{
+    "name": "my-game",
+    "dependencies": {
+        "game-engine": { "path": "../path/to/game-engine" }
+    }
+}
+```
+
+Ensure `libSDL3.so` is installed on the host and your `game-engine/libs/` directory contains `libwgpu_native.a`, `libbox3d.a`, `libstb.a`, and `libsymgc-cards.a`.
+
+---
+
+## Extended Engine Features
+
+- **Lighting, IBL & Shadows (`TexturedScene3D`)**:
+  - Supports 1 directional sun, up to **32 point lights** (storage buffer), and 8 spotlights.
+  - Procedural gradient IBL: `IblEnvironment.createGradient(gpu, scene.iblLayout(), skyRgb, horizonRgb, groundRgb)` or 6-face cubemap `IblEnvironment.createFromEnvFaces(...)`, plus `scene.setIblIntensity(val)`.
+  - Zero-boilerplate shadow pass: call `scene.renderShadows(frame, lights)` inside an active `FrameContext` before `scene.end(frame)`.
+  - Configure draw-batch capacity via `TexturedScene3D.create(gpu, maxBatches)`.
+- **Post-Processing (`app.post()` & Custom Passes)**:
+  - Tone-mapping modes: ACES (`0`), Reinhard (`1`), Neutral (`2`), and AgX (`3`), plus `bloomRadius`, `saturation`, and `contrast`.
+  - Inject custom full-screen WGSL passes at `PostStage.beforeTonemap`, `PostStage.afterTonemap`, or `PostStage.afterUi` using `app.renderer.addPostPass(...)`.
+- **3D Shapes & Procedural Noise**:
+  - `engine.graphics.shapes` (`MeshData` + `transform`/`merge`/`toTexMesh`): `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus`.
+  - `engine.math.noise`: `valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`, paired with `Mat4.trs(pos, rot, scale)`.
+- **2D UI, SDF Text & Textures (`engine.ui`)**:
+  - `Font` (`engine.ui.text.font`) uses SDF rendering by default so one loaded font renders sharply at any `pixelHeight`, supports fallback fonts (`addFallbackFont`), auto-growing atlases, and full Unicode codepoints.
+  - `UiBatchRenderer` (`engine.ui.render.batch`): `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.
+  - `Texture.fromImageFile(gpu, path)` / `fromImageBytes(gpu, bytes)` decodes PNG/JPG/TGA/BMP via `stb_image`.
+- **Window, Audio & Action Input (`engine.platform`, `engine.audio`)**:
+  - `Window` supports `WindowOptions`, `setFullscreen`, `setTitle`, `setResizable`, `setBordered`, `setCursorVisible`, `setCustomCursor`, `resetCursor`; `App.setPresentMode` / `App.setVsync(bool)`.
+  - `AudioMixer` mixes up to 32 simultaneous polyphonic voices (`sfx`/`music` buses, pitch resampling, loop, per-voice & master gain); `AudioClip.convertTo` resamples WAV assets.
+  - `InputMap` (`app.input.actions`) binds keyboard, mouse, and gamepad buttons/axes to named actions and serializes bindings to JSON.
+- **Timing, Tweens & PNG Screenshots (`engine.core`, `engine.app`)**:
+  - `GameClock` (`engine.core.clock`) provides a fixed-timestep accumulator (`advance(realDt) -> StepResult`).
+  - `Tweens` & `Timers` (`engine.core.tween`) provide zero-alloc easing curves (`Ease.outCubic`, `Ease.outBack`, `Ease.outBounce`, etc.) and countdown/interval timers.
+  - Call `app.saveScreenshot("shot.png")` (backed by SDL3 `SDL_SavePNG`) to save the rendered frame at the end of `endFrame()`.

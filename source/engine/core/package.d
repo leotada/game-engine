@@ -9,3 +9,5 @@ public import engine.core.strings;
 public import engine.core.arena;
 public import engine.core.attrs;
 public import engine.core.gc;
+public import engine.core.clock;
+public import engine.core.tween;

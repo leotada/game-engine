@@ -9,12 +9,12 @@
     "importPaths": ["source", "source/bindings/box3d"],
     "stringImportPaths": ["assets/shaders"],
 
-    "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-Ivendor/box3d/include"],
-    "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-Ivendor/box3d/include"],
+    "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-I$PACKAGE_DIR/vendor/box3d/include"],
+    "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-I$PACKAGE_DIR/vendor/box3d/include"],
 
     "sourceFiles": ["source/bindings/box3d/box3d_import.c"],
     "libs": ["SDL3", "wgpu_native", "box3d", "stb", "m", "symgc-cards"],
-    "lflags-linux": ["-L./libs"],
+    "lflags-linux": ["-L$PACKAGE_DIR/libs"],
 
     "configurations": [
         {
@@ -332,7 +332,7 @@
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_ref", "stdc++"],
-            "lflags-linux": ["-L./libs"],
+            "lflags-linux": ["-L$PACKAGE_DIR/libs"],
             "versions": ["MeshoptOracle"]
         },
         {
@@ -351,7 +351,7 @@
                 "source/demo/*"
             ],
             "libs": [],
-            "lflags-linux": ["-L./libs"]
+            "lflags-linux": ["-L$PACKAGE_DIR/libs"]
         },
         {
             "name": "meshopt-codec-oracle",
@@ -368,7 +368,7 @@
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_codec_scalar", "stdc++"],
-            "lflags-linux": ["-L./libs"],
+            "lflags-linux": ["-L$PACKAGE_DIR/libs"],
             "versions": ["MeshoptOracle"]
         },
         {
@@ -386,7 +386,7 @@
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_ref", "stdc++"],
-            "lflags-linux": ["-L./libs"],
+            "lflags-linux": ["-L$PACKAGE_DIR/libs"],
             "versions": ["MeshoptCodecBench"]
         },
         {
