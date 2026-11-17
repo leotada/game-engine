@@ -87,6 +87,26 @@ struct Texture {
     }
 
     /// Flat solid-color texture (1×1, cheap).
+    /// White disc with a smooth alpha falloff (alpha 1 at the center, 0 at the
+    /// edge): the standard particle sprite.
+    static Texture softDisc(ref GpuContext gpu, uint size = 64) @trusted {
+        auto px = new ubyte[size * size * 4];
+        immutable half = size * 0.5f;
+        foreach (y; 0 .. size) {
+            foreach (x; 0 .. size) {
+                immutable dx = (x + 0.5f - half) / half;
+                immutable dy = (y + 0.5f - half) / half;
+                immutable d = dx * dx + dy * dy;
+                float a = d >= 1.0f ? 0.0f : (1.0f - d);
+                a = a * a * (3.0f - 2.0f * a); // smoothstep falloff
+                immutable i = (y * size + x) * 4;
+                px[i] = 255; px[i + 1] = 255; px[i + 2] = 255;
+                px[i + 3] = cast(ubyte)(a * 255.0f + 0.5f);
+            }
+        }
+        return fromPixels(gpu, px, size, size);
+    }
+
     static Texture solid(ref GpuContext gpu, ubyte r, ubyte g, ubyte bl, ubyte a = 255) @trusted {
         ubyte[4] px = [r, g, bl, a];
         return fromPixels(gpu, px[], 1, 1);

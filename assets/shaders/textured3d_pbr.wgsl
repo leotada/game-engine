@@ -252,6 +252,7 @@ struct VertexOutput {
     @location(6) localPos: vec3<f32>,
     @location(7) localNormal: vec3<f32>,
     @location(8) custom: vec4<f32>,
+    @location(9) tintAlpha: f32,
 };
 
 @vertex
@@ -286,6 +287,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.localPos = in.position;
     out.localNormal = in.normal;
     out.custom = in.custom;
+    out.tintAlpha = in.tint.a;
     return out;
 }
 
@@ -293,7 +295,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let albedoSample = textureSample(albedoMap, texSampler, in.uv);
     var baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
-    var surfaceOpacity = albedoSample.a * mat.geometryOpacity;
+    // Instance tint alpha scales opacity (particle fade); 1 for stock draws.
+    var surfaceOpacity = albedoSample.a * mat.geometryOpacity * in.tintAlpha;
     var metalness = mat.baseMetalness;
     var roughness = mat.specularRoughness;
     if ((mat.flags & FLAG_MR) != 0u) {
