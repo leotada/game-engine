@@ -6,7 +6,7 @@ import bindings.wgpu;
 import engine.core.pod : isPod;
 import engine.gpu.buffer : createUniformBuffer, updateBuffer, destroyBuffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE;
+import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE;
 import engine.graphics.texture : Texture, Sampler;
 import engine.core.log;
 
@@ -108,6 +108,10 @@ package(engine) MaterialDefaults gMaterialDefaults;
 struct Material {
     package(engine) WGPUBindGroup bindGroup;
     package(engine) WGPUBuffer paramsBuf;
+    package(engine) WGPUBuffer surfaceBuf;
+    /// Custom surface shader used to draw this material: 0 is the stock PBR
+    /// shader, otherwise an id from `Scene3DTextured.createSurfaceShader`.
+    uint surfaceShader = 0;
 
     @disable this(this);
 
@@ -142,7 +146,11 @@ struct Material {
         m.paramsBuf = createUniformBuffer(gpu.getDevice(), MATERIAL_PARAMS_SIZE);
         updateBuffer(gpu.getQueue(), m.paramsBuf, (&params)[0 .. 1]);
 
-        WGPUBindGroupEntry[7] entries;
+        m.surfaceBuf = createUniformBuffer(gpu.getDevice(), SURFACE_PARAMS_SIZE);
+        immutable float[16] zeroSurface = 0.0f;
+        updateBuffer(gpu.getQueue(), m.surfaceBuf, zeroSurface[]);
+
+        WGPUBindGroupEntry[8] entries;
         entries[0].binding = 0;
         entries[0].buffer  = m.paramsBuf;
         entries[0].offset  = 0;
@@ -162,9 +170,14 @@ struct Material {
         entries[6].binding = 6;
         entries[6].textureView = em.view;
 
+        entries[7].binding = 7;
+        entries[7].buffer  = m.surfaceBuf;
+        entries[7].offset  = 0;
+        entries[7].size    = SURFACE_PARAMS_SIZE;
+
         WGPUBindGroupDescriptor desc;
         desc.layout     = layout;
-        desc.entryCount = 7;
+        desc.entryCount = 8;
         desc.entries    = entries.ptr;
 
         m.bindGroup = wgpuDeviceCreateBindGroup(gpu.getDevice(), &desc);
@@ -180,9 +193,18 @@ struct Material {
         updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
     }
 
+    /// Upload the 4 × vec4 block a custom surface shader reads as
+    /// `surfaceParams.p0 .. p3`.
+    void updateSurfaceParams(ref GpuContext gpu, in float[16] values) nothrow @nogc @trusted {
+        if (surfaceBuf is null) return;
+        updateBuffer(gpu.getQueue(), surfaceBuf, values[]);
+    }
+
     void destroy() nothrow @nogc @trusted {
         if (bindGroup !is null) { wgpuBindGroupRelease(bindGroup); bindGroup = null; }
         destroyBuffer(paramsBuf);
         paramsBuf = null;
+        destroyBuffer(surfaceBuf);
+        surfaceBuf = null;
     }
 }

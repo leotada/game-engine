@@ -58,6 +58,47 @@ const FLAG_WATER_RIVER: u32 = 32u;
 
 #include "common/pbr_brdf.wgsl"
 
+#ifdef CUSTOM_SURFACE
+/// Free per-material parameters for custom surface shaders
+/// (`Material.updateSurfaceParams`).
+struct SurfaceParams {
+    p0: vec4<f32>,
+    p1: vec4<f32>,
+    p2: vec4<f32>,
+    p3: vec4<f32>,
+};
+@group(1) @binding(7) var<uniform> surfaceParams: SurfaceParams;
+
+/// What a custom `surface` function can read about the shaded point.
+struct SurfaceIn {
+    worldPos: vec3<f32>,
+    localPos: vec3<f32>,
+    worldNormal: vec3<f32>,
+    localNormal: vec3<f32>,
+    uv: vec2<f32>,
+    tint: vec3<f32>,
+    viewDir: vec3<f32>,
+};
+
+/// Surface description handed to the standard OpenPBR lighting. A custom
+/// `surface` function receives the material defaults and returns its edits.
+struct SurfaceOut {
+    baseColor: vec3<f32>,
+    metalness: f32,
+    roughness: f32,
+    emission: vec3<f32>,
+    normal: vec3<f32>,
+    opacity: f32,
+    ao: f32,
+};
+
+// Game code is spliced in here by `composeSurfaceShader`. It must define
+//   fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut
+// and may define
+//   fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>
+//@@SURFACE_CODE@@
+#endif
+
 fn evalRiverBankMask(worldPos: vec3<f32>, isRiver: bool) -> f32 {
     if (!isRiver) {
         return 1.0;
@@ -186,12 +227,18 @@ struct VertexOutput {
     @location(3) tint: vec3<f32>,
     @location(4) worldTangent: vec3<f32>,
     @location(5) worldBitangent: vec3<f32>,
+    @location(6) localPos: vec3<f32>,
+    @location(7) localNormal: vec3<f32>,
 };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
-    let worldPos4 = model * vec4<f32>(in.position, 1.0);
+    var localPos = in.position;
+#ifdef CUSTOM_SURFACE
+//@@DISPLACE_CALL@@
+#endif
+    let worldPos4 = model * vec4<f32>(localPos, 1.0);
     let normalMat = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
     var out: VertexOutput;
     out.clipPos = frame.viewProj * worldPos4;
@@ -212,13 +259,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 #endif
     out.uv = in.uv;
     out.tint = in.tint.rgb;
+    // Undisplaced object-space position: a stable domain for procedural noise.
+    out.localPos = in.position;
+    out.localNormal = in.normal;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let albedoSample = textureSample(albedoMap, texSampler, in.uv);
-    let baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
+    var baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
+    var surfaceOpacity = albedoSample.a * mat.geometryOpacity;
     var metalness = mat.baseMetalness;
     var roughness = mat.specularRoughness;
     if ((mat.flags & FLAG_MR) != 0u) {
@@ -253,6 +304,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let V = normalize(frame.cameraPos - in.worldPos);
+
+#ifdef CUSTOM_SURFACE
+    var surfIn: SurfaceIn;
+    surfIn.worldPos = in.worldPos;
+    surfIn.localPos = in.localPos;
+    surfIn.worldNormal = N;
+    surfIn.localNormal = normalize(in.localNormal);
+    surfIn.uv = in.uv;
+    surfIn.tint = in.tint;
+    surfIn.viewDir = V;
+    var surfBase: SurfaceOut;
+    surfBase.baseColor = baseColor;
+    surfBase.metalness = metalness;
+    surfBase.roughness = roughness;
+    surfBase.emission = emissive;
+    surfBase.normal = N;
+    surfBase.opacity = surfaceOpacity;
+    surfBase.ao = ao;
+    let surf = surface(surfIn, surfBase);
+    baseColor = max(surf.baseColor, vec3<f32>(0.0));
+    metalness = clamp(surf.metalness, 0.0, 1.0);
+    roughness = clamp(surf.roughness, 0.04, 1.0);
+    emissive = max(surf.emission, vec3<f32>(0.0));
+    surfaceOpacity = surf.opacity;
+    ao = clamp(surf.ao, 0.0, 1.0);
+    N = normalize(surf.normal);
+    T = normalize(T - N * dot(N, T));
+    B = cross(N, T);
+#endif
+
     let NdotV = max(dot(N, V), 0.001);
 
     let enableWaterFx = (mat.flags & FLAG_WATER_WETLINE) != 0u;
@@ -441,7 +522,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = direct + ambient + totalEmission;
     color = max(color, vec3<f32>(0.0));
-    let rawAlpha = clamp(albedoSample.a * mat.geometryOpacity, 0.0, 1.0);
+    let rawAlpha = clamp(surfaceOpacity, 0.0, 1.0);
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
     let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
     let outAlpha = select(rawAlpha, mix(rawAlpha, 1.0, viewReflectance), rawAlpha < 0.999);

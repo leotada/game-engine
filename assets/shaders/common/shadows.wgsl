@@ -39,7 +39,8 @@ struct FrameUniforms {
     pointCount: u32,
     spotCount: u32,
     dirEnabled: u32,
-    _padCounts: u32,
+    /// Seconds, set by `Scene3DTextured.setTime` (0 when the game never sets it).
+    time: f32,
     points: array<PointLight, 8>,
     spots: array<SpotLight, 4>,
 };

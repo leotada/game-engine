@@ -17,6 +17,50 @@ enum text2dShaderSource = import("text2d.wgsl");
 enum textured3dShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl").code;
 enum textured3dTangentShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT"]).code;
 
+/// PBR shader variants with the custom-surface hook enabled. They still hold
+/// the splice markers; build the final source with `composeSurfaceShader`.
+enum textured3dSurfaceTemplate = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["CUSTOM_SURFACE"]).code;
+enum textured3dSurfaceTangentTemplate = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["CUSTOM_SURFACE", "MESH_TANGENT"]).code;
+
+private enum SURFACE_CODE_MARKER = "//@@SURFACE_CODE@@";
+private enum DISPLACE_CALL_MARKER = "//@@DISPLACE_CALL@@";
+
+/// Splice game WGSL into the PBR shader. `surfaceWgsl` must define
+/// `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut`; when it also
+/// defines `fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>`
+/// the vertex stage calls it before the model transform.
+string composeSurfaceShader(scope const(char)[] surfaceWgsl, bool tangent = false) {
+    import std.array : replace;
+    import std.algorithm.searching : canFind;
+
+    string code = tangent ? textured3dSurfaceTangentTemplate : textured3dSurfaceTemplate;
+    immutable displaceCall = surfaceWgsl.canFind("fn displace(")
+        ? "    localPos = displace(localPos, in.normal);" : "";
+    code = code.replace(DISPLACE_CALL_MARKER, displaceCall);
+    return code.replace(SURFACE_CODE_MARKER, surfaceWgsl.idup);
+}
+
+unittest {
+    import std.algorithm.searching : canFind;
+
+    static assert(textured3dSurfaceTemplate.canFind(SURFACE_CODE_MARKER));
+    static assert(textured3dSurfaceTemplate.canFind(DISPLACE_CALL_MARKER));
+    static assert(!textured3dShaderSource.canFind("surfaceParams"));
+
+    enum snippet = "fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }";
+    auto plain = composeSurfaceShader(snippet);
+    assert(plain.canFind(snippet));
+    assert(!plain.canFind("@@"));
+    assert(!plain.canFind("localPos = displace("));
+    assert(!plain.canFind("@location(8) tangent"));
+
+    auto displaced = composeSurfaceShader(
+        snippet ~ "\nfn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32> { return localPos; }",
+        true);
+    assert(displaced.canFind("localPos = displace(localPos, in.normal);"));
+    assert(displaced.canFind("@location(8) tangent"));
+}
+
 enum shadowDepthShaderSource = import("shadow_depth.wgsl");
 
 enum gizmoLineShaderSource = import("gizmo_line.wgsl");

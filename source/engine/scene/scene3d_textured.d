@@ -11,7 +11,8 @@ import engine.core.log;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
-import engine.gpu.pipeline : Pipeline3D, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
+import engine.gpu.pipeline : Pipeline3D, SurfacePipelines, createSurfacePipelines,
+    createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shadow : PointShadowMap, ShadowMap, SpotShadowMap;
 import engine.graphics.types : InstanceData, Color4;
@@ -71,7 +72,7 @@ struct FrameUniforms {
     uint pointCount = 0;
     uint spotCount = 0;
     uint dirEnabled = 1;
-    uint _padCounts = 0;
+    float time = 0.0f;
     GpuPointLightUbo[MAX_POINT_LIGHTS] points;
     GpuSpotLightUbo[MAX_SPOT_LIGHTS] spots;
 }
@@ -106,6 +107,10 @@ struct Scene3DTextured {
         InstanceData[] instances;
         WGPUBuffer instanceBuf;
     }
+
+    private enum MAX_SURFACE_SHADERS = 16;
+    private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
+    private uint surfaceShaderCount = 0;
 
     private Batch[MAX_BATCHES] batches;
     private uint batchCount = 0;
@@ -178,6 +183,45 @@ struct Scene3DTextured {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
         return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, true);
     }
+
+    /// Compile a custom surface shader. `surfaceWgsl` defines
+    /// `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut` and
+    /// optionally `fn displace(localPos, localNormal) -> vec3<f32>`; it can
+    /// read `frame.time`, `surfaceParams.p0 .. p3` and the material bindings.
+    /// Assign the returned id to `Material.surfaceShader`. Returns 0 (the
+    /// stock shader) when compilation fails or the table is full.
+    /// Shadow passes do not run `displace`.
+    uint createSurfaceShader(scope const(char)[] surfaceWgsl) @trusted {
+        import engine.gpu.shaders : composeSurfaceShader;
+        if (surfaceShaderCount >= MAX_SURFACE_SHADERS) {
+            warn("Surface shader table full (MAX_SURFACE_SHADERS=", MAX_SURFACE_SHADERS, ")");
+            return 0;
+        }
+        auto built = createSurfacePipelines(pipeline, device, Renderer.sceneFormat(),
+            composeSurfaceShader(surfaceWgsl, false), composeSurfaceShader(surfaceWgsl, true));
+        if (!built.valid) {
+            err("Custom surface shader failed to compile; using the stock PBR shader");
+            return 0;
+        }
+        surfaceShaders[surfaceShaderCount] = built;
+        return ++surfaceShaderCount;
+    }
+
+    /// Recompile an existing surface shader in place (hot reload). The old
+    /// pipelines stay active when the new source fails.
+    bool reloadSurfaceShader(uint id, scope const(char)[] surfaceWgsl) @trusted {
+        import engine.gpu.shaders : composeSurfaceShader;
+        if (id == 0 || id > surfaceShaderCount) return false;
+        auto built = createSurfacePipelines(pipeline, device, Renderer.sceneFormat(),
+            composeSurfaceShader(surfaceWgsl, false), composeSurfaceShader(surfaceWgsl, true));
+        if (!built.valid) return false;
+        surfaceShaders[id - 1].release();
+        surfaceShaders[id - 1] = built;
+        return true;
+    }
+
+    /// Seconds exposed to shaders as `frame.time`; call before `begin`.
+    void setTime(float seconds) nothrow @nogc { frameData.time = seconds; }
 
     /// Update multi-light UBO + bind shadow maps for the next draws.
     ///
@@ -349,7 +393,14 @@ struct Scene3DTextured {
             if (b.instances.length == 0) continue;
             updateBuffer(queue, b.instanceBuf, b.instances);
 
-            frame.setPipeline(b.mesh.vertexStride == 48 ? pipeline.pipelineTangent : pipeline.pipeline);
+            immutable tangent = b.mesh.vertexStride == 48;
+            immutable shaderId = b.material.surfaceShader;
+            if (shaderId != 0 && shaderId <= surfaceShaderCount) {
+                auto custom = &surfaceShaders[shaderId - 1];
+                frame.setPipeline(tangent ? custom.pipelineTangent : custom.pipeline);
+            } else {
+                frame.setPipeline(tangent ? pipeline.pipelineTangent : pipeline.pipeline);
+            }
             frame.setBindGroup(1, b.material.bindGroup);
             frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
             frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * InstanceData.sizeof);
@@ -359,6 +410,8 @@ struct Scene3DTextured {
     }
 
     void destroy() nothrow @nogc @trusted {
+        foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
+        surfaceShaderCount = 0;
         foreach (ref b; batches)
             destroyBuffer(b.instanceBuf);
         if (frameBindGroup !is null) {

@@ -377,6 +377,8 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 enum FRAME_UNIFORMS_SIZE = 1088;
 /// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
 enum MATERIAL_PARAMS_SIZE = 144;
+/// Free parameter block for custom surface shaders (4 × vec4<f32>), material binding 7.
+enum SURFACE_PARAMS_SIZE = 64;
 
 /// Textured 3D instanced PBR pipeline.
 ///   Buffer 0 (per-vertex): `TexVert` stride 32, or `TexTanVert` stride 48 on `pipelineTangent`.
@@ -427,7 +429,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 
     // --- Group 1: Material ---
-    WGPUBindGroupLayoutEntry[7] matEntries;
+    WGPUBindGroupLayoutEntry[8] matEntries;
     matEntries[0].binding = 0;
     matEntries[0].visibility = WGPUShaderStage.fragment;
     matEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -444,8 +446,15 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         matEntries[2 + i].texture.viewDimension = WGPUTextureViewDimension.dim2D;
     }
 
+    // Custom surface parameters: unused by the stock shader, read by
+    // `surface` (fragment) and `displace` (vertex) in custom variants.
+    matEntries[7].binding = 7;
+    matEntries[7].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
+    matEntries[7].buffer.type = WGPUBufferBindingType.uniform;
+    matEntries[7].buffer.minBindingSize = SURFACE_PARAMS_SIZE;
+
     WGPUBindGroupLayoutDescriptor matBglDesc;
-    matBglDesc.entryCount = 7;
+    matBglDesc.entryCount = 8;
     matBglDesc.entries = matEntries.ptr;
     result.bindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &matBglDesc);
 
@@ -630,6 +639,40 @@ private WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUSha
     pipeDesc.depthStencil = &depthState;
     pipeDesc.fragment = &fragState;
     return wgpuDeviceCreateRenderPipeline(device, &pipeDesc);
+}
+
+/// Draw pipelines (stride 32 and stride 48) for one custom surface shader.
+/// They share the stock pipeline layout, so every `Material` binds to them.
+struct SurfacePipelines {
+    WGPURenderPipeline pipeline;
+    WGPURenderPipeline pipelineTangent;
+    WGPUShaderModule shaderModule;
+    WGPUShaderModule shaderModuleTangent;
+
+    bool valid() const nothrow @nogc { return pipeline !is null && pipelineTangent !is null; }
+
+    void release() nothrow @nogc @trusted {
+        if (pipeline !is null) { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
+        if (pipelineTangent !is null) { wgpuRenderPipelineRelease(pipelineTangent); pipelineTangent = null; }
+        if (shaderModule !is null) { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
+        if (shaderModuleTangent !is null) { wgpuShaderModuleRelease(shaderModuleTangent); shaderModuleTangent = null; }
+    }
+}
+
+/// Build both vertex-layout variants from fully composed WGSL
+/// (see `composeSurfaceShader`). Returns an invalid struct on failure.
+SurfacePipelines createSurfacePipelines(ref Pipeline3D base, WGPUDevice device, WGPUTextureFormat surfaceFormat,
+                                        scope const(char)[] wgsl, scope const(char)[] wgslTangent) nothrow @nogc @trusted {
+    SurfacePipelines result;
+    if (base.pipelineLayout is null || device is null) return result;
+    result.shaderModule = createShaderModule(device, wgsl, "custom_surface");
+    result.shaderModuleTangent = createShaderModule(device, wgslTangent, "custom_surface_tangent");
+    if (result.shaderModule !is null)
+        result.pipeline = createTexturedDrawPipeline(device, result.shaderModule, base.pipelineLayout, surfaceFormat, 32, false);
+    if (result.shaderModuleTangent !is null)
+        result.pipelineTangent = createTexturedDrawPipeline(device, result.shaderModuleTangent, base.pipelineLayout, surfaceFormat, 48, true);
+    if (!result.valid) result.release();
+    return result;
 }
 
 /// Transactional hot-reload for colored 3D pipeline: keeps old pipeline if new shader fails.
