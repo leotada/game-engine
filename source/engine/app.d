@@ -56,6 +56,22 @@ struct App {
 
     void close() nothrow @nogc { _running = false; }
 
+    /// Change swapchain present mode at runtime (`fifo` = VSync, `mailbox`/`immediate` = uncapped).
+    bool setPresentMode(WGPUPresentMode mode) {
+        return gpu.setPresentMode(mode);
+    }
+
+    WGPUPresentMode presentMode() const nothrow @nogc {
+        return gpu.presentMode();
+    }
+
+    /// Toggle VSync on (`fifo`) or off (`mailbox` / `immediate` fallback).
+    bool setVsync(bool enabled) {
+        if (enabled) return gpu.setPresentMode(WGPUPresentMode.fifo);
+        if (gpu.setPresentMode(WGPUPresentMode.mailbox)) return true;
+        return gpu.setPresentMode(WGPUPresentMode.immediate);
+    }
+
     /// Configure target FPS and compute expected frame budget. Pass 0 for uncapped.
     void setTargetFps(uint fps) nothrow @nogc {
         _targetFps = fps;

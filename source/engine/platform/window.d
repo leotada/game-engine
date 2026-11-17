@@ -22,14 +22,25 @@ struct NativeSurfaceInfo {
     ulong x11Window         = 0;    // Window ID (X11)
 }
 
+/// Options for `Window.create`.
+struct WindowOptions {
+    bool fullscreen = false;
+    bool borderless = false;
+    bool resizable = false;
+    bool highPixelDensity = false;
+    bool hidden = false;
+}
+
 struct Window {
     private SDL_Window* handle;
     private SDL_MetalView metalView;
+    private SDL_Cursor* customCursor;
     private uint w, h;
 
     @disable this(this);
 
-    static Window create(const(char)* title, uint width, uint height) @trusted {
+    static Window create(const(char)* title, uint width, uint height,
+                         WindowOptions opts = WindowOptions.init) @trusted {
         // SDL captures the pointer on every button press and, on KWin/Wayland,
         // that capture does a wl_display round-trip. Nested with the wgpu
         // present wait, the round-trip stalls the frame for a few seconds.
@@ -38,7 +49,14 @@ struct Window {
             err("SDL_Init failed");
             assert(false);
         }
-        auto win = SDL_CreateWindow(title, width, height, 0);
+        ulong flags = 0;
+        if (opts.fullscreen)       flags |= SDL_WINDOW_FULLSCREEN;
+        if (opts.borderless)       flags |= SDL_WINDOW_BORDERLESS;
+        if (opts.resizable)        flags |= SDL_WINDOW_RESIZABLE;
+        if (opts.highPixelDensity) flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        if (opts.hidden)           flags |= SDL_WINDOW_HIDDEN;
+
+        auto win = SDL_CreateWindow(title, width, height, flags);
         if (win is null) {
             err("SDL_CreateWindow failed");
             assert(false);
@@ -52,12 +70,94 @@ struct Window {
             mv = SDL_Metal_CreateView(win);
         }
 
-        return Window(win, mv, width, height);
+        Window result = Window(win, mv, null, width, height);
+        result.refreshSize();
+        return result;
     }
 
-    bool valid() const @trusted { return handle !is null; }
-    uint width()  const { return w; }
-    uint height() const { return h; }
+    bool valid() const nothrow @nogc { return handle !is null; }
+    uint width()  const nothrow @nogc { return w; }
+    uint height() const nothrow @nogc { return h; }
+
+    /// Toggle exclusive/desktop fullscreen mode and sync drawable dimensions.
+    bool setFullscreen(bool enabled) @trusted {
+        if (handle is null) return false;
+        immutable bool ok = SDL_SetWindowFullscreen(handle, enabled);
+        SDL_SyncWindow(handle);
+        refreshSize();
+        return ok;
+    }
+
+    bool isFullscreen() const nothrow @nogc @trusted {
+        if (handle is null) return false;
+        return (SDL_GetWindowFlags(cast(SDL_Window*) handle) & SDL_WINDOW_FULLSCREEN) != 0;
+    }
+
+    /// Update the window title bar text (UTF-8, truncated to 255 bytes).
+    void setTitle(scope const(char)[] title) nothrow @nogc @trusted {
+        if (handle is null) return;
+        char[256] buf = 0;
+        immutable size_t n = title.length < 255 ? title.length : 255;
+        buf[0 .. n] = title[0 .. n];
+        buf[n] = '\0';
+        SDL_SetWindowTitle(handle, buf.ptr);
+    }
+
+    bool setResizable(bool enabled) nothrow @nogc @trusted {
+        return handle !is null && SDL_SetWindowResizable(handle, enabled);
+    }
+
+    bool setBordered(bool enabled) nothrow @nogc @trusted {
+        return handle !is null && SDL_SetWindowBordered(handle, enabled);
+    }
+
+    /// Show or hide the OS mouse cursor.
+    bool setCursorVisible(bool visible) nothrow @nogc @trusted {
+        return visible ? SDL_ShowCursor() : SDL_HideCursor();
+    }
+
+    bool isCursorVisible() const nothrow @nogc @trusted {
+        return SDL_CursorVisible();
+    }
+
+    /// Set an RGBA8 custom image as the active OS mouse cursor.
+    bool setCustomCursor(const(ubyte)[] rgba, uint cursorW, uint cursorH,
+                         int hotX = 0, int hotY = 0) nothrow @nogc @trusted {
+        if (cursorW == 0 || cursorH == 0) return false;
+        if (rgba.length < cast(size_t) cursorW * cursorH * 4) return false;
+
+        auto surf = SDL_CreateSurfaceFrom(
+            cast(int) cursorW, cast(int) cursorH,
+            SDL_PIXELFORMAT_RGBA32,
+            cast(void*) rgba.ptr,
+            cast(int)(cursorW * 4)
+        );
+        if (surf is null) return false;
+        scope(exit) SDL_DestroySurface(surf);
+
+        auto cursor = SDL_CreateColorCursor(surf, hotX, hotY);
+        if (cursor is null) return false;
+
+        if (!SDL_SetCursor(cursor)) {
+            SDL_DestroyCursor(cursor);
+            return false;
+        }
+        if (customCursor !is null) {
+            SDL_DestroyCursor(customCursor);
+        }
+        customCursor = cursor;
+        return true;
+    }
+
+    /// Restore the OS default cursor and free any custom cursor image.
+    bool resetCursor() nothrow @nogc @trusted {
+        immutable bool ok = SDL_SetCursor(null);
+        if (customCursor !is null) {
+            SDL_DestroyCursor(customCursor);
+            customCursor = null;
+        }
+        return ok;
+    }
 
     /// Re-read the drawable size (in pixels) from SDL. Returns true when it changed.
     bool refreshSize() @trusted {
@@ -127,6 +227,11 @@ struct Window {
     }
 
     void destroy() @trusted {
+        if (customCursor !is null) {
+            SDL_SetCursor(null);
+            SDL_DestroyCursor(customCursor);
+            customCursor = null;
+        }
         if (metalView !is null) {
             SDL_Metal_DestroyView(metalView);
             metalView = null;

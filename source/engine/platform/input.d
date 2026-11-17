@@ -4,11 +4,12 @@ module engine.platform.input;
 import bindings.sdl3;
 import engine.math.vec : Vec2;
 import engine.platform.gamepad;
+import engine.platform.input_map : InputMap;
 import core.stdc.stdio : fprintf, stderr;
 
 @safe:
 
-/// Keyboard key identifiers (subset — extend as needed).
+/// Keyboard key identifiers.
 enum Key : uint {
     unknown  = 0,
     escape   = SDL_Scancode.SCANCODE_ESCAPE,
@@ -16,25 +17,35 @@ enum Key : uint {
     tab      = SDL_Scancode.SCANCODE_TAB,
     lshift   = SDL_Scancode.SCANCODE_LSHIFT,
     lctrl    = SDL_Scancode.SCANCODE_LCTRL,
-    w        = SDL_Scancode.SCANCODE_W,
     a        = SDL_Scancode.SCANCODE_A,
-    s        = SDL_Scancode.SCANCODE_S,
+    b        = SDL_Scancode.SCANCODE_B,
+    c        = SDL_Scancode.SCANCODE_C,
     d        = SDL_Scancode.SCANCODE_D,
     e        = SDL_Scancode.SCANCODE_E,
     f        = SDL_Scancode.SCANCODE_F,
     g        = SDL_Scancode.SCANCODE_G,
-    b        = SDL_Scancode.SCANCODE_B,
-    q        = SDL_Scancode.SCANCODE_Q,
-    r        = SDL_Scancode.SCANCODE_R,
+    h        = SDL_Scancode.SCANCODE_H,
+    i        = SDL_Scancode.SCANCODE_I,
+    j        = SDL_Scancode.SCANCODE_J,
+    k        = SDL_Scancode.SCANCODE_K,
+    l        = SDL_Scancode.SCANCODE_L,
+    m        = SDL_Scancode.SCANCODE_M,
     n        = SDL_Scancode.SCANCODE_N,
     o        = SDL_Scancode.SCANCODE_O,
     p        = SDL_Scancode.SCANCODE_P,
+    q        = SDL_Scancode.SCANCODE_Q,
+    r        = SDL_Scancode.SCANCODE_R,
+    s        = SDL_Scancode.SCANCODE_S,
+    t        = SDL_Scancode.SCANCODE_T,
+    u        = SDL_Scancode.SCANCODE_U,
+    v        = SDL_Scancode.SCANCODE_V,
+    w        = SDL_Scancode.SCANCODE_W,
     x        = SDL_Scancode.SCANCODE_X,
     y        = SDL_Scancode.SCANCODE_Y,
     z        = SDL_Scancode.SCANCODE_Z,
-    c        = SDL_Scancode.SCANCODE_C,
     equals   = SDL_Scancode.SCANCODE_EQUALS,
     minus    = SDL_Scancode.SCANCODE_MINUS,
+    comma    = SDL_Scancode.SCANCODE_COMMA,
     backspace = SDL_Scancode.SCANCODE_BACKSPACE,
     return_  = SDL_Scancode.SCANCODE_RETURN,
     delete_  = SDL_Scancode.SCANCODE_DELETE,
@@ -59,6 +70,13 @@ enum Key : uint {
     f3       = SDL_Scancode.SCANCODE_F3,
     f4       = SDL_Scancode.SCANCODE_F4,
     f5       = SDL_Scancode.SCANCODE_F5,
+    f6       = SDL_Scancode.SCANCODE_F6,
+    f7       = SDL_Scancode.SCANCODE_F7,
+    f8       = SDL_Scancode.SCANCODE_F8,
+    f9       = SDL_Scancode.SCANCODE_F9,
+    f10      = SDL_Scancode.SCANCODE_F10,
+    f11      = SDL_Scancode.SCANCODE_F11,
+    f12      = SDL_Scancode.SCANCODE_F12,
     digit0   = SDL_Scancode.SCANCODE_0,
     digit1   = SDL_Scancode.SCANCODE_1,
     digit2   = SDL_Scancode.SCANCODE_2,
@@ -97,6 +115,9 @@ struct InputState {
 
     private char[128] _textBuf;
     private uint _textLen = 0;
+
+    /// Logical input action/axis bindings (`input.actions.bindKey(...)`).
+    InputMap actions;
 
     Gamepads gamepads;
 
@@ -318,6 +339,28 @@ struct InputState {
 
     void stopPadRumble(uint slot = 0) nothrow @nogc {
         gamepads.stopRumble(slot);
+    }
+
+    // -----------------------------------------------------------------------
+    // Action / Axis Mapping convenience queries
+    // -----------------------------------------------------------------------
+
+    bool actionDown(scope const(char)[] action, uint padSlot = 0) const nothrow @nogc {
+        return actions.isDown(action, this, padSlot);
+    }
+    bool actionPressed(scope const(char)[] action, uint padSlot = 0) const nothrow @nogc {
+        return actions.isPressed(action, this, padSlot);
+    }
+    bool actionUp(scope const(char)[] action, uint padSlot = 0) const nothrow @nogc {
+        return actions.isUp(action, this, padSlot);
+    }
+    float actionStrength(scope const(char)[] action, uint padSlot = 0) const nothrow @nogc {
+        return actions.strength(action, this, padSlot);
+    }
+    Vec2 axis2D(scope const(char)[] negX, scope const(char)[] posX,
+                scope const(char)[] negY, scope const(char)[] posY,
+                uint padSlot = 0) const nothrow @nogc {
+        return actions.axis2D(negX, posX, negY, posY, this, padSlot);
     }
 }
 

@@ -198,6 +198,37 @@ struct GpuContext {
         configureSurface();
     }
 
+    /// Reconfigure swapchain present mode at runtime (`fifo` = vsync, `immediate`/`mailbox` = uncapped).
+    /// Returns false if the adapter surface does not support the requested mode.
+    bool setPresentMode(WGPUPresentMode mode) @trusted {
+        if (surface is null || adapter is null || device is null) return false;
+        WGPUSurfaceCapabilities caps;
+        if (wgpuSurfaceGetCapabilities(surface, adapter, &caps) != WGPUStatus.success) {
+            return false;
+        }
+        scope(exit) wgpuSurfaceCapabilitiesFreeMembers(caps);
+
+        bool supported = false;
+        if (caps.presentModes !is null) {
+            foreach (i; 0 .. caps.presentModeCount) {
+                if (caps.presentModes[i] == mode) {
+                    supported = true;
+                    break;
+                }
+            }
+        }
+        if (!supported) {
+            return false;
+        }
+        if (presentModeVal != mode) {
+            presentModeVal = mode;
+            configureSurface();
+        }
+        return true;
+    }
+
+    WGPUPresentMode presentMode() const nothrow @nogc { return presentModeVal; }
+
     WGPUDevice   getDevice()  nothrow @nogc { return device; }
     WGPUQueue    getQueue()   nothrow @nogc { return queue; }
     WGPUSurface  getSurface() nothrow @nogc { return surface; }

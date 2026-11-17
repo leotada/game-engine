@@ -31,7 +31,7 @@ enum : uint {
 // ---------------------------------------------------------------------------
 // Window flags
 // ---------------------------------------------------------------------------
-enum : uint {
+enum : ulong {
     SDL_WINDOW_FULLSCREEN         = 0x0000_0001,
     SDL_WINDOW_OPENGL             = 0x0000_0002,
     SDL_WINDOW_HIDDEN             = 0x0000_0008,
@@ -338,13 +338,36 @@ void SDL_Quit();
 const(char)* SDL_GetError();
 
 // Window
-SDL_Window* SDL_CreateWindow(const(char)* title, int w, int h, uint flags);
+SDL_Window* SDL_CreateWindow(const(char)* title, int w, int h, ulong flags);
 void SDL_DestroyWindow(SDL_Window* window);
 SDL_PropertiesID SDL_GetWindowProperties(SDL_Window* window);
+ulong SDL_GetWindowFlags(SDL_Window* window);
 bool SDL_GetWindowSize(SDL_Window* window, int* w, int* h);
 bool SDL_GetWindowSizeInPixels(SDL_Window* window, int* w, int* h);
 void SDL_SetWindowTitle(SDL_Window* window, const(char)* title);
+bool SDL_SetWindowFullscreen(SDL_Window* window, bool fullscreen);
+bool SDL_SetWindowResizable(SDL_Window* window, bool resizable);
+bool SDL_SetWindowBordered(SDL_Window* window, bool bordered);
+bool SDL_SyncWindow(SDL_Window* window);
 const(char)* SDL_GetCurrentVideoDriver();
+
+// Surface & PNG
+alias SDL_Surface = void;
+
+enum SDL_PixelFormat : uint {
+    SDL_PIXELFORMAT_RGBA8888 = 0x1646_2004u,
+    SDL_PIXELFORMAT_ABGR8888 = 0x1676_2004u,
+}
+
+version (BigEndian) {
+    enum SDL_PixelFormat SDL_PIXELFORMAT_RGBA32 = SDL_PixelFormat.SDL_PIXELFORMAT_RGBA8888;
+} else {
+    enum SDL_PixelFormat SDL_PIXELFORMAT_RGBA32 = SDL_PixelFormat.SDL_PIXELFORMAT_ABGR8888;
+}
+
+SDL_Surface* SDL_CreateSurfaceFrom(int width, int height, SDL_PixelFormat format, void* pixels, int pitch);
+void SDL_DestroySurface(SDL_Surface* surface);
+bool SDL_SavePNG(SDL_Surface* surface, const(char)* file);
 
 // Metal
 alias SDL_MetalView = void*;
@@ -387,8 +410,10 @@ bool SDL_SetWindowRelativeMouseMode(SDL_Window* window, bool enabled);
 bool SDL_GetWindowRelativeMouseMode(SDL_Window* window);
 bool SDL_HideCursor();
 bool SDL_ShowCursor();
+bool SDL_CursorVisible();
 bool SDL_WarpMouseInWindow(SDL_Window* window, float x, float y);
 SDL_Cursor* SDL_CreateSystemCursor(SDL_SystemCursor id);
+SDL_Cursor* SDL_CreateColorCursor(SDL_Surface* surface, int hot_x, int hot_y);
 bool SDL_SetCursor(SDL_Cursor* cursor);
 void SDL_DestroyCursor(SDL_Cursor* cursor);
 
@@ -438,18 +463,27 @@ struct SDL_AudioSpec {
 }
 
 // Loading / device / stream API
+alias SDL_AudioStreamCallback = extern(C) void function(
+    void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) nothrow @nogc;
+
 bool SDL_LoadWAV(const(char)* path, SDL_AudioSpec* spec, ubyte** audio_buf, uint* audio_len);
 void* SDL_malloc(size_t size);
 void SDL_free(void* mem);
 SDL_AudioStream* SDL_OpenAudioDeviceStream(SDL_AudioDeviceID devid,
                                            const(SDL_AudioSpec)* spec,
-                                           void* callback, void* userdata);
+                                           SDL_AudioStreamCallback callback, void* userdata);
 void SDL_DestroyAudioStream(SDL_AudioStream* stream);
 bool SDL_PutAudioStreamData(SDL_AudioStream* stream, const(void)* buf, int len);
 bool SDL_ResumeAudioStreamDevice(SDL_AudioStream* stream);
 bool SDL_PauseAudioStreamDevice(SDL_AudioStream* stream);
 bool SDL_ClearAudioStream(SDL_AudioStream* stream);
 int  SDL_GetAudioStreamQueued(SDL_AudioStream* stream);
+bool SDL_SetAudioStreamGain(SDL_AudioStream* stream, float gain);
+float SDL_GetAudioStreamGain(SDL_AudioStream* stream);
+bool SDL_LockAudioStream(SDL_AudioStream* stream);
+bool SDL_UnlockAudioStream(SDL_AudioStream* stream);
+bool SDL_ConvertAudioSamples(const(SDL_AudioSpec)* src_spec, const(ubyte)* src_data, int src_len,
+                             const(SDL_AudioSpec)* dst_spec, ubyte** dst_data, int* dst_len);
 
 // ---------------------------------------------------------------------------
 // Subsystem control
