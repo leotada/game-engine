@@ -6,7 +6,7 @@ import bindings.wgpu;
 import engine.core.pod : isPod;
 import engine.gpu.buffer : createUniformBuffer, updateBuffer, destroyBuffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE;
+import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE, RenderState, BlendMode;
 import engine.graphics.texture : Texture, Sampler;
 import engine.core.log;
 
@@ -21,6 +21,8 @@ enum MaterialFlags : uint {
     emissive           = 1 << 3,
     waterWetCaustics   = 1 << 4,
     waterRiverMode     = 1 << 5,
+    /// Skip all lighting: output = base color × tint + emission.
+    unlit              = 1 << 6,
 }
 
 /// Canonical OpenPBR Surface v1.1 uniform block matching WGSL `MaterialParams` (144 bytes = 9 × vec4<f32>).
@@ -112,6 +114,10 @@ struct Material {
     /// Custom surface shader used to draw this material: 0 is the stock PBR
     /// shader, otherwise an id from `Scene3DTextured.createSurfaceShader`.
     uint surfaceShader = 0;
+    /// Blend mode, depth write and culling. Non-default states get their own
+    /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
+    /// alpha batches back to front, then additive batches.
+    RenderState renderState;
 
     @disable this(this);
 

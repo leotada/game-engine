@@ -11,11 +11,11 @@ import engine.core.log;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
-import engine.gpu.pipeline : Pipeline3D, SurfacePipelines, createSurfacePipelines,
-    createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
+import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
+    createSurfacePipelines, createTexturedDrawPipeline, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shadow : PointShadowMap, ShadowMap, SpotShadowMap;
-import engine.graphics.types : InstanceData, Color4;
+import engine.graphics.types : Color4;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.material : Material;
 import engine.math.mat : Mat4;
@@ -98,15 +98,29 @@ struct Scene3DTextured {
 
     private FrameUniforms frameData;
 
-    private enum MAX_BATCHES = 32;
-    private enum MAX_INSTANCES_PER_BATCH = 512;
+    private enum MAX_BATCHES = 64;
+    /// Initial instance capacity; a batch's buffer doubles when exceeded.
+    private enum INITIAL_INSTANCES_PER_BATCH = 512;
 
     private struct Batch {
         TexMesh*   mesh;
         Material*  material;
-        InstanceData[] instances;
+        TexInstanceData[] instances;
         WGPUBuffer instanceBuf;
+        size_t     capacity;
     }
+
+    /// Pipelines for a (surface shader, render state) pair other than the default state.
+    private struct PipelineVariant {
+        uint shaderId;
+        RenderState state;
+        WGPURenderPipeline pipeline;
+        WGPURenderPipeline pipelineTangent;
+    }
+    private enum MAX_VARIANTS = 64;
+    private PipelineVariant[MAX_VARIANTS] variants;
+    private uint variantCount = 0;
+    private bool warnedBatchOverflow = false;
 
     private enum MAX_SURFACE_SHADERS = 16;
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
@@ -149,7 +163,8 @@ struct Scene3DTextured {
 
         foreach (ref b; s.batches) {
             b.instanceBuf = createDynamicVertexBuffer(
-                device, MAX_INSTANCES_PER_BATCH * InstanceData.sizeof);
+                device, INITIAL_INSTANCES_PER_BATCH * TexInstanceData.sizeof);
+            b.capacity = INITIAL_INSTANCES_PER_BATCH;
         }
         return s;
     }
@@ -175,13 +190,17 @@ struct Scene3DTextured {
     /// Safely hot-reload the textured 3D PBR pipeline without reallocating bind groups.
     bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
-        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, false);
+        if (!reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, false)) return false;
+        releaseVariants(0);
+        return true;
     }
 
     /// Hot-reload the stride-48 variant (`MESH_TANGENT` already applied to `newWgsl`).
     bool reloadTangentShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
-        return reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, true);
+        if (!reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, true)) return false;
+        releaseVariants(0);
+        return true;
     }
 
     /// Compile a custom surface shader. `surfaceWgsl` defines
@@ -217,6 +236,7 @@ struct Scene3DTextured {
         if (!built.valid) return false;
         surfaceShaders[id - 1].release();
         surfaceShaders[id - 1] = built;
+        releaseVariants(id);
         return true;
     }
 
@@ -378,38 +398,126 @@ struct Scene3DTextured {
     }
 
     void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint) {
-        auto b = findOrAdd(mesh, material);
-        if (b is null) return;
-        b.instances ~= InstanceData(model.m, tint.toArray());
+        drawMatrix(mesh, material, model, tint, [1.0f, 0.0f, 0.0f, 0.0f]);
     }
 
-    void end(ref FrameContext frame) {
+    /// Draw with a per-instance `custom` vec4. Stock meaning: x = emission
+    /// multiplier (1 = material value), y = white flash [0..1], z = dissolve
+    /// threshold [0..1, 0 = intact]; w is free for custom surface shaders.
+    void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint, float[4] custom) {
+        auto b = findOrAdd(mesh, material);
+        if (b is null) return;
+        b.instances ~= TexInstanceData(model.m, tint.toArray(), custom);
+    }
+
+    void end(ref FrameContext frame) @trusted {
+        import std.algorithm.sorting : sort;
+
         if (!frame.valid) return;
 
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
 
-        foreach (ref b; batches[0 .. batchCount]) {
-            if (b.instances.length == 0) continue;
-            updateBuffer(queue, b.instanceBuf, b.instances);
+        immutable cam = Vec3(frameData.cameraPos[0], frameData.cameraPos[1], frameData.cameraPos[2]);
+        static float distSq(ref const TexInstanceData d, Vec3 c) pure nothrow @nogc {
+            immutable dx = d.model[12] - c.x, dy = d.model[13] - c.y, dz = d.model[14] - c.z;
+            return dx * dx + dy * dy + dz * dz;
+        }
 
-            immutable tangent = b.mesh.vertexStride == 48;
-            immutable shaderId = b.material.surfaceShader;
-            if (shaderId != 0 && shaderId <= surfaceShaderCount) {
-                auto custom = &surfaceShaders[shaderId - 1];
-                frame.setPipeline(tangent ? custom.pipelineTangent : custom.pipeline);
-            } else {
-                frame.setPipeline(tangent ? pipeline.pipelineTangent : pipeline.pipeline);
+        // Pass 0: depth-writing batches in submission order. Pass 1: alpha
+        // batches without depth write, back to front. Pass 2: additive.
+        uint[MAX_BATCHES] order;
+        float[MAX_BATCHES] farthest;
+        uint orderCount = 0;
+        foreach (pass; 0 .. 3) {
+            orderCount = 0;
+            foreach (i, ref b; batches[0 .. batchCount]) {
+                if (b.instances.length == 0) continue;
+                immutable st = b.material.renderState;
+                immutable p = st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
+                if (p != pass) continue;
+                if (pass == 1) {
+                    b.instances.sort!((x, y) => distSq(x, cam) > distSq(y, cam));
+                    farthest[i] = distSq(b.instances[0], cam);
+                }
+                order[orderCount++] = cast(uint) i;
             }
-            frame.setBindGroup(1, b.material.bindGroup);
-            frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
-            frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * InstanceData.sizeof);
-            frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
-            frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
+            if (pass == 1)
+                order[0 .. orderCount].sort!((x, y) => farthest[x] > farthest[y]);
+            foreach (idx; order[0 .. orderCount]) drawBatch(frame, batches[idx]);
         }
     }
 
+    private void drawBatch(ref FrameContext frame, ref Batch b) @trusted {
+        if (b.instances.length > b.capacity) {
+            size_t cap = b.capacity;
+            while (cap < b.instances.length) cap *= 2;
+            destroyBuffer(b.instanceBuf);
+            b.instanceBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
+            b.capacity = cap;
+        }
+        updateBuffer(queue, b.instanceBuf, b.instances);
+
+        immutable tangent = b.mesh.vertexStride == 48;
+        auto pipe = pipelineFor(b.material.surfaceShader, b.material.renderState, tangent);
+        if (pipe is null) return;
+        frame.setPipeline(pipe);
+        frame.setBindGroup(1, b.material.bindGroup);
+        frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
+        frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
+        frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
+        frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
+    }
+
+    /// Pipeline for a surface shader id + render state, built on first use.
+    private WGPURenderPipeline pipelineFor(uint shaderId, RenderState state, bool tangent) @trusted {
+        if (shaderId > surfaceShaderCount) shaderId = 0;
+        if (state.isDefault) {
+            if (shaderId == 0) return tangent ? pipeline.pipelineTangent : pipeline.pipeline;
+            auto custom = &surfaceShaders[shaderId - 1];
+            return tangent ? custom.pipelineTangent : custom.pipeline;
+        }
+        foreach (ref v; variants[0 .. variantCount]) {
+            if (v.shaderId == shaderId && v.state == state)
+                return tangent ? v.pipelineTangent : v.pipeline;
+        }
+        if (variantCount >= MAX_VARIANTS) {
+            warn("Textured pipeline variant table full; drawing with the default render state");
+            return pipelineFor(shaderId, RenderState.init, tangent);
+        }
+        auto module32 = shaderId == 0 ? pipeline.shaderModule : surfaceShaders[shaderId - 1].shaderModule;
+        auto module48 = shaderId == 0 ? pipeline.shaderModuleTangent : surfaceShaders[shaderId - 1].shaderModuleTangent;
+        PipelineVariant v;
+        v.shaderId = shaderId;
+        v.state = state;
+        v.pipeline = createTexturedDrawPipeline(device, module32, pipeline.pipelineLayout,
+                                                Renderer.sceneFormat(), 32, false, state);
+        v.pipelineTangent = createTexturedDrawPipeline(device, module48, pipeline.pipelineLayout,
+                                                       Renderer.sceneFormat(), 48, true, state);
+        variants[variantCount++] = v;
+        return tangent ? v.pipelineTangent : v.pipeline;
+    }
+
+    /// Drop cached variants of one shader (after a hot reload).
+    private void releaseVariants(uint shaderId) nothrow @nogc @trusted {
+        uint kept = 0;
+        foreach (ref v; variants[0 .. variantCount]) {
+            if (v.shaderId == shaderId) {
+                if (v.pipeline !is null) wgpuRenderPipelineRelease(v.pipeline);
+                if (v.pipelineTangent !is null) wgpuRenderPipelineRelease(v.pipelineTangent);
+            } else {
+                variants[kept++] = v;
+            }
+        }
+        variantCount = kept;
+    }
+
     void destroy() nothrow @nogc @trusted {
+        foreach (ref v; variants[0 .. variantCount]) {
+            if (v.pipeline !is null) wgpuRenderPipelineRelease(v.pipeline);
+            if (v.pipelineTangent !is null) wgpuRenderPipelineRelease(v.pipelineTangent);
+        }
+        variantCount = 0;
         foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
         surfaceShaderCount = 0;
         foreach (ref b; batches)
@@ -568,7 +676,12 @@ struct Scene3DTextured {
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.mesh is &mesh && b.material is &material) return &b;
         }
-        if (batchCount >= MAX_BATCHES) return null;
+        if (batchCount >= MAX_BATCHES) {
+            if (!warnedBatchOverflow)
+                warn("Scene3DTextured: more than ", MAX_BATCHES, " (mesh, material) batches; extra draws are dropped");
+            warnedBatchOverflow = true;
+            return null;
+        }
         batches[batchCount].mesh = &mesh;
         batches[batchCount].material = &material;
         batches[batchCount].instances = null;

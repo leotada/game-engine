@@ -55,6 +55,25 @@ const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
 const FLAG_WATER_WETLINE: u32 = 16u;
 const FLAG_WATER_RIVER: u32 = 32u;
+const FLAG_UNLIT: u32 = 64u;
+
+fn engineDissolveHash(p: vec3<f32>) -> f32 {
+    let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
+    return fract(q.x * q.y * q.z * (q.x + q.y + q.z));
+}
+
+/// Value noise in [0, 1] used by the per-instance dissolve.
+fn engineDissolveNoise(x: vec3<f32>) -> f32 {
+    let p = floor(x);
+    let w = fract(x);
+    let u = w * w * (vec3<f32>(3.0) - 2.0 * w);
+    return mix(
+        mix(mix(engineDissolveHash(p), engineDissolveHash(p + vec3<f32>(1.0, 0.0, 0.0)), u.x),
+            mix(engineDissolveHash(p + vec3<f32>(0.0, 1.0, 0.0)), engineDissolveHash(p + vec3<f32>(1.0, 1.0, 0.0)), u.x), u.y),
+        mix(mix(engineDissolveHash(p + vec3<f32>(0.0, 0.0, 1.0)), engineDissolveHash(p + vec3<f32>(1.0, 0.0, 1.0)), u.x),
+            mix(engineDissolveHash(p + vec3<f32>(0.0, 1.0, 1.0)), engineDissolveHash(p + vec3<f32>(1.0, 1.0, 1.0)), u.x), u.y),
+        u.z);
+}
 
 #include "common/pbr_brdf.wgsl"
 
@@ -78,6 +97,8 @@ struct SurfaceIn {
     uv: vec2<f32>,
     tint: vec3<f32>,
     viewDir: vec3<f32>,
+    /// Per-instance `custom` vec4 (see `TexInstanceData`).
+    custom: vec4<f32>,
 };
 
 /// Surface description handed to the standard OpenPBR lighting. A custom
@@ -214,6 +235,7 @@ struct VertexInput {
     @location(5) model2: vec4<f32>,
     @location(6) model3: vec4<f32>,
     @location(7) tint: vec4<f32>,
+    @location(9) custom: vec4<f32>,
 #ifdef MESH_TANGENT
     @location(8) tangent: vec4<f32>,
 #endif
@@ -229,6 +251,7 @@ struct VertexOutput {
     @location(5) worldBitangent: vec3<f32>,
     @location(6) localPos: vec3<f32>,
     @location(7) localNormal: vec3<f32>,
+    @location(8) custom: vec4<f32>,
 };
 
 @vertex
@@ -262,6 +285,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     // Undisplaced object-space position: a stable domain for procedural noise.
     out.localPos = in.position;
     out.localNormal = in.normal;
+    out.custom = in.custom;
     return out;
 }
 
@@ -314,6 +338,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surfIn.uv = in.uv;
     surfIn.tint = in.tint;
     surfIn.viewDir = V;
+    surfIn.custom = in.custom;
     var surfBase: SurfaceOut;
     surfBase.baseColor = baseColor;
     surfBase.metalness = metalness;
@@ -333,6 +358,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     T = normalize(T - N * dot(N, T));
     B = cross(N, T);
 #endif
+
+    // Per-instance emission multiplier and white flash.
+    emissive = emissive * max(in.custom.x, 0.0);
+    let flash = clamp(in.custom.y, 0.0, 1.0);
+    baseColor = mix(baseColor, vec3<f32>(1.0), flash);
+    emissive = emissive + vec3<f32>(flash * 2.5);
+
+    // Per-instance dissolve: fragments under the threshold are discarded at
+    // the end (keeps derivative-using code in uniform control flow); a thin
+    // band above it glows in the material emission color.
+    let dissolve = clamp(in.custom.z, 0.0, 1.0);
+    var dissolveKill = false;
+    if (dissolve > 0.0) {
+        let n = engineDissolveNoise(in.localPos * 4.0) * 0.7 + engineDissolveNoise(in.localPos * 11.0) * 0.3;
+        dissolveKill = n < dissolve;
+        let edge = 1.0 - smoothstep(dissolve, dissolve + 0.08, n);
+        emissive = emissive + mat.emissionColor * edge * 6.0;
+    }
+
+    if ((mat.flags & FLAG_UNLIT) != 0u) {
+        if (dissolveKill) {
+            discard;
+        }
+        return vec4<f32>(baseColor + emissive, clamp(surfaceOpacity, 0.0, 1.0));
+    }
 
     let NdotV = max(dot(N, V), 0.001);
 
@@ -526,5 +576,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
     let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
     let outAlpha = select(rawAlpha, mix(rawAlpha, 1.0, viewReflectance), rawAlpha < 0.999);
+    if (dissolveKill) {
+        discard;
+    }
     return vec4<f32>(color, outAlpha);
 }
