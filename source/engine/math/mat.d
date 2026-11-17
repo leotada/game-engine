@@ -2,6 +2,7 @@
 module engine.math.mat;
 
 import engine.math.vec;
+import engine.math.quat : Quat;
 import std.math : sin, cos, tan;
 
 pure nothrow @nogc @safe:
@@ -33,6 +34,18 @@ struct Mat4 {
         r.m[0]  = sx;
         r.m[5]  = sy;
         r.m[10] = sz;
+        return r;
+    }
+
+    /// Compose translation * rotation * scaling.
+    static Mat4 trs(Vec3 pos, Quat rot, Vec3 scale) {
+        auto r = rot.toMat4();
+        r.m[0] *= scale.x; r.m[1] *= scale.x; r.m[2]  *= scale.x;
+        r.m[4] *= scale.y; r.m[5] *= scale.y; r.m[6]  *= scale.y;
+        r.m[8] *= scale.z; r.m[9] *= scale.z; r.m[10] *= scale.z;
+        r.m[12] = pos.x;
+        r.m[13] = pos.y;
+        r.m[14] = pos.z;
         return r;
     }
 
