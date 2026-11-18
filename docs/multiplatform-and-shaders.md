@@ -6,19 +6,29 @@ This document details the multiplatform WGPU/SDL3 surface creation architecture 
 
 ## 1. Multiplatform Support and Swapchain Negotiation
 
-The engine is engineered for high-performance execution across Linux (Wayland as the primary development target with transparent fallback to X11 in the standalone executable), Windows, Android, macOS, and iOS.
+The engine is engineered for execution across Linux (Wayland as the primary development target with transparent fallback to X11 in the standalone executable), Windows, Android, macOS/iOS, and Web (Emscripten WebAssembly + WebGPU).
 
 ### 1.1 Native Surface Abstraction Layer (`NativeSurfaceInfo`)
 
-In `source/engine/platform/window.d`, the `NativeSurfaceInfo` struct encapsulates platform window properties from SDL3 as a POD, GC-safe data structure:
+In `source/engine/platform/window.d`, the `NativeSurfaceBackend` enum and `NativeSurfaceInfo` struct encapsulate platform window properties from SDL3 (or Emscripten canvas selector) as a POD, GC-safe data structure:
 
 ```d
+enum NativeSurfaceBackend : ubyte {
+    none = 0,
+    wayland = 1,
+    x11 = 2,
+    win32 = 3,
+    android = 4,
+    metal = 5,
+    webCanvas = 6,
+}
+
 struct NativeSurfaceInfo {
-    NativePlatform platform;
-    void* display; // wl_display (Wayland) or Display* (X11)
-    void* surface; // wl_surface (Wayland) or uint Window (X11 cast)
-    void* window;  // HWND (Win32), ANativeWindow* (Android), or CALayer* (Metal)
-    void* instance;// HINSTANCE (Win32)
+    NativeSurfaceBackend backend = NativeSurfaceBackend.none;
+    void* displayOrInstance = null; // wl_display*, Display* (X11), HINSTANCE (Win32)
+    void* windowOrSurface   = null; // wl_surface*, HWND (Win32), ANativeWindow* (Android), CAMetalLayer* (Metal)
+    ulong x11Window         = 0;    // Window ID (X11)
+    const(char)* canvasSelector = null; // CSS selector (Emscripten WebGPU)
 }
 ```
 
@@ -45,6 +55,11 @@ When calling `window.nativeSurface()`, the engine detects the active platform vi
 5. **macOS / iOS (Metal)**:
    - Creates a Metal view via `SDL_Metal_CreateView` and obtains the `CAMetalLayer` pointer via `SDL_Metal_GetLayer`.
    - Configures `WGPUSurfaceSourceMetalLayer`.
+
+6. **Web (Emscripten WebAssembly + WebGPU)**:
+   - Under `version (WebAssembly)`, `Window.nativeSurface()` returns `NativeSurfaceBackend.webCanvas` with selector `"#canvas"`.
+   - `GpuContext.create` chains `WGPUSurfaceSourceCanvasHTMLSelector` (`WGPUSType.surfaceSourceCanvasHTMLSelector = 0x0004_0000`) and polls adapter/device callbacks via `wgpuInstanceProcessEvents` + `emscripten_sleep(1)`.
+   - `App.run` delegates the frame callback to `emscripten_set_main_loop_arg`, and Linux-only `inotify`/POSIX `dlfcn`/`std.process`/`steadygc` symbols are guarded out cleanly in `engine.hotreload` and `engine.core.gc`.
 
 ### 1.2 Dynamic Swapchain Negotiation
 

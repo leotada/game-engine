@@ -11,7 +11,7 @@ The visual editor (`--config=editor`) is built natively using the engine's custo
 - **Architecture:** 100% native D, `@safe:` by default, DIP1000 enabled (`-preview=dip1000`).
 - **Memory & GC:** Strictly `@nogc` in engine frame loops. Zero GC allocations over 600 continuous frames verified in benchmarks.
 - **Docking System:** Recursive H/V split tree (`DockSpace`) supporting tab dragging, panel resizing, persistence, and default 4-zone layout (Hierarchy, Scene/Game View, Inspector, Project/Console).
-- **Text & Glyph Atlas:** Dynamic SDF text rendering via `stb_truetype` compiled in `libs/libstb.a`, supporting full Latin-1 Supplement (pt-BR accented characters: `á, é, í, ó, ú, ç, ã, õ`).
+- **Text & Glyph Atlas:** Dynamic FreeType 2 SDF and hinted bitmap font rendering via `SDL3_ttf` (`source/bindings/sdl3_ttf.d`), supporting kerning, fallback fonts, and full Unicode + Latin-1 Supplement (pt-BR accented characters: `á, é, í, ó, ú, ç, ã, õ`).
 - **Input & Windowing:** SDL3 platform wrapper with full keyboard/mouse event dispatching and IME text input.
 
 ---
@@ -85,13 +85,20 @@ The editor features a non-destructive Play Mode:
 
 ---
 
-## 5. Build & Standalone Export
+## 5. Build & Multiplatform Release Export
 
-Exporting a game produces a standalone bundle that runs without the editor:
-- **Output:** `build/linux-x86_64/`
-- **Included Content:**
-  - Standalone player binary `game-player` compiled via `--config=player`.
-  - Cooked assets in `assets/`.
-  - Required runtime shared libraries in `libs/`.
-  - Portable launcher script `run.sh` (`chmod +x`).
-- **Execution:** Run `./run.sh` from any terminal or file manager.
+Exporting a game compiles the standalone player ([tools/player/player_main.d](../tools/player/player_main.d)) with `-version=StaticSDLDeps` and packages a self-contained bundle with `assets/` and `THIRD-PARTY-LICENSES.txt` (`ExportPipeline` in [source/editor/build_export.d](../source/editor/build_export.d)):
+
+- **Editor UI Workflow:** Open **Arquivo → Exportar Release (Linux / Windows / macOS / Web)** in the top menu bar.
+- **CLI Export Tool:**
+  ```bash
+  dub run --config=export -- --list-targets
+  dub run --config=export -- --check-toolchains
+  dub run --config=export -- --target=linux-x86_64 --release --archive
+  ```
+- **Static Dependencies Setup:** Run `./tools/build_sdl3_deps.sh <target>` to build and stage `SDL3`, `SDL3_image`, `SDL3_ttf`, `FreeType`, `wgpu_native`, and `Box3D` static archives under `libs/<target>/`.
+- **Target Bundle Outputs:**
+  - **Linux (`linux-x86_64`, `linux-arm64`):** Static `game-player` ELF (`dub build --config=player-static --compiler=ldc2 --build=release` on host `x86_64`), executable `run.sh`, `game-player.desktop`, `assets/`, `THIRD-PARTY-LICENSES.txt`, and `.tar.gz` archive.
+  - **Windows (`windows-x86_64`):** Standalone `game-player.exe` linked against static `.lib` archives, `assets/`, `THIRD-PARTY-LICENSES.txt`, and `.zip` archive.
+  - **macOS (`macos-arm64`, `macos-x86_64`, `macos-universal`):** `<AppTitle>.app` bundle (`Contents/Info.plist`, `Contents/MacOS/game-player`, `Contents/Resources/assets/`, optional `lipo` universal binary + ad-hoc `codesign`) and `.zip` archive.
+  - **Web (`web-wasm32`):** Compiled via `ldc2 -mtriple=wasm32-unknown-emscripten` + `emcc` (`-sUSE_WEBGPU=1 -sASYNCIFY=1 --preload-file assets@/assets`) using [tools/web/shell.html](../tools/web/shell.html), producing `<name>.html`, `.js`, `.wasm`, `.data`, and a `.zip` archive.

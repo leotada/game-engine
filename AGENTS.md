@@ -182,15 +182,18 @@ The engine ships with `steadygc` (`symgc`) as an **optional, plug-in collector**
 ```
 source/
 ├── bindings/           # extern(C) declarations for C libraries
-│   ├── sdl3.d          # SDL3 (window, events, input, Wayland properties, audio)
-│   ├── wgpu.d          # WGPU-native (GPU API based on webgpu.h)
+│   ├── sdl3.d          # SDL3 (window, events, input, Wayland properties, surfaces, I/O, audio)
+│   ├── sdl3_image.d    # SDL3_image (StaticSDLDeps + lazy SDL_LoadObject loader)
+│   ├── sdl3_ttf.d      # SDL3_ttf (FreeType 2 SDF/bitmap/kerning, static + dynamic)
+│   ├── wgpu.d          # WGPU-native (GPU API based on webgpu.h + Emscripten canvas)
 │   └── package.d       # Re-exports
 ├── engine/             # Core engine modules
-│   ├── app.d           # Application framework (window + GPU + input loop)
+│   ├── app.d           # Application framework (window + GPU + input + App.run loop)
 │   ├── package.d       # Top-level re-export: `import engine;`
 │   ├── assets/         # Disk-to-engine loaders
+│   │   ├── image.d     # SDL3_image RGBA8 decoder (PNG/JPG/WEBP/QOI/SVG/TGA/BMP)
 │   │   ├── bmp.d       # Uncompressed 24/32-bpp BMP decoder → Texture
-│   │   └── gltf.d      # Minimal glTF 2.0 mesh loader (JSON + .bin) → TexMesh
+│   │   └── gltf.d      # glTF 2.0 mesh + OpenPBR material loader → TexMesh / Texture
 │   ├── audio/          # SDL3-backed audio (AudioEngine, AudioClip)
 │   │   └── engine.d
 │   ├── core/           # Logging, RAII handles, GC-safe primitives
@@ -220,9 +223,12 @@ source/
 │   ├── build_export.d  # Standalone player export pipeline
 │   ├── shortcuts.d     # Shortcuts and keyboard bindings
 │   └── panels/         # Hierarchy, Inspector, Scene View, Game View, Console, Project
-├── tools/
-│   ├── lint.d          # GC-safe storage lint
-│   └── player/         # Standalone player entrypoint (player_main.d)
+tools/
+├── build_sdl3_deps.sh  # Build static SDL3, SDL3_image, SDL3_ttf, FreeType libs per target
+├── export_main.d       # CLI multiplatform game release exporter (`--config=export`)
+├── lint.d              # GC-safe storage lint
+├── web/shell.html      # Emscripten WebGPU HTML shell template
+└── player/             # Standalone player entrypoint (player_main.d)
 └── demo/               # Executable demos
     ├── main.d          # Clear-screen demo
     ├── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
@@ -238,7 +244,10 @@ dub build --config=editor            # Visual Game Engine Editor (Unity/Godot st
 dub run --config=editor              # Run Visual Game Engine Editor
 dub run --config=editor -- --headless-frames=600 --assert-no-gc # Assert zero GC allocations in editor loop
 dub build --config=player            # Build standalone game player
+dub build --config=player-static --compiler=ldc2 --build=release # Build statically linked release player
 dub run --config=player -- --headless-frames=600 --assert-no-gc # Assert zero GC allocations in player loop
+dub run --config=export -- --target=linux-x86_64 --release --archive # Export release bundle
+dub test --config=export             # Run exporter unit tests (incl. ldd static verification)
 dub run --config=ui-gallery          # UI widget & docking testbed
 dub run --config=lint                # Run GC-safe storage lint
 dub test --config=library            # Run all unit tests

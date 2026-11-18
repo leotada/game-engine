@@ -24,12 +24,14 @@ D sits at the intersection of C++ performance and high-level ergonomics. This en
 ```
 source/
 ├── bindings/              # C interop (manual extern(C) + ImportC)
-│   ├── sdl3.d             # SDL3 — window, events, input, audio
+│   ├── sdl3.d             # SDL3 — window, events, input, surfaces, I/O, audio
+│   ├── sdl3_image.d       # SDL3_image — PNG/JPG/WEBP/QOI/SVG/TGA/BMP codecs
+│   ├── sdl3_ttf.d         # SDL3_ttf — FreeType 2 fonts, SDF/bitmap, kerning
 │   ├── wgpu.d             # WGPU-native — GPU resources, render pipeline
 │   └── box3d/             # Box3D via ImportC (box3d_import.c + shim)
 ├── engine/
-│   ├── app.d              # Application framework (window + GPU + input loop)
-│   ├── assets/            # Disk-to-engine loaders (BMP, glTF, asset files)
+│   ├── app.d              # Application framework (window + GPU + App.run loop)
+│   ├── assets/            # Disk-to-engine loaders (image/SVG, BMP, PNG, glTF)
 │   ├── audio/             # SDL3 audio streams, WAV, AudioEngine/AudioClip
 │   ├── core/              # Logging, RAII resources, GC-safe primitives
 │   │   ├── pod.d          # isPod!T / Pod!T — compile-time POD gate
@@ -50,8 +52,12 @@ source/
 │   └── scene/             # Camera, controllers, graph, Scene3D (+ textured)
 ├── vendor/
 │   ├── box3d/             # Box3D physics engine C headers
-│   ├── stb/               # Single-header C image/font helpers
 │   └── symgc/             # steadygc — optional concurrent card-marking GC
+├── tools/
+│   ├── build_sdl3_deps.sh # Static/dev builder for SDL3, SDL3_image, SDL3_ttf & FreeType
+│   ├── export_main.d      # Multiplatform release exporter CLI (`--config=export`)
+│   ├── player/            # Standalone runtime player (`--config=player` / `player-static`)
+│   └── web/shell.html     # HTML5 WebGPU Emscripten shell template
 └── demo/
     ├── main.d             # Minimal clear-screen demo
     ├── benchmark.d        # 3D benchmark — 1000 spinning cubes + FPS overlay
@@ -234,6 +240,13 @@ dub run --config=golf
 
 # Build as library (for embedding in other projects)
 dub build --config=library
+
+# Build static standalone player (requires ./tools/build_sdl3_deps.sh linux-x86_64)
+dub build --config=player-static --compiler=ldc2 --build=release
+
+# Export standalone release bundles (Linux, Windows, macOS, Web)
+dub run --config=export -- --check-toolchains
+dub run --config=export -- --target=linux-x86_64 --release --archive
 ```
 
 ### Installing WGPU-native
@@ -362,6 +375,7 @@ Initial roadmap phases are **complete**, including PBR + IBL + shadow PCF, post-
 - [x] Phase 17 — Scene editor UX v1 (`dub run --config=editor`)
 - [x] Phase 18 — Optional `steadygc` (`symgc`) multiplatform card-marking GC (`engine.core.gc`, `vendor/symgc`)
 - [x] Phase 19 — Real-Time OpenPBR Surface v1.1 shading model ([docs/plan-openpbr.md](docs/plan-openpbr.md))
+- [x] Phase 20 — `SDL3_image` & `SDL3_ttf` media pipeline + static multiplatform release export ([docs/plan-sdl3-image-ttf-and-export.md](docs/plan-sdl3-image-ttf-and-export.md))
 
 Active plans and remaining work live under [`docs/`](docs/README.md). Overview: [`docs/roadmap.md`](docs/roadmap.md).
 

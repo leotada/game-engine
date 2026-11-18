@@ -8,7 +8,7 @@ This guide explains how to build a 3D game using the engine's high-level API. Th
 | **Graphics** | Resources: meshes, textures, materials, primitives | `engine.graphics.*` |
 | **GPU** | Low-level WGPU wrappers (power users) | `engine.gpu.*` |
 | **Physics** | Rigid bodies via Box3D (shapes, sensors, queries, joints, character) | `engine.physics.*` |
-| **Assets** | Disk loaders (BMP, glTF) | `engine.assets.*` |
+| **Assets** | Disk loaders (PNG, JPG, WEBP, QOI, SVG, BMP, TGA, glTF) | `engine.assets.*` |
 | **Audio** | WAV playback via SDL3 streams | `engine.audio.*` |
 | **DevTools** | In-engine gizmos + debug overlay | `engine.devtools.*` |
 
@@ -400,23 +400,27 @@ audio.play(click);
 
 Only uncompressed WAV is supported. Each `play()` queues a copy into the shared output stream.
 
-### Assets (BMP + glTF)
+### Assets (SDL3_image + BMP + glTF)
 
 ```d
-import engine.assets.bmp  : loadBmpTexture;
-import engine.assets.gltf : loadGltfMesh, loadGltfPbr;
+import engine.assets.image : decodeImageFile, decodeImageBytes, decodeSvgBytesSized, saveRgbaJpg;
+import engine.assets.gltf  : loadGltfMesh, loadGltfPbr;
+import engine.graphics.texture : Texture;
 
-// 24/32-bpp uncompressed BMP → GPU texture
-auto tex = loadBmpTexture(app.gpu, "assets/ground.bmp");
+// PNG, JPG, WEBP, AVIF, QOI, TGA, BMP via SDL3_image -> GPU texture
+auto tex = Texture.fromImageFile(app.gpu, "assets/ground.png");
 
-// First primitive of the first mesh of a .gltf file → TexMesh
+// Sized rasterization of SVG UI/vector assets
+auto svgTex = Texture.fromSvgBytes(app.gpu, svgBytes, 128, 128);
+
+// First primitive of the first mesh of a .gltf file -> TexMesh
 auto mesh = loadGltfMesh(app.gpu, "assets/chair.gltf");
 
 // Or load mesh + OpenPBR material textures/params (KHR_materials_* extensions)
 auto loaded = loadGltfPbr(app.gpu, scene.materialLayout, sampler, "assets/crate.gltf");
 ```
 
-`loadGltfMesh` loads indexed triangle primitives (`POSITION`, `NORMAL`, `TEXCOORD_0`, and tangents when needed) from an external `.bin` buffer. `loadGltfPbr` maps `pbrMetallicRoughness`, normal/occlusion/emissive maps, and `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` into OpenPBR `MaterialParams`. Skins, animations, and `.glb` containers are not yet supported.
+`Texture.fromImageFile`, `Texture.fromImageBytes`, `Texture.fromSurface`, and `loadGltfPbr` decode `.png`, `.jpg`, `.jpeg`, `.webp`, `.qoi`, `.gif`, `.avif`, `.svg`, `.tga`, and `.bmp` textures via `engine.assets.image` (`SDL3_image`). `loadGltfMesh` loads indexed triangle primitives (`POSITION`, `NORMAL`, `TEXCOORD_0`, and tangents when needed) from an external `.bin` buffer. Skins, animations, and `.glb` containers are not yet supported.
 
 ### DevTools — Gizmos and Debug Overlay
 
@@ -490,6 +494,16 @@ app.running()      // true until window close or app.close()
 app.close()        // request exit
 app.pollEvents()   // process SDL3 events, update input state
 
+// Managed desktop / Emscripten main loop
+app.run((float dt) {
+    app.pollEvents();
+    app.handleResize();
+    // update & draw...
+});
+
+// Window icon from decoded RGBA8 pixels (e.g. via decodeImageFile)
+app.window.setIcon(rgba, iconW, iconH);
+
 // Frame management
 auto frame = app.beginFrame(Color4(r, g, b));  // clear + begin render pass
 app.endFrame(frame);                            // submit + present
@@ -513,7 +527,7 @@ app.input   // InputState — keyboard/mouse state
 | Orbit / fly / first-person camera | `engine.scene.controllers` |
 | Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-openpbr.md](plan-openpbr.md) |
 | Physics (Box3D) | `engine.physics` — [physics-quickstart.md](physics-quickstart.md) |
-| Load BMP or glTF from disk | `engine.assets.bmp`, `engine.assets.gltf` |
+| Load PNG, JPG, WEBP, SVG, BMP, or glTF from disk | `engine.assets.image`, `Texture.fromImageFile`, `engine.assets.bmp`, `engine.assets.gltf` |
 | Play WAV sound effects | `engine.audio` |
 | Render HUD text | `TextRenderer` |
 | Debug: 3D lines, axes, grid, bounding boxes | `engine.devtools.gizmos` |
@@ -633,7 +647,21 @@ You can live in your own repository outside `game-engine/` and consume the engin
 }
 ```
 
-Ensure `libSDL3.so` is installed on the host and your `game-engine/libs/` directory contains `libwgpu_native.a`, `libbox3d.a`, `libstb.a`, and `libsymgc-cards.a`.
+Ensure `libSDL3.so` is installed on the host (`SDL3_image` and `SDL3_ttf` load lazily via `SDL_LoadObject` in development builds) and your `game-engine/libs/` directory contains `libwgpu_native.a`, `libbox3d.a`, and `libsymgc-cards.a`. For standalone static release exports (`-version=StaticSDLDeps`), run `./tools/build_sdl3_deps.sh <target>` to populate static `SDL3`, `SDL3_image`, `SDL3_ttf`, and `FreeType` archives under `libs/<target>/`.
+
+### Exporting Multiplatform Releases
+
+```bash
+# 1. Build/stage static SDL3, SDL3_image, SDL3_ttf, FreeType archives
+./tools/build_sdl3_deps.sh linux-x86_64
+
+# 2. Direct static Linux player build via LDC2
+dub build --config=player-static --compiler=ldc2 --build=release
+
+# 3. Package standalone release bundle (Linux, Windows, macOS, or Web)
+dub run --config=export -- --check-toolchains
+dub run --config=export -- --target=linux-x86_64 --release --archive
+```
 
 ---
 
@@ -650,10 +678,10 @@ Ensure `libSDL3.so` is installed on the host and your `game-engine/libs/` direct
 - **3D Shapes & Procedural Noise**:
   - `engine.graphics.shapes` (`MeshData` + `transform`/`merge`/`toTexMesh`): `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus`.
   - `engine.math.noise`: `valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`, paired with `Mat4.trs(pos, rot, scale)`.
-- **2D UI, SDF Text & Textures (`engine.ui`)**:
-  - `Font` (`engine.ui.text.font`) uses SDF rendering by default so one loaded font renders sharply at any `pixelHeight`, supports fallback fonts (`addFallbackFont`), auto-growing atlases, and full Unicode codepoints.
+- **2D UI, SDF/Hinted Text & Textures (`engine.ui`)**:
+  - `Font` (`engine.ui.text.font`) uses `SDL3_ttf` + FreeType 2 supporting both scaled SDF atlases and hinted bitmap rendering (`setHinting`, `TTF_HintingFlags`), kerning (`getKerning`), fallback fonts (`addFallbackFont`), file loading (`loadFromFile`), auto-growing atlases, full Unicode codepoints, and explicit cleanup (`destroy()`).
   - `UiBatchRenderer` (`engine.ui.render.batch`): `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.
-  - `Texture.fromImageFile(gpu, path)` / `fromImageBytes(gpu, bytes)` decodes PNG/JPG/TGA/BMP via `stb_image`.
+  - `Texture.fromImageFile(gpu, path)`, `fromImageBytes(gpu, bytes)`, and `fromSvgBytes(gpu, bytes, w, h)` decode PNG/JPG/WEBP/QOI/SVG/TGA/BMP via `SDL3_image` (`engine.assets.image`).
 - **Window, Audio & Action Input (`engine.platform`, `engine.audio`)**:
   - `Window` supports `WindowOptions`, `setFullscreen`, `setTitle`, `setResizable`, `setBordered`, `setCursorVisible`, `setCustomCursor`, `resetCursor`; `App.setPresentMode` / `App.setVsync(bool)`.
   - `AudioMixer` mixes up to 32 simultaneous polyphonic voices (`sfx`/`music` buses, pitch resampling, loop, per-voice & master gain); `AudioClip.convertTo` resamples WAV assets.
