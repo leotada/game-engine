@@ -206,9 +206,9 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 1 (`SDL-DEPS`) — Static & Dynamic SDL3 / SDL3_image / SDL3_ttf Dependency Builder
 
-- [ ] Add `tools/build_sdl3_deps.sh` to build static (`libSDL3.a`, `libSDL3_image.a`, `libSDL3_ttf.a` + `libfreetype.a`) and Linux dev shared libraries into `libs/<target>/`
-- [ ] Add cross-compilation support in `tools/build_sdl3_deps.sh` (and `vendor/box3d` helper target) for `linux-x86_64`, `linux-arm64`, `windows-x86_64`, `macos-arm64`, `macos-x86_64`, and `web-wasm32`
-- [ ] Verify host build produces static archives in `libs/linux-x86_64/` and stages `libwgpu_native.a` / `libsymgc-cards.a`
+- [x] Add `tools/build_sdl3_deps.sh` to build static (`libSDL3.a`, `libSDL3_image.a`, `libSDL3_ttf.a` + `libfreetype.a`) and Linux dev shared libraries into `libs/<target>/`
+- [x] Add cross-compilation support in `tools/build_sdl3_deps.sh` (and `vendor/box3d` helper target) for `linux-x86_64`, `linux-arm64`, `windows-x86_64`, `macos-arm64`, `macos-x86_64`, and `web-wasm32`
+- [x] Verify host build produces static archives in `libs/linux-x86_64/` and stages `libwgpu_native.a` / `libsymgc-cards.a`
 
 **DoD:** `tools/build_sdl3_deps.sh` builds and stages static `SDL3`, `SDL3_image`, `SDL3_ttf`, and `freetype` archives into `libs/linux-x86_64/` and accepts cross-target triples for Windows, macOS, and Web.
 
