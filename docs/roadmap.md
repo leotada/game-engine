@@ -24,6 +24,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 9 | Parallel ECS | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Low | Stable serial API; opt-in scheduler |
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
+| 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | High | Replace `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static export) and release export to Linux, Windows, macOS, and Web |
 
 ### Ordering Notes
 
