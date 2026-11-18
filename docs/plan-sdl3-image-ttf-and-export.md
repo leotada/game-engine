@@ -214,11 +214,11 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 2 (`SDL-IMG`) — `SDL3_image` Bindings, Unified Image Pipeline & `stb_image` Removal
 
-- [ ] Expand `source/bindings/sdl3.d` with full `SDL_Surface`, `SDL_Color`, `SDL_IOStream`, `SDL_SharedObject`, `SDL_ConvertSurface`, `SDL_LoadPNG_IO`, `SDL_LoadBMP_IO`, `SDL_LoadSurface_IO`, and `SDL_SetWindowIcon`
-- [ ] Create `source/bindings/sdl3_image.d` with `version (StaticSDLDeps)` static bindings and `SDL_LoadObject` dynamic bindings (+ SDL 3.4 PNG/BMP fallback)
-- [ ] Create `source/engine/assets/image.d` (`decodeImageBytes`, `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaJpg`) and update `Texture` (`source/engine/graphics/texture.d`) + `Window.setIcon` (`source/engine/platform/window.d`)
-- [ ] Update `source/engine/assets/gltf.d` (`loadImageTexture`) to load `.png`, `.jpg`, `.webp`, `.qoi`, `.tga`, and `.bmp` via `Texture.fromImageFile`
-- [ ] Remove `source/bindings/stb_image.d` and its re-export in `source/bindings/package.d`
+- [x] Expand `source/bindings/sdl3.d` with full `SDL_Surface`, `SDL_Color`, `SDL_IOStream`, `SDL_SharedObject`, `SDL_ConvertSurface`, `SDL_LoadPNG_IO`, `SDL_LoadBMP_IO`, `SDL_LoadSurface_IO`, and `SDL_SetWindowIcon`
+- [x] Create `source/bindings/sdl3_image.d` with `version (StaticSDLDeps)` static bindings and `SDL_LoadObject` dynamic bindings (+ SDL 3.4 PNG/BMP fallback)
+- [x] Create `source/engine/assets/image.d` (`decodeImageBytes`, `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaJpg`) and update `Texture` (`source/engine/graphics/texture.d`) + `Window.setIcon` (`source/engine/platform/window.d`)
+- [x] Update `source/engine/assets/gltf.d` (`loadImageTexture`) to load `.png`, `.jpg`, `.webp`, `.qoi`, `.tga`, and `.bmp` via `Texture.fromImageFile`
+- [x] Remove `source/bindings/stb_image.d` and its re-export in `source/bindings/package.d`
 
 **DoD:** `Texture.fromImageFile`/`fromImageBytes`, `Texture.fromSvgBytes`, and `gltf.d` decode PNG/JPG/WEBP/QOI/SVG/TGA/BMP via `SDL3_image`, `stb_image.d` is removed, and all asset/texture unit tests pass.
 

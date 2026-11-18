@@ -351,23 +351,90 @@ bool SDL_SetWindowBordered(SDL_Window* window, bool bordered);
 bool SDL_SyncWindow(SDL_Window* window);
 const(char)* SDL_GetCurrentVideoDriver();
 
-// Surface & PNG
-alias SDL_Surface = void;
+// Surface, IOStream, PNG/BMP & SharedObject
+alias SDL_SurfaceFlags = uint;
+enum : SDL_SurfaceFlags {
+    SDL_SURFACE_PREALLOCATED = 0x0000_0001u,
+    SDL_SURFACE_LOCK_NEEDED  = 0x0000_0002u,
+    SDL_SURFACE_LOCKED       = 0x0000_0004u,
+    SDL_SURFACE_SIMD_ALIGNED = 0x0000_0008u,
+}
 
 enum SDL_PixelFormat : uint {
+    SDL_PIXELFORMAT_UNKNOWN  = 0,
+    SDL_PIXELFORMAT_INDEX8   = 0x1300_0801u,
+    SDL_PIXELFORMAT_RGB24    = 0x1710_1803u,
+    SDL_PIXELFORMAT_BGR24    = 0x1740_1803u,
+    SDL_PIXELFORMAT_ARGB8888 = 0x1636_2004u,
     SDL_PIXELFORMAT_RGBA8888 = 0x1646_2004u,
     SDL_PIXELFORMAT_ABGR8888 = 0x1676_2004u,
+    SDL_PIXELFORMAT_BGRA8888 = 0x1686_2004u,
 }
 
 version (BigEndian) {
     enum SDL_PixelFormat SDL_PIXELFORMAT_RGBA32 = SDL_PixelFormat.SDL_PIXELFORMAT_RGBA8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_ARGB32 = SDL_PixelFormat.SDL_PIXELFORMAT_ARGB8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_BGRA32 = SDL_PixelFormat.SDL_PIXELFORMAT_BGRA8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_ABGR32 = SDL_PixelFormat.SDL_PIXELFORMAT_ABGR8888;
 } else {
     enum SDL_PixelFormat SDL_PIXELFORMAT_RGBA32 = SDL_PixelFormat.SDL_PIXELFORMAT_ABGR8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_ARGB32 = SDL_PixelFormat.SDL_PIXELFORMAT_BGRA8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_BGRA32 = SDL_PixelFormat.SDL_PIXELFORMAT_ARGB8888;
+    enum SDL_PixelFormat SDL_PIXELFORMAT_ABGR32 = SDL_PixelFormat.SDL_PIXELFORMAT_RGBA8888;
 }
 
+struct SDL_Color {
+    ubyte r;
+    ubyte g;
+    ubyte b;
+    ubyte a;
+}
+
+struct SDL_Surface {
+    SDL_SurfaceFlags flags;
+    SDL_PixelFormat format;
+    int w;
+    int h;
+    int pitch;
+    void* pixels;
+    int refcount;
+    void* reserved;
+}
+
+static assert(size_t.sizeof == 8 ? SDL_Surface.sizeof == 48 : SDL_Surface.sizeof == 32);
+
+alias SDL_IOStream = void;
+SDL_IOStream* SDL_IOFromFile(const(char)* file, const(char)* mode);
+SDL_IOStream* SDL_IOFromMem(void* mem, size_t size);
+SDL_IOStream* SDL_IOFromConstMem(const(void)* mem, size_t size);
+bool SDL_CloseIO(SDL_IOStream* context);
+
+SDL_Surface* SDL_CreateSurface(int width, int height, SDL_PixelFormat format);
 SDL_Surface* SDL_CreateSurfaceFrom(int width, int height, SDL_PixelFormat format, void* pixels, int pitch);
 void SDL_DestroySurface(SDL_Surface* surface);
+SDL_Surface* SDL_ConvertSurface(SDL_Surface* surface, SDL_PixelFormat format);
+bool SDL_ConvertPixels(int width, int height, SDL_PixelFormat src_format, const(void)* src, int src_pitch,
+                       SDL_PixelFormat dst_format, void* dst, int dst_pitch);
+bool SDL_LockSurface(SDL_Surface* surface);
+void SDL_UnlockSurface(SDL_Surface* surface);
+SDL_Surface* SDL_LoadBMP(const(char)* file);
+SDL_Surface* SDL_LoadBMP_IO(SDL_IOStream* src, bool closeio);
+bool SDL_SaveBMP(SDL_Surface* surface, const(char)* file);
+bool SDL_SaveBMP_IO(SDL_Surface* surface, SDL_IOStream* dst, bool closeio);
+SDL_Surface* SDL_LoadPNG(const(char)* file);
+SDL_Surface* SDL_LoadPNG_IO(SDL_IOStream* src, bool closeio);
 bool SDL_SavePNG(SDL_Surface* surface, const(char)* file);
+bool SDL_SavePNG_IO(SDL_Surface* surface, SDL_IOStream* dst, bool closeio);
+SDL_Surface* SDL_LoadSurface(const(char)* file);
+SDL_Surface* SDL_LoadSurface_IO(SDL_IOStream* src, bool closeio);
+bool SDL_SetWindowIcon(SDL_Window* window, SDL_Surface* icon);
+
+// Dynamic Shared Object Loading
+alias SDL_SharedObject = void;
+alias SDL_FunctionPointer = void*;
+SDL_SharedObject* SDL_LoadObject(const(char)* sofile);
+SDL_FunctionPointer SDL_LoadFunction(SDL_SharedObject* handle, const(char)* name);
+void SDL_UnloadObject(SDL_SharedObject* handle);
 
 // Metal
 alias SDL_MetalView = void*;

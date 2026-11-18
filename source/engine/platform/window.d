@@ -103,6 +103,21 @@ struct Window {
         SDL_SetWindowTitle(handle, buf.ptr);
     }
 
+    /// Set the OS window icon from an RGBA8 pixel buffer (top-left origin).
+    bool setIcon(const(ubyte)[] rgba, uint iconW, uint iconH) nothrow @nogc @trusted {
+        if (handle is null || iconW == 0 || iconH == 0) return false;
+        if (rgba.length < cast(size_t) iconW * iconH * 4) return false;
+        auto surf = SDL_CreateSurfaceFrom(
+            cast(int) iconW, cast(int) iconH,
+            SDL_PIXELFORMAT_RGBA32,
+            cast(void*) rgba.ptr,
+            cast(int)(iconW * 4)
+        );
+        if (surf is null) return false;
+        scope(exit) SDL_DestroySurface(surf);
+        return SDL_SetWindowIcon(handle, surf);
+    }
+
     bool setResizable(bool enabled) nothrow @nogc @trusted {
         return handle !is null && SDL_SetWindowResizable(handle, enabled);
     }

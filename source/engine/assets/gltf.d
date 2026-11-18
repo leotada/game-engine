@@ -334,7 +334,11 @@ private Texture loadImageTexture(ref GpuContext gpu, string path) {
         import engine.assets.bmp : loadBmpTexture;
         return loadBmpTexture(gpu, path);
     }
-    err("glTF: unsupported image format (use .bmp or .tga): ", path);
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp"
+            || ext == ".qoi" || ext == ".gif" || ext == ".avif" || ext == ".svg") {
+        return Texture.fromImageFile(gpu, path);
+    }
+    err("glTF: unsupported image format: ", path);
     return Texture.init;
 }
 

@@ -3,7 +3,12 @@
 module engine.graphics.texture;
 
 import bindings.wgpu;
-import bindings.stb_image;
+import bindings.sdl3 : SDL_Surface;
+import engine.assets.image :
+    decodeImgBytes = decodeImageBytes,
+    decodeImgFile  = decodeImageFile,
+    decodeSvgBytesSized,
+    surfaceToRgba8;
 import engine.gpu.context : GpuContext;
 import engine.core.log;
 
@@ -174,58 +179,55 @@ struct Texture {
         return fromPixels(gpu, rgba, width, height);
     }
 
-    /// Decode PNG/JPG/TGA/BMP/PSD/GIF/HDR image bytes into an RGBA8 buffer via stb_image.
+    /// Decode PNG/JPG/BMP/QOI/GIF/WEBP/SVG/TGA image bytes into an RGBA8 buffer via SDL3_image.
     static bool decodeImageBytes(
         const(ubyte)[] bytes,
         out ubyte[] outRgba,
         out uint outWidth,
-        out uint outHeight
+        out uint outHeight,
+        const(char)* typeHint = null
     ) @trusted {
-        outRgba = null;
-        outWidth = 0;
-        outHeight = 0;
-        if (bytes.length == 0 || bytes.length > int.max) return false;
-
-        int w = 0, h = 0, comp = 0;
-        stbi_set_flip_vertically_on_load(0);
-        ubyte* decoded = stbi_load_from_memory(bytes.ptr, cast(int) bytes.length, &w, &h, &comp, 4);
-        if (decoded is null || w <= 0 || h <= 0) {
-            if (decoded !is null) stbi_image_free(decoded);
-            err("Image decode failed (stb_image)");
-            return false;
-        }
-        scope(exit) stbi_image_free(decoded);
-
-        immutable size_t total = cast(size_t) w * cast(size_t) h * 4;
-        outRgba = new ubyte[total];
-        outRgba[] = decoded[0 .. total];
-        outWidth = cast(uint) w;
-        outHeight = cast(uint) h;
-        return true;
+        return decodeImgBytes(bytes, outRgba, outWidth, outHeight, typeHint);
     }
 
-    /// Load an image (PNG, JPG, TGA, BMP, etc.) from in-memory file bytes into a GPU Texture.
-    static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes) {
+    /// Create a GPU `Texture` by converting an `SDL_Surface*` to RGBA8.
+    static Texture fromSurface(ref GpuContext gpu, SDL_Surface* surf) @trusted {
         ubyte[] rgba;
         uint w, h;
-        if (!decodeImageBytes(bytes, rgba, w, h)) return Texture.init;
+        if (!surfaceToRgba8(surf, rgba, w, h)) return Texture.init;
         return fromPixels(gpu, rgba, w, h);
     }
 
-    /// Load an image (PNG, JPG, TGA, BMP, etc.) from disk into a GPU Texture.
+    /// Rasterize an in-memory SVG document at `(targetW, targetH)` into a GPU `Texture`.
+    static Texture fromSvgBytes(ref GpuContext gpu, const(ubyte)[] svgBytes, uint targetW, uint targetH) {
+        ubyte[] rgba;
+        uint w, h;
+        if (!decodeSvgBytesSized(svgBytes, targetW, targetH, rgba, w, h)) return Texture.init;
+        return fromPixels(gpu, rgba, w, h);
+    }
+
+    /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, etc.) from in-memory file bytes into a GPU Texture.
+    static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes, const(char)* typeHint = null) @trusted {
+        ubyte[] rgba;
+        uint w, h;
+        if (!decodeImageBytes(bytes, rgba, w, h, typeHint)) return Texture.init;
+        return fromPixels(gpu, rgba, w, h);
+    }
+
+    /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, WEBP, etc.) from disk into a GPU Texture.
     static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path) {
-        import std.file : exists, read;
+        import std.file : exists;
         if (!exists(path)) {
             err("Texture.fromImageFile: file not found");
             return Texture.init;
         }
-        try {
-            auto bytes = cast(const(ubyte)[]) () @trusted { return read(path); }();
-            return fromImageBytes(gpu, bytes);
-        } catch (Exception) {
-            err("Texture.fromImageFile: failed to read file");
+        ubyte[] rgba;
+        uint w, h;
+        if (!decodeImgFile(path, rgba, w, h)) {
+            err("Texture.fromImageFile: failed to decode image");
             return Texture.init;
         }
+        return fromPixels(gpu, rgba, w, h);
     }
 
     /// Opaque UI texture handle compatible with `UiNode.textureHandle`.
