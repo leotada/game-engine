@@ -1,8 +1,6 @@
 /// Dynamic shared library loader for game scripts using druntime Runtime.loadLibrary.
 module engine.hotreload.loader;
 
-import core.runtime : Runtime;
-import core.sys.posix.dlfcn : dlsym;
 import std.file : copy, remove, exists, mkdirRecurse;
 import std.path : dirName;
 import std.format : format;
@@ -12,11 +10,32 @@ import engine.core.strings : StringTable;
 import engine.ecs.scene_world : SceneWorld;
 import engine.core.log : info, warn, err;
 
+version (WebAssembly) {
+} else version (Posix) {
+    import core.runtime : Runtime;
+    import core.sys.posix.dlfcn : dlsym;
+} else version (Windows) {
+    import core.runtime : Runtime;
+    import core.sys.windows.windows : GetProcAddress, HMODULE;
+}
+
 @safe:
 
 alias AbiFn = extern(C) uint function() nothrow;
 alias RegisterFn = extern(C) void function(ref ModuleRegistrar);
 alias ShutdownFn = extern(C) void function() nothrow;
+
+private void* lookupSymbol(void* handle, const(char)* name) nothrow @nogc @system {
+    version (WebAssembly) {
+        return null;
+    } else version (Posix) {
+        return dlsym(handle, name);
+    } else version (Windows) {
+        return GetProcAddress(cast(HMODULE) handle, name);
+    } else {
+        return null;
+    }
+}
 
 struct ScriptModule {
     void* handle = null;
@@ -31,69 +50,82 @@ struct ScriptModule {
     }
 
     bool load(string sourceSoPath, ref TypeRegistry types, ref StringTable strings, size_t instanceIndex) @trusted {
-        if (!exists(sourceSoPath)) {
-            err("ScriptModule.load: file does not exist: %s", sourceSoPath);
+        version (WebAssembly) {
+            warn("ScriptModule.load: dynamic module loading is unsupported on WebAssembly");
             return false;
+        } else {
+            if (!exists(sourceSoPath)) {
+                err("ScriptModule.load: file does not exist: %s", sourceSoPath);
+                return false;
+            }
+
+            version (Windows) {
+                enum instExt = "dll";
+            } else version (OSX) {
+                enum instExt = "dylib";
+            } else {
+                enum instExt = "so";
+            }
+
+            // Generate unique instance path to bypass OS dynamic linker caching of inode/filename
+            instancePath = format(".engine/bin/libgame_inst_%d.%s", instanceIndex, instExt);
+            try {
+                auto dir = dirName(instancePath);
+                if (!exists(dir)) mkdirRecurse(dir);
+                if (exists(instancePath)) remove(instancePath);
+                copy(sourceSoPath, instancePath);
+            } catch (Exception e) {
+                err("ScriptModule.load: failed to copy library to instance path: %s", e.msg);
+                return false;
+            }
+
+            handle = Runtime.loadLibrary(instancePath);
+            if (handle is null) {
+                err("ScriptModule.load: Runtime.loadLibrary failed for %s", instancePath);
+                return false;
+            }
+
+            auto abiSym = cast(AbiFn) lookupSymbol(handle, "engine_script_abi");
+            if (abiSym is null) {
+                err("ScriptModule.load: 'engine_script_abi' symbol not found");
+                unloadInternal();
+                return false;
+            }
+
+            abiVersion = abiSym();
+            if (abiVersion != ENGINE_SCRIPT_ABI) {
+                err("ScriptModule.load: ABI mismatch! Expected 0x%08x, got 0x%08x", ENGINE_SCRIPT_ABI, abiVersion);
+                unloadInternal();
+                return false;
+            }
+
+            auto regSym = cast(RegisterFn) lookupSymbol(handle, "engine_game_register");
+            if (regSym is null) {
+                err("ScriptModule.load: 'engine_game_register' symbol not found");
+                unloadInternal();
+                return false;
+            }
+
+            shutdownFn = cast(ShutdownFn) lookupSymbol(handle, "engine_game_shutdown");
+
+            // Initialize registrar
+            registrar.types = &types;
+            registrar.strings = &strings;
+            registrar.components.length = 0;
+            registrar.systems.length = 0;
+
+            try {
+                regSym(registrar);
+            } catch (Exception e) {
+                err("ScriptModule.load: exception during engine_game_register: %s", e.msg);
+                unloadInternal();
+                return false;
+            }
+
+            info("ScriptModule: successfully loaded %s (%d components, %d systems)",
+                instancePath, cast(int) registrar.components.length, cast(int) registrar.systems.length);
+            return true;
         }
-
-        // Generate unique instance path to bypass OS dynamic linker caching of inode/filename
-        instancePath = format(".engine/bin/libgame_inst_%d.so", instanceIndex);
-        try {
-            auto dir = dirName(instancePath);
-            if (!exists(dir)) mkdirRecurse(dir);
-            if (exists(instancePath)) remove(instancePath);
-            copy(sourceSoPath, instancePath);
-        } catch (Exception e) {
-            err("ScriptModule.load: failed to copy library to instance path: %s", e.msg);
-            return false;
-        }
-
-        handle = Runtime.loadLibrary(instancePath);
-        if (handle is null) {
-            err("ScriptModule.load: Runtime.loadLibrary failed for %s", instancePath);
-            return false;
-        }
-
-        auto abiSym = cast(AbiFn) dlsym(handle, "engine_script_abi");
-        if (abiSym is null) {
-            err("ScriptModule.load: 'engine_script_abi' symbol not found");
-            unloadInternal();
-            return false;
-        }
-
-        abiVersion = abiSym();
-        if (abiVersion != ENGINE_SCRIPT_ABI) {
-            err("ScriptModule.load: ABI mismatch! Expected 0x%08x, got 0x%08x", ENGINE_SCRIPT_ABI, abiVersion);
-            unloadInternal();
-            return false;
-        }
-
-        auto regSym = cast(RegisterFn) dlsym(handle, "engine_game_register");
-        if (regSym is null) {
-            err("ScriptModule.load: 'engine_game_register' symbol not found");
-            unloadInternal();
-            return false;
-        }
-
-        shutdownFn = cast(ShutdownFn) dlsym(handle, "engine_game_shutdown");
-
-        // Initialize registrar
-        registrar.types = &types;
-        registrar.strings = &strings;
-        registrar.components.length = 0;
-        registrar.systems.length = 0;
-
-        try {
-            regSym(registrar);
-        } catch (Exception e) {
-            err("ScriptModule.load: exception during engine_game_register: %s", e.msg);
-            unloadInternal();
-            return false;
-        }
-
-        info("ScriptModule: successfully loaded %s (%d components, %d systems)",
-            instancePath, cast(int) registrar.components.length, cast(int) registrar.systems.length);
-        return true;
     }
 
     void unload(ref SceneWorld world) @trusted {
@@ -115,15 +147,19 @@ struct ScriptModule {
     }
 
     private void unloadInternal() @trusted {
-        if (handle !is null) {
-            Runtime.unloadLibrary(handle);
+        version (WebAssembly) {
             handle = null;
-        }
-        if (instancePath.length > 0) {
-            try {
-                if (exists(instancePath)) remove(instancePath);
-            } catch (Exception) {}
-            instancePath = null;
+        } else {
+            if (handle !is null) {
+                Runtime.unloadLibrary(handle);
+                handle = null;
+            }
+            if (instancePath.length > 0) {
+                try {
+                    if (exists(instancePath)) remove(instancePath);
+                } catch (Exception) {}
+                instancePath = null;
+            }
         }
     }
 }

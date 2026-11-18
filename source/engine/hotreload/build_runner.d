@@ -2,10 +2,14 @@
 module engine.hotreload.build_runner;
 
 import std.file : exists, mkdirRecurse, readText;
-import std.process : executeShell, Config, spawnShell, tryWait, kill, Pid;
-import std.stdio : File;
 import std.string : splitLines, indexOf;
 import std.conv : to;
+
+version (WebAssembly) {
+} else {
+    import std.process : executeShell, Config, spawnShell, tryWait, kill, Pid;
+    import std.stdio : File;
+}
 
 @safe:
 
@@ -29,7 +33,10 @@ struct BuildRunner {
     string workingDir = ".";
     private string _logPath = ".engine/hotreload.log";
     private bool _active = false;
-    private Pid _pid;
+    version (WebAssembly) {
+    } else {
+        private Pid _pid;
+    }
 
     bool active() const nothrow @nogc { return _active; }
 
@@ -37,56 +44,80 @@ struct BuildRunner {
     /// on the compiler — a synchronous dub build freezes the editor for seconds.
     /// The log `File` is closed after spawn; the child keeps its own dup.
     bool start() @trusted {
-        if (_active) return false;
-        try {
-            if (!exists(".engine")) mkdirRecurse(".engine");
-            auto log = File(_logPath, "w");
-            _pid = spawnShell(command, File("/dev/null", "r"), log, log, null, Config.none, workingDir);
-            log.flush();
-            log.close();
-            _active = true;
-            return true;
-        } catch (Exception) {
-            _active = false;
+        version (WebAssembly) {
             return false;
+        } else {
+            if (_active) return false;
+            try {
+                if (!exists(".engine")) mkdirRecurse(".engine");
+                version (Windows) {
+                    enum nullDevice = "NUL";
+                } else {
+                    enum nullDevice = "/dev/null";
+                }
+                auto log = File(_logPath, "w");
+                _pid = spawnShell(command, File(nullDevice, "r"), log, log, null, Config.none, workingDir);
+                log.flush();
+                log.close();
+                _active = true;
+                return true;
+            } catch (Exception) {
+                _active = false;
+                return false;
+            }
         }
     }
 
     /// Returns true when the background build has finished and `res` is filled.
     bool poll(out BuildResult res) @trusted {
-        if (!_active) return false;
-        auto st = tryWait(_pid);
-        if (!st.terminated) return false;
-        _active = false;
-        res.exitCode = st.status;
-        try res.rawOutput = readText(_logPath);
-        catch (Exception) res.rawOutput = "";
-        res.success = st.status == 0;
-        res.diagnostics = parseDiagnostics(res.rawOutput);
-        return true;
+        version (WebAssembly) {
+            return false;
+        } else {
+            if (!_active) return false;
+            auto st = tryWait(_pid);
+            if (!st.terminated) return false;
+            _active = false;
+            res.exitCode = st.status;
+            try res.rawOutput = readText(_logPath);
+            catch (Exception) res.rawOutput = "";
+            res.success = st.status == 0;
+            res.diagnostics = parseDiagnostics(res.rawOutput);
+            return true;
+        }
     }
 
     void cancel() @trusted {
-        if (!_active) return;
-        try kill(_pid);
-        catch (Exception) {}
-        _active = false;
+        version (WebAssembly) {
+            _active = false;
+        } else {
+            if (!_active) return;
+            try kill(_pid);
+            catch (Exception) {}
+            _active = false;
+        }
     }
 
     BuildResult run() @trusted {
         BuildResult res;
-        try {
-            auto proc = executeShell(command, null, Config.none, size_t.max, workingDir);
-            res.exitCode = proc.status;
-            res.rawOutput = proc.output;
-            res.success = (proc.status == 0);
-            res.diagnostics = parseDiagnostics(proc.output);
-        } catch (Exception e) {
+        version (WebAssembly) {
             res.exitCode = -1;
-            res.rawOutput = "Failed to execute build command: " ~ e.msg;
+            res.rawOutput = "Subprocess execution is unavailable on WebAssembly";
             res.success = false;
+            return res;
+        } else {
+            try {
+                auto proc = executeShell(command, null, Config.none, size_t.max, workingDir);
+                res.exitCode = proc.status;
+                res.rawOutput = proc.output;
+                res.success = (proc.status == 0);
+                res.diagnostics = parseDiagnostics(proc.output);
+            } catch (Exception e) {
+                res.exitCode = -1;
+                res.rawOutput = "Failed to execute build command: " ~ e.msg;
+                res.success = false;
+            }
+            return res;
         }
-        return res;
     }
 
     static Diagnostic[] parseDiagnostics(string output) {

@@ -233,9 +233,9 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 4 (`PLAYER-RENDER`) — Standalone Player Rendering, Platform Guards & `App.run`
 
-- [ ] Add `App.run(scope void delegate(float dt) frameFn)` in `source/engine/app.d` (native loop on desktop, `emscripten_set_main_loop_arg` on WebAssembly)
-- [ ] Guard Linux-only `inotify`/`dlopen` modules in `source/engine/hotreload/` with `version (linux)` / `version (Posix)` and add `version (WebAssembly)` fallback in `source/engine/core/gc.d` so engine library compiles cleanly across Linux, Windows, macOS, and Web
-- [ ] Upgrade `tools/player/player_main.d` to render the loaded `SceneWorld` (`Scene3DTextured`, lights, shadows, post-processing, UI) inside `App.run`
+- [x] Add `App.run(scope void delegate(float dt) frameFn)` in `source/engine/app.d` (native loop on desktop, `emscripten_set_main_loop_arg` on WebAssembly)
+- [x] Guard Linux-only `inotify`/`dlopen` modules in `source/engine/hotreload/` with `version (linux)` / `version (Posix)` and add `version (WebAssembly)` fallback in `source/engine/core/gc.d` so engine library compiles cleanly across Linux, Windows, macOS, and Web
+- [x] Upgrade `tools/player/player_main.d` to render the loaded `SceneWorld` (`Scene3D`, entity visuals/materials, scene camera, post-processing) inside `App.run`
 
 **DoD:** `tools/player/player_main.d` renders a full `.scene.json` interactively via `App.run` and passes `--headless-frames=600 --assert-no-gc` with 0 bytes allocated.
 

@@ -33,6 +33,32 @@ struct GcFrameDelta {
     ulong maxPauseNs;       /// Worst pause seen so far
 }
 
+version (WebAssembly) {
+    bool gcIsSteadyGcActive() nothrow @nogc { return false; }
+    void gcStepFrameSlack(Duration slack) nothrow @nogc {}
+    size_t gcDefragment() nothrow @nogc { return 0; }
+    void gcExcludeCurrentThread() nothrow @nogc {}
+    void gcIncludeCurrentThread() nothrow @nogc {}
+    bool gcIsThreadExcluded() nothrow @nogc { return false; }
+    void gcBarrierRange(scope const(void)* dst, size_t size) nothrow @nogc {}
+
+    SteadyGcTimes gcTotalTimes() nothrow @nogc {
+        SteadyGcTimes t;
+        const ps = GC.profileStats();
+        t.cycleCount = ps.numCollections;
+        t.pauseCount = ps.numCollections;
+        t.pauseNs    = cast(ulong) ps.totalPauseTime.total!"nsecs";
+        t.workNs     = cast(ulong) ps.totalCollectionTime.total!"nsecs";
+        t.maxPauseNs = cast(ulong) ps.maxPauseTime.total!"nsecs";
+        return t;
+    }
+
+    SteadyGcTimes gcThreadTimes() nothrow @nogc {
+        return SteadyGcTimes.init;
+    }
+
+    size_t gcCardWindowBytes() nothrow @nogc { return 0; }
+} else {
 // C ABI extern declarations matching vendor/symgc/source/d/gc/capi.d & gctime.d
 extern (C) nothrow @nogc {
     void __sd_gc_step(ulong maxTimeHns);
@@ -187,6 +213,13 @@ SteadyGcTimes gcThreadTimes() nothrow @nogc {
     return t;
 }
 
+size_t gcCardWindowBytes() nothrow @nogc {
+    return () @trusted {
+        return __sd_gc_card_n << 9; // 512 bytes per card
+    }();
+}
+}
+
 /**
  * Compute the per-frame delta from the previous snapshot without allocating memory.
  */
@@ -203,16 +236,6 @@ GcFrameDelta gcComputeFrameDelta(ref SteadyGcTimes prevTimes) nothrow @nogc {
 
     prevTimes = cur;
     return delta;
-}
-
-/**
- * Query the reserved card window size in bytes (256 GiB on desktop, 16 GiB on mobile,
- * or 0 if running on stock druntime GC).
- */
-size_t gcCardWindowBytes() nothrow @nogc {
-    return () @trusted {
-        return __sd_gc_card_n << 9; // 512 bytes per card
-    }();
 }
 
 /**
