@@ -67,8 +67,9 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
         // Mode 1: Font glyph (R8 SDF when rectParams.x > 0, else bitmap alpha mask)
         let alphaMask = textureSample(uiTexture, uiSampler, in.uv).r;
         if (in.rectParams.x > 0.0) {
-            // SDF baked with onedge=180/255 (0.70588235), pixel_dist_scale=36/255 -> 255/36 = 7.0833333
-            let sdPx = (alphaMask - 0.70588235) * 7.0833333 * in.rectParams.x;
+            // SDF baked via FreeType/SDL3_ttf with onedge=128/255 (0.50196078),
+            // pixel_dist_scale=16/255 -> 255/16 = 15.9375.
+            let sdPx = (alphaMask - 0.50196078) * 15.9375 * in.rectParams.x;
             let fillT = clamp(sdPx + 0.5, 0.0, 1.0);
             let outlineW = in.rectParams.w;
             if (outlineW > 0.0) {

@@ -1,8 +1,9 @@
-/// TTF Font loading, glyph rasterization via stb_truetype (SDF + bitmap),
-/// multi-size metric scaling, fallback fonts, and dynamic texture atlas.
+/// TTF Font loading, glyph rasterization via SDL3_ttf / FreeType (SDF + bitmap),
+/// multi-size metric scaling, fallback fonts, kerning, and dynamic texture atlas.
 module engine.ui.text.font;
 
-import bindings.stb_truetype;
+import bindings.sdl3;
+import bindings.sdl3_ttf;
 import engine.core.log : info, warn, err;
 import engine.core.pod : isPod, Pod;
 
@@ -30,22 +31,21 @@ private struct GlyphEntry {
 static assert(isPod!GlyphEntry);
 
 private struct FontSource {
-    stbtt_fontinfo info;
-    ubyte[] fontBytes;
-    int ascent = 0;
-    int descent = 0;
-    int lineGap = 0;
-    float unitScale = 0;
+    TTF_Font* ttf = null;
+    ubyte[] fontBytes; // kept alive while SDL_IOStream references this buffer
+    float bakeSize = 0;
+    int lineSkip = 0;
     bool active = false;
 }
 
 /// Dynamic font manager and texture atlas supporting SDF multi-size rendering,
-/// fallback font chains, full Unicode codepoints, and automatic atlas growth.
+/// fallback font chains, kerning, hinting, full Unicode codepoints, and automatic atlas growth.
 struct Font {
     enum float SDF_BASE_HEIGHT = 48.0f;
-    enum int SDF_PADDING = 5;
-    enum ubyte SDF_ONEDGE = 180;
-    enum float SDF_PIXEL_DIST_SCALE = 36.0f; // 180.0 / 5.0
+    // Calibrated empirically against FreeType SDF in SDL3_ttf (spread=8 px, onedge=128/255, slope=16/px).
+    enum int SDF_PADDING = 8;
+    enum ubyte SDF_ONEDGE = 128;
+    enum float SDF_PIXEL_DIST_SCALE = 16.0f;
     enum uint MAX_FALLBACKS = 4;
 
     private enum int INITIAL_ATLAS_DIM = 512;
@@ -65,6 +65,7 @@ struct Font {
 
     private float pixelHeight = 16.0f;
     private bool sdfEnabled = true;
+    private TTF_HintingFlags currentHinting = TTF_HintingFlags.normal;
 
     // Shelf packer state
     private int currentX = 1;
@@ -73,19 +74,20 @@ struct Font {
     private bool atlasDirty = true;
     private bool initialized = false;
 
-    /// Initialize font from TTF bytes in memory.
-    /// When `useSdf` is true (default), glyphs are baked once into an SDF atlas
+    /// Initialize font from TTF/OTF bytes in memory.
+    /// When `useSdf` is true (default), glyphs are baked once into a FreeType SDF atlas
     /// and scale crisply to any pixel height.
     bool loadFromMemory(ubyte[] ttfBytes, float defaultPixelHeight = 16.0f, bool useSdf = true) nothrow {
         if (ttfBytes.length == 0) return false;
 
-        sources[] = FontSource.init;
-        sourceCount = 0;
-        if (!initSource(sources[0], ttfBytes)) return false;
-        sourceCount = 1;
+        destroy();
 
         pixelHeight = defaultPixelHeight > 0 ? defaultPixelHeight : 16.0f;
         sdfEnabled = useSdf;
+
+        immutable float prebakeH = sdfEnabled ? SDF_BASE_HEIGHT : pixelHeight;
+        if (!initSource(sources[0], ttfBytes, prebakeH, sdfEnabled, currentHinting)) return false;
+        sourceCount = 1;
 
         atlasWidth = INITIAL_ATLAS_DIM;
         atlasHeight = INITIAL_ATLAS_DIM;
@@ -102,7 +104,6 @@ struct Font {
         atlasDirty = true;
         initialized = true;
 
-        immutable float prebakeH = sdfEnabled ? SDF_BASE_HEIGHT : pixelHeight;
         // Pre-bake ASCII printable range (32 .. 126)
         foreach (int cp; 32 .. 127) {
             rasterizeGlyph(cp, prebakeH);
@@ -115,13 +116,87 @@ struct Font {
         return true;
     }
 
-    /// Register a fallback TTF font used when a codepoint is missing in the primary font.
+    /// Initialize font from a TTF/OTF file path on disk.
+    bool loadFromFile(scope const(char)[] path, float defaultPixelHeight = 16.0f, bool useSdf = true) nothrow {
+        if (path.length == 0) return false;
+        try {
+            import std.file : exists, read;
+            if (!exists(path)) return false;
+            ubyte[] bytes = () @trusted { return cast(ubyte[]) read(path); }();
+            return loadFromMemory(bytes, defaultPixelHeight, useSdf);
+        } catch (Exception) {
+            return false;
+        }
+    }
+
+    /// Close all open SDL3_ttf handles and reset font state.
+    void destroy() nothrow @nogc {
+        if (sourceCount > 0 && sources[0].ttf !is null) {
+            () @trusted { TTF_ClearFallbackFonts(sources[0].ttf); }();
+        }
+        foreach (i; 0 .. sourceCount) {
+            if (sources[i].ttf !is null) {
+                () @trusted { TTF_CloseFont(sources[i].ttf); }();
+                sources[i].ttf = null;
+            }
+            sources[i].fontBytes = null;
+            sources[i].bakeSize = 0;
+            sources[i].lineSkip = 0;
+            sources[i].active = false;
+        }
+        sourceCount = 0;
+        initialized = false;
+    }
+
+    /// Register a fallback TTF/OTF font used when a codepoint is missing in the primary font.
     /// Up to `MAX_FALLBACKS` fallback fonts may be registered.
     bool addFallbackFont(ubyte[] ttfBytes) nothrow {
         if (!initialized || ttfBytes.length == 0 || sourceCount >= sources.length) return false;
-        if (!initSource(sources[sourceCount], ttfBytes)) return false;
+        immutable float bakeH = sdfEnabled ? SDF_BASE_HEIGHT : sources[0].bakeSize;
+        if (!initSource(sources[sourceCount], ttfBytes, bakeH, sdfEnabled, currentHinting)) return false;
+        immutable bool attached = () @trusted {
+            return TTF_AddFallbackFont(sources[0].ttf, sources[sourceCount].ttf);
+        }();
+        if (!attached) {
+            () @trusted { TTF_CloseFont(sources[sourceCount].ttf); }();
+            sources[sourceCount] = FontSource.init;
+            return false;
+        }
         sourceCount++;
         return true;
+    }
+
+    /// Update FreeType hinting mode across all loaded font faces.
+    /// In bitmap mode, existing cached glyphs are rebaked under the new hinter.
+    void setHinting(TTF_HintingFlags hinting) nothrow {
+        currentHinting = hinting;
+        if (!initialized) return;
+        foreach (i; 0 .. sourceCount) {
+            if (sources[i].ttf !is null) {
+                () @trusted { TTF_SetFontHinting(sources[i].ttf, hinting); }();
+            }
+        }
+        if (!sdfEnabled) {
+            atlasPixels[] = 0;
+            cache[] = GlyphEntry.init;
+            cacheCount = 0;
+            currentX = 1;
+            currentY = 1;
+            rowHeight = 0;
+            atlasVer++;
+            atlasDirty = true;
+            foreach (int cp; 32 .. 127) {
+                rasterizeGlyph(cp, pixelHeight);
+            }
+            foreach (int cp; 160 .. 256) {
+                rasterizeGlyph(cp, pixelHeight);
+            }
+        }
+    }
+
+    /// Active hinting mode.
+    TTF_HintingFlags hinting() const nothrow @nogc pure {
+        return currentHinting;
     }
 
     /// Check if font is initialized.
@@ -179,7 +254,27 @@ struct Font {
         if (!initialized || sourceCount == 0) return pxHeight;
         immutable float h = pxHeight > 0 ? pxHeight : pixelHeight;
         const src = &sources[0];
-        return (src.ascent - src.descent + src.lineGap) * (src.unitScale * h);
+        if (src.bakeSize <= 0 || src.lineSkip <= 0) return h;
+        return cast(float)src.lineSkip * (h / src.bakeSize);
+    }
+
+    /// Query kerning adjustment in pixels between `prevCodepoint` and `codepoint`.
+    float getKerning(int prevCodepoint, int codepoint, float pxHeight = 0) nothrow @nogc {
+        if (!initialized || sourceCount == 0 || prevCodepoint <= 0 || codepoint <= 0)
+            return 0.0f;
+        immutable float targetH = pxHeight > 0 ? pxHeight : pixelHeight;
+        if (!sdfEnabled) {
+            ensureBitmapSize(targetH);
+        }
+        int kern = 0;
+        immutable bool ok = () @trusted {
+            return TTF_GetGlyphKerning(sources[0].ttf, cast(uint)prevCodepoint, cast(uint)codepoint, &kern);
+        }();
+        if (!ok || kern == 0) return 0.0f;
+        if (sdfEnabled) {
+            return cast(float)kern * (targetH / SDF_BASE_HEIGHT);
+        }
+        return cast(float)kern;
     }
 
     /// Query or rasterize a glyph by Unicode codepoint at the default pixel height.
@@ -224,17 +319,23 @@ struct Font {
         if (text.length == 0 || !initialized) return;
 
         float cursorX = 0;
+        int prevCp = 0;
         size_t i = 0;
         while (i < text.length) {
-            int cp = decodeUtf8(text, i);
+            immutable int cp = decodeUtf8(text, i);
             if (cp == '\n') {
                 if (cursorX > outWidth) outWidth = cursorX;
                 cursorX = 0;
+                prevCp = 0;
                 outHeight += lh;
                 continue;
             }
+            if (prevCp != 0) {
+                cursorX += getKerning(prevCp, cp, pxHeight);
+            }
             Glyph g = getGlyph(cp, pxHeight);
             cursorX += g.advance;
+            prevCp = cp;
         }
         if (cursorX > outWidth) outWidth = cursorX;
     }
@@ -262,23 +363,47 @@ struct Font {
         return b0;
     }
 
-    private static bool initSource(ref FontSource src, ubyte[] ttfBytes) nothrow {
+    private static bool initSource(ref FontSource src, ubyte[] ttfBytes, float ptsize, bool sdf, TTF_HintingFlags hinting) nothrow {
+        if (ttfBytes.length == 0 || !ttfInit()) return false;
         src.fontBytes = ttfBytes;
-        immutable int ok = () @trusted {
-            return stbtt_InitFont(&src.info, src.fontBytes.ptr, 0);
+        TTF_Font* font = () @trusted {
+            SDL_IOStream* io = SDL_IOFromConstMem(src.fontBytes.ptr, src.fontBytes.length);
+            if (io is null) return null;
+            return TTF_OpenFontIO(io, true, ptsize);
         }();
-        if (ok == 0) return false;
-
+        if (font is null) {
+            src.fontBytes = null;
+            return false;
+        }
         () @trusted {
-            int a, d, g;
-            stbtt_GetFontVMetrics(&src.info, &a, &d, &g);
-            src.ascent = a;
-            src.descent = d;
-            src.lineGap = g;
-            src.unitScale = stbtt_ScaleForPixelHeight(&src.info, 1.0f);
+            TTF_SetFontHinting(font, hinting);
+            if (sdf) TTF_SetFontSDF(font, true);
+            src.lineSkip = TTF_GetFontLineSkip(font);
+            if (src.lineSkip <= 0) src.lineSkip = TTF_GetFontHeight(font);
         }();
+        src.ttf = font;
+        src.bakeSize = ptsize;
         src.active = true;
         return true;
+    }
+
+    private void ensureBitmapSize(float targetH) nothrow @nogc {
+        immutable float diff = targetH > sources[0].bakeSize
+            ? targetH - sources[0].bakeSize
+            : sources[0].bakeSize - targetH;
+        if (diff <= 0.125f) return;
+
+        foreach (i; 0 .. sourceCount) {
+            if (sources[i].ttf !is null) {
+                () @trusted { TTF_SetFontSize(sources[i].ttf, targetH); }();
+                sources[i].bakeSize = targetH;
+            }
+        }
+        sources[0].lineSkip = () @trusted {
+            int ls = TTF_GetFontLineSkip(sources[0].ttf);
+            if (ls <= 0) ls = TTF_GetFontHeight(sources[0].ttf);
+            return ls;
+        }();
     }
 
     private ulong makeKey(int cp, float pxHeight) const nothrow @nogc pure {
@@ -346,16 +471,6 @@ struct Font {
         cacheCount = newCount;
     }
 
-    private uint pickSourceForCodepoint(int cp) const nothrow @nogc {
-        foreach (uint s; 0 .. sourceCount) {
-            immutable int gi = () @trusted {
-                return stbtt_FindGlyphIndex(&sources[s].info, cp);
-            }();
-            if (gi != 0) return s;
-        }
-        return 0;
-    }
-
     private bool growAtlas() nothrow {
         if (atlasWidth >= MAX_ATLAS_DIM && atlasHeight >= MAX_ATLAS_DIM) {
             return false;
@@ -419,106 +534,88 @@ struct Font {
     }
 
     private Glyph rasterizeGlyph(int cp, float targetH) nothrow {
-        if (!initialized) return Glyph.init;
+        if (!initialized || sourceCount == 0 || sources[0].ttf is null) return Glyph.init;
 
-        immutable uint srcIdx = pickSourceForCodepoint(cp);
-        auto src = &sources[srcIdx];
-        immutable float s = () @trusted {
-            return stbtt_ScaleForPixelHeight(&src.info, targetH);
-        }();
+        if (!sdfEnabled) {
+            ensureBitmapSize(targetH);
+        }
+
         immutable ulong key = makeKey(cp, targetH);
+        TTF_Font* primary = sources[0].ttf;
 
-        int advance, lsb;
-        () @trusted {
-            stbtt_GetCodepointHMetrics(&src.info, cp, &advance, &lsb);
+        int minx = 0, maxx = 0, miny = 0, maxy = 0, advance = 0;
+        immutable bool hasMetrics = () @trusted {
+            return TTF_GetGlyphMetrics(primary, cast(uint)cp, &minx, &maxx, &miny, &maxy, &advance);
         }();
 
-        if (sdfEnabled) {
-            int gw = 0, gh = 0, xoff = 0, yoff = 0;
-            ubyte* sdf = () @trusted {
-                return stbtt_GetCodepointSDF(
-                    &src.info, s, cp, SDF_PADDING, SDF_ONEDGE, SDF_PIXEL_DIST_SCALE,
-                    &gw, &gh, &xoff, &yoff
-                );
-            }();
-
-            Glyph g;
-            g.advance = cast(float)advance * s;
-            g.valid = true;
-
-            if (sdf is null || gw <= 0 || gh <= 0) {
-                if (sdf !is null) () @trusted { stbtt_FreeSDF(sdf, null); }();
-                insertCache(key, g);
-                return g;
+        TTF_ImageType imgType = TTF_ImageType.invalid;
+        SDL_Surface* surf = () @trusted {
+            return TTF_GetGlyphImage(primary, cast(uint)cp, &imgType);
+        }();
+        scope (exit) {
+            if (surf !is null) {
+                () @trusted { SDL_DestroySurface(surf); }();
             }
+        }
 
-            g.width = cast(float)gw;
-            g.height = cast(float)gh;
-            g.xOffset = cast(float)xoff;
-            g.yOffset = cast(float)yoff;
+        Glyph g;
+        g.advance = hasMetrics ? cast(float)advance : 0.0f;
+        g.valid = hasMetrics || (surf !is null);
 
-            int gx, gy;
-            if (!allocateAtlasRect(gw, gh, gx, gy)) {
-                () @trusted { stbtt_FreeSDF(sdf, null); }();
-                insertCache(key, g);
-                return g;
-            }
-
-            () @trusted {
-                foreach (int row; 0 .. gh) {
-                    const(ubyte)* srcRow = sdf + row * gw;
-                    ubyte* dstRow = atlasPixels.ptr + ((gy + row) * atlasWidth + gx);
-                    dstRow[0 .. gw] = srcRow[0 .. gw];
-                }
-                stbtt_FreeSDF(sdf, null);
-            }();
-
-            g.u0 = cast(float)gx / cast(float)atlasWidth;
-            g.v0 = cast(float)gy / cast(float)atlasHeight;
-            g.u1 = cast(float)(gx + gw) / cast(float)atlasWidth;
-            g.v1 = cast(float)(gy + gh) / cast(float)atlasHeight;
-
-            atlasDirty = true;
+        if (surf is null) {
             insertCache(key, g);
             return g;
         }
 
-        // Bitmap path (legacy / non-SDF)
-        int ix0, iy0, ix1, iy1;
-        () @trusted {
-            stbtt_GetCodepointBitmapBox(&src.info, cp, s, s, &ix0, &iy0, &ix1, &iy1);
-        }();
-
-        immutable int gw = ix1 - ix0;
-        immutable int gh = iy1 - iy0;
-
-        Glyph g;
-        g.width = cast(float)gw;
-        g.height = cast(float)gh;
-        g.xOffset = cast(float)ix0;
-        g.yOffset = cast(float)iy0;
-        g.advance = cast(float)advance * s;
-        g.valid = true;
-
+        immutable int gw = () @trusted { return surf.w; }();
+        immutable int gh = () @trusted { return surf.h; }();
         if (gw <= 0 || gh <= 0) {
             insertCache(key, g);
             return g;
         }
 
-        int gx, gy;
+        // SDL3_ttf emits a 1x1 transparent surface for whitespace glyphs like ' '.
+        if (gw == 1 && gh == 1 && maxx == minx && maxy == miny) {
+            insertCache(key, g);
+            return g;
+        }
+
+        if (sdfEnabled && imgType == TTF_ImageType.sdf) {
+            g.xOffset = cast(float)(minx - SDF_PADDING);
+            g.yOffset = cast(float)(-maxy - SDF_PADDING);
+        } else {
+            g.xOffset = cast(float)minx;
+            g.yOffset = cast(float)(-maxy);
+        }
+        g.width = cast(float)gw;
+        g.height = cast(float)gh;
+
+        int gx = 0, gy = 0;
         if (!allocateAtlasRect(gw, gh, gx, gy)) {
             insertCache(key, g);
             return g;
         }
 
         () @trusted {
-            stbtt_MakeCodepointBitmap(
-                &src.info,
-                atlasPixels.ptr + (gy * atlasWidth + gx),
-                gw, gh, atlasWidth,
-                s, s,
-                cp
-            );
+            SDL_LockSurface(surf);
+            scope (exit) SDL_UnlockSurface(surf);
+
+            const(ubyte)* srcBytes = cast(const(ubyte)*) surf.pixels;
+            immutable int pitch = surf.pitch;
+            immutable bool isRgba32 = pitch >= gw * 4;
+
+            foreach (int row; 0 .. gh) {
+                const(ubyte)* srcRow = srcBytes + cast(size_t)row * pitch;
+                ubyte* dstRow = atlasPixels.ptr + (cast(size_t)(gy + row) * atlasWidth + gx);
+                if (isRgba32) {
+                    const(uint)* row32 = cast(const(uint)*) srcRow;
+                    foreach (int col; 0 .. gw) {
+                        dstRow[col] = cast(ubyte)((row32[col] >> 24) & 0xFFu);
+                    }
+                } else {
+                    dstRow[0 .. gw] = srcRow[0 .. gw];
+                }
+            }
         }();
 
         g.u0 = cast(float)gx / cast(float)atlasWidth;
@@ -567,5 +664,35 @@ unittest {
         float w48, h48;
         font.measure("◈ 120 ⚡ ★", 48.0f, w48, h48);
         assert(w48 > 0 && h48 >= 48.0f);
+
+        // Kerning consistency: measure("VA") includes getKerning('V', 'A')
+        Glyph gV = font.getGlyph('V', 24.0f);
+        Glyph gA24 = font.getGlyph('A', 24.0f);
+        float kernVA = font.getKerning('V', 'A', 24.0f);
+        float wVA = 0, hVA = 0;
+        font.measure("VA", 24.0f, wVA, hVA);
+        float diff = wVA - (gV.advance + gA24.advance + kernVA);
+        assert(diff > -0.01f && diff < 0.01f);
+
+        // Hinting change and bitmap mode check
+        font.setHinting(TTF_HintingFlags.light);
+        assert(font.hinting == TTF_HintingFlags.light);
+
+        font.destroy();
+        assert(!font.isLoaded);
+
+        // File loading + bitmap mode + re-hinting
+        assert(font.loadFromFile("assets/fonts/default.ttf", 20.0f, false));
+        assert(font.isLoaded && !font.isSdf);
+        Glyph gB = font.getGlyph('B');
+        assert(gB.valid && gB.width > 0 && gB.advance > 0);
+        font.setHinting(TTF_HintingFlags.none);
+        assert(font.getGlyph('B').valid);
+        font.destroy();
+        assert(!font.isLoaded);
+
+        // Invalid data fails gracefully
+        ubyte[] bad = [0x01, 0x02];
+        assert(!font.loadFromMemory(bad));
     }
 }

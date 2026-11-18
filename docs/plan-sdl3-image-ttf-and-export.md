@@ -224,10 +224,10 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 3 (`SDL-TTF`) — `SDL3_ttf` Bindings, FreeType SDF/Hinted Font Atlas & `stb_truetype` Removal
 
-- [ ] Create `source/bindings/sdl3_ttf.d` (`TTF_Init`, `TTF_OpenFontIO`, `TTF_SetFontSDF`, `TTF_SetFontHinting`, `TTF_AddFallbackFont`, `TTF_GetGlyphMetrics`, `TTF_GetGlyphKerning`, `TTF_RenderGlyph_Blended`, `TTF_RenderText_Blended_Wrapped`, `TTF_CloseFont`, `TTF_Quit`) with `StaticSDLDeps` and dynamic `SDL_LoadObject` modes
-- [ ] Refactor `Font` (`source/engine/ui/text/font.d`), `measure.d`, `shaping.d`, and `UiBatchRenderer.drawText` (`source/engine/ui/render/batch.d`) to use `SDL3_ttf`, FreeType SDF + hinted bitmap rasterization, fallback fonts, and kerning
-- [ ] Update `assets/shaders/ui2d.wgsl` Mode 1 SDF constants to match FreeType `TTF_SetFontSDF` encoding
-- [ ] Delete `source/bindings/stb_truetype.d`, `vendor/stb/`, `libs/libstb.a`, and remove `"stb"` from `dub.json`; update `docs/third-party-licenses.md`
+- [x] Create `source/bindings/sdl3_ttf.d` (`TTF_Init`, `TTF_OpenFontIO`, `TTF_SetFontSDF`, `TTF_SetFontHinting`, `TTF_AddFallbackFont`, `TTF_GetGlyphMetrics`, `TTF_GetGlyphKerning`, `TTF_RenderGlyph_Blended`, `TTF_RenderText_Blended_Wrapped`, `TTF_CloseFont`, `TTF_Quit`) with `StaticSDLDeps` and dynamic `SDL_LoadObject` modes
+- [x] Refactor `Font` (`source/engine/ui/text/font.d`), `measure.d`, `shaping.d`, and `UiBatchRenderer.drawText` (`source/engine/ui/render/batch.d`) to use `SDL3_ttf`, FreeType SDF + hinted bitmap rasterization, fallback fonts, and kerning
+- [x] Update `assets/shaders/ui2d.wgsl` Mode 1 SDF constants to match FreeType `TTF_SetFontSDF` encoding
+- [x] Delete `source/bindings/stb_truetype.d`, `vendor/stb/`, `libs/libstb.a`, and remove `"stb"` from `dub.json`; update `docs/third-party-licenses.md`
 
 **DoD:** `SDL3_ttf` powers all SDF and bitmap font rendering with kerning and Unicode fallback, `vendor/stb/` and `libstb.a` are completely removed, and all unit tests + UI/Editor visual smoke tests pass with 0 bytes frame-loop GC allocation.
 

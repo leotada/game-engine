@@ -41,13 +41,16 @@ const(char)[] truncateWithEllipsis(
     size_t lastValidByte = 0;
 
     size_t i = 0;
+    int prevCp = 0;
     while (i < input.length) {
         immutable int cp = Font.decodeUtf8(input, i);
+        immutable float kern = prevCp != 0 ? font.getKerning(prevCp, cp, pixelHeight) : 0.0f;
         Glyph g = font.getGlyph(cp, pixelHeight);
-        if (curW + g.advance > avail) {
+        if (curW + kern + g.advance > avail) {
             break;
         }
-        curW += g.advance;
+        curW += kern + g.advance;
+        prevCp = cp;
         lastValidByte = i;
     }
 

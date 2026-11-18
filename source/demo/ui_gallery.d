@@ -210,6 +210,7 @@ struct UiGalleryDemo {
         if (!isHeadless) {
             renderer.release();
         }
+        font.destroy();
     }
 }
 

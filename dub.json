@@ -13,7 +13,7 @@
     "dflags-ldc": ["-preview=dip1000", "-P-std=c17", "-P-I$PACKAGE_DIR/vendor/box3d/include"],
 
     "sourceFiles": ["source/bindings/box3d/box3d_import.c"],
-    "libs": ["SDL3", "wgpu_native", "box3d", "stb", "m", "symgc-cards"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "m", "symgc-cards"],
     "lflags-linux": ["-L$PACKAGE_DIR/libs"],
 
     "configurations": [
@@ -181,7 +181,7 @@
             "sourcePaths": ["tools"],
             "importPaths": ["tools"],
             "excludedSourceFiles": [
-                "tools/spikes/*", "tools/ozz/*",
+                "tools/spikes/*", "tools/ozz/*", "tools/meshopt-oracle/*", "tools/player/*", "tools/benchmarks/*",
                 "source/demo/*",
                 "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/engine/*",

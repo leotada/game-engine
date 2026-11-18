@@ -425,6 +425,7 @@ struct EditorApp {
         }
         if (!isHeadless)
             uiRenderer.release();
+        font.destroy();
     }
 
     private void checkDemoContract() {

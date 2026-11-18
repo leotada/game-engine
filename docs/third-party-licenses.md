@@ -43,3 +43,40 @@ Distributed under CC-BY-SA 3.0
 
 Procedural grid, sphere, torus, UV-seam, and soup meshes are generated in
 tests and are not separate licensed assets. No scanned mesh is committed.
+
+## SDL3, SDL3_image, and SDL3_ttf
+
+Windowing, input, audio, image decoding (`SDL3_image` 3.2.4), and font
+rasterization (`SDL3_ttf` 3.2.2) use SDL3 (`release-3.4.0`), distributed under
+the zlib license (`ref/sdl3-deps/` is gitignored and built via
+`tools/build_sdl3_deps.sh`):
+
+```
+Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+```
+
+## FreeType 2
+
+Portions of this software are copyright © 1996-2025 The FreeType Project
+(https://freetype.org). All rights reserved.
+
+Font shaping, hinting, and SDF glyph generation via `SDL3_ttf` are backed by
+FreeType 2 (`VER-2-13-3`), used under the **FreeType License (FTL)**
+(`ref/sdl3-deps/freetype/docs/FTL.TXT`). Every exported game bundle must retain
+this attribution alongside the distributed binary.

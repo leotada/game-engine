@@ -872,15 +872,20 @@ struct UiBatchRenderer {
         float curY = y + lh * 0.75f; // baseline offset
 
         size_t i = 0;
+        int prevCp = 0;
         while (i < text.length) {
             immutable int cp = Font.decodeUtf8(text, i);
 
             if (cp == '\n') {
                 curX = x;
                 curY += lh;
+                prevCp = 0;
                 continue;
             }
 
+            if (prevCp != 0) {
+                curX += font.getKerning(prevCp, cp, effectiveH);
+            }
             Glyph g = font.getGlyph(cp, effectiveH);
             if (g.width > 0 && g.height > 0 && vertices.length > 0) {
                 if (vertexCount + 4 > MAX_VERTICES || indexCount + 6 > MAX_INDICES) break;
@@ -906,6 +911,7 @@ struct UiBatchRenderer {
             }
 
             curX += g.advance;
+            prevCp = cp;
         }
 
         if (device !is null && (font.isDirty || font.atlasVersion != uploadedFontVer)) {
