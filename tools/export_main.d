@@ -21,6 +21,10 @@ private immutable ExportTarget[7] ALL_TARGETS = [
     ExportTarget.webWasm32,
 ];
 
+private void writeErr(A...)(string fmt, A args) @trusted {
+    stderr.writefln(fmt, args);
+}
+
 private void printUsage() {
     writeln("Game Engine Release Exporter");
     writeln("Usage: dub run --config=export -- [options]");
@@ -65,7 +69,7 @@ void main(string[] args) {
         } else if (arg.length > 9 && arg[0 .. 9] == "--target=") {
             immutable val = arg[9 .. $];
             if (!parseExportTarget(val, opts.target)) {
-                stderr.writefln("Error: unknown export target '%s'", val);
+                writeErr("Error: unknown export target '%s'", val);
                 () @trusted { exit(2); }();
             }
             opts.targetPlatform = exportTargetId(opts.target);
@@ -81,7 +85,7 @@ void main(string[] args) {
         } else if (arg.length > 11 && arg[0 .. 11] == "--compiler=") {
             opts.compiler = arg[11 .. $];
         } else {
-            stderr.writefln("Error: unrecognized argument '%s'", arg);
+            writeErr("Error: unrecognized argument '%s'", arg);
             printUsage();
             () @trusted { exit(2); }();
         }
@@ -116,7 +120,7 @@ void main(string[] args) {
 
     string outLog;
     if (!ExportPipeline.exportGame(opts, outLog)) {
-        stderr.writefln("Export failed:\n%s", outLog);
+        writeErr("Export failed:\n%s", outLog);
         () @trusted { exit(1); }();
     }
 

@@ -13,6 +13,7 @@ enum NativeSurfaceBackend : ubyte {
     win32 = 3,
     android = 4,
     metal = 5,
+    webCanvas = 6,
 }
 
 struct NativeSurfaceInfo {
@@ -20,6 +21,7 @@ struct NativeSurfaceInfo {
     void* displayOrInstance = null; // wl_display*, Display* (X11), HINSTANCE (Win32)
     void* windowOrSurface   = null; // wl_surface*, HWND (Win32), ANativeWindow* (Android), CAMetalLayer* (Apple)
     ulong x11Window         = 0;    // Window ID (X11)
+    const(char)* canvasSelector = null; // CSS selector (Emscripten WebGPU)
 }
 
 /// Options for `Window.create`.
@@ -195,7 +197,9 @@ struct Window {
         if (handle is null) return NativeSurfaceInfo.init;
         auto props = SDL_GetWindowProperties(handle);
 
-        version (Windows) {
+        version (WebAssembly) {
+            return NativeSurfaceInfo(NativeSurfaceBackend.webCanvas, null, null, 0, "#canvas".ptr);
+        } else version (Windows) {
             void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
             void* hinst = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HINSTANCE_POINTER, null);
             return NativeSurfaceInfo(NativeSurfaceBackend.win32, hinst, hwnd, 0);

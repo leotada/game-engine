@@ -34,7 +34,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Pending | Parallel system scheduler (#9) |
 | [plan-networking.md](plan-networking.md) | Pending | Multiplayer primitives (#10) |
 | [plan-split-screen.md](plan-split-screen.md) | Pending | Split-screen local co-op: multi-viewport rendering + gamepads (#11) |
-| [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Pending | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
+| [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Delivered | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
 
 ## History / Cancelled
 

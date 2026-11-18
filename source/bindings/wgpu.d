@@ -77,6 +77,7 @@ enum WGPUSType : uint {
     surfaceSourceWaylandSurface    = 0x0000_0007,
     surfaceSourceAndroidNativeWindow = 0x0000_0008,
     surfaceSourceXCBWindow         = 0x0000_0009,
+    surfaceSourceCanvasHTMLSelector = 0x0004_0000,
 }
 
 enum WGPUBackendType : uint {
@@ -513,6 +514,11 @@ struct WGPUSurfaceSourceAndroidNativeWindow {
 struct WGPUSurfaceSourceMetalLayer {
     WGPUChainedStruct chain;
     void* layer;
+}
+
+struct WGPUSurfaceSourceCanvasHTMLSelector {
+    WGPUChainedStruct chain;
+    WGPUStringView selector;
 }
 
 struct WGPURequestAdapterOptions {

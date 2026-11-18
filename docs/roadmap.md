@@ -24,7 +24,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 9 | Parallel ECS | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Low | Stable serial API; opt-in scheduler |
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
-| 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | High | Replace `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static export) and release export to Linux, Windows, macOS, and Web |
+| 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
 
 ### Ordering Notes
 
@@ -52,6 +52,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 - **Gameplay Physics:** `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors, raycasts + overlaps, joints (distance/revolute/weld), character controller, contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
 - **GC-Safe Primitives:** `Pod!T`, `Handle!T`, `StringId`, `FrameArena`, static lint (`dub run --config=lint`) — see [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
 - **Editor UX v1:** Full level editor (`dub run --config=editor`) — raycast picking, TRS gizmos + snapping, multi-selection, undo/redo stack, hierarchy/inspector panels, lighting + shadows, play/pause physics simulation, `*.scene.json` and `*.asset.json` pipelines — see [plan-editor-ux.md](plan-editor-ux.md)
+- **Media Pipeline & Multiplatform Export:** `SDL3_image` + `SDL3_ttf` (`FreeType` SDF & hinted bitmap, kerning, fallback fonts; `stb` removed), static `player-static` builds via `ldc2`, and `ExportPipeline` + CLI (`dub run --config=export`) / Editor File menu release export for Linux, Windows, macOS, and Web (WASM + WebGPU) — see [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md)
 
 ## Pending Maintenance (Non-Feature)
 

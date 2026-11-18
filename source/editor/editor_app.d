@@ -7,6 +7,7 @@ import std.math : PI, asin, atan2, tan;
 import std.path : dirName;
 import std.stdio : writefln;
 
+import editor.build_export : BuildExportOptions, ExportPipeline, ExportTarget, exportTargetId;
 import editor.panels;
 import editor.play_mode : PlayMode;
 import editor.shortcuts;
@@ -78,6 +79,10 @@ enum MenuAction : uint {
     winProject = 15,
     winConsole = 16,
     camera = 22,
+    exportLinux = 30,
+    exportWindows = 31,
+    exportMacOS = 32,
+    exportWeb = 33,
 }
 
 enum playTag = 0xAA01;
@@ -673,6 +678,10 @@ struct EditorApp {
             case PopupKind.arquivo:
                 item("Nova cena", "Ctrl+N", MenuAction.newScene);
                 item("Salvar cena", "Ctrl+S", MenuAction.saveScene);
+                item("Exportar Release (Linux)", "", MenuAction.exportLinux);
+                item("Exportar Release (Windows)", "", MenuAction.exportWindows);
+                item("Exportar Release (macOS)", "", MenuAction.exportMacOS);
+                item("Exportar Release (Web)", "", MenuAction.exportWeb);
                 break;
             case PopupKind.editar:
                 item("Desfazer", "Ctrl+Z", MenuAction.undo);
@@ -921,8 +930,39 @@ struct EditorApp {
             case MenuAction.winConsole:
                 showPanel("Console");
                 break;
+            case MenuAction.exportLinux:
+                exportReleaseForTarget(ExportTarget.linuxX86_64);
+                break;
+            case MenuAction.exportWindows:
+                exportReleaseForTarget(ExportTarget.windowsX86_64);
+                break;
+            case MenuAction.exportMacOS:
+                exportReleaseForTarget(ExportTarget.macosUniversal);
+                break;
+            case MenuAction.exportWeb:
+                exportReleaseForTarget(ExportTarget.webWasm32);
+                break;
             default:
                 break;
+        }
+    }
+
+    private void exportReleaseForTarget(ExportTarget target) {
+        if (sceneDirty)
+            saveCurrentScene();
+        BuildExportOptions opts;
+        opts.target = target;
+        opts.targetPlatform = exportTargetId(target);
+        opts.outputDir = "build/" ~ opts.targetPlatform;
+        opts.startScene = currentScenePath;
+        opts.release = true;
+        opts.packageArchive = true;
+        string outLog;
+        if (ExportPipeline.exportGame(opts, outLog)) {
+            info("Release exportada com sucesso: %s", opts.outputDir);
+        } else {
+            err("Falha ao exportar release (%s): %s", opts.targetPlatform, outLog);
+            showPanel("Console");
         }
     }
 

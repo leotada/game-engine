@@ -1,6 +1,6 @@
 # Plan: SDL3_image, SDL3_ttf Integration & Static Multiplatform Release Export (Linux, Windows, macOS, Web)
 
-> **Status:** Pending (Planned) · Priority: High · See [roadmap.md](roadmap.md)
+> **Status:** Delivered (Verified natively on Linux x86_64; cross-targets Windows/macOS/Web verified at toolchain preflight, command generation, and bundle level) · Priority: High · See [roadmap.md](roadmap.md)
 
 ## 1. Objective
 
@@ -249,9 +249,9 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 6 (`EXPORT-WEB`) — WebAssembly (Emscripten + WebGPU) Target & Editor/CLI Export Integration
 
-- [ ] Add `WGPUSurfaceSourceCanvasHTMLSelector` (`source/bindings/wgpu.d`), `NativeSurfaceBackend.webCanvas` (`source/engine/platform/window.d`, `source/engine/gpu/context.d`), and async adapter/device `emscripten_sleep(0)` polling
-- [ ] Add `tools/web/shell.html` and `ExportTarget.webWasm32` in `source/editor/build_export.d` compiling D objects via `ldc2 -mtriple=wasm32-unknown-emscripten` and linking via `emcc` with WebGPU + `SDL3` + `SDL3_image` + `SDL3_ttf` + `--preload-file assets@/assets`
-- [ ] Add CLI export tool (`dub run --config=export`) and wire `Export Release...` menu actions into `source/editor/editor_app.d`
+- [x] Add `WGPUSurfaceSourceCanvasHTMLSelector` (`source/bindings/wgpu.d`), `NativeSurfaceBackend.webCanvas` (`source/engine/platform/window.d`, `source/engine/gpu/context.d`), and async adapter/device `emscripten_sleep(1)` polling
+- [x] Add `tools/web/shell.html` and `ExportTarget.webWasm32` in `source/editor/build_export.d` compiling D objects via `ldc2 -mtriple=wasm32-unknown-emscripten` and linking via `emcc` with WebGPU + `SDL3` + `SDL3_image` + `SDL3_ttf` + `--preload-file assets@/assets`
+- [x] Add CLI export tool (`dub run --config=export`) and wire `Export Release...` menu actions into `source/editor/editor_app.d`
 
 **DoD:** `ExportTarget.webWasm32` generates a runnable `<game>.html` + `.js` + `.wasm` + `.data` bundle served cleanly via local HTTP, and both CLI and Editor export menus support Linux, Windows, macOS, and Web targets.
 

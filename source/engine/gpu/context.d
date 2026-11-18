@@ -6,6 +6,10 @@ import bindings.wgpu;
 import engine.platform.window : NativeSurfaceInfo, NativeSurfaceBackend;
 import engine.core.log;
 
+version (WebAssembly) {
+    private extern (C) nothrow @nogc void emscripten_sleep(uint ms);
+}
+
 @safe:
 
 struct GpuContext {
@@ -33,12 +37,13 @@ struct GpuContext {
         }
         info("WGPU instance created");
 
-        // 2. Surface (Wayland / X11 fallback / Win32 / Android / Metal)
+        // 2. Surface (Wayland / X11 fallback / Win32 / Android / Metal / WebGPU canvas)
         WGPUSurfaceSourceWaylandSurface waylandSource;
         WGPUSurfaceSourceXlibWindow x11Source;
         WGPUSurfaceSourceWindowsHWND win32Source;
         WGPUSurfaceSourceAndroidNativeWindow androidSource;
         WGPUSurfaceSourceMetalLayer metalSource;
+        WGPUSurfaceSourceCanvasHTMLSelector webCanvasSource;
         WGPUChainedStruct* chainPtr = null;
 
         final switch (surfInfo.backend) {
@@ -75,6 +80,14 @@ struct GpuContext {
                 metalSource.layer       = surfInfo.windowOrSurface;
                 chainPtr = cast(WGPUChainedStruct*) &metalSource;
                 break;
+            case NativeSurfaceBackend.webCanvas:
+                webCanvasSource.chain.sType = WGPUSType.surfaceSourceCanvasHTMLSelector;
+                webCanvasSource.chain.next  = null;
+                webCanvasSource.selector    = wgpuStringView(
+                    surfInfo.canvasSelector !is null ? surfInfo.canvasSelector : "#canvas"
+                );
+                chainPtr = cast(WGPUChainedStruct*) &webCanvasSource;
+                break;
             case NativeSurfaceBackend.none:
                 fatal("Cannot create WGPU surface: no native surface provided");
                 break;
@@ -99,7 +112,14 @@ struct GpuContext {
         adapterCb.userdata1 = cast(void*) &ctx.adapter;
 
         wgpuInstanceRequestAdapter(ctx.instance, &adapterOpts, adapterCb);
-        wgpuInstanceProcessEvents(ctx.instance);
+        version (WebAssembly) {
+            while (ctx.adapter is null) {
+                wgpuInstanceProcessEvents(ctx.instance);
+                emscripten_sleep(1);
+            }
+        } else {
+            wgpuInstanceProcessEvents(ctx.instance);
+        }
 
         if (ctx.adapter is null) {
             fatal("Failed to obtain WGPU adapter");
@@ -114,7 +134,14 @@ struct GpuContext {
         devCb.userdata1 = cast(void*) &ctx.device;
 
         wgpuAdapterRequestDevice(ctx.adapter, &devDesc, devCb);
-        wgpuInstanceProcessEvents(ctx.instance);
+        version (WebAssembly) {
+            while (ctx.device is null) {
+                wgpuInstanceProcessEvents(ctx.instance);
+                emscripten_sleep(1);
+            }
+        } else {
+            wgpuInstanceProcessEvents(ctx.instance);
+        }
 
         if (ctx.device is null) {
             fatal("Failed to obtain WGPU device");
