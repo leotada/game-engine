@@ -97,8 +97,16 @@ Exporting a game compiles the standalone player ([tools/player/player_main.d](..
   dub run --config=export -- --target=linux-x86_64 --release --archive
   ```
 - **Static Dependencies Setup:** Run `./tools/build_sdl3_deps.sh <target>` to build and stage `SDL3`, `SDL3_image`, `SDL3_ttf`, `FreeType`, `wgpu_native`, and `Box3D` static archives under `libs/<target>/`.
-- **Target Bundle Outputs:**
-  - **Linux (`linux-x86_64`, `linux-arm64`):** Static `game-player` ELF (`dub build --config=player-static --compiler=ldc2 --build=release` on host `x86_64`), executable `run.sh`, `game-player.desktop`, `assets/`, `THIRD-PARTY-LICENSES.txt`, and `.tar.gz` archive.
-  - **Windows (`windows-x86_64`):** Standalone `game-player.exe` linked against static `.lib` archives, `assets/`, `THIRD-PARTY-LICENSES.txt`, and `.zip` archive.
-  - **macOS (`macos-arm64`, `macos-x86_64`, `macos-universal`):** `<AppTitle>.app` bundle (`Contents/Info.plist`, `Contents/MacOS/game-player`, `Contents/Resources/assets/`, optional `lipo` universal binary + ad-hoc `codesign`) and `.zip` archive.
-  - **Web (`web-wasm32`):** Compiled via `ldc2 -mtriple=wasm32-unknown-emscripten` + `emcc` (`-sUSE_WEBGPU=1 -sASYNCIFY=1 --preload-file assets@/assets`) using [tools/web/shell.html](../tools/web/shell.html), producing `<name>.html`, `.js`, `.wasm`, `.data`, and a `.zip` archive.
+- **Target Export Matrix:**
+
+| `--target=<value>` | Aliases | LLVM Triple | Static Libs (`libs/`) | Bundle & Archive Output |
+|:---|:---|:---|:---|:---|
+| `linux-x86_64` | `linux`, `linux_x86_64` | `x86_64-unknown-linux-gnu` | `libs/linux-x86_64/` | `game-player`, `run.sh`, `.desktop`, `.tar.gz` |
+| `linux-arm64` | `linux-aarch64` | `aarch64-unknown-linux-gnu` | `libs/linux-arm64/` | `game-player`, `run.sh`, `.desktop`, `.tar.gz` |
+| `windows-x86_64` | `windows`, `win64` | `x86_64-pc-windows-msvc` | `libs/windows-x86_64/` | `game-player.exe`, `assets/`, `.zip` |
+| `macos-arm64` | `darwin-arm64` | `arm64-apple-macos12.0` | `libs/macos-arm64/` | `<Title>.app`, `assets/`, `.zip` |
+| `macos-x86_64` | `darwin-x86_64` | `x86_64-apple-macos11.0` | `libs/macos-x86_64/` | `<Title>.app`, `assets/`, `.zip` |
+| `macos-universal` | `macos`, `darwin` | `arm64` + `x86_64` (`lipo`) | `libs/macos-arm64/` + `macos-x86_64/` | `<Title>.app` (`lipo` + ad-hoc `codesign`), `.zip` |
+| `web-wasm32` | `web`, `wasm`, `wasm32` | `wasm32-unknown-emscripten` | `libs/web-wasm32/` | `<name>.html`, `.js`, `.wasm`, `.data`, `.zip` |
+
+Full per-target CLI options, required static libraries, linker flags, and shell details: [export-guide.md](export-guide.md).

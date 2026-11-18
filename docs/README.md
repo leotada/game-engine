@@ -11,6 +11,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU) |
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |
+| [export-guide.md](export-guide.md) | Multiplatform release export (`--target=<id>` specs, CLI flags, static deps, and media formats) |
 | [scripting-guide.md](scripting-guide.md) | D scripting API, reflection attributes, lifecycle, and hot-reload rules |
 | [why-this-is-fast.md](why-this-is-fast.md) | Why the ECS/SoA architecture is fast |
 | [incremental-gc-research.md](incremental-gc-research.md) | Garbage collection research, pause metrics, and benchmarks |

@@ -663,6 +663,18 @@ dub run --config=export -- --check-toolchains
 dub run --config=export -- --target=linux-x86_64 --release --archive
 ```
 
+| `--target=<value>` | Aliases | LLVM Triple | Required Libs Dir | Bundle Output |
+|:---|:---|:---|:---|:---|
+| `linux-x86_64` | `linux`, `linux_x86_64` | `x86_64-unknown-linux-gnu` | `libs/linux-x86_64/` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
+| `linux-arm64` | `linux-aarch64` | `aarch64-unknown-linux-gnu` | `libs/linux-arm64/` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
+| `windows-x86_64` | `windows`, `win64` | `x86_64-pc-windows-msvc` | `libs/windows-x86_64/` | `game-player.exe` + `.zip` |
+| `macos-arm64` | `darwin-arm64` | `arm64-apple-macos12.0` | `libs/macos-arm64/` | `<Title>.app` + `.zip` |
+| `macos-x86_64` | `darwin-x86_64` | `x86_64-apple-macos11.0` | `libs/macos-x86_64/` | `<Title>.app` + `.zip` |
+| `macos-universal` | `macos`, `darwin` | `arm64` + `x86_64` | `libs/macos-arm64/` + `macos-x86_64/` | Universal `.app` (`lipo` + `codesign`) + `.zip` |
+| `web-wasm32` | `web`, `wasm`, `wasm32` | `wasm32-unknown-emscripten` | `libs/web-wasm32/` | `<name>.html` + `.js` + `.wasm` + `.data` + `.zip` |
+
+See [export-guide.md](export-guide.md) for per-target linker arguments, `BuildExportOptions` fields, WebGPU shell configuration, and supported `SDL3_image`/`SDL3_ttf` formats.
+
 ---
 
 ## Extended Engine Features

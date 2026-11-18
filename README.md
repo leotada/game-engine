@@ -401,6 +401,7 @@ removed from the tree. See [docs/physics-quickstart.md](docs/physics-quickstart.
 - [docs/README.md](docs/README.md) — index of guides and plans
 - [docs/roadmap.md](docs/roadmap.md) — remaining work overview
 - [docs/game-development-guide.md](docs/game-development-guide.md) — how to build a 3D game with the high-level API
+- [docs/export-guide.md](docs/export-guide.md) — multiplatform static release export (`linux-x86_64`, `linux-arm64`, `windows-x86_64`, `macos-arm64`, `macos-x86_64`, `macos-universal`, `web-wasm32`) and media formats (`SDL3_image` / `SDL3_ttf`)
 - [docs/physics-quickstart.md](docs/physics-quickstart.md) — Box3D gameplay physics API
 - [docs/graphics.md](docs/graphics.md) — GPU architecture and rendering pipeline
 - [docs/plan-openpbr.md](docs/plan-openpbr.md) — Real-Time OpenPBR Surface v1.1 shading model architecture
