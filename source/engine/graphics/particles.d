@@ -14,7 +14,7 @@
 /// ---
 module engine.graphics.particles;
 
-import std.math : cbrt, cos, floor, sin, sqrt, PI;
+import std.math : cos, floor, pow, sin, sqrt, PI;
 
 import engine.core.pod : Pod, isPod;
 import engine.graphics.material : Material;
@@ -169,7 +169,7 @@ struct ParticleEmitter {
             immutable u = next01();
             immutable v = next01() * 2.0f - 1.0f;
             immutable a = next01() * 2.0f * PI;
-            immutable r = spawnRadius * cbrt(u);
+            immutable r = spawnRadius * (u > 0.0f ? pow(u, 1.0f / 3.0f) : 0.0f);
             immutable ring = sqrt(1.0f - v * v);
             offset = Vec3(ring * cos(a), v, ring * sin(a)) * r;
         }

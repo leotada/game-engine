@@ -34,6 +34,18 @@ struct GcFrameDelta {
 }
 
 version (WebAssembly) {
+    private enum bool hasSteadyGcSymbols = false;
+} else version (Symgc_cards) {
+    private enum bool hasSteadyGcSymbols = true;
+} else version (StaticSDLDeps) {
+    private enum bool hasSteadyGcSymbols = false;
+} else version (LDC) {
+    private enum bool hasSteadyGcSymbols = false;
+} else {
+    private enum bool hasSteadyGcSymbols = true;
+}
+
+static if (!hasSteadyGcSymbols) {
     bool gcIsSteadyGcActive() nothrow @nogc { return false; }
     void gcStepFrameSlack(Duration slack) nothrow @nogc {}
     size_t gcDefragment() nothrow @nogc { return 0; }

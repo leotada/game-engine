@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{{APP_TITLE}}</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0f1116;
+            --panel: #171b23;
+            --border: #2a3140;
+            --text: #e6ebf2;
+            --muted: #93a1b8;
+            --accent: #4c9aff;
+            --danger: #ff6b6b;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        }
+        .stage {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        canvas.emscripten {
+            display: block;
+            width: 100%;
+            height: 100%;
+            outline: none;
+            background: #0b0d12;
+        }
+        .hud-overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 17, 22, 0.92);
+            z-index: 20;
+            padding: 24px;
+            text-align: center;
+            transition: opacity 0.25s ease;
+        }
+        .hud-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .card {
+            max-width: 460px;
+            width: 100%;
+            padding: 24px;
+            border-radius: 10px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+        }
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        p {
+            margin: 0 0 16px 0;
+            font-size: 13px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+        .progress-track {
+            width: 100%;
+            height: 8px;
+            background: #0d1016;
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #74b9ff);
+            transition: width 0.12s ease;
+        }
+        .error-banner {
+            display: none;
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            background: rgba(255, 107, 107, 0.12);
+            border: 1px solid rgba(255, 107, 107, 0.45);
+            color: var(--danger);
+            font-size: 12px;
+        }
+        .controls {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 10;
+            display: flex;
+            gap: 8px;
+        }
+        .btn {
+            appearance: none;
+            border: 1px solid var(--border);
+            background: rgba(23, 27, 35, 0.85);
+            color: var(--text);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .btn:hover {
+            border-color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="stage">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    </div>
+
+    <div class="controls">
+        <button class="btn" id="fullscreen-btn" type="button">Fullscreen</button>
+    </div>
+
+    <div class="hud-overlay" id="loading-overlay">
+        <div class="card">
+            <h1>{{APP_TITLE}}</h1>
+            <p id="status-text">Initializing WebGPU runtime...</p>
+            <div class="progress-track">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="error-banner" id="webgpu-warning">
+                WebGPU (`navigator.gpu`) is unavailable in this browser. Enable WebGPU or use Chrome/Edge/Firefox Nightly.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            var overlay = document.getElementById("loading-overlay");
+            var statusEl = document.getElementById("status-text");
+            var progressBar = document.getElementById("progress-bar");
+            var warningEl = document.getElementById("webgpu-warning");
+            var canvas = document.getElementById("canvas");
+
+            if (!navigator.gpu) {
+                warningEl.style.display = "block";
+                statusEl.textContent = "Missing WebGPU support";
+            }
+
+            document.getElementById("fullscreen-btn").addEventListener("click", function () {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else if (canvas.requestFullscreen) {
+                    canvas.requestFullscreen();
+                }
+            });
+
+            window.Module = {
+                canvas: canvas,
+                preRun: [],
+                postRun: [function () {
+                    overlay.classList.add("hidden");
+                }],
+                print: function (text) {
+                    console.log(text);
+                },
+                printErr: function (text) {
+                    console.error(text);
+                },
+                setStatus: function (text) {
+                    if (!text) {
+                        overlay.classList.add("hidden");
+                        return;
+                    }
+                    statusEl.textContent = text;
+                    var match = text.match(/([^(]+)\((\d+(?:\.\d+)?)\/(\d+)\)/);
+                    if (match) {
+                        var pct = Math.min(100, Math.round((parseFloat(match[2]) / parseFloat(match[3])) * 100));
+                        progressBar.style.width = pct + "%";
+                    }
+                },
+                totalDependencies: 0,
+                monitorRunDependencies: function (left) {
+                    this.totalDependencies = Math.max(this.totalDependencies, left);
+                    if (left > 0) {
+                        var pct = Math.round(((this.totalDependencies - left) / this.totalDependencies) * 100);
+                        progressBar.style.width = pct + "%";
+                        statusEl.textContent = "Loading assets (" + (this.totalDependencies - left) + "/" + this.totalDependencies + ")...";
+                    } else {
+                        progressBar.style.width = "100%";
+                        overlay.classList.add("hidden");
+                    }
+                }
+            };
+        })();
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>

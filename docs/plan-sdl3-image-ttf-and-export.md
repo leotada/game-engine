@@ -241,9 +241,9 @@ Define `enum ExportTarget { linuxX86_64, linuxArm64, windowsX86_64, macosArm64, 
 
 ### Phase 5 (`EXPORT-NATIVE`) — Static Multiplatform Release Exporter (Linux, Windows, macOS)
 
-- [ ] Extend `source/editor/build_export.d` (`ExportTarget`, `BuildExportOptions`, `ExportPipeline.checkToolchain`, `ExportPipeline.exportGame`) with `StaticSDLDeps` + `ldc2 --build=release` static linking for `linux-x86_64`, `linux-arm64`, `windows-x86_64`, `macos-arm64`, `macos-x86_64`, and `macos-universal`
-- [ ] Add platform bundle generators: Linux ELF + `run.sh` + `.desktop` + `.tar.gz`, Windows single `.exe` + `.zip`, macOS `.app` (`Info.plist`, `MacOS/`, `Resources/assets/`, optional `lipo` + ad-hoc `codesign`) + `.zip`
-- [ ] Add unit tests validating toolchain preflight diagnostics, static link command generation per target, and Linux static bundle creation
+- [x] Extend `source/editor/build_export.d` (`ExportTarget`, `BuildExportOptions`, `ExportPipeline.checkToolchain`, `ExportPipeline.exportGame`) with `StaticSDLDeps` + `ldc2 --build=release` static linking for `linux-x86_64`, `linux-arm64`, `windows-x86_64`, `macos-arm64`, `macos-x86_64`, and `macos-universal`
+- [x] Add platform bundle generators: Linux ELF + `run.sh` + `.desktop` + `.tar.gz`, Windows single `.exe` + `.zip`, macOS `.app` (`Info.plist`, `MacOS/`, `Resources/assets/`, optional `lipo` + ad-hoc `codesign`) + `.zip`
+- [x] Add unit tests validating toolchain preflight diagnostics, static link command generation per target, and Linux static bundle creation
 
 **DoD:** Exporting a release for Linux produces a standalone binary with zero non-`glibc` dynamic library dependencies (verified via `ldd`), and Windows/macOS cross-export bundles compile and package cleanly when target sysroots/libs are present in `libs/<target>/`.
 

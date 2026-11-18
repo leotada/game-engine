@@ -82,6 +82,26 @@
             "importPaths": ["source", "source/bindings/box3d", "tools/player"]
         },
         {
+            "name": "player-static",
+            "targetType": "executable",
+            "targetName": "game-engine-player-static",
+            "mainSourceFile": "tools/player/player_main.d",
+            "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
+            "importPaths": ["source", "source/bindings/box3d", "tools/player"],
+            "versions": ["StaticSDLDeps"],
+            "sourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "libs/linux-x86_64/libSDL3_ttf.a",
+                "libs/linux-x86_64/libSDL3_image.a",
+                "libs/linux-x86_64/libfreetype.a",
+                "libs/linux-x86_64/libSDL3.a"
+            ],
+            "libs-linux": ["dl", "pthread", "rt"],
+            "lflags-linux": [
+                "--as-needed"
+            ]
+        },
+        {
             "name": "player-symgc",
             "targetType": "executable",
             "targetName": "game-engine-player-symgc",
@@ -91,6 +111,25 @@
             "versions": ["Symgc_cards", "Symgc_druntime_hooks"],
             "dflags-dmd": ["-preview=gcbarrier"],
             "dflags-ldc": ["-gc-card-marking"]
+        },
+        {
+            "name": "export",
+            "targetType": "executable",
+            "targetName": "game-engine-export",
+            "mainSourceFile": "tools/export_main.d",
+            "sourcePaths": ["source/engine", "source/bindings", "source/editor", "tools"],
+            "importPaths": ["source", "source/bindings/box3d", "source/editor", "tools"],
+            "excludedSourceFiles": [
+                "source/editor/main.d",
+                "source/editor/editor_app.d",
+                "source/editor/panels/*",
+                "tools/lint.d",
+                "tools/player/*",
+                "tools/spikes/*",
+                "tools/ozz/*",
+                "tools/meshopt-oracle/*",
+                "tools/benchmarks/*"
+            ]
         },
         {
             "name": "pbr",
@@ -181,7 +220,7 @@
             "sourcePaths": ["tools"],
             "importPaths": ["tools"],
             "excludedSourceFiles": [
-                "tools/spikes/*", "tools/ozz/*", "tools/meshopt-oracle/*", "tools/player/*", "tools/benchmarks/*",
+                "tools/export_main.d", "tools/spikes/*", "tools/ozz/*", "tools/meshopt-oracle/*", "tools/player/*", "tools/benchmarks/*",
                 "source/demo/*",
                 "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/engine/*",
