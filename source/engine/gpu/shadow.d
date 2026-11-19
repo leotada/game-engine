@@ -130,7 +130,7 @@ struct ShadowPipeline {
 
 ShadowPipeline createShadowPipeline(WGPUDevice device) @trusted {
     ShadowPipeline r;
-    r.shaderModule = createShaderModule(device, shadowDepthShaderSource.ptr);
+    r.shaderModule = createShaderModule(device, shadowDepthShaderSource);
     if (r.shaderModule is null) fatal("Shadow depth shader compile failed");
 
     WGPUBindGroupLayoutEntry bgle;
@@ -326,7 +326,7 @@ struct TexShadowPipeline {
 
 TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
     TexShadowPipeline r;
-    r.shaderModule = createShaderModule(device, shadowDepthShaderSource.ptr);
+    r.shaderModule = createShaderModule(device, shadowDepthShaderSource);
     if (r.shaderModule is null) fatal("Tex shadow depth shader compile failed");
 
     WGPUBindGroupLayoutEntry bgle;

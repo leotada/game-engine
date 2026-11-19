@@ -51,7 +51,7 @@ Pipeline3D createPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) 
     Pipeline3D result;
 
     // Shader
-    result.shaderModule = createShaderModule(device, cube3dShaderSource.ptr);
+    result.shaderModule = createShaderModule(device, cube3dShaderSource);
     if (result.shaderModule is null) {
         fatal("Failed to create 3D shader module");
     }
@@ -160,7 +160,7 @@ Pipeline3D createColoredPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceF
     Pipeline3D result;
 
     // Shader
-    result.shaderModule = createShaderModule(device, colored3dShaderSource.ptr);
+    result.shaderModule = createShaderModule(device, colored3dShaderSource);
     if (result.shaderModule is null) {
         fatal("Failed to create colored 3D shader module");
     }
@@ -283,7 +283,7 @@ struct PipelineText {
 PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
     PipelineText result;
 
-    result.shaderModule = createShaderModule(device, text2dShaderSource.ptr);
+    result.shaderModule = createShaderModule(device, text2dShaderSource);
     if (result.shaderModule is null) {
         fatal("Failed to create text shader module");
     }
@@ -419,7 +419,7 @@ enum SURFACE_PARAMS_SIZE = 64;
 Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
     Pipeline3D result;
 
-    result.shaderModule = createShaderModule(device, textured3dShaderSource.ptr);
+    result.shaderModule = createShaderModule(device, textured3dShaderSource);
     if (result.shaderModule is null) {
         fatal("Failed to create textured 3D shader module");
     }
@@ -535,7 +535,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D render pipeline");
     }
 
-    result.shaderModuleTangent = createShaderModule(device, textured3dTangentShaderSource.ptr);
+    result.shaderModuleTangent = createShaderModule(device, textured3dTangentShaderSource);
     if (result.shaderModuleTangent is null)
         fatal("Failed to create textured 3D tangent shader module");
     result.pipelineTangent = createTexturedDrawPipeline(device, result.shaderModuleTangent, result.pipelineLayout, surfaceFormat, 48, true);

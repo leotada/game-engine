@@ -91,7 +91,7 @@ struct SkinnedRenderer {
     }
 
     private void buildPipeline(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
-        pipe.shaderModule = createShaderModule(device, skinnedShaderSource.ptr);
+        pipe.shaderModule = createShaderModule(device, skinnedShaderSource);
 
         WGPUBindGroupLayoutEntry[2] e;
         e[0].binding = 0;

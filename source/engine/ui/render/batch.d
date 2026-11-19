@@ -113,7 +113,7 @@ struct UiBatchRenderer {
         indices.length = MAX_INDICES;
 
         // Create shader module
-        shaderModule = createShaderModule(device, ui2dShaderSource.ptr);
+        shaderModule = createShaderModule(device, ui2dShaderSource);
         if (shaderModule is null) {
             fatal("Failed to create UI shader module");
         }

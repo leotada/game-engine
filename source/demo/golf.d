@@ -1139,7 +1139,7 @@ struct UiRenderer {
         r.queue = gpu.getQueue();
         auto surfFmt = gpu.getFormat();
 
-        r.shaderModule = createShaderModule(r.device, uiShaderSource.ptr);
+        r.shaderModule = createShaderModule(r.device, uiShaderSource);
 
         WGPUBindGroupLayoutEntry bgle;
         bgle.binding = 0;

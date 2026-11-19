@@ -167,13 +167,13 @@ struct PostProcessor {
         p.thresholdUBO = createUniformBuffer(device, 16);
         p.tonemapUBO = createUniformBuffer(device, 32);
 
-        p.threshSM = createShaderModule(device, bloomThresholdShaderSource.ptr);
-        p.downKarisSM = createShaderModule(device, bloomDownsampleKarisShaderSource.ptr);
-        p.downSM = createShaderModule(device, bloomDownsampleShaderSource.ptr);
-        p.upSM = createShaderModule(device, bloomUpsampleShaderSource.ptr);
-        p.tonemapSM = createShaderModule(device, tonemapShaderSource.ptr);
-        p.fxaaSM = createShaderModule(device, fxaaShaderSource.ptr);
-        p.blitSM = createShaderModule(device, blitShaderSource.ptr);
+        p.threshSM = createShaderModule(device, bloomThresholdShaderSource);
+        p.downKarisSM = createShaderModule(device, bloomDownsampleKarisShaderSource);
+        p.downSM = createShaderModule(device, bloomDownsampleShaderSource);
+        p.upSM = createShaderModule(device, bloomUpsampleShaderSource);
+        p.tonemapSM = createShaderModule(device, tonemapShaderSource);
+        p.fxaaSM = createShaderModule(device, fxaaShaderSource);
+        p.blitSM = createShaderModule(device, blitShaderSource);
 
         p.threshBGL = makeTexUBOBGL(device, /*hasUbo=*/true);
         p.sampleBGL = makeTexUBOBGL(device, /*hasUbo=*/false);

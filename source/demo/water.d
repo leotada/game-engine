@@ -435,7 +435,7 @@ private struct WaterShaderPipelines {
             p.simBg[i] = wgpuDeviceCreateBindGroup(dev, &cbgd);
         }
 
-        p.simCsMod = createShaderModule(dev, waterSimCsShaderSource.ptr);
+        p.simCsMod = createShaderModule(dev, waterSimCsShaderSource);
         if (p.simCsMod is null) fatal("Failed to compile water_sim_cs.wgsl");
         {
             WGPUComputePipelineDescriptor cpd;
@@ -446,9 +446,9 @@ private struct WaterShaderPipelines {
             if (p.simPipe is null) fatal("Failed to create WTR-6 water simulation compute pipeline");
         }
 
-        p.skyMod   = createShaderModule(dev, skyDomeShaderSource.ptr);
-        p.bedMod   = createShaderModule(dev, causticsBedShaderSource.ptr);
-        p.waterMod = createShaderModule(dev, waterSurfaceShaderSource.ptr);
+        p.skyMod   = createShaderModule(dev, skyDomeShaderSource);
+        p.bedMod   = createShaderModule(dev, causticsBedShaderSource);
+        p.waterMod = createShaderModule(dev, waterSurfaceShaderSource);
         if (p.skyMod is null || p.bedMod is null || p.waterMod is null) {
             fatal("Failed to compile water/sky/caustics WGSL shader modules");
         }

@@ -168,7 +168,7 @@ struct GizmoRenderer {
     }
 
     private void buildPipeline(WGPUTextureFormat surfaceFormat) @trusted {
-        pipe.shaderModule = createShaderModule(device, gizmoLineShaderSource.ptr);
+        pipe.shaderModule = createShaderModule(device, gizmoLineShaderSource);
 
         WGPUBindGroupLayoutEntry bgle;
         bgle.binding = 0;
