@@ -275,6 +275,45 @@ dub run --config=export -- --target=<id> [options]
 
 ---
 
-## 6. Third-Party License Attribution
+## 6. External Game Project Static Export & Protected Asset Packs (`engine.assets.pak`)
+
+### 6.1 Encrypted / Obfuscated Asset Containers (`GEPK` v1)
+
+Games built on `game-engine` can pack their asset directory into a single encrypted binary container (`GEPK` v1) using `engine.assets.pak` and the standalone `game-engine-pak` CLI:
+
+```bash
+dub build --config=pak --compiler=dmd
+./game-engine-pak --input=/path/to/game/Assets --output=build/assets.pak --key=0x454F544F56455354 --verify
+```
+
+- **Path Hashing (`FNV-1a 64-bit`):** Normalized forward-slash relative paths are hashed; no plaintext filenames or directory names are written to the `.pak` table of contents.
+- **Stream Encryption (`SplitMix64` XOR):** Both the TOC (`tocSeed` + 64-bit integrity verification tag) and every asset payload (`key ^ pathHash ^ (offset * 0x9E3779B97F4A7C15)`) are stream-encrypted, stripping raw `.glb` (`glTF`), `.png`, and `.ttf` file headers.
+- **Transparent VFS Loading:** Call `mountAssetPak(cast(immutable(ubyte)[]) import("assets.pak"), key, false)` (or `mountAssetPakFile(...)`) once at startup. Engine loaders (`Font.loadFromFile`, `Texture.fromImageFile`, `parseGltfMesh`, `parseGltfMaterial`, `loadImageTexture`) and `readAssetBytes` / `assetExists` automatically decrypt assets in memory without reading loose files from disk.
+
+### 6.2 Exporting External Games (`--project`) with Embedded Assets & ELF Verification
+
+`ExportPipeline` (`game-engine-export`) can compile external D game repositories directly against the engine sources and static archives, pack and verify their assets, embed `assets.pak` inside the binary (`-J` + `-version=ProtectedAssets`), and validate the resulting Linux ELF binary:
+
+```bash
+dub run --config=export --compiler=dmd -- \
+  --target=linux-x86_64 \
+  --project=/path/to/my-game \
+  --engine=/path/to/game-engine \
+  --source=source \
+  --assets=Assets \
+  --protect-assets \
+  --embed-pak \
+  --pak-key=0x454F544F56455354 \
+  --name=my-game \
+  --title="My Game" \
+  --output=/path/to/dist/my-game
+```
+
+- **Compiler Auto-Selection & Static Phobos:** `ExportPipeline.hasLdcStaticPhobos()` checks for `libphobos2-ldc.a`. On Linux hosts where system `ldc2` only ships shared Phobos (`libphobos2-ldc-shared.so`), `--compiler=dmd` (or omitting `--compiler`) links `/usr/lib64/libphobos2.a` statically (`-defaultlib=libphobos2.a`) and excludes `hotreload/loader.d` + `hotreload/reload.d` so `rt_loadLibrary` is never referenced.
+- **Post-Build Verification (`verifyStaticBinary` & `verifyPakObfuscation`):** Unless `--no-verify` is passed, `ExportPipeline` inspects `readelf -d` (rejecting any `RPATH`/`RUNPATH` or non-base `DT_NEEDED` libraries outside `libc.so.6`, `libm.so.6`, `libgcc_s.so.1`, `ld-linux-x86-64.so.2`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`), verifies `ldd` has zero unresolved or engine/D shared libraries, and ensures plaintext asset names/headers do not leak into the `.pak`.
+
+---
+
+## 7. Third-Party License Attribution
 
 Every bundle produced by `ExportPipeline` copies/writes `THIRD-PARTY-LICENSES.txt` alongside the executable ([docs/third-party-licenses.md](third-party-licenses.md)), preserving MIT notices (engine & `meshoptimizer`), the zlib notice (`SDL3`, `SDL3_image`, `SDL3_ttf`), and the **FreeType License (FTL)** attribution required by FreeType 2.

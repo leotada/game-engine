@@ -479,16 +479,18 @@ Consume `game-engine` from a separate game repository (see [examples/external-ga
 }
 ```
 
-### 14.3 Static Multiplatform Release Export
+### 14.3 Static Multiplatform Release Export & Protected Asset Packs
 
-Build static `SDL3` / `SDL3_image` / `SDL3_ttf` / `FreeType` archives under `libs/<target>/` and package standalone bundles from the CLI or the Editor's **Arquivo → Exportar Release** menu:
+Build static `SDL3` / `SDL3_image` / `SDL3_ttf` / `FreeType` archives under `libs/<target>/` and package standalone bundles (including external `--project` games with embedded `GEPK` encrypted asset packs via `engine.assets.pak`) from the CLI or the Editor's **Arquivo → Exportar Release** menu:
 
 ```bash
 ./tools/build_sdl3_deps.sh linux-x86_64
-dub build --config=player-static --compiler=ldc2 --build=release
-dub run --config=export -- --check-toolchains
-dub run --config=export -- --target=linux-x86_64 --release --archive
+dub build --config=player-static --compiler=dmd --build=plain
+dub run --config=export --compiler=dmd -- --check-toolchains
+dub run --config=export --compiler=dmd -- --target=linux-x86_64 --project=../my-game --assets=Assets --protect-assets --embed-pak
 ```
+
+For standalone asset packing outside `export`, use `dub build --config=pak --compiler=dmd` (`game-engine-pak`) and mount via `mountAssetPak(import("assets.pak"), key, false)` at startup.
 
 | `--target=<value>` | Aliases | LLVM Triple | Bundle Output |
 |:---|:---|:---|:---|
@@ -499,4 +501,4 @@ dub run --config=export -- --target=linux-x86_64 --release --archive
 | `macos-universal` | `macos`, `darwin` | `arm64` + `x86_64` | Universal `.app` (`lipo` + `codesign`) + `.zip` |
 | `web-wasm32` | `web`, `wasm`, `wasm32` | `wasm32-unknown-emscripten` | `<name>.html` + `.js` + `.wasm` + `.data` + `.zip` |
 
-Deep dive: [export-guide.md](export-guide.md) (per-target flags, `BuildExportOptions`, WebGPU shell, and media format matrix).
+Deep dive: [export-guide.md](export-guide.md) (per-target flags, `BuildExportOptions`, `engine.assets.pak` `GEPK` format, external project export, WebGPU shell, and media format matrix).

@@ -4,6 +4,7 @@ module engine.ui.text.font;
 
 import bindings.sdl3;
 import bindings.sdl3_ttf;
+import engine.assets.pak : readAssetBytes;
 import engine.core.log : info, warn, err;
 import engine.core.pod : isPod, Pod;
 
@@ -116,13 +117,12 @@ struct Font {
         return true;
     }
 
-    /// Initialize font from a TTF/OTF file path on disk.
+    /// Initialize font from a TTF/OTF file path (or mounted `GEPK` asset pack).
     bool loadFromFile(scope const(char)[] path, float defaultPixelHeight = 16.0f, bool useSdf = true) nothrow {
         if (path.length == 0) return false;
         try {
-            import std.file : exists, read;
-            if (!exists(path)) return false;
-            ubyte[] bytes = () @trusted { return cast(ubyte[]) read(path); }();
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) return false;
             return loadFromMemory(bytes, defaultPixelHeight, useSdf);
         } catch (Exception) {
             return false;

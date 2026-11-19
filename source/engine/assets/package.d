@@ -9,4 +9,5 @@ version (NoAssetFile) {
 public import engine.assets.bmp;
 public import engine.assets.gltf;
 public import engine.assets.image;
+public import engine.assets.pak;
 public import engine.assets.png;

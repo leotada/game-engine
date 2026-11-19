@@ -9,6 +9,7 @@ import engine.assets.image :
     decodeImgFile  = decodeImageFile,
     decodeSvgBytesSized,
     surfaceToRgba8;
+import engine.assets.pak : isAssetPakMounted, readAssetBytes;
 import engine.gpu.context : GpuContext;
 import engine.core.log;
 
@@ -214,8 +215,16 @@ struct Texture {
         return fromPixels(gpu, rgba, w, h);
     }
 
-    /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, WEBP, etc.) from disk into a GPU Texture.
+    /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, WEBP, etc.) from disk or mounted `GEPK` pak into a GPU Texture.
     static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path) {
+        if (isAssetPakMounted()) {
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) {
+                err("Texture.fromImageFile: asset not found in mounted pak");
+                return Texture.init;
+            }
+            return fromImageBytes(gpu, bytes);
+        }
         import std.file : exists;
         if (!exists(path)) {
             err("Texture.fromImageFile: file not found");

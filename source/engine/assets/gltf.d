@@ -14,11 +14,11 @@ module engine.assets.gltf;
 import core.math : sqrt;
 import std.conv : to;
 import std.exception : enforce;
-import std.file : read, exists;
 import std.json;
 import std.path : dirName, buildPath, extension;
 import std.string : toLower;
 
+import engine.assets.pak : assetExists, readAssetBytes;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.graphics.material : Material, MaterialParams, MaterialFlags;
@@ -193,7 +193,9 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
 
 /// Parse pbrMetallicRoughness + `KHR_materials_*` extensions from the first material in a `.gltf` file.
 GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
-    auto text = cast(string) read(gltfPath);
+    ubyte[] rawBytes;
+    enforce(readAssetBytes(gltfPath, rawBytes), "glTF file not found: " ~ gltfPath);
+    auto text = cast(string) rawBytes;
     return parseGltfMaterialJson(text);
 }
 
@@ -322,15 +324,27 @@ private string resolveTextureUri(ref JSONValue root, int textureIndex) @trusted 
 }
 
 private Texture loadImageTexture(ref GpuContext gpu, string path) {
-    if (!exists(path)) {
+    if (!assetExists(path)) {
         err("glTF image not found: ", path);
         return Texture.init;
     }
     immutable ext = extension(path).toLower;
     if (ext == ".tga") {
+        import engine.assets.pak : isAssetPakMounted;
+        if (isAssetPakMounted()) {
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) return Texture.init;
+            return Texture.fromImageBytes(gpu, bytes, "TGA");
+        }
         return Texture.fromTgaFile(gpu, path);
     }
     if (ext == ".bmp") {
+        import engine.assets.pak : isAssetPakMounted;
+        if (isAssetPakMounted()) {
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) return Texture.init;
+            return Texture.fromImageBytes(gpu, bytes, "BMP");
+        }
         import engine.assets.bmp : loadBmpTexture;
         return loadBmpTexture(gpu, path);
     }
@@ -540,7 +554,9 @@ private Vec3 transformNormal(Mat4 invWorld, Vec3 n) pure nothrow @nogc {
 
 /// Parse a .gltf file and return its first primitive as CPU geometry.
 GltfMesh parseGltfMesh(string gltfPath) @trusted {
-    auto text = cast(string) read(gltfPath);
+    ubyte[] rawJson;
+    enforce(readAssetBytes(gltfPath, rawJson), "glTF file not found: " ~ gltfPath);
+    auto text = cast(string) rawJson;
     auto root = parseJSON(text);
     enforce("meshes" in root, "glTF: no meshes");
     auto meshes = root["meshes"].array;
@@ -570,7 +586,10 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
         immutable uri = b["uri"].str;
         enforce(uri.length < 5 || uri[0 .. 5] != "data:",
                 "glTF: data: URIs not supported — use external .bin");
-        bufferData[i] = cast(const(ubyte)[]) read(buildPath(baseDir, uri));
+        ubyte[] binBytes;
+        immutable binPath = buildPath(baseDir, uri);
+        enforce(readAssetBytes(binPath, binBytes), "glTF: missing external buffer: " ~ binPath);
+        bufferData[i] = binBytes;
     }
 
     // Decode EXT_meshopt_compression before any accessor read. The decoded

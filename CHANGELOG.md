@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Encrypted Asset Packs (`engine.assets.pak`) & External Static Project Export (`2026-11-19`):**
+  - Added `source/engine/assets/pak.d` (re-exported by `engine.assets`) implementing the `GEPK` v1 container format with FNV-1a 64-bit normalized path hashing, SplitMix64 XOR stream encryption for both TOC (with 64-bit verification tag) and payloads, and a mounted VFS (`mountAssetPak`, `mountAssetPakFile`, `readAssetBytes`, `assetExists`, `packDirectoryToPak`).
+  - Integrated transparent VFS asset loading into `Font.loadFromFile` (`source/engine/ui/text/font.d`), `Texture.fromImageFile` (`source/engine/graphics/texture.d`), and `source/engine/assets/gltf.d` (`parseGltfMaterial`, `parseGltfMesh`, `loadImageTexture`).
+  - Added standalone `game-engine-pak` CLI (`tools/pak_main.d`, DUB config `pak`) with `--verify` round-trip and header-obfuscation validation.
+  - Fixed `player-static` in `dub.json` to link Phobos statically under DMD (`-defaultlib=libphobos2.a`), pass `-link-defaultlib-shared=false` under LDC, exclude `hotreload/loader.d` & `hotreload/reload.d`, and link static `libwgpu_native.a` / `libbox3d.a`.
+  - Extended `ExportPipeline` (`source/editor/build_export.d`) and `tools/export_main.d` with external project static export (`--project`, `--engine`, `--source`, `--assets`, `--protect-assets`, `--embed-pak`, `--pak-key`, `--version`), compiler auto-detection (`hasLdcStaticPhobos()`), `verifyPakObfuscation()`, and post-build ELF verification (`verifyStaticBinary()` checking `readelf -d` and `ldd`).
+
 - **Complete Box3D Physics API (`OW-1`, `2026-11-19`):**
   - Expanded `source/bindings/box3d/functions.d` with native Box3D C99 bindings for heightfields, per-shape/mesh surface materials, collision filters, contact manifold data (`b3Contact_GetData`, `b3Body_GetContactData`), body type/CCD/sleep/mass controls, and spherical/wheel/prismatic/filter joints plus constraint force/torque queries and joint events.
   - Replaced the fixed `retainedMeshes[256]` leak in `source/engine/physics/body.d` with move-only RAII `CookedMesh` and `CookedHeightField` handles plus world-owned cleanup in `PhysicsWorld.~this()` (`source/engine/physics/world.d`), and added `createHeightField` (with `heightFieldHole` and per-cell `PhysicsSurfaceMaterial[]`).

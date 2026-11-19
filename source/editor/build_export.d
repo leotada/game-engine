@@ -2,13 +2,14 @@
 /// Supports static self-contained release builds across Linux, Windows, macOS, and Web (WASM + WebGPU).
 module editor.build_export;
 
-import std.algorithm : any, canFind;
+import std.algorithm : any, canFind, sort;
 import std.array : join, replace;
-import std.file : copy, dirEntries, exists, getAttributes, isDir, isFile, mkdirRecurse, readText, remove, setAttributes, SpanMode, write;
+import std.file : copy, dirEntries, exists, getAttributes, isDir, isFile, mkdirRecurse, read, readText, remove, rmdirRecurse, setAttributes, SpanMode, thisExePath, write;
 import std.format : format;
-import std.path : baseName, buildPath, dirName;
+import std.path : absolutePath, baseName, buildPath, dirName, extension, relativePath;
 import std.process : environment, executeShell;
 import std.string : split, strip, toLower;
+import engine.assets.pak : DEFAULT_ASSET_PAK_KEY, packDirectoryToPak;
 import engine.core.log : err, info, warn;
 
 @safe:
@@ -49,6 +50,16 @@ struct BuildExportOptions {
     bool packageArchive = false;
     bool useStaticDeps = true;
     bool enableSymGc = false;
+
+    string projectDir = "";          /// External game project root (empty = engine built-in player).
+    string engineDir = "";           /// Engine root directory (auto-detected if empty).
+    string sourceDir = "source";     /// Game source directory relative to projectDir.
+    string assetsDir = "assets";     /// Assets directory relative to projectDir (e.g. "Assets").
+    string[] extraVersions;          /// Extra -version= / -d-version= flags.
+    bool protectAssets = false;      /// Pack assets into encrypted GEPK container.
+    bool embedAssetsPak = false;     /// Embed assets.pak into executable (-J + version=ProtectedAssets).
+    ulong assetPakKey = 0;           /// 64-bit encryption key (0 => DEFAULT_ASSET_PAK_KEY).
+    bool verifyStatic = true;        /// Run ELF DT_NEEDED / ldd / obfuscation verification on Linux static exports.
 }
 
 private struct TargetSpec {
@@ -379,6 +390,248 @@ struct ExportPipeline {
         return args;
     }
 
+    /// Resolve the game-engine root directory containing `source/engine/app.d`.
+    static string resolveEngineDir(string explicitDir = "") @trusted {
+        string[] candidates;
+        if (explicitDir.length > 0) candidates ~= absolutePath(explicitDir);
+        candidates ~= ".";
+        auto exeDir = dirName(thisExePath());
+        candidates ~= exeDir;
+        candidates ~= buildPath(exeDir, "..");
+        foreach (cand; candidates) {
+            if (exists(buildPath(cand, "source/engine/app.d"))) {
+                return absolutePath(cand);
+            }
+        }
+        return explicitDir.length > 0 ? absolutePath(explicitDir) : absolutePath(".");
+    }
+
+    /// Return true if static LDC runtime/Phobos archives (`libphobos2-ldc.a`) are present on host.
+    static bool hasLdcStaticPhobos() @trusted {
+        string[] searchDirs = ["/usr/lib64", "/usr/lib", "/usr/local/lib64", "/usr/local/lib"];
+        auto ldcBin = findExecutableOnPath("ldc2");
+        if (ldcBin.length > 0) {
+            auto prefix = dirName(dirName(ldcBin));
+            searchDirs ~= buildPath(prefix, "lib64");
+            searchDirs ~= buildPath(prefix, "lib");
+        }
+        foreach (d; searchDirs) {
+            if (exists(buildPath(d, "libphobos2-ldc.a"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool isAllowedLinuxBaseLib(scope const(char)[] libBase) pure nothrow @nogc {
+        switch (libBase) {
+            case "libc.so.6":
+            case "libm.so.6":
+            case "libgcc_s.so.1":
+            case "ld-linux-x86-64.so.2":
+            case "libpthread.so.0":
+            case "libdl.so.2":
+            case "librt.so.1":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// Verify that a Linux static binary embeds all engine and D runtime libraries
+    /// (zero RPATH/RUNPATH, zero `not found`, and only base Linux ABI libs in DT_NEEDED and ldd).
+    static bool verifyStaticBinary(string binaryPath, out string outReport) @trusted {
+        outReport = "";
+        if (!exists(binaryPath)) {
+            outReport = "Binary does not exist: " ~ binaryPath;
+            return false;
+        }
+
+        auto rd = executeShell(format("readelf -d \"%s\"", binaryPath));
+        if (rd.status != 0) {
+            outReport = "readelf failed: " ~ rd.output;
+            return false;
+        }
+
+        string[] needed;
+        foreach (rawLine; rd.output.split('\n')) {
+            auto line = rawLine.strip();
+            if (line.canFind("(RPATH)") || line.canFind("(RUNPATH)")) {
+                outReport = "Unexpected RPATH/RUNPATH in static binary: " ~ line;
+                return false;
+            }
+            if (line.canFind("(NEEDED)")) {
+                auto lb = line.split('[');
+                if (lb.length >= 2) {
+                    auto rb = lb[$ - 1].split(']');
+                    if (rb.length >= 1) {
+                        immutable lib = rb[0].strip();
+                        needed ~= lib;
+                        if (!isAllowedLinuxBaseLib(lib)) {
+                            outReport = "Non-base shared library dependency in DT_NEEDED: " ~ lib;
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        if (needed.length == 0) {
+            outReport = "No DT_NEEDED entries parsed from readelf output";
+            return false;
+        }
+
+        auto ldRes = executeShell(format("ldd \"%s\"", binaryPath));
+        if (ldRes.status != 0) {
+            outReport = "ldd failed: " ~ ldRes.output;
+            return false;
+        }
+        if (ldRes.output.canFind("not found")) {
+            outReport = "Unresolved shared library in ldd:\n" ~ ldRes.output;
+            return false;
+        }
+        foreach (rawLine; ldRes.output.split('\n')) {
+            auto line = rawLine.strip();
+            if (line.length == 0) continue;
+            auto parts = line.split(' ');
+            if (parts.length == 0) continue;
+            auto base = baseName(parts[0].strip());
+            if (base == "linux-vdso.so.1" || base.length == 0) continue;
+            if (!isAllowedLinuxBaseLib(base)) {
+                outReport = "Unexpected shared library in ldd output: " ~ line;
+                return false;
+            }
+        }
+
+        outReport = "Verified static ELF DT_NEEDED=[" ~ needed.join(", ") ~ "]";
+        return true;
+    }
+
+    /// Verify that an encrypted GEPK asset pack leaks neither plaintext asset filenames
+    /// nor unencrypted GLB/PNG headers.
+    static bool verifyPakObfuscation(
+        scope const(ubyte)[] pakBytes,
+        scope const(string)[] sampleFilenames,
+        out string outReport
+    ) pure {
+        if (pakBytes.canFind(cast(const(ubyte)[]) "glTF\x02\x00\x00\x00")) {
+            outReport = "Asset pak contains unencrypted GLB header";
+            return false;
+        }
+        if (pakBytes.canFind(cast(const(ubyte)[]) "\x89PNG\r\n\x1a\n")) {
+            outReport = "Asset pak contains unencrypted PNG header";
+            return false;
+        }
+        foreach (name; sampleFilenames) {
+            auto leaf = baseName(name);
+            if (leaf.length >= 5 && pakBytes.canFind(cast(const(ubyte)[]) leaf)) {
+                outReport = "Asset pak contains plaintext filename: " ~ leaf;
+                return false;
+            }
+        }
+        outReport = format("Verified GEPK obfuscation across %d asset entries (%d bytes)",
+            cast(int) sampleFilenames.length, cast(int) pakBytes.length);
+        return true;
+    }
+
+    /// Collect source files and compiler flags for an external game project static build.
+    static string[] buildProjectCompileArgs(
+        const ref BuildExportOptions opts,
+        string compilerBin,
+        string projRoot,
+        string engineRoot,
+        string objDir,
+        string destBin,
+        string pakStageDir = ""
+    ) @trusted {
+        immutable tgt = effectiveTarget(opts);
+        immutable bool symGc = opts.enableSymGc || opts.useCardBarrier;
+        immutable bool isLdc = (baseName(compilerBin) == "ldc2" || baseName(compilerBin) == "ldc");
+
+        string[] args;
+        args ~= "-preview=dip1000";
+        if (isLdc) {
+            args ~= "-link-defaultlib-shared=false";
+            if (opts.release) {
+                args ~= ["-O3", "-release"];
+            }
+        } else {
+            args ~= "-defaultlib=libphobos2.a";
+        }
+
+        args ~= [
+            "-P-std=c17",
+            "-P-I" ~ buildPath(engineRoot, "vendor/box3d/include"),
+            "-I" ~ buildPath(projRoot, opts.sourceDir),
+            "-I" ~ buildPath(engineRoot, "source"),
+            "-I" ~ buildPath(engineRoot, "source/bindings/box3d"),
+            "-J" ~ buildPath(engineRoot, "assets/shaders"),
+        ];
+
+        void addVersion(string v) {
+            args ~= (isLdc ? "-d-version=" : "-version=") ~ v;
+        }
+
+        addVersion("StaticSDLDeps");
+        if (opts.embedAssetsPak && pakStageDir.length > 0) {
+            args ~= "-J" ~ pakStageDir;
+            addVersion("ProtectedAssets");
+        }
+        if (symGc) {
+            addVersion("Symgc_cards");
+            addVersion("Symgc_druntime_hooks");
+            args ~= isLdc ? "-gc-card-marking" : "-preview=gcbarrier";
+        }
+        foreach (v; opts.extraVersions) {
+            if (v.length > 0) addVersion(v);
+        }
+
+        args ~= ["-od=" ~ objDir, "-of=" ~ destBin];
+
+        string[] gameFiles;
+        immutable srcDirPath = buildPath(projRoot, opts.sourceDir);
+        foreach (entry; dirEntries(srcDirPath, SpanMode.depth)) {
+            if (entry.isFile && extension(entry.name) == ".d") {
+                gameFiles ~= entry.name;
+            }
+        }
+        gameFiles.sort();
+        args ~= gameFiles;
+
+        string[] engineFiles;
+        immutable engineModDir = buildPath(engineRoot, "source/engine");
+        foreach (entry; dirEntries(engineModDir, SpanMode.depth)) {
+            if (!entry.isFile || extension(entry.name) != ".d") continue;
+            auto rel = relativePath(entry.name, engineModDir).replace("\\", "/");
+            if (rel == "hotreload/loader.d" || rel == "hotreload/reload.d") continue;
+            engineFiles ~= entry.name;
+        }
+        immutable bindingsDir = buildPath(engineRoot, "source/bindings");
+        foreach (entry; dirEntries(bindingsDir, SpanMode.depth)) {
+            if (entry.isFile && extension(entry.name) == ".d") {
+                engineFiles ~= entry.name;
+            }
+        }
+        engineFiles.sort();
+        args ~= engineFiles;
+        args ~= buildPath(engineRoot, "source/bindings/box3d/box3d_import.c");
+
+        immutable spec = specFor(tgt);
+        immutable libsDir = buildPath(engineRoot, "libs", spec.libsSubdir);
+        foreach (lib; requiredStaticLibs(tgt, symGc)) {
+            args ~= buildPath(libsDir, lib);
+        }
+
+        if (tgt == ExportTarget.linuxX86_64 || tgt == ExportTarget.linuxArm64) {
+            if (isLdc) {
+                args ~= ["-L=--as-needed", "-L=-lm", "-L=-ldl", "-L=-lpthread", "-L=-lrt"];
+            } else {
+                args ~= ["-L=--as-needed", "-L-lm", "-L-ldl", "-L-lpthread", "-L-lrt"];
+            }
+        }
+
+        return args;
+    }
+
     /// Construct the compiler / dub command line for native targets.
     static string buildCompileCommand(const ref BuildExportOptions opts) pure {
         immutable tgt = effectiveTarget(opts);
@@ -397,10 +650,11 @@ struct ExportPipeline {
                     extraFlags = ` --dflags="-preview=gcbarrier -version=Symgc_cards -version=Symgc_druntime_hooks"`;
                 }
             }
+            immutable string buildMode = (opts.release && isLdc) ? " --build=release" : " --build=plain";
             return format("dub build --config=%s --compiler=%s%s%s",
                 configName,
                 compilerBin,
-                opts.release ? " --build=release" : "",
+                buildMode,
                 extraFlags);
         }
 
@@ -475,10 +729,11 @@ struct ExportPipeline {
         return shellTemplate.idup.replace("{{APP_TITLE}}", escapeXml(title));
     }
 
-    static void writeThirdPartyLicenses(string destDir) @trusted {
+    static void writeThirdPartyLicenses(string destDir, string engineRoot = ".") @trusted {
         immutable dest = buildPath(destDir, "THIRD-PARTY-LICENSES.txt");
-        if (exists("docs/third-party-licenses.md")) {
-            write(dest, readText("docs/third-party-licenses.md"));
+        immutable engineDoc = buildPath(engineRoot, "docs/third-party-licenses.md");
+        if (exists(engineDoc)) {
+            write(dest, readText(engineDoc));
             return;
         }
         write(dest,
@@ -493,13 +748,16 @@ struct ExportPipeline {
         immutable libLine = opts.useStaticDeps
             ? "# Self-contained static dependencies (no LD_LIBRARY_PATH override required)\n"
             : "export LD_LIBRARY_PATH=\"$DIR/libs:${LD_LIBRARY_PATH:-}\"\n";
+        immutable sceneArg = opts.startScene.length > 0
+            ? " --scene=\"" ~ opts.startScene ~ "\""
+            : "";
         immutable script =
             "#!/usr/bin/env bash\n"
             ~ "set -euo pipefail\n"
             ~ "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n"
             ~ libLine
             ~ "export SDL_VIDEODRIVER=\"${SDL_VIDEODRIVER:-wayland,x11}\"\n"
-            ~ "exec \"$DIR/" ~ binName ~ "\" --scene=\"" ~ opts.startScene ~ "\" \"$@\"\n";
+            ~ "exec \"$DIR/" ~ binName ~ "\"" ~ sceneArg ~ " \"$@\"\n";
 
         immutable launcherPath = buildPath(destDir, "run.sh");
         write(launcherPath, script);
@@ -510,12 +768,15 @@ struct ExportPipeline {
     static void writeLinuxDesktopEntry(string destDir, const ref BuildExportOptions opts) @trusted {
         immutable binName = opts.binaryName.length > 0 ? opts.binaryName : "game-player";
         immutable title = opts.appTitle.length > 0 ? opts.appTitle : "Game Engine Player";
+        immutable sceneArg = opts.startScene.length > 0
+            ? " --scene=" ~ opts.startScene
+            : "";
         immutable desktop =
             "[Desktop Entry]\n"
             ~ "Type=Application\n"
             ~ "Version=1.0\n"
             ~ "Name=" ~ title ~ "\n"
-            ~ "Exec=" ~ binName ~ " --scene=" ~ opts.startScene ~ "\n"
+            ~ "Exec=" ~ binName ~ sceneArg ~ "\n"
             ~ "Terminal=false\n"
             ~ "Categories=Game;\n";
         write(buildPath(destDir, sanitizeDesktopFileId(binName) ~ ".desktop"), desktop);
@@ -593,6 +854,136 @@ struct ExportPipeline {
         writeThirdPartyLicenses(rootDestDir);
     }
 
+    private static bool exportExternalProject(
+        const ref BuildExportOptions opts,
+        ExportTarget tgt,
+        ref string outLog
+    ) @trusted {
+        immutable projRoot = absolutePath(opts.projectDir);
+        immutable engineRoot = resolveEngineDir(opts.engineDir);
+        immutable bool symGc = opts.enableSymGc || opts.useCardBarrier;
+        immutable binName = (opts.binaryName.length > 0 ? opts.binaryName : baseName(projRoot))
+            ~ specFor(tgt).exeExt;
+
+        string compilerBin = opts.compiler;
+        if (compilerBin.length == 0 || compilerBin == "auto") {
+            compilerBin = (tgt == ExportTarget.linuxX86_64 && !hasLdcStaticPhobos()) ? "dmd" : "ldc2";
+        }
+        immutable bool isLdc = (baseName(compilerBin) == "ldc2" || baseName(compilerBin) == "ldc");
+        if (tgt == ExportTarget.linuxX86_64 && opts.useStaticDeps && isLdc && !hasLdcStaticPhobos()) {
+            outLog ~= "Host ldc2 installation lacks static libphobos2-ldc.a; pass --compiler=dmd or install static LDC runtime libs.\n";
+            err("Export: %s", outLog);
+            return false;
+        }
+
+        const chk = checkToolchain(tgt, buildPath(engineRoot, "libs"), symGc);
+        if (!chk.available) {
+            err("Export: preflight check failed: %s", chk.missingReason);
+            outLog ~= "Toolchain preflight failed: " ~ chk.missingReason ~ "\n";
+            return false;
+        }
+
+        if (exists(opts.outputDir)) rmdirRecurse(opts.outputDir);
+        mkdirRecurse(opts.outputDir);
+
+        immutable objDir = buildPath(opts.outputDir, ".obj_stage");
+        mkdirRecurse(objDir);
+        scope (exit) {
+            if (exists(objDir)) rmdirRecurse(objDir);
+        }
+
+        string pakStageDir;
+        scope (exit) {
+            if (pakStageDir.length > 0 && exists(pakStageDir)) rmdirRecurse(pakStageDir);
+        }
+
+        immutable srcAssets = buildPath(projRoot, opts.assetsDir);
+        if (opts.protectAssets && exists(srcAssets)) {
+            immutable ulong pakKey = opts.assetPakKey != 0 ? opts.assetPakKey : DEFAULT_ASSET_PAK_KEY;
+            immutable string prefix = baseName(opts.assetsDir);
+            auto pakBytes = packDirectoryToPak(srcAssets, pakKey, prefix);
+
+            string[] sampleNames;
+            foreach (entry; dirEntries(srcAssets, SpanMode.depth)) {
+                if (entry.isFile) sampleNames ~= entry.name;
+            }
+            string pakReport;
+            if (!verifyPakObfuscation(pakBytes, sampleNames, pakReport)) {
+                err("Export: %s", pakReport);
+                outLog ~= pakReport ~ "\n";
+                return false;
+            }
+            info("Export: %s", pakReport);
+            outLog ~= pakReport ~ "\n";
+
+            if (opts.embedAssetsPak) {
+                pakStageDir = buildPath(opts.outputDir, ".pak_stage");
+                mkdirRecurse(pakStageDir);
+                write(buildPath(pakStageDir, "assets.pak"), pakBytes);
+            } else {
+                write(buildPath(opts.outputDir, "assets.pak"), pakBytes);
+            }
+        } else if (!opts.protectAssets && exists(srcAssets)) {
+            immutable dstAssets = buildPath(opts.outputDir, baseName(opts.assetsDir));
+            foreach (entry; dirEntries(srcAssets, SpanMode.depth)) {
+                if (!entry.isFile) continue;
+                auto rel = relativePath(entry.name, srcAssets);
+                auto dst = buildPath(dstAssets, rel);
+                auto p = dirName(dst);
+                if (!exists(p)) mkdirRecurse(p);
+                copy(entry.name, dst);
+            }
+        }
+
+        immutable destBin = buildPath(opts.outputDir, binName);
+        auto compileArgs = buildProjectCompileArgs(
+            opts, compilerBin, projRoot, engineRoot, objDir, destBin, pakStageDir);
+
+        immutable rspPath = buildPath(objDir, "compile.rsp");
+        write(rspPath, compileArgs.join("\n") ~ "\n");
+
+        immutable cmd = format("\"%s\" @\"%s\"", compilerBin, rspPath);
+        info("Export: compiling external project with %s...", compilerBin);
+        auto res = executeShell(cmd);
+        outLog ~= res.output;
+        if (res.status != 0) {
+            err("Export: compilation failed (%d):\n%s", res.status, res.output);
+            return false;
+        }
+
+        if (exists(destBin)) {
+            auto attrs = getAttributes(destBin);
+            setAttributes(destBin, attrs | 0b001_001_001);
+        }
+        writeThirdPartyLicenses(opts.outputDir, engineRoot);
+        if (tgt == ExportTarget.linuxX86_64 || tgt == ExportTarget.linuxArm64) {
+            BuildExportOptions scriptOpts = cloneOpts(opts);
+            scriptOpts.binaryName = binName;
+            writeLinuxRunScript(opts.outputDir, scriptOpts);
+            writeLinuxDesktopEntry(opts.outputDir, scriptOpts);
+        }
+
+        if (opts.verifyStatic && opts.useStaticDeps && tgt == ExportTarget.linuxX86_64) {
+            string verifyReport;
+            if (!verifyStaticBinary(destBin, verifyReport)) {
+                err("Export: static verification failed: %s", verifyReport);
+                outLog ~= "Static verification failed: " ~ verifyReport ~ "\n";
+                return false;
+            }
+            info("Export: %s", verifyReport);
+            outLog ~= verifyReport ~ "\n";
+        }
+
+        if (opts.packageArchive) {
+            if (!packageOutputArchive(tgt, opts.outputDir, outLog)) {
+                warn("Export: archive packaging failed (unarchived bundle remains valid)");
+            }
+        }
+
+        info("Export: successfully packaged %s release in %s", exportTargetId(tgt), opts.outputDir);
+        return true;
+    }
+
     static bool exportGame(const ref BuildExportOptions opts, out string outLog) @trusted {
         outLog = "";
         immutable tgt = effectiveTarget(opts);
@@ -601,6 +992,19 @@ struct ExportPipeline {
         info("Export: starting %s export to %s...", exportTargetId(tgt), opts.outputDir);
 
         try {
+            if (opts.projectDir.length > 0) {
+                return exportExternalProject(opts, tgt, outLog);
+            }
+
+            if (opts.useStaticDeps && tgt == ExportTarget.linuxX86_64) {
+                immutable comp = opts.compiler.length > 0 ? opts.compiler : "ldc2";
+                if ((comp == "ldc2" || comp == "ldc") && !hasLdcStaticPhobos()) {
+                    outLog ~= "Host ldc2 installation lacks static libphobos2-ldc.a; pass --compiler=dmd or install static LDC runtime libs.\n";
+                    err("Export: %s", outLog);
+                    return false;
+                }
+            }
+
             if (opts.useStaticDeps || tgt != ExportTarget.linuxX86_64) {
                 const chk = checkToolchain(tgt, "libs", symGc);
                 if (!chk.available) {
@@ -649,14 +1053,25 @@ struct ExportPipeline {
                 immutable produced = opts.useStaticDeps
                     ? "game-engine-player-static"
                     : (symGc ? "game-engine-player-symgc" : "game-engine-player");
+                immutable destBin = buildPath(opts.outputDir, binName);
                 if (exists(produced)) {
-                    immutable destBin = buildPath(opts.outputDir, binName);
                     copy(produced, destBin);
                     auto attrs = getAttributes(destBin);
                     setAttributes(destBin, attrs | 0b001_001_001);
                 }
                 writeLinuxRunScript(opts.outputDir, opts);
                 writeLinuxDesktopEntry(opts.outputDir, opts);
+
+                if (opts.verifyStatic && opts.useStaticDeps) {
+                    string verifyReport;
+                    if (!verifyStaticBinary(destBin, verifyReport)) {
+                        err("Export: static verification failed: %s", verifyReport);
+                        outLog ~= "Static verification failed: " ~ verifyReport ~ "\n";
+                        return false;
+                    }
+                    info("Export: %s", verifyReport);
+                    outLog ~= verifyReport ~ "\n";
+                }
             }
 
             if (opts.packageArchive) {
@@ -692,6 +1107,15 @@ struct ExportPipeline {
         dst.packageArchive = src.packageArchive;
         dst.useStaticDeps  = src.useStaticDeps;
         dst.enableSymGc    = src.enableSymGc;
+        dst.projectDir     = src.projectDir;
+        dst.engineDir      = src.engineDir;
+        dst.sourceDir      = src.sourceDir;
+        dst.assetsDir      = src.assetsDir;
+        dst.extraVersions  = src.extraVersions.dup;
+        dst.protectAssets  = src.protectAssets;
+        dst.embedAssetsPak = src.embedAssetsPak;
+        dst.assetPakKey    = src.assetPakKey;
+        dst.verifyStatic   = src.verifyStatic;
         return dst;
     }
 
@@ -844,12 +1268,22 @@ unittest {
     const linuxChk = ExportPipeline.checkToolchain(ExportTarget.linuxX86_64);
     assert(linuxChk.available, "Host Linux toolchain preflight failed: " ~ linuxChk.missingReason);
 
+    // GEPK obfuscation verification check
+    string pakReport;
+    assert(!ExportPipeline.verifyPakObfuscation(
+        cast(const(ubyte)[]) "glTF\x02\x00\x00\x00", ["player_ship.glb"], pakReport));
+    assert(!ExportPipeline.verifyPakObfuscation(
+        cast(const(ubyte)[]) "header player_ship.glb tail", ["Assets/Models/player_ship.glb"], pakReport));
+    assert(ExportPipeline.verifyPakObfuscation(
+        cast(const(ubyte)[]) "GEPK\x01\x00\x00\x00\x00\x00\x00\x00", ["Assets/Models/player_ship.glb"], pakReport));
+
     BuildExportOptions opts;
     opts.outputDir = "build/test_export";
     opts.startScene = "assets/scenes/arena_01.scene.json";
-    opts.compiler = "ldc2";
-    opts.release = true;
+    opts.compiler = ExportPipeline.hasLdcStaticPhobos() ? "ldc2" : "dmd";
+    opts.release = ExportPipeline.hasLdcStaticPhobos();
     opts.useStaticDeps = true;
+    opts.verifyStatic = true;
     string outLog;
     assert(ExportPipeline.exportGame(opts, outLog), "ExportPipeline failed: " ~ outLog);
     assert(exists("build/test_export/game-player"));
@@ -858,8 +1292,13 @@ unittest {
     assert(exists("build/test_export/THIRD-PARTY-LICENSES.txt"));
     assert(exists("build/test_export/assets/scenes/arena_01.scene.json"));
 
+    string verifyReport;
+    assert(ExportPipeline.verifyStaticBinary("build/test_export/game-player", verifyReport), verifyReport);
+
     auto lddRes = executeShell("ldd build/test_export/game-player");
     assert(lddRes.status == 0, "ldd failed on exported static binary");
+    assert(!lddRes.output.canFind("libphobos"), "libphobos dynamically linked:\n" ~ lddRes.output);
+    assert(!lddRes.output.canFind("libdruntime"), "libdruntime dynamically linked:\n" ~ lddRes.output);
     assert(!lddRes.output.canFind("libSDL3"), "libSDL3 dynamically linked:\n" ~ lddRes.output);
     assert(!lddRes.output.canFind("libfreetype"), "libfreetype dynamically linked:\n" ~ lddRes.output);
     assert(!lddRes.output.canFind("libwgpu"), "libwgpu dynamically linked:\n" ~ lddRes.output);

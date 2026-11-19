@@ -88,13 +88,21 @@
             "mainSourceFile": "tools/player/player_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
             "importPaths": ["source", "source/bindings/box3d", "tools/player"],
+            "excludedSourceFiles": [
+                "source/engine/hotreload/loader.d",
+                "source/engine/hotreload/reload.d"
+            ],
             "versions": ["StaticSDLDeps"],
+            "dflags-dmd": ["-defaultlib=libphobos2.a"],
+            "dflags-ldc": ["-link-defaultlib-shared=false"],
             "sourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
                 "libs/linux-x86_64/libSDL3_ttf.a",
                 "libs/linux-x86_64/libSDL3_image.a",
                 "libs/linux-x86_64/libfreetype.a",
-                "libs/linux-x86_64/libSDL3.a"
+                "libs/linux-x86_64/libSDL3.a",
+                "libs/linux-x86_64/libwgpu_native.a",
+                "libs/linux-x86_64/libbox3d.a"
             ],
             "libs-linux": ["dl", "pthread", "rt"],
             "lflags-linux": [
@@ -124,12 +132,38 @@
                 "source/editor/editor_app.d",
                 "source/editor/panels/*",
                 "tools/lint.d",
+                "tools/pak_main.d",
                 "tools/player/*",
                 "tools/spikes/*",
                 "tools/ozz/*",
                 "tools/meshopt-oracle/*",
                 "tools/benchmarks/*"
             ]
+        },
+        {
+            "name": "pak",
+            "targetType": "executable",
+            "targetName": "game-engine-pak",
+            "mainSourceFile": "tools/pak_main.d",
+            "sourcePaths": ["tools"],
+            "importPaths": ["source", "tools"],
+            "sourceFiles": [
+                "tools/pak_main.d",
+                "source/engine/assets/pak.d"
+            ],
+            "excludedSourceFiles": [
+                "tools/export_main.d",
+                "tools/lint.d",
+                "tools/spikes/*",
+                "tools/ozz/*",
+                "tools/meshopt-oracle/*",
+                "tools/player/*",
+                "tools/benchmarks/*",
+                "source/demo/*",
+                "source/bindings/box3d/box3d_import.c"
+            ],
+            "libs": [],
+            "versions": ["NoSDL", "NoWGPU", "NoAssetFile"]
         },
         {
             "name": "pbr",
