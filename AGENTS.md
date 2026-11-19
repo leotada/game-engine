@@ -48,6 +48,8 @@ This is a commercial-grade 3D game engine written in **D**, targeting Bevy Engin
 ### Documentation & Language
 
 - **All documentation must be written in English.** This applies to all files in `docs/`, architecture documents, roadmaps, implementation plans, code comments, docstrings, and commit messages. Never write documentation or plans in Portuguese or any other language. All existing and future documentation must be maintained in English.
+- **Document every change or new feature in the engine's markdown documentation.** Whenever you add a feature or modify existing behavior, update the relevant markdown files in `docs/` (such as `docs/graphics.md`, `docs/editor-guide.md`, `docs/export-guide.md`, `docs/scripting-guide.md`, `docs/README.md`, etc.) and `CHANGELOG.md` as appropriate.
+- **Keep the development usage guide (`docs/game-development-guide.md`) clear on how to use every feature.** Any user-facing or developer-facing feature or change must be clearly explained in `docs/game-development-guide.md` with accurate usage instructions, configuration options, and practical code examples so developers can immediately understand how to use it.
 
 ### Workflow: Commits and Memory
 
@@ -206,7 +208,7 @@ source/
 │   │   └── overlay.d   # Structured FPS + label overlay atop TextRenderer
 │   ├── ecs/            # Sparse-set ComponentStore, World template, SceneWorld
 │   ├── gpu/            # WGPU context, renderer, pipelines, buffers, shaders, text, shadow
-│   ├── graphics/       # High-level mesh, texture, material types
+│   ├── graphics/       # High-level mesh, texture, material, 2D SpriteRenderer/Camera2D types
 │   ├── meshopt/        # Import-time mesh processing (pure-D meshoptimizer)
 │   ├── hotreload/      # Inotify file watcher, build runner, dynamic module loader, state migration
 │   ├── math/           # Vec2/3/4, Mat4 (perspective, ortho, lookAt, transforms)
