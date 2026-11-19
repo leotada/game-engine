@@ -67,6 +67,8 @@ enum gizmoLineShaderSource = import("gizmo_line.wgsl");
 
 enum ui2dShaderSource = import("ui2d.wgsl");
 
+enum sprite2dShaderSource = import("sprite2d.wgsl");
+
 enum bloomThresholdShaderSource = preprocessShader(import("post_bloom_threshold.wgsl"), "post_bloom_threshold.wgsl").code;
 
 enum bloomDownsampleKarisShaderSource = preprocessShader(import("post_bloom_down_karis.wgsl"), "post_bloom_down_karis.wgsl").code;
