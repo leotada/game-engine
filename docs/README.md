@@ -37,6 +37,8 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-networking.md](plan-networking.md) | Pending | Multiplayer primitives (#10) |
 | [plan-split-screen.md](plan-split-screen.md) | Pending | Split-screen local co-op: multi-viewport rendering + gamepads (#11) |
 | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Delivered | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
+| [plan-navigation-recast.md](plan-navigation-recast.md) | Pending (pure-D deferred; C shim first) | 3D NavMesh, TileCache dynamic obstacles & Crowd navigation (`engine.nav`) |
+| [plan-open-world-readiness.md](plan-open-world-readiness.md) | Pending (Phase 1 next) | Semi-open-world 9 km² readiness: Box3D physics, open-world rendering, spatial/DSP/OGG audio, ragdoll/sockets, UI clip/rotate, Recast nav, streaming, Windows steadygc, Blender/hot-reload (#13) |
 
 ## History / Cancelled
 

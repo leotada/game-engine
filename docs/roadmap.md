@@ -25,8 +25,11 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 | 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
+| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **High (Phase 1 next)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics, culling/LOD/CSM/terrain/decals/weather, 3D/DSP/OGG audio, ozz-physics ragdoll + UI circle clip/rotate, Recast C-shim nav, chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
 
 ### Ordering Notes
+
+- **Open-World Readiness (#13) — Phase 1 (`OW-1`) starts next:** Completing Box3D bindings and wrappers in `engine.physics` (heightfields, per-triangle materials, spherical/wheel/filter joints, constraint force/breakables, contact impulses, filters, CCD, sleep/wake) has zero upstream blockers and supersedes the deferred P5 static mesh/heightfield maintenance note below.
 
 - **steadygc (#2b):** Direct compiler card barrier (`-version=Symgc_cards`) and custom runtime integration across all 5 engine target platforms; pairs with engine's `Pod!T` DOD storage (`BlkAttr.NO_SCAN`) for sub-millisecond GC pauses.
 - **PBR + Post:** Scene renders into `rgba16float`; bloom + ACES + FXAA detailed in [`plan-post-processing.md`](plan-post-processing.md). Swapchain presentation remains SDR.
