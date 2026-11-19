@@ -35,47 +35,72 @@ struct Texture {
     package(engine) WGPUTextureView view;
     uint width;
     uint height;
+    /// Number of mip levels (1 = no mip chain).
+    uint mipLevels = 1;
+    /// Storage format of `texture`.
+    WGPUTextureFormat format = WGPUTextureFormat.rgba8Unorm;
 
     @disable this(this);
 
     /// Upload raw RGBA8 pixel data (row-major, top-left origin, 4 bytes/pixel).
     static Texture fromPixels(ref GpuContext gpu, const(ubyte)[] rgba,
-                              uint width, uint height) @trusted {
+                              uint width, uint height) {
+        return fromPixels(gpu, rgba, width, height, TextureDesc.init);
+    }
+
+    /// Upload RGBA8 pixels. `desc.generateMips` builds a CPU box-filtered mip
+    /// chain at load time (never call this from the frame loop).
+    static Texture fromPixels(ref GpuContext gpu, const(ubyte)[] rgba,
+                              uint width, uint height, TextureDesc desc) {
         assert(rgba.length == cast(size_t) width * height * 4,
                "Texture.fromPixels: pixel buffer size mismatch");
 
         Texture t;
         t.width  = width;
         t.height = height;
+        t.format = WGPUTextureFormat.rgba8Unorm;
+        t.mipLevels = desc.generateMips ? mipCount(width, height) : 1;
 
-        auto device = gpu.getDevice();
-        auto queue  = gpu.getQueue();
-
-        WGPUTextureDescriptor desc;
-        desc.usage     = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;
-        desc.dimension = WGPUTextureDimension.dim2D;
-        desc.size      = WGPUExtent3D(width, height, 1);
-        desc.format    = WGPUTextureFormat.rgba8Unorm;
-        t.texture = wgpuDeviceCreateTexture(device, &desc);
-        if (t.texture is null) {
+        t.texture = createTexture2D(gpu, WGPUTextureFormat.rgba8Unorm, width, height, 1, t.mipLevels);
+        if (t.texture is null)
             fatal("Failed to create WGPU texture");
+
+        uploadRgba8WithMips(gpu, t.texture, 0, rgba, width, height, t.mipLevels, desc.normalMap);
+        t.view = createView(t.texture, WGPUTextureFormat.rgba8Unorm,
+                            WGPUTextureViewDimension.dim2D, 1);
+        return t;
+    }
+
+    /// Single-channel 16-bit normalized texture (heightmaps, masks).
+    /// Requires the 16-bit-norm device feature; returns an invalid texture
+    /// (and logs) when the device cannot create it.
+    static Texture fromR16(ref GpuContext gpu, const(ushort)[] texels, uint width, uint height) {
+        return fromSingleChannel(gpu, WGPUTextureFormat.r16Unorm, 2,
+            () @trusted { return cast(const(ubyte)[]) texels; }(), width, height);
+    }
+
+    /// Single-channel 32-bit float texture. Not filterable on stock WebGPU:
+    /// sample it with a nearest sampler or `textureLoad`.
+    static Texture fromR32F(ref GpuContext gpu, const(float)[] texels, uint width, uint height) {
+        return fromSingleChannel(gpu, WGPUTextureFormat.r32Float, 4,
+            () @trusted { return cast(const(ubyte)[]) texels; }(), width, height);
+    }
+
+    private static Texture fromSingleChannel(ref GpuContext gpu, WGPUTextureFormat fmt, uint bpp,
+                                             const(ubyte)[] bytes, uint width, uint height) {
+        assert(bytes.length == cast(size_t) width * height * bpp,
+               "Texture: single-channel buffer size mismatch");
+        Texture t;
+        t.width = width;
+        t.height = height;
+        t.format = fmt;
+        t.texture = createTexture2D(gpu, fmt, width, height, 1, 1);
+        if (t.texture is null) {
+            err("Texture: device cannot create single-channel format ", cast(uint) fmt);
+        } else {
+            writeLevel(gpu, t.texture, 0, 0, bytes, width, height, bpp);
+            t.view = createView(t.texture, fmt, WGPUTextureViewDimension.dim2D, 1);
         }
-
-        WGPUImageCopyTexture dst;
-        dst.texture = t.texture;
-
-        WGPUTextureDataLayout layout;
-        layout.bytesPerRow  = width * 4;
-        layout.rowsPerImage = height;
-
-        WGPUExtent3D extent = WGPUExtent3D(width, height, 1);
-        wgpuQueueWriteTexture(queue, &dst, rgba.ptr, rgba.length, &layout, &extent);
-
-        WGPUTextureViewDescriptor viewDesc;
-        viewDesc.format    = WGPUTextureFormat.rgba8Unorm;
-        viewDesc.dimension = WGPUTextureViewDimension.dim2D;
-        t.view = wgpuTextureCreateView(t.texture, &viewDesc);
-
         return t;
     }
 
@@ -121,12 +146,12 @@ struct Texture {
 
     /// Load an uncompressed 24/32-bit TGA file (bottom-left origin).
     /// Returns an invalid Texture on failure.
-    static Texture fromTgaFile(ref GpuContext gpu, string path) {
+    static Texture fromTgaFile(ref GpuContext gpu, string path, TextureDesc desc = TextureDesc.init) {
         import std.file : read;
         import std.exception : ErrnoException;
         try {
             auto bytes = cast(const(ubyte)[]) read(path);
-            return fromTgaBytes(gpu, bytes);
+            return fromTgaBytes(gpu, bytes, desc);
         } catch (Exception e) {
             err("Failed to read TGA file: " ~ path);
             return Texture.init;
@@ -134,7 +159,7 @@ struct Texture {
     }
 
     /// Decode TGA bytes (type 2 RGB uncompressed, 24 or 32 bpp).
-    static Texture fromTgaBytes(ref GpuContext gpu, const(ubyte)[] bytes) {
+    static Texture fromTgaBytes(ref GpuContext gpu, const(ubyte)[] bytes, TextureDesc desc = TextureDesc.init) {
         if (bytes.length < 18) {
             err("TGA: truncated header");
             return Texture.init;
@@ -177,7 +202,7 @@ struct Texture {
             }
         }
 
-        return fromPixels(gpu, rgba, width, height);
+        return fromPixels(gpu, rgba, width, height, desc);
     }
 
     /// Decode PNG/JPG/BMP/QOI/GIF/WEBP/SVG/TGA image bytes into an RGBA8 buffer via SDL3_image.
@@ -208,22 +233,24 @@ struct Texture {
     }
 
     /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, etc.) from in-memory file bytes into a GPU Texture.
-    static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes, const(char)* typeHint = null) @trusted {
+    static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes, const(char)* typeHint = null,
+                                  TextureDesc desc = TextureDesc.init) @trusted {
         ubyte[] rgba;
         uint w, h;
         if (!decodeImageBytes(bytes, rgba, w, h, typeHint)) return Texture.init;
-        return fromPixels(gpu, rgba, w, h);
+        return fromPixels(gpu, rgba, w, h, desc);
     }
 
     /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, WEBP, etc.) from disk or mounted `GEPK` pak into a GPU Texture.
-    static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path) {
+    static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path,
+                                 TextureDesc desc = TextureDesc.init) {
         if (isAssetPakMounted()) {
             ubyte[] bytes;
             if (!readAssetBytes(path, bytes)) {
                 err("Texture.fromImageFile: asset not found in mounted pak");
                 return Texture.init;
             }
-            return fromImageBytes(gpu, bytes);
+            return fromImageBytes(gpu, bytes, null, desc);
         }
         import std.file : exists;
         if (!exists(path)) {
@@ -236,7 +263,7 @@ struct Texture {
             err("Texture.fromImageFile: failed to decode image");
             return Texture.init;
         }
-        return fromPixels(gpu, rgba, w, h);
+        return fromPixels(gpu, rgba, w, h, desc);
     }
 
     /// Opaque UI texture handle compatible with `UiNode.textureHandle`.
@@ -252,6 +279,255 @@ struct Texture {
     }
 }
 
+/// Upload options for `Texture.fromPixels` and the image loaders.
+struct TextureDesc {
+    /// Build a full CPU box-filtered mip chain at load time.
+    bool generateMips = false;
+    /// Treat RGB as a tangent-space normal and re-normalize every mip texel.
+    bool normalMap = false;
+
+    /// Mipmapped color texture (albedo, ORM, emissive).
+    static TextureDesc mipped() pure nothrow @nogc { return TextureDesc(true, false); }
+    /// Mipmapped normal map.
+    static TextureDesc mippedNormal() pure nothrow @nogc { return TextureDesc(true, true); }
+}
+
+/// Number of mip levels for a full chain down to 1×1.
+uint mipCount(uint width, uint height) pure nothrow @nogc {
+    uint m = width > height ? width : height;
+    uint levels = 1;
+    while (m > 1) {
+        m >>= 1;
+        levels++;
+    }
+    return levels;
+}
+
+/// Size of mip `level` along one axis (never below 1).
+uint mipExtent(uint base, uint level) pure nothrow @nogc {
+    immutable v = base >> level;
+    return v == 0 ? 1 : v;
+}
+
+/// Bytes needed for RGBA8 mip levels `1 .. levels` (level 0 excluded).
+size_t mipTailBytesRgba8(uint width, uint height, uint levels) pure nothrow @nogc {
+    size_t total = 0;
+    foreach (l; 1 .. levels)
+        total += cast(size_t) mipExtent(width, l) * mipExtent(height, l) * 4;
+    return total;
+}
+
+/**
+ * Downsample one RGBA8 level with a 2×2 box filter. Odd source sizes clamp
+ * the second tap to the edge, so non-power-of-two images work. When
+ * `normalMap` is set, RGB is decoded as a unit vector, averaged and
+ * re-normalized; alpha is always averaged.
+ */
+void downsampleRgba8(scope const(ubyte)[] src, uint sw, uint sh,
+                     scope ubyte[] dst, uint dw, uint dh, bool normalMap) pure nothrow @nogc {
+    assert(src.length >= cast(size_t) sw * sh * 4 && dst.length >= cast(size_t) dw * dh * 4);
+    foreach (y; 0 .. dh) {
+        immutable y0 = y * 2 < sh ? y * 2 : sh - 1;
+        immutable y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        foreach (x; 0 .. dw) {
+            immutable x0 = x * 2 < sw ? x * 2 : sw - 1;
+            immutable x1 = x0 + 1 < sw ? x0 + 1 : x0;
+            immutable size_t a = (cast(size_t) y0 * sw + x0) * 4;
+            immutable size_t b = (cast(size_t) y0 * sw + x1) * 4;
+            immutable size_t c = (cast(size_t) y1 * sw + x0) * 4;
+            immutable size_t d = (cast(size_t) y1 * sw + x1) * 4;
+            immutable size_t o = (cast(size_t) y * dw + x) * 4;
+            if (normalMap) {
+                float[3] n = 0;
+                immutable size_t[4] taps = [a, b, c, d];
+                foreach (ch; 0 .. 3) {
+                    foreach (idx; taps)
+                        n[ch] += src[idx + ch] / 127.5f - 1.0f;
+                }
+                immutable len2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+                if (len2 > 1e-12f) {
+                    immutable inv = 1.0f / sqrtF(len2);
+                    foreach (ch; 0 .. 3) n[ch] *= inv;
+                } else {
+                    n = [0.0f, 0.0f, 1.0f];
+                }
+                foreach (ch; 0 .. 3) {
+                    float v = (n[ch] * 0.5f + 0.5f) * 255.0f + 0.5f;
+                    dst[o + ch] = cast(ubyte)(v < 0 ? 0 : (v > 255 ? 255 : v));
+                }
+            } else {
+                foreach (ch; 0 .. 3)
+                    dst[o + ch] = cast(ubyte)((src[a + ch] + src[b + ch] + src[c + ch] + src[d + ch] + 2) / 4);
+            }
+            dst[o + 3] = cast(ubyte)((src[a + 3] + src[b + 3] + src[c + 3] + src[d + 3] + 2) / 4);
+        }
+    }
+}
+
+/// Fill `dst` with RGBA8 levels `1 .. levels` packed back to back
+/// (`mipTailBytesRgba8` bytes). Level 0 is `src` itself.
+void generateMipChainRgba8(scope const(ubyte)[] src, uint width, uint height,
+                           scope ubyte[] dst, uint levels, bool normalMap = false) pure nothrow @nogc {
+    assert(dst.length >= mipTailBytesRgba8(width, height, levels));
+    const(ubyte)[] prev = src;
+    uint pw = width, ph = height;
+    size_t off = 0;
+    foreach (l; 1 .. levels) {
+        immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
+        immutable bytes = cast(size_t) lw * lh * 4;
+        downsampleRgba8(prev, pw, ph, dst[off .. off + bytes], lw, lh, normalMap);
+        prev = dst[off .. off + bytes];
+        pw = lw;
+        ph = lh;
+        off += bytes;
+    }
+}
+
+private float sqrtF(float v) pure nothrow @nogc {
+    import core.math : sqrt;
+    return sqrt(v);
+}
+
+package(engine) WGPUTexture createTexture2D(ref GpuContext gpu, WGPUTextureFormat fmt,
+                                            uint width, uint height, uint layers, uint mips) {
+    WGPUTextureDescriptor desc;
+    desc.usage         = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;
+    desc.dimension     = WGPUTextureDimension.dim2D;
+    desc.size          = WGPUExtent3D(width, height, layers);
+    desc.format        = fmt;
+    desc.mipLevelCount = mips;
+    auto device = gpu.getDevice();
+    return () @trusted { return wgpuDeviceCreateTexture(device, &desc); }();
+}
+
+package(engine) WGPUTextureView createView(WGPUTexture tex, WGPUTextureFormat fmt,
+                                           WGPUTextureViewDimension dim, uint layers) {
+    WGPUTextureViewDescriptor vd;
+    vd.format    = fmt;
+    vd.dimension = dim;
+    vd.baseArrayLayer = 0;
+    vd.arrayLayerCount = layers;
+    return () @trusted { return wgpuTextureCreateView(tex, &vd); }();
+}
+
+/// Write one mip level of one array layer.
+package(engine) void writeLevel(ref GpuContext gpu, WGPUTexture tex, uint layer, uint mip,
+                                scope const(ubyte)[] data, uint w, uint h, uint bytesPerPixel) {
+    WGPUImageCopyTexture dst;
+    dst.texture  = tex;
+    dst.mipLevel = mip;
+    dst.origin   = WGPUOrigin3D(0, 0, layer);
+    WGPUTextureDataLayout layout;
+    layout.bytesPerRow  = w * bytesPerPixel;
+    layout.rowsPerImage = h;
+    WGPUExtent3D extent = WGPUExtent3D(w, h, 1);
+    auto queue = gpu.getQueue();
+    () @trusted {
+        wgpuQueueWriteTexture(queue, &dst, data.ptr, data.length, &layout, &extent);
+    }();
+}
+
+/// Upload level 0 plus a CPU-generated mip tail into `layer`.
+private void uploadRgba8WithMips(ref GpuContext gpu, WGPUTexture tex, uint layer,
+                                 const(ubyte)[] rgba, uint width, uint height,
+                                 uint levels, bool normalMap) {
+    writeLevel(gpu, tex, layer, 0, rgba, width, height, 4);
+    if (levels <= 1) return;
+    auto tail = new ubyte[mipTailBytesRgba8(width, height, levels)];
+    generateMipChainRgba8(rgba, width, height, tail, levels, normalMap);
+    size_t off = 0;
+    foreach (l; 1 .. levels) {
+        immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
+        immutable bytes = cast(size_t) lw * lh * 4;
+        writeLevel(gpu, tex, layer, l, tail[off .. off + bytes], lw, lh, 4);
+        off += bytes;
+    }
+}
+
+/**
+ * Owned RGBA8 `texture_2d_array` (terrain splat layers, decal atlases).
+ * Every layer shares one size and mip count. Bind `view` as `texture_2d_array<f32>`.
+ */
+struct TextureArray {
+    package(engine) WGPUTexture     texture;
+    package(engine) WGPUTextureView view;
+    uint width;
+    uint height;
+    uint layers;
+    uint mipLevels = 1;
+
+    @disable this(this);
+
+    /// One RGBA8 buffer (`width*height*4` bytes) per layer. Load time only.
+    static TextureArray fromLayers(ref GpuContext gpu, scope const(ubyte)[][] layersRgba,
+                                   uint width, uint height, TextureDesc desc = TextureDesc.init) {
+        TextureArray a;
+        if (layersRgba.length == 0) {
+            err("TextureArray.fromLayers: no layers");
+            return a;
+        }
+        a.width = width;
+        a.height = height;
+        a.layers = cast(uint) layersRgba.length;
+        a.mipLevels = desc.generateMips ? mipCount(width, height) : 1;
+        a.texture = createTexture2D(gpu, WGPUTextureFormat.rgba8Unorm, width, height, a.layers, a.mipLevels);
+        if (a.texture is null) {
+            err("TextureArray: failed to create texture");
+            return a;
+        }
+        foreach (i, layer; layersRgba) {
+            assert(layer.length == cast(size_t) width * height * 4,
+                   "TextureArray.fromLayers: layer size mismatch");
+            uploadRgba8WithMips(gpu, a.texture, cast(uint) i, layer, width, height, a.mipLevels, desc.normalMap);
+        }
+        a.view = createView(a.texture, WGPUTextureFormat.rgba8Unorm,
+                            WGPUTextureViewDimension.dim2DArray, a.layers);
+        return a;
+    }
+
+    bool valid() const nothrow @nogc { return texture !is null; }
+
+    void destroy() nothrow @nogc @trusted {
+        if (view !is null)    { wgpuTextureViewRelease(view); view = null; }
+        if (texture !is null) { wgpuTextureRelease(texture); texture = null; }
+    }
+}
+
+/// Sampler options. `maxAnisotropy` is clamped to 1..16; WebGPU only allows
+/// anisotropy with linear min/mag/mip filtering, so `nearest` forces 1.
+struct SamplerDesc {
+    TextureFilter filter = TextureFilter.linear;
+    TextureWrap wrap = TextureWrap.repeat;
+    ushort maxAnisotropy = 1;
+}
+
+/// Pure translation of `SamplerDesc` into the WGPU descriptor.
+WGPUSamplerDescriptor samplerDescriptorFor(SamplerDesc d) pure nothrow @nogc {
+    WGPUFilterMode fm = d.filter == TextureFilter.linear
+        ? WGPUFilterMode.linear : WGPUFilterMode.nearest;
+    WGPUMipmapFilterMode mip = d.filter == TextureFilter.linear
+        ? WGPUMipmapFilterMode.linear : WGPUMipmapFilterMode.nearest;
+    WGPUAddressMode am;
+    final switch (d.wrap) {
+        case TextureWrap.clamp:  am = WGPUAddressMode.clampToEdge;  break;
+        case TextureWrap.repeat: am = WGPUAddressMode.repeat;       break;
+        case TextureWrap.mirror: am = WGPUAddressMode.mirrorRepeat; break;
+    }
+    WGPUSamplerDescriptor desc;
+    desc.addressModeU = am;
+    desc.addressModeV = am;
+    desc.addressModeW = am;
+    desc.magFilter    = fm;
+    desc.minFilter    = fm;
+    desc.mipmapFilter = mip;
+    desc.lodMinClamp  = 0.0f;
+    desc.lodMaxClamp  = 32.0f;
+    ushort aniso = d.maxAnisotropy < 1 ? 1 : (d.maxAnisotropy > 16 ? 16 : d.maxAnisotropy);
+    if (d.filter != TextureFilter.linear) aniso = 1;
+    desc.maxAnisotropy = aniso;
+    return desc;
+}
+
 /// Owned GPU sampler. Reusable across textures / materials.
 struct Sampler {
     package(engine) WGPUSampler sampler;
@@ -260,28 +536,16 @@ struct Sampler {
 
     static Sampler create(ref GpuContext gpu,
                           TextureFilter filter = TextureFilter.linear,
-                          TextureWrap wrap = TextureWrap.repeat) @trusted {
-        WGPUFilterMode fm = filter == TextureFilter.linear
-            ? WGPUFilterMode.linear : WGPUFilterMode.nearest;
-        WGPUMipmapFilterMode mip = filter == TextureFilter.linear
-            ? WGPUMipmapFilterMode.linear : WGPUMipmapFilterMode.nearest;
-        WGPUAddressMode am;
-        final switch (wrap) {
-            case TextureWrap.clamp:  am = WGPUAddressMode.clampToEdge;  break;
-            case TextureWrap.repeat: am = WGPUAddressMode.repeat;       break;
-            case TextureWrap.mirror: am = WGPUAddressMode.mirrorRepeat; break;
-        }
+                          TextureWrap wrap = TextureWrap.repeat) {
+        return create(gpu, SamplerDesc(filter, wrap, 1));
+    }
 
-        WGPUSamplerDescriptor desc;
-        desc.addressModeU = am;
-        desc.addressModeV = am;
-        desc.addressModeW = am;
-        desc.magFilter    = fm;
-        desc.minFilter    = fm;
-        desc.mipmapFilter = mip;
-
+    /// Sampler with explicit anisotropy (4×/8× recommended for ground and roads).
+    static Sampler create(ref GpuContext gpu, SamplerDesc d) {
+        auto desc = samplerDescriptorFor(d);
+        auto device = gpu.getDevice();
         Sampler s;
-        s.sampler = wgpuDeviceCreateSampler(gpu.getDevice(), &desc);
+        s.sampler = () @trusted { return wgpuDeviceCreateSampler(device, &desc); }();
         if (s.sampler is null) fatal("Failed to create sampler");
         return s;
     }
@@ -309,4 +573,62 @@ unittest {
     assert(Texture.decodeImageBytes(red1x1Png, rgba, w, h));
     assert(w == 1 && h == 1);
     assert(rgba == [255, 0, 0, 255]);
+}
+
+@("texture.mipCount") pure nothrow @nogc unittest {
+    assert(mipCount(1, 1) == 1);
+    assert(mipCount(4, 4) == 3);
+    assert(mipCount(5, 3) == 3);
+    assert(mipCount(1024, 1) == 11);
+    assert(mipExtent(5, 1) == 2 && mipExtent(5, 2) == 1 && mipExtent(5, 7) == 1);
+    assert(mipTailBytesRgba8(4, 4, 3) == (4 + 1) * 4);
+}
+
+@("texture.mipChainBox") @safe unittest {
+    // 4x4: left half 0, right half 200 → 2x2 level keeps the split, 1x1 is the mean.
+    ubyte[4 * 4 * 4] src;
+    foreach (y; 0 .. 4) foreach (x; 0 .. 4) {
+        immutable v = cast(ubyte)(x < 2 ? 0 : 200);
+        src[(y * 4 + x) * 4 .. (y * 4 + x) * 4 + 4] = [v, v, v, 255];
+    }
+    ubyte[(4 + 1) * 4] tail;
+    generateMipChainRgba8(src[], 4, 4, tail[], 3);
+    assert(tail[0] == 0 && tail[4] == 200 && tail[8] == 0 && tail[12] == 200);
+    assert(tail[3] == 255);
+    assert(tail[16] == 100 && tail[19] == 255);
+}
+
+@("texture.mipChainNpot") @safe unittest {
+    // 5x3 → 2x1 → 1x1, constant colour must stay constant.
+    ubyte[5 * 3 * 4] src;
+    foreach (i; 0 .. 15) src[i * 4 .. i * 4 + 4] = [10, 20, 30, 40];
+    ubyte[(2 * 1 + 1) * 4] tail;
+    assert(mipTailBytesRgba8(5, 3, 3) == tail.length);
+    generateMipChainRgba8(src[], 5, 3, tail[], 3);
+    foreach (i; 0 .. 3)
+        assert(tail[i * 4 .. i * 4 + 4] == [10, 20, 30, 40]);
+}
+
+@("texture.mipChainNormal") @safe unittest {
+    // Two opposing tilted normals average to +Z after renormalization.
+    ubyte[2 * 2 * 4] src;
+    // (+0.7, 0, 0.7) and (-0.7, 0, 0.7)
+    src[0 .. 4] = [217, 128, 217, 255];
+    src[4 .. 8] = [38, 128, 217, 255];
+    src[8 .. 12] = [217, 128, 217, 255];
+    src[12 .. 16] = [38, 128, 217, 255];
+    ubyte[4] tail;
+    generateMipChainRgba8(src[], 2, 2, tail[], 2, true);
+    assert(tail[0] >= 126 && tail[0] <= 129);
+    assert(tail[2] >= 253);
+}
+
+@("texture.samplerDesc") pure nothrow @nogc unittest {
+    auto d = samplerDescriptorFor(SamplerDesc(TextureFilter.linear, TextureWrap.repeat, 8));
+    assert(d.maxAnisotropy == 8 && d.mipmapFilter == WGPUMipmapFilterMode.linear);
+    assert(samplerDescriptorFor(SamplerDesc(TextureFilter.linear, TextureWrap.clamp, 64)).maxAnisotropy == 16);
+    assert(samplerDescriptorFor(SamplerDesc(TextureFilter.linear, TextureWrap.clamp, 0)).maxAnisotropy == 1);
+    // Anisotropy requires linear filtering: nearest forces 1.
+    assert(samplerDescriptorFor(SamplerDesc(TextureFilter.nearest, TextureWrap.repeat, 8)).maxAnisotropy == 1);
+    assert(d.lodMaxClamp == 32.0f);
 }

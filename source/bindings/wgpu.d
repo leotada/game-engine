@@ -126,14 +126,23 @@ enum WGPUTextureFormat : uint {
     r8Snorm         = 0x0000_0002,
     r8Uint          = 0x0000_0003,
     r8Sint          = 0x0000_0004,
+    /// Core since webgpu.h added the 16-bit norm formats; wgpu-native needs
+    /// the `TEXTURE_FORMAT_16BIT_NORM` device feature to create it.
+    r16Unorm        = 0x0000_0005,
+    r16Snorm        = 0x0000_0006,
+    r16Float        = 0x0000_0009,
     rg8Unorm        = 0x0000_000A,
     rg8Snorm        = 0x0000_000B,
+    /// Not filterable without the `float32-filterable` feature.
+    r32Float        = 0x0000_000E,
+    rg16Float       = 0x0000_0015,
     rgba8Unorm      = 0x0000_0016,
     rgba8UnormSrgb  = 0x0000_0017,
     rgba8Snorm      = 0x0000_0018,
     bgra8Unorm      = 0x0000_001B,
     bgra8UnormSrgb  = 0x0000_001C,
     rgba16Float     = 0x0000_0028, // WGPUTextureFormat_RGBA16Float
+    rgba32Float     = 0x0000_0029,
     depth24Plus            = 0x0000_002E,
     depth24PlusStencil8    = 0x0000_002F,
     depth32Float           = 0x0000_0030,

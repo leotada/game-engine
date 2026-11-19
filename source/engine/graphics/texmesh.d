@@ -15,6 +15,12 @@ struct ShadowLodDraw {
     uint count;
 }
 
+/// Index range for one color LOD level.
+struct LodRange {
+    uint first;
+    uint count;
+}
+
 /// Owned GPU mesh with UV-equipped vertices (TexVert, stride 32).
 struct TexMesh {
     package(engine) WGPUBuffer vertexBuffer;
@@ -111,6 +117,18 @@ struct TexMesh {
             return fromData(gpu, verts, indices);
         return uploadSphereTangents(gpu, verts, indices);
     }
+
+    /// Color-pass index range for `lod`. Without a chain this is the whole
+    /// index buffer; levels past the chain clamp to the coarsest one.
+    LodRange colorLodRange(ubyte lod = 0) const pure nothrow @nogc {
+        if (lodLevels <= 1)
+            return LodRange(0, indexCount);
+        immutable l = lod < lodLevels ? lod : lodLevels - 1;
+        return LodRange(lodFirst[l], lodDrawCount[l]);
+    }
+
+    /// Number of LOD levels (1 when the mesh has no chain).
+    ubyte lodCount() const pure nothrow @nogc { return lodLevels <= 1 ? 1 : lodLevels; }
 
     /// Index buffer the shadow pass binds. The color pass keeps `indexBuffer`.
     WGPUBuffer shadowDrawBuffer() pure nothrow @nogc {
@@ -305,4 +323,19 @@ immutable ushort[6] texQuadIndices = [0, 2, 1,  0, 3, 2];
     assert(fromCurrent.first == 48 && fromCurrent.count == 9);
     ShadowLodDraw clamped = mesh.shadowLodDraw(2);
     assert(clamped.first == 48 && clamped.count == 9);
+}
+
+@("texmesh.colorLodRange") pure nothrow @nogc unittest {
+    TexMesh mesh;
+    mesh.indexCount = 57;
+    assert(mesh.colorLodRange() == LodRange(0, 57));
+    assert(mesh.colorLodRange(3) == LodRange(0, 57));
+    assert(mesh.lodCount == 1);
+    // Concatenated chain: color LOD0 must not draw the coarser levels too.
+    mesh.setLodChain([0u, 30, 48], [30u, 18, 9]);
+    assert(mesh.colorLodRange(0) == LodRange(0, 30));
+    assert(mesh.colorLodRange(1) == LodRange(30, 18));
+    assert(mesh.colorLodRange(2) == LodRange(48, 9));
+    assert(mesh.colorLodRange(7) == LodRange(48, 9));
+    assert(mesh.lodCount == 3);
 }

@@ -8,6 +8,8 @@ import std.math : cos, PI;
 
 import bindings.wgpu;
 import engine.core.log;
+import engine.core.podbuf : PodBuffer;
+import engine.core.pod : Pod;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
@@ -110,18 +112,23 @@ struct Scene3DTextured {
     private FrameUniforms frameData;
     private GpuPointLightUbo[MAX_POINT_LIGHTS] pointLightsData;
 
-    private enum DEFAULT_MAX_BATCHES = 64;
+    private enum DEFAULT_MAX_BATCHES = 256;
     /// Initial instance capacity; a batch's buffer doubles when exceeded.
     private enum INITIAL_INSTANCES_PER_BATCH = 512;
 
+    /// One (mesh, material, lod) draw list. `instances` is malloc-backed and
+    /// keeps its capacity across frames, so steady-state submission never
+    /// allocates.
     private struct Batch {
         TexMesh*   mesh;
         Material*  material;
-        TexInstanceData[] instances;
+        ubyte      lod;
+        PodBuffer!TexInstanceData instances;
         WGPUBuffer instanceBuf;
         size_t     capacity;
         bool       uploaded = false;
     }
+    private BatchMap batchMap;
 
     private enum uint SHADOW_VP_STRIDE = 256;
     private enum uint MAX_SHADOW_PASS_SLOTS = 1 + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
@@ -157,6 +164,10 @@ struct Scene3DTextured {
     private uint[] sortOrder;
     private float[] sortFarthest;
     private uint batchCount = 0;
+
+    // Last views bound into `frameBindGroup`; rebuild only when one changes.
+    private WGPUSampler boundShadowSampler;
+    private WGPUTextureView[7] boundShadowViews;
 
     @disable this(this);
 
@@ -195,6 +206,7 @@ struct Scene3DTextured {
         s.ownsIbl = true;
 
         s.batches = new Batch[maxBatches];
+        s.batchMap.reserve(maxBatches);
         s.sortOrder = new uint[maxBatches];
         s.sortFarthest = new float[maxBatches];
         foreach (ref b; s.batches) {
@@ -427,12 +439,7 @@ struct Scene3DTextured {
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
 
         batchCount = 0;
-        foreach (ref b; batches) {
-            b.mesh = null;
-            b.material = null;
-            b.instances = null;
-            b.uploaded = false;
-        }
+        batchMap.reset();
     }
 
     /// Render depth shadow passes automatically for all queued `depthWrite`
@@ -634,7 +641,7 @@ struct Scene3DTextured {
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
                 wgpuRenderPassEncoderSetVertexBuffer(
                     pass, 1, b.instanceBuf, 0, b.instances.length * TexInstanceData.sizeof);
-                ShadowLodDraw lod = b.mesh.shadowLodDraw();
+                ShadowLodDraw lod = b.mesh.shadowLodDraw(b.lod);
                 WGPUBuffer indexBuf = lod.useLodRange ? b.mesh.indexBuffer : b.mesh.shadowDrawBuffer();
                 ulong indexBytes = lod.useLodRange ? b.mesh.indexBufSize : b.mesh.shadowDrawBytes();
                 wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, b.mesh.indexFormat, 0, indexBytes);
@@ -659,10 +666,17 @@ struct Scene3DTextured {
     /// Draw with a per-instance `custom` vec4. Stock meaning: x = emission
     /// multiplier (1 = material value), y = white flash [0..1], z = dissolve
     /// threshold [0..1, 0 = intact]; w is free for custom surface shaders.
-    void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint, float[4] custom) {
-        auto b = findOrAdd(mesh, material);
+    void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint, float[4] custom) nothrow @nogc {
+        drawMatrix(mesh, material, model, tint, custom, 0);
+    }
+
+    /// Draw a specific LOD level of `mesh` (`MeshLod.current`, distance
+    /// selection done by the caller). Levels past the chain clamp to the last.
+    void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint,
+                    float[4] custom, ubyte lod) nothrow @nogc {
+        auto b = findOrAdd(mesh, material, lod);
         if (b is null) return;
-        b.instances ~= TexInstanceData(model.m, tint.toArray(), custom);
+        b.instances.put(TexInstanceData(model.m, tint.toArray(), custom));
     }
 
     void end(ref FrameContext frame) @trusted {
@@ -690,7 +704,7 @@ struct Scene3DTextured {
                 immutable p = st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
                 if (p != pass) continue;
                 if (pass == 1) {
-                    b.instances.sort!((x, y) => distSq(x, cam) > distSq(y, cam));
+                    b.instances[].sort!((x, y) => distSq(x, cam) > distSq(y, cam));
                     b.uploaded = false;
                     sortFarthest[i] = distSq(b.instances[0], cam);
                 }
@@ -711,7 +725,7 @@ struct Scene3DTextured {
             b.instanceBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
             b.capacity = cap;
         }
-        updateBuffer(queue, b.instanceBuf, b.instances);
+        updateBuffer(queue, b.instanceBuf, b.instances[]);
         b.uploaded = true;
     }
 
@@ -726,7 +740,8 @@ struct Scene3DTextured {
         frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
         frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
         frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
-        frame.drawIndexed(b.mesh.indexCount, cast(uint) b.instances.length);
+        immutable range = b.mesh.colorLodRange(b.lod);
+        frame.drawIndexed(range.count, cast(uint) b.instances.length, range.first);
     }
 
     /// Pipeline for a surface shader id + render state, built on first use.
@@ -780,8 +795,10 @@ struct Scene3DTextured {
         variantCount = 0;
         foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
         surfaceShaderCount = 0;
-        foreach (ref b; batches)
+        foreach (ref b; batches) {
             destroyBuffer(b.instanceBuf);
+            b.instances.release();
+        }
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -910,6 +927,11 @@ struct Scene3DTextured {
         WGPUTextureView point2, WGPUTextureView point3,
         WGPUTextureView spot0, WGPUTextureView spot1) @trusted
     {
+        WGPUTextureView[7] views = [dirView, point0, point1, point2, point3, spot0, spot1];
+        if (frameBindGroup !is null && shadowSampler is boundShadowSampler && views == boundShadowViews)
+            return;
+        boundShadowSampler = shadowSampler;
+        boundShadowViews = views;
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -948,22 +970,126 @@ struct Scene3DTextured {
         if (frameBindGroup is null) fatal("Failed to create frame bind group");
     }
 
-    private Batch* findOrAdd(ref TexMesh mesh, ref Material material) @trusted {
-        foreach (ref b; batches[0 .. batchCount]) {
-            if (b.mesh is &mesh && b.material is &material) return &b;
-        }
+    private Batch* findOrAdd(ref TexMesh mesh, ref Material material, ubyte lod) nothrow @nogc @trusted {
+        immutable meshKey = cast(size_t) &mesh;
+        immutable matKey = cast(size_t) &material;
+        immutable found = batchMap.find(meshKey, matKey, lod);
+        if (found != BatchMap.none) return &batches[found];
         if (batchCount >= batches.length) {
             if (!warnedBatchOverflow)
-                warn("Scene3DTextured: more than ", batches.length, " (mesh, material) batches; extra draws are dropped");
+                warn("Scene3DTextured: more than ", batches.length, " (mesh, material, lod) batches; extra draws are dropped");
             warnedBatchOverflow = true;
             return null;
         }
-        batches[batchCount].mesh = &mesh;
-        batches[batchCount].material = &material;
-        batches[batchCount].instances = null;
-        batches[batchCount].uploaded = false;
-        return &batches[batchCount++];
+        auto b = &batches[batchCount];
+        b.mesh = &mesh;
+        b.material = &material;
+        b.lod = lod;
+        b.instances.clear();
+        b.uploaded = false;
+        batchMap.insert(meshKey, matKey, lod, batchCount);
+        batchCount++;
+        return b;
     }
+}
+
+/**
+ * Open-addressed `(mesh, material, lod) → batch index` table with linear
+ * probing. `reset` bumps an epoch instead of clearing slots, so starting a
+ * frame is O(1). Capacity is a power of two ≥ 2× the batch limit, which keeps
+ * probes short and guarantees `insert` finds a free slot.
+ */
+package(engine) struct BatchMap {
+    enum uint none = uint.max;
+
+    private static struct Slot {
+        size_t mesh;
+        size_t material;
+        uint lod;
+        uint epoch;
+        uint batch;
+    }
+    private Pod!Slot[] slots;
+    private uint epoch = 1;
+
+    void reserve(size_t maxBatches) {
+        size_t cap = 16;
+        while (cap < maxBatches * 2) cap <<= 1;
+        slots = new Slot[cap];
+        epoch = 1;
+    }
+
+    /// Forget every entry (O(1) except on epoch wrap).
+    void reset() pure nothrow @nogc {
+        epoch++;
+        if (epoch == 0) {
+            foreach (ref sl; slots) sl.epoch = 0;
+            epoch = 1;
+        }
+    }
+
+    private size_t home(size_t mesh, size_t material, uint lod) const pure nothrow @nogc {
+        ulong h = cast(ulong) mesh * 0x9E37_79B9_7F4A_7C15UL;
+        h ^= (cast(ulong) material + 0x632B_E59B_D9B4_E019UL) * 0xC2B2_AE3D_27D4_EB4FUL;
+        h ^= cast(ulong) lod * 0x1656_67B1_9E37_79F9UL;
+        h ^= h >> 29;
+        return cast(size_t) h & (slots.length - 1);
+    }
+
+    /// Batch index or `none`.
+    uint find(size_t mesh, size_t material, uint lod) const pure nothrow @nogc {
+        if (slots.length == 0) return none;
+        size_t i = home(mesh, material, lod);
+        foreach (_; 0 .. slots.length) {
+            auto sl = &slots[i];
+            if (sl.epoch != epoch) return none;
+            if (sl.mesh == mesh && sl.material == material && sl.lod == lod) return sl.batch;
+            i = (i + 1) & (slots.length - 1);
+        }
+        return none;
+    }
+
+    /// Insert a key known to be absent. False when the table is full.
+    bool insert(size_t mesh, size_t material, uint lod, uint batch) pure nothrow @nogc {
+        if (slots.length == 0) return false;
+        size_t i = home(mesh, material, lod);
+        foreach (_; 0 .. slots.length) {
+            auto sl = &slots[i];
+            if (sl.epoch != epoch) {
+                *sl = Slot(mesh, material, lod, epoch, batch);
+                return true;
+            }
+            i = (i + 1) & (slots.length - 1);
+        }
+        return false;
+    }
+}
+
+@("scene3dTextured.batchMap") @safe unittest {
+    BatchMap map;
+    map.reserve(4); // 16 slots
+    assert(map.find(1, 2, 0) == BatchMap.none);
+    assert(map.insert(1, 2, 0, 0));
+    assert(map.insert(1, 2, 1, 1));   // same mesh/material, other LOD
+    assert(map.insert(3, 2, 0, 2));
+    assert(map.find(1, 2, 0) == 0);
+    assert(map.find(1, 2, 1) == 1);
+    assert(map.find(3, 2, 0) == 2);
+    assert(map.find(3, 4, 0) == BatchMap.none);
+
+    // Epoch reset forgets everything without touching slots.
+    map.reset();
+    assert(map.find(1, 2, 0) == BatchMap.none);
+    assert(map.insert(1, 2, 0, 7));
+    assert(map.find(1, 2, 0) == 7);
+
+    // Fill the table: colliding keys still resolve, then insert reports full.
+    map.reset();
+    foreach (uint k; 0 .. 16)
+        assert(map.insert(k * 16, 0, 0, k));
+    foreach (uint k; 0 .. 16)
+        assert(map.find(k * 16, 0, 0) == k);
+    assert(!map.insert(999, 0, 0, 99));
 }
 
 @safe unittest {

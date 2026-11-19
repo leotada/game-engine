@@ -7,7 +7,7 @@ import std.exception : enforce;
 import std.file : read;
 
 import engine.core.log;
-import engine.graphics.texture : Texture;
+import engine.graphics.texture : Texture, TextureDesc;
 import engine.gpu.context : GpuContext;
 
 @safe:
@@ -62,11 +62,11 @@ BmpImage decodeBmp(const(ubyte)[] data) @trusted {
 }
 
 /// Load a BMP from disk and upload it as a GPU texture.
-Texture loadBmpTexture(ref GpuContext gpu, string path) @trusted {
+Texture loadBmpTexture(ref GpuContext gpu, string path, TextureDesc desc = TextureDesc.init) @trusted {
     auto bytes = cast(const(ubyte)[]) read(path);
     auto img   = decodeBmp(bytes);
     info("Loaded BMP: ", path, " (", img.width, "x", img.height, ")");
-    return Texture.fromPixels(gpu, img.pixels, img.width, img.height);
+    return Texture.fromPixels(gpu, img.pixels, img.width, img.height, desc);
 }
 
 private uint readU32(const(ubyte)[] b, size_t off) pure nothrow @nogc {

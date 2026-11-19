@@ -662,7 +662,11 @@ struct FrameContext {
         wgpuRenderPassEncoderSetIndexBuffer(pass, buf, fmt, offset, size);
     }
 
-    void drawIndexed(uint indexCount, uint instanceCount) nothrow @nogc @trusted {
-        wgpuRenderPassEncoderDrawIndexed(pass, indexCount, instanceCount, 0, 0, 0);
+    /// Indexed draw. `firstIndex` selects a sub-range of the bound index buffer
+    /// (LOD levels, glTF primitives); `firstInstance` selects a sub-range of the
+    /// per-instance vertex buffer (retained static instancing).
+    void drawIndexed(uint indexCount, uint instanceCount, uint firstIndex = 0,
+                     int baseVertex = 0, uint firstInstance = 0) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderDrawIndexed(pass, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     }
 }
