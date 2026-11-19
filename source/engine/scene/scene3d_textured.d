@@ -23,6 +23,8 @@ import engine.gpu.shadow :
 import engine.graphics.types : Color4;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.graphics.material : Material;
+import engine.graphics.lod : LOD_NONE, selectLod;
+import engine.math.bounds : maxAxisScale;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
@@ -71,6 +73,10 @@ struct GpuSpotLightUbo {
     float[16] viewProj;
 }
 static assert(GpuSpotLightUbo.sizeof == 128);
+
+/// `drawMatrix` LOD argument: pick the level from the camera distance and the
+/// mesh's simplifier errors (LOD0 for meshes without a chain).
+enum ubyte LOD_AUTO = 0xFF;
 
 /// CPU mirror of WGSL FrameUniforms (720 bytes).
 struct FrameUniforms {
@@ -164,6 +170,12 @@ struct Scene3DTextured {
     private uint[] sortOrder;
     private float[] sortFarthest;
     private uint batchCount = 0;
+
+    // Automatic LOD inputs, captured in `begin`.
+    private Vec3 lodCameraPos;
+    private float lodFovY = 0.9f;
+    private float lodScreenHeight = 1080.0f;
+    private float lodBias = 1.0f;
 
     // Last views bound into `frameBindGroup`; rebuild only when one changes.
     private WGPUSampler boundShadowSampler;
@@ -433,7 +445,19 @@ struct Scene3DTextured {
         iblBindGroup = ibl.bindGroup;
     }
 
+    /// Viewport height in pixels used by automatic LOD selection (default 1080).
+    void setLodScreenHeight(float pixels) nothrow @nogc {
+        lodScreenHeight = pixels > 1 ? pixels : 1;
+    }
+
+    /// Multiplier on projected LOD error: > 1 keeps finer levels longer, < 1 drops sooner.
+    void setLodBias(float bias) nothrow @nogc {
+        lodBias = bias > 0 ? bias : 1;
+    }
+
     void begin(ref const Camera camera) @trusted {
+        lodCameraPos = camera.position;
+        lodFovY = camera.fovY;
         frameData.viewProj = camera.viewProjection().m;
         frameData.cameraPos = [camera.position.x, camera.position.y, camera.position.z];
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
@@ -667,16 +691,30 @@ struct Scene3DTextured {
     /// multiplier (1 = material value), y = white flash [0..1], z = dissolve
     /// threshold [0..1, 0 = intact]; w is free for custom surface shaders.
     void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint, float[4] custom) nothrow @nogc {
-        drawMatrix(mesh, material, model, tint, custom, 0);
+        drawMatrix(mesh, material, model, tint, custom, LOD_AUTO);
     }
 
-    /// Draw a specific LOD level of `mesh` (`MeshLod.current`, distance
-    /// selection done by the caller). Levels past the chain clamp to the last.
+    /// Draw a LOD level of `mesh`: an explicit level (`MeshLod.current`;
+    /// levels past the chain clamp to the last) or `LOD_AUTO`.
     void drawMatrix(ref TexMesh mesh, ref Material material, Mat4 model, Color4 tint,
                     float[4] custom, ubyte lod) nothrow @nogc {
+        if (lod == LOD_AUTO)
+            lod = autoLod(mesh, model);
+        else if (mesh.lodLevels <= 1)
+            lod = 0;
         auto b = findOrAdd(mesh, material, lod);
         if (b is null) return;
         b.instances.put(TexInstanceData(model.m, tint.toArray(), custom));
+    }
+
+    /// Screen-space LOD for one instance (stateless: no hysteresis).
+    private ubyte autoLod(ref const TexMesh mesh, ref const Mat4 model) const nothrow @nogc {
+        auto errors = mesh.lodErrorList();
+        if (errors.length == 0) return 0;
+        immutable c = mesh.localSphere.transformed(model).center;
+        immutable d = Vec3(c.x - lodCameraPos.x, c.y - lodCameraPos.y, c.z - lodCameraPos.z).length();
+        return selectLod(errors, LOD_NONE, mesh.lodMeshScale, maxAxisScale(model), d,
+                         lodFovY, lodScreenHeight, lodBias);
     }
 
     void end(ref FrameContext frame) @trusted {

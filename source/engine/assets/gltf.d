@@ -1,14 +1,19 @@
-/// Minimal glTF 2.0 loader — mesh geometry + optional pbrMetallicRoughness materials.
+/// glTF 2.0 loader — geometry, OpenPBR materials and the node hierarchy.
 ///
 /// Supported:
-///   - .gltf JSON + external .bin buffer (same directory)
-///   - Component types: 5123 (u16), 5125 (u32). Upload narrows to u16 when every index fits in 65535.
-///   - Attribute types: VEC3 positions/normals, VEC2 uvs (float32)
-///   - Materials: pbrMetallicRoughness factors + baseColor / MR / normal /
-///     occlusion / emissive textures (BMP or TGA via engine loaders)
+///   - `.gltf` JSON with external `.bin` or `data:` base64 buffers, and binary `.glb`
+///   - Images by file URI, `data:` URI or GLB `bufferView` (PNG/JPG/WEBP/TGA/BMP...)
+///   - Component types u8/u16/u32 indices, float and normalized-integer attributes
+///     (`KHR_mesh_quantization`), `EXT_meshopt_compression`
+///   - Every mesh, every primitive (with its own material) and the node tree
+///     (`parseGltfScene`, `engine.graphics.model.loadGltfAsset`)
+///   - Materials: pbrMetallicRoughness + `KHR_materials_*` mapped to OpenPBR
 ///
-/// NOT supported: .glb containers, embedded base64 buffers, animations,
-/// skinning, multiple primitives.
+/// The single-mesh helpers (`parseGltfMesh`, `loadGltfMesh`, `loadGltfPbr`)
+/// keep their historical behavior: first primitive of mesh 0 with the first
+/// instancing node's transform baked in.
+///
+/// NOT supported: animations, skinning, morph targets, sparse accessors.
 module engine.assets.gltf;
 
 import core.math : sqrt;
@@ -23,7 +28,7 @@ import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.graphics.material : Material, MaterialParams, MaterialFlags;
 import engine.graphics.texmesh : TexMesh;
-import engine.graphics.texture : Texture, Sampler;
+import engine.graphics.texture : Texture, TextureDesc, Sampler;
 import engine.graphics.types : TexVert;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
@@ -71,6 +76,13 @@ struct GltfMaterialDesc {
     string normalUri;
     string occlusionUri;
     string emissiveUri;
+    /// glTF image indices behind each map (-1 = none). Embedded images have
+    /// an empty URI and are loaded through `loadGltfImage`.
+    int baseColorImage = -1;
+    int metallicRoughnessImage = -1;
+    int normalImage = -1;
+    int occlusionImage = -1;
+    int emissiveImage = -1;
 }
 
 /// Loaded GPU model: mesh + material (caller destroys both).
@@ -107,11 +119,15 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
                       ref Sampler sampler) @trusted {
     import core.lifetime : move;
 
-    auto meshCpu = parseGltfMesh(gltfPath);
-    auto matDesc = parseGltfMaterial(gltfPath);
-    if (matDesc.normalUri.length || matDesc.params.specularAnisotropy != 0.0f)
+    auto doc = parseGltfDocument(gltfPath);
+    auto meshCpu = parseFirstMesh(doc);
+    GltfMaterialDesc matDesc;
+    if ("materials" in doc.root && doc.root["materials"].array.length) {
+        immutable mi = firstPrimitiveMaterial(doc);
+        matDesc = parseGltfMaterialAt(doc.root, mi >= 0 ? mi : 0);
+    }
+    if (matDesc.normalImage >= 0 || matDesc.params.specularAnisotropy != 0.0f)
         generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
-    immutable baseDir = dirName(gltfPath);
 
     GltfModel model;
     model.mesh = uploadOptimizedMesh(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
@@ -119,8 +135,12 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     MaterialParams params = matDesc.params;
     params.flags = MaterialFlags.none;
 
-    if (matDesc.baseColorUri.length) {
-        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.baseColorUri));
+    Texture loadMap(int image, TextureDesc d) {
+        return image >= 0 ? loadGltfImage(gpu, doc, image, d) : Texture.init;
+    }
+
+    {
+        auto t = loadMap(matDesc.baseColorImage, TextureDesc.mipped());
         if (t.valid) {
             model.albedo = move(t);
             model.hasAlbedo = true;
@@ -142,8 +162,8 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     Texture* aoPtr = null;
     Texture* emPtr = null;
 
-    if (matDesc.metallicRoughnessUri.length) {
-        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.metallicRoughnessUri));
+    {
+        auto t = loadMap(matDesc.metallicRoughnessImage, TextureDesc.mipped());
         if (t.valid) {
             model.metallicRoughness = move(t);
             model.hasMR = true;
@@ -151,8 +171,8 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
             params.flags |= MaterialFlags.metallicRoughness;
         }
     }
-    if (matDesc.normalUri.length) {
-        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.normalUri));
+    {
+        auto t = loadMap(matDesc.normalImage, TextureDesc.mippedNormal());
         if (t.valid) {
             model.normal = move(t);
             model.hasNormal = true;
@@ -160,8 +180,8 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
             params.flags |= MaterialFlags.normal;
         }
     }
-    if (matDesc.occlusionUri.length) {
-        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.occlusionUri));
+    {
+        auto t = loadMap(matDesc.occlusionImage, TextureDesc.mipped());
         if (t.valid) {
             model.occlusion = move(t);
             model.hasOcclusion = true;
@@ -169,8 +189,8 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
             params.flags |= MaterialFlags.occlusion;
         }
     }
-    if (matDesc.emissiveUri.length) {
-        auto t = loadImageTexture(gpu, buildPath(baseDir, matDesc.emissiveUri));
+    {
+        auto t = loadMap(matDesc.emissiveImage, TextureDesc.mipped());
         if (t.valid) {
             model.emissive = move(t);
             model.hasEmissive = true;
@@ -191,22 +211,35 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     return model;
 }
 
-/// Parse pbrMetallicRoughness + `KHR_materials_*` extensions from the first material in a `.gltf` file.
+/// Material index of mesh 0 / primitive 0, or -1.
+private int firstPrimitiveMaterial(ref GltfDocument doc) @trusted {
+    if ("meshes" !in doc.root) return -1;
+    auto meshes = doc.root["meshes"].array;
+    if (meshes.length == 0) return -1;
+    auto prims = meshes[0]["primitives"].array;
+    if (prims.length == 0 || "material" !in prims[0].object) return -1;
+    return cast(int) prims[0]["material"].integer;
+}
+
+/// Parse pbrMetallicRoughness + `KHR_materials_*` extensions from the first material in a `.gltf`/`.glb` file.
 GltfMaterialDesc parseGltfMaterial(string gltfPath) @trusted {
-    ubyte[] rawBytes;
-    enforce(readAssetBytes(gltfPath, rawBytes), "glTF file not found: " ~ gltfPath);
-    auto text = cast(string) rawBytes;
-    return parseGltfMaterialJson(text);
+    auto doc = parseGltfDocument(gltfPath);
+    return parseGltfMaterialAt(doc.root, 0);
 }
 
 /// Pure JSON material parser mapping glTF 2.0 + `KHR_materials_*` into OpenPBR `MaterialParams`.
 GltfMaterialDesc parseGltfMaterialJson(string jsonText) @trusted {
-    GltfMaterialDesc desc;
     auto root = parseJSON(jsonText);
+    return parseGltfMaterialAt(root, 0);
+}
+
+/// Parse `materials[index]`. Returns defaults when the material does not exist.
+GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted {
+    GltfMaterialDesc desc;
     if ("materials" !in root) return desc;
     auto materials = root["materials"].array;
-    if (materials.length == 0) return desc;
-    auto mat = materials[0];
+    if (index >= materials.length) return desc;
+    auto mat = materials[index];
 
     if ("pbrMetallicRoughness" in mat) {
         auto pbr = mat["pbrMetallicRoughness"];
@@ -227,16 +260,16 @@ GltfMaterialDesc parseGltfMaterialJson(string jsonText) @trusted {
         if ("roughnessFactor" in pbr)
             desc.params.specularRoughness = jsonFloat(pbr["roughnessFactor"]);
         if ("baseColorTexture" in pbr)
-            desc.baseColorUri = resolveTextureUri(root, cast(int) pbr["baseColorTexture"]["index"].integer);
+            desc.baseColorUri = resolveTextureRef(root, cast(int) pbr["baseColorTexture"]["index"].integer, desc.baseColorImage);
         if ("metallicRoughnessTexture" in pbr)
-            desc.metallicRoughnessUri = resolveTextureUri(root, cast(int) pbr["metallicRoughnessTexture"]["index"].integer);
+            desc.metallicRoughnessUri = resolveTextureRef(root, cast(int) pbr["metallicRoughnessTexture"]["index"].integer, desc.metallicRoughnessImage);
     }
     if ("normalTexture" in mat)
-        desc.normalUri = resolveTextureUri(root, cast(int) mat["normalTexture"]["index"].integer);
+        desc.normalUri = resolveTextureRef(root, cast(int) mat["normalTexture"]["index"].integer, desc.normalImage);
     if ("occlusionTexture" in mat)
-        desc.occlusionUri = resolveTextureUri(root, cast(int) mat["occlusionTexture"]["index"].integer);
+        desc.occlusionUri = resolveTextureRef(root, cast(int) mat["occlusionTexture"]["index"].integer, desc.occlusionImage);
     if ("emissiveTexture" in mat) {
-        desc.emissiveUri = resolveTextureUri(root, cast(int) mat["emissiveTexture"]["index"].integer);
+        desc.emissiveUri = resolveTextureRef(root, cast(int) mat["emissiveTexture"]["index"].integer, desc.emissiveImage);
         if (desc.params.emissionLuminance == 0.0f)
             desc.params.emissionLuminance = 1.0f;
     }
@@ -313,17 +346,22 @@ private float jsonFloat(ref JSONValue v) {
     return 0;
 }
 
-private string resolveTextureUri(ref JSONValue root, int textureIndex) @trusted {
+/// Resolve `textures[textureIndex]` to its image index; returns the file URI
+/// (empty for embedded `bufferView` / `data:` images).
+private string resolveTextureRef(ref JSONValue root, int textureIndex, out int imageIndex) @trusted {
     auto textures = root["textures"].array;
     enforce(textureIndex >= 0 && textureIndex < textures.length, "glTF: texture index OOB");
+    enforce("source" in textures[textureIndex], "glTF: texture without source");
     immutable int source = cast(int) textures[textureIndex]["source"].integer;
     auto images = root["images"].array;
     enforce(source >= 0 && source < images.length, "glTF: image index OOB");
-    enforce("uri" in images[source], "glTF: image missing uri");
-    return images[source]["uri"].str;
+    imageIndex = source;
+    if ("uri" !in images[source]) return null;
+    immutable uri = images[source]["uri"].str;
+    return isDataUri(uri) ? null : uri;
 }
 
-private Texture loadImageTexture(ref GpuContext gpu, string path) {
+private Texture loadImageTexture(ref GpuContext gpu, string path, TextureDesc desc = TextureDesc.init) {
     if (!assetExists(path)) {
         err("glTF image not found: ", path);
         return Texture.init;
@@ -334,23 +372,23 @@ private Texture loadImageTexture(ref GpuContext gpu, string path) {
         if (isAssetPakMounted()) {
             ubyte[] bytes;
             if (!readAssetBytes(path, bytes)) return Texture.init;
-            return Texture.fromImageBytes(gpu, bytes, "TGA");
+            return Texture.fromImageBytes(gpu, bytes, "TGA", desc);
         }
-        return Texture.fromTgaFile(gpu, path);
+        return Texture.fromTgaFile(gpu, path, desc);
     }
     if (ext == ".bmp") {
         import engine.assets.pak : isAssetPakMounted;
         if (isAssetPakMounted()) {
             ubyte[] bytes;
             if (!readAssetBytes(path, bytes)) return Texture.init;
-            return Texture.fromImageBytes(gpu, bytes, "BMP");
+            return Texture.fromImageBytes(gpu, bytes, "BMP", desc);
         }
         import engine.assets.bmp : loadBmpTexture;
-        return loadBmpTexture(gpu, path);
+        return loadBmpTexture(gpu, path, desc);
     }
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp"
             || ext == ".qoi" || ext == ".gif" || ext == ".avif" || ext == ".svg") {
-        return Texture.fromImageFile(gpu, path);
+        return Texture.fromImageFile(gpu, path, desc);
     }
     err("glTF: unsupported image format: ", path);
     return Texture.init;
@@ -474,6 +512,518 @@ private ubyte[] decodeMeshoptView(ref JSONValue ext, const(ubyte)[][] buffers) @
     return dst;
 }
 
+// ---------------------------------------------------------------------------
+// Document: JSON root + resolved buffers (.gltf, .glb, data: URIs)
+// ---------------------------------------------------------------------------
+
+private enum uint GLB_MAGIC      = 0x46546C67; // "glTF"
+private enum uint GLB_CHUNK_JSON = 0x4E4F534A; // "JSON"
+private enum uint GLB_CHUNK_BIN  = 0x004E4942; // "BIN\0"
+
+/// Parsed glTF container: JSON root plus every buffer resolved to bytes.
+/// Load-time only (GC allowed).
+struct GltfDocument {
+    JSONValue root;
+    /// One entry per `buffers[]` (external `.bin`, GLB BIN chunk, or `data:` URI).
+    const(ubyte)[][] buffers;
+    /// Decoded `EXT_meshopt_compression` bufferViews; empty when uncompressed.
+    ubyte[][] meshoptViews;
+    /// Directory used to resolve relative URIs.
+    string baseDir;
+    /// Asset path (for `.meta` import settings). May be empty.
+    string path;
+}
+
+/// CPU view of one glTF image: either a URI on disk or embedded bytes.
+struct GltfImageRef {
+    /// Relative file URI; empty for embedded images.
+    string uri;
+    /// Embedded bytes (GLB bufferView or `data:` URI); empty for file URIs.
+    const(ubyte)[] bytes;
+    string mimeType;
+}
+
+private uint readU32le(scope const(ubyte)[] b, size_t at) pure nothrow @nogc {
+    return cast(uint) b[at] | (cast(uint) b[at + 1] << 8)
+         | (cast(uint) b[at + 2] << 16) | (cast(uint) b[at + 3] << 24);
+}
+
+/// True when `bytes` starts with the binary glTF (`.glb`) header.
+bool isGlb(scope const(ubyte)[] bytes) pure nothrow @nogc {
+    return bytes.length >= 12 && readU32le(bytes, 0) == GLB_MAGIC;
+}
+
+private bool isDataUri(string uri) pure nothrow @nogc {
+    return uri.length >= 5 && uri[0 .. 5] == "data:";
+}
+
+/// Decode a `data:[<mime>];base64,<payload>` URI. Writes the MIME type.
+private ubyte[] decodeDataUri(string uri, out string mime) @trusted {
+    import std.base64 : Base64;
+    import std.string : indexOf;
+    immutable comma = uri.indexOf(',');
+    enforce(comma > 5, "glTF: malformed data: URI");
+    auto header = uri[5 .. comma];
+    enforce(header.length >= 7 && header[$ - 7 .. $] == ";base64", "glTF: only base64 data: URIs are supported");
+    mime = header[0 .. $ - 7];
+    return Base64.decode(uri[comma + 1 .. $]);
+}
+
+/// Load and parse a `.gltf` or `.glb` file (disk or mounted asset pak).
+GltfDocument parseGltfDocument(string path) @trusted {
+    ubyte[] raw;
+    enforce(readAssetBytes(path, raw), "glTF file not found: " ~ path);
+    return parseGltfDocumentBytes(raw, dirName(path), path);
+}
+
+/// Parse an in-memory `.gltf` (JSON text) or `.glb` container.
+/// External buffer URIs resolve against `baseDir`.
+GltfDocument parseGltfDocumentBytes(const(ubyte)[] bytes, string baseDir, string assetPath = "") @trusted {
+    GltfDocument doc;
+    doc.baseDir = baseDir;
+    doc.path = assetPath;
+
+    const(ubyte)[] bin;
+    string jsonText;
+    if (isGlb(bytes)) {
+        enforce(readU32le(bytes, 4) == 2, "GLB: unsupported container version");
+        immutable size_t total = readU32le(bytes, 8);
+        enforce(total <= bytes.length, "GLB: truncated file");
+        size_t at = 12;
+        bool haveJson = false;
+        while (at + 8 <= total) {
+            immutable size_t len = readU32le(bytes, at);
+            immutable uint type = readU32le(bytes, at + 4);
+            at += 8;
+            enforce(at + len <= total, "GLB: chunk out of bounds");
+            if (type == GLB_CHUNK_JSON && !haveJson) {
+                jsonText = cast(string) bytes[at .. at + len].idup;
+                haveJson = true;
+            } else if (type == GLB_CHUNK_BIN && bin.length == 0) {
+                bin = bytes[at .. at + len];
+            }
+            at += len;
+        }
+        enforce(haveJson, "GLB: missing JSON chunk");
+    } else {
+        jsonText = cast(string) bytes.idup;
+    }
+    doc.root = parseJSON(jsonText);
+    enforce(doc.root.type == JSONType.object, "glTF: root is not a JSON object");
+
+    if ("buffers" in doc.root) {
+        auto buffers = doc.root["buffers"].array;
+        doc.buffers.length = buffers.length;
+        foreach (i, b; buffers) {
+            if ("uri" !in b.object) {
+                enforce(bin.length > 0, "glTF: buffer without uri needs a GLB BIN chunk");
+                doc.buffers[i] = bin;
+                continue;
+            }
+            immutable uri = b["uri"].str;
+            if (isDataUri(uri)) {
+                string mime;
+                doc.buffers[i] = decodeDataUri(uri, mime);
+                continue;
+            }
+            ubyte[] binBytes;
+            immutable binPath = buildPath(baseDir, uri);
+            enforce(readAssetBytes(binPath, binBytes), "glTF: missing external buffer: " ~ binPath);
+            doc.buffers[i] = binBytes;
+        }
+    }
+
+    // Decode EXT_meshopt_compression before any accessor read. The decoded
+    // bytes replace that bufferView; accessor byteOffset is relative to them.
+    if ("bufferViews" in doc.root) {
+        auto bufferViews = doc.root["bufferViews"].array;
+        doc.meshoptViews.length = bufferViews.length;
+        foreach (vi, ref bv; bufferViews) {
+            if ("extensions" !in bv.object)
+                continue;
+            auto exts = bv["extensions"];
+            if ("EXT_meshopt_compression" !in exts.object)
+                continue;
+            doc.meshoptViews[vi] = decodeMeshoptView(exts["EXT_meshopt_compression"], doc.buffers);
+        }
+    }
+    return doc;
+}
+
+/// Raw bytes of a whole bufferView (embedded images).
+const(ubyte)[] bufferViewBytes(ref GltfDocument doc, int bvIndex) @trusted {
+    auto bufferViews = doc.root["bufferViews"].array;
+    enforce(bvIndex >= 0 && bvIndex < bufferViews.length, "glTF: bufferView index OOB");
+    if (doc.meshoptViews.length > bvIndex && doc.meshoptViews[bvIndex].length)
+        return doc.meshoptViews[bvIndex];
+    auto bv = bufferViews[bvIndex];
+    immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
+    enforce(bufIdx < doc.buffers.length, "glTF: buffer index OOB");
+    immutable size_t off = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
+    immutable size_t len = cast(size_t) bv["byteLength"].integer;
+    enforce(off + len <= doc.buffers[bufIdx].length, "glTF: bufferView out of buffer bounds");
+    return doc.buffers[bufIdx][off .. off + len];
+}
+
+/// Resolve `images[imageIndex]` to a file URI or embedded bytes.
+GltfImageRef resolveGltfImage(ref GltfDocument doc, int imageIndex) @trusted {
+    GltfImageRef r;
+    enforce("images" in doc.root, "glTF: no images array");
+    auto images = doc.root["images"].array;
+    enforce(imageIndex >= 0 && imageIndex < images.length, "glTF: image index OOB");
+    auto img = images[imageIndex];
+    if ("mimeType" in img.object)
+        r.mimeType = img["mimeType"].str;
+    if ("bufferView" in img.object) {
+        r.bytes = bufferViewBytes(doc, cast(int) img["bufferView"].integer);
+        return r;
+    }
+    enforce("uri" in img.object, "glTF: image has neither uri nor bufferView");
+    immutable uri = img["uri"].str;
+    if (isDataUri(uri)) {
+        string mime;
+        r.bytes = decodeDataUri(uri, mime);
+        if (r.mimeType.length == 0) r.mimeType = mime;
+        return r;
+    }
+    r.uri = uri;
+    return r;
+}
+
+/// SDL3_image type hint for a glTF MIME type (null lets SDL sniff the bytes).
+private const(char)* imageTypeHint(string mime) pure nothrow @nogc {
+    if (mime == "image/png") return "PNG";
+    if (mime == "image/jpeg") return "JPG";
+    if (mime == "image/webp") return "WEBP";
+    return null;
+}
+
+/// Upload a glTF image (file URI or embedded bytes) as a GPU texture.
+Texture loadGltfImage(ref GpuContext gpu, ref GltfDocument doc, int imageIndex,
+                      TextureDesc desc = TextureDesc.init) @trusted {
+    GltfImageRef r;
+    try {
+        r = resolveGltfImage(doc, imageIndex);
+    } catch (Exception e) {
+        err("glTF image ", imageIndex, ": ", e.msg);
+        return Texture.init;
+    }
+    if (r.bytes.length)
+        return Texture.fromImageBytes(gpu, r.bytes, imageTypeHint(r.mimeType), desc);
+    return loadImageTexture(gpu, buildPath(doc.baseDir, r.uri), desc);
+}
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
+
+private const(ubyte)[] viewBytes(ref GltfDocument doc, int bvIndex, ref size_t baseOff) @trusted {
+    auto bufferViews = doc.root["bufferViews"].array;
+    enforce(bvIndex >= 0 && bvIndex < bufferViews.length, "glTF: bufferView index OOB");
+    if (doc.meshoptViews.length > bvIndex && doc.meshoptViews[bvIndex].length) {
+        baseOff = 0;
+        return doc.meshoptViews[bvIndex];
+    }
+    auto bv = bufferViews[bvIndex];
+    immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
+    enforce(bufIdx < doc.buffers.length, "glTF: buffer index OOB");
+    baseOff = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
+    return doc.buffers[bufIdx];
+}
+
+private bool isMeshoptView(ref GltfDocument doc, int bvIndex) {
+    return doc.meshoptViews.length > bvIndex && doc.meshoptViews[bvIndex].length > 0;
+}
+
+/// Read a float VEC2/3/4 accessor (dequantizing normalized integers).
+float[] readAccessorFloats(ref GltfDocument doc, int accessorIndex, uint expectedComponents) @trusted {
+    auto accessors = doc.root["accessors"].array;
+    enforce(accessorIndex >= 0 && accessorIndex < accessors.length, "glTF: accessor index OOB");
+    auto acc = accessors[accessorIndex];
+    immutable uint ct = cast(uint) acc["componentType"].integer;
+    immutable bool normalized = jsonFlag(acc, "normalized");
+    immutable string type = acc["type"].str;
+    uint comps = 0;
+    if (type == "VEC2") comps = 2;
+    else if (type == "VEC3") comps = 3;
+    else if (type == "VEC4") comps = 4;
+    else enforce(false, "glTF: unsupported accessor type " ~ type);
+    enforce(comps == expectedComponents, "glTF: accessor component count mismatch");
+    immutable size_t count = cast(size_t) acc["count"].integer;
+    enforce("bufferView" in acc.object, "glTF: accessors without bufferView (sparse/zero) are unsupported");
+    immutable int bvIndex  = cast(int) acc["bufferView"].integer;
+    auto bv = doc.root["bufferViews"].array[bvIndex];
+    size_t baseOff;
+    auto src = viewBytes(doc, bvIndex, baseOff);
+    immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
+    immutable size_t elem = componentSize(ct) * comps;
+    enforce(elem > 0, "glTF: unsupported component type");
+    immutable size_t stride = ("byteStride" in bv.object) ? cast(size_t) bv["byteStride"].integer : elem;
+    enforce(stride >= elem, "glTF: byteStride smaller than the element");
+    immutable size_t totalOff = baseOff + accOff;
+    enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
+            "glTF: accessor out of buffer bounds");
+    auto dst = new float[count * comps];
+    if (ct == CT_FLOAT && stride == elem && (cast(size_t)(src.ptr + totalOff)) % 4 == 0) {
+        auto fSrc = cast(const(float)*) (src.ptr + totalOff);
+        foreach (i; 0 .. count * comps) dst[i] = fSrc[i];
+        return dst;
+    }
+    foreach (v; 0 .. count) {
+        size_t at = totalOff + v * stride;
+        foreach (c; 0 .. comps) {
+            if (ct == CT_FLOAT) {
+                uint bits = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
+                import engine.meshopt.internal.bits : bitsFloat;
+                dst[v * comps + c] = bitsFloat(bits);
+                at += 4;
+            } else {
+                int raw = readComponent(src, at, ct);
+                dst[v * comps + c] = dequantizeComponent(raw, ct, normalized);
+                at += componentSize(ct);
+            }
+        }
+    }
+    return dst;
+}
+
+/// Read a SCALAR index accessor (u8/u16/u32) into `uint[]`.
+uint[] readAccessorIndices(ref GltfDocument doc, int accessorIndex) @trusted {
+    auto accessors = doc.root["accessors"].array;
+    enforce(accessorIndex >= 0 && accessorIndex < accessors.length, "glTF: accessor index OOB");
+    auto acc = accessors[accessorIndex];
+    immutable uint ct = cast(uint) acc["componentType"].integer;
+    immutable string type = acc["type"].str;
+    enforce(type == "SCALAR", "glTF: indices must be SCALAR");
+    immutable size_t count = cast(size_t) acc["count"].integer;
+    immutable int bvIndex  = cast(int) acc["bufferView"].integer;
+    auto bv = doc.root["bufferViews"].array[bvIndex];
+    size_t baseOff;
+    auto src = viewBytes(doc, bvIndex, baseOff);
+    immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
+    immutable size_t elem = componentSize(ct);
+    immutable size_t stride = ("byteStride" in bv.object && !isMeshoptView(doc, bvIndex))
+            ? cast(size_t) bv["byteStride"].integer : elem;
+    immutable size_t totalOff = baseOff + accOff;
+    enforce(elem > 0, "glTF: unsupported index component type");
+    enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
+            "glTF: index accessor out of buffer bounds");
+    auto dst = new uint[count];
+    if (ct == CT_USHORT || ct == CT_UINT || ct == CT_UBYTE) {
+        foreach (i; 0 .. count) {
+            size_t at = totalOff + i * stride;
+            if (ct == CT_UINT) {
+                dst[i] = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
+            } else {
+                int raw = readComponent(src, at, ct);
+                enforce(raw >= 0, "glTF: negative index");
+                dst[i] = cast(uint) raw;
+            }
+        }
+    } else {
+        enforce(false, "glTF: unsupported index component type");
+    }
+    return dst;
+}
+
+/// Geometry of one primitive, exactly as authored (no node transform, no
+/// optimization). Non-indexed triangle lists get sequential indices.
+GltfMesh readPrimitiveGeometry(ref GltfDocument doc, ref JSONValue prim) @trusted {
+    if ("mode" in prim.object)
+        enforce(prim["mode"].integer == 4, "glTF: only TRIANGLES primitives are supported");
+    auto attrs = prim["attributes"].object;
+    enforce("POSITION" in attrs, "glTF: primitive missing POSITION");
+    immutable int posAcc  = cast(int) attrs["POSITION"].integer;
+    immutable int normAcc = ("NORMAL"     in attrs) ? cast(int) attrs["NORMAL"].integer     : -1;
+    immutable int uvAcc   = ("TEXCOORD_0" in attrs) ? cast(int) attrs["TEXCOORD_0"].integer : -1;
+    immutable int tanAcc  = ("TANGENT"    in attrs) ? cast(int) attrs["TANGENT"].integer    : -1;
+
+    auto positions = readAccessorFloats(doc, posAcc, 3);
+    immutable size_t vcount = positions.length / 3;
+    float[] normals; float[] uvs; float[] tans;
+    if (normAcc >= 0) normals = readAccessorFloats(doc, normAcc, 3);
+    if (uvAcc   >= 0) uvs     = readAccessorFloats(doc, uvAcc,   2);
+    if (tanAcc  >= 0) tans    = readAccessorFloats(doc, tanAcc,  4);
+    enforce(normals.length == 0 || normals.length == vcount * 3, "glTF: NORMAL count mismatch");
+    enforce(uvs.length == 0 || uvs.length == vcount * 2, "glTF: TEXCOORD_0 count mismatch");
+
+    GltfMesh out_;
+    out_.vertices.length = vcount;
+    foreach (i; 0 .. vcount) {
+        TexVert v;
+        v.pos = [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]];
+        v.normal = normals.length ? [normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]] : [0.0f, 1.0f, 0.0f];
+        v.uv = uvs.length ? [uvs[i * 2], uvs[i * 2 + 1]] : [0.0f, 0.0f];
+        out_.vertices[i] = v;
+    }
+    if (tans.length) {
+        enforce(tans.length == vcount * 4, "glTF: TANGENT count mismatch");
+        out_.tangents.length = vcount;
+        foreach (i; 0 .. vcount)
+            out_.tangents[i] = [tans[i * 4 + 0], tans[i * 4 + 1], tans[i * 4 + 2], tans[i * 4 + 3]];
+    }
+    if ("indices" in prim.object) {
+        out_.indices = readAccessorIndices(doc, cast(int) prim["indices"].integer);
+    } else {
+        enforce(vcount % 3 == 0, "glTF: non-indexed primitive vertex count is not a multiple of 3");
+        out_.indices = new uint[vcount];
+        foreach (i; 0 .. vcount) out_.indices[i] = cast(uint) i;
+    }
+    foreach (idx; out_.indices)
+        enforce(idx < vcount, "glTF: index out of vertex range");
+    return out_;
+}
+
+// ---------------------------------------------------------------------------
+// Scene graph (meshes × primitives × materials × nodes), transforms not baked
+// ---------------------------------------------------------------------------
+
+/// One primitive: optimized geometry plus its glTF material index (-1 = default).
+struct GltfPrimitiveCpu {
+    GltfMesh mesh;
+    int material = -1;
+}
+
+/// One glTF mesh (a list of primitives).
+struct GltfMeshCpu {
+    string name;
+    GltfPrimitiveCpu[] primitives;
+}
+
+/// One glTF node with its local transform kept separate (never baked).
+struct GltfNodeCpu {
+    string name;
+    int parent = -1;
+    int[] children;
+    /// Local transform (T * R * S, or the authored matrix).
+    Mat4 local = Mat4.identity;
+    /// Mesh index or -1.
+    int mesh = -1;
+}
+
+/// Whole-file CPU scene.
+struct GltfSceneCpu {
+    GltfMeshCpu[] meshes;
+    GltfNodeCpu[] nodes;
+    /// Root node indices of the default scene (or every parentless node).
+    int[] roots;
+    GltfMaterialDesc[] materials;
+}
+
+/// Parse every mesh, primitive, material and node. Each primitive runs the
+/// import-time optimizer (`.meta` settings of `doc.path`) and generates
+/// tangents when its material needs them. Node transforms stay in
+/// `GltfNodeCpu.local`.
+GltfSceneCpu parseGltfScene(ref GltfDocument doc) @trusted {
+    GltfSceneCpu scene;
+    auto root = doc.root;
+
+    if ("materials" in root) {
+        immutable n = root["materials"].array.length;
+        scene.materials.length = n;
+        foreach (i; 0 .. n)
+            scene.materials[i] = parseGltfMaterialAt(root, i);
+    }
+
+    if ("meshes" in root) {
+        auto meshes = root["meshes"].array;
+        scene.meshes.length = meshes.length;
+        foreach (mi, ref m; meshes) {
+            if ("name" in m.object) scene.meshes[mi].name = m["name"].str;
+            auto prims = m["primitives"].array;
+            scene.meshes[mi].primitives.length = prims.length;
+            foreach (pi, ref prim; prims) {
+                auto p = &scene.meshes[mi].primitives[pi];
+                p.material = ("material" in prim.object) ? cast(int) prim["material"].integer : -1;
+                enforce(p.material < cast(int) scene.materials.length, "glTF: primitive material index OOB");
+                p.mesh = readPrimitiveGeometry(doc, prim);
+                auto g = &p.mesh;
+                finalizeImportedMesh(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
+                if (p.material >= 0) {
+                    auto md = &scene.materials[p.material];
+                    if (md.normalImage >= 0 || md.normalUri.length || md.params.specularAnisotropy != 0.0f)
+                        generateMissingTangents(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
+                }
+            }
+        }
+    }
+
+    if ("nodes" in root) {
+        auto nodes = root["nodes"].array;
+        scene.nodes.length = nodes.length;
+        foreach (ni, ref n; nodes) {
+            auto node = &scene.nodes[ni];
+            if ("name" in n.object) node.name = n["name"].str;
+            node.local = nodeLocalMatrix(n);
+            if ("mesh" in n.object) {
+                node.mesh = cast(int) n["mesh"].integer;
+                enforce(node.mesh >= 0 && node.mesh < cast(int) scene.meshes.length, "glTF: node mesh index OOB");
+            }
+            if ("children" in n.object) {
+                foreach (c; n["children"].array) {
+                    immutable ci = cast(int) c.integer;
+                    enforce(ci >= 0 && ci < cast(int) nodes.length, "glTF: child index OOB");
+                    node.children ~= ci;
+                }
+            }
+        }
+        foreach (ni, ref node; scene.nodes) {
+            foreach (ci; node.children) {
+                enforce(scene.nodes[ci].parent < 0, "glTF: node has two parents");
+                scene.nodes[ci].parent = cast(int) ni;
+            }
+        }
+        if ("scenes" in root && root["scenes"].array.length) {
+            immutable si = ("scene" in root) ? cast(size_t) root["scene"].integer : 0;
+            auto sc = root["scenes"].array[si < root["scenes"].array.length ? si : 0];
+            if ("nodes" in sc.object)
+                foreach (r; sc["nodes"].array) scene.roots ~= cast(int) r.integer;
+        } else {
+            foreach (ni, ref node; scene.nodes)
+                if (node.parent < 0) scene.roots ~= cast(int) ni;
+        }
+    } else {
+        // No node graph: expose every mesh as a root node at the origin.
+        foreach (mi; 0 .. scene.meshes.length) {
+            GltfNodeCpu node;
+            node.name = scene.meshes[mi].name;
+            node.mesh = cast(int) mi;
+            scene.nodes ~= node;
+            scene.roots ~= cast(int) mi;
+        }
+    }
+    return scene;
+}
+
+/// Build a `.glb` container from JSON text and an optional BIN chunk
+/// (padding added per spec). Used by tests and tooling.
+ubyte[] buildGlb(string json, scope const(ubyte)[] bin = null) @trusted {
+    ubyte[] jsonBytes = cast(ubyte[]) json.dup;
+    while (jsonBytes.length % 4) jsonBytes ~= ' ';
+    ubyte[] binBytes = bin.dup;
+    while (binBytes.length % 4) binBytes ~= 0;
+    void put32(ref ubyte[] o, uint v) {
+        o ~= cast(ubyte)(v & 0xFF);
+        o ~= cast(ubyte)((v >> 8) & 0xFF);
+        o ~= cast(ubyte)((v >> 16) & 0xFF);
+        o ~= cast(ubyte)(v >> 24);
+    }
+    immutable total = 12 + 8 + jsonBytes.length + (binBytes.length ? 8 + binBytes.length : 0);
+    ubyte[] o;
+    put32(o, GLB_MAGIC);
+    put32(o, 2);
+    put32(o, cast(uint) total);
+    put32(o, cast(uint) jsonBytes.length);
+    put32(o, GLB_CHUNK_JSON);
+    o ~= jsonBytes;
+    if (binBytes.length) {
+        put32(o, cast(uint) binBytes.length);
+        put32(o, GLB_CHUNK_BIN);
+        o ~= binBytes;
+    }
+    return o;
+}
+
 private Mat4 nodeLocalMatrix(ref JSONValue node) @trusted {
     if ("matrix" in node.object) {
         auto arr = node["matrix"].array;
@@ -552,220 +1102,43 @@ private Vec3 transformNormal(Mat4 invWorld, Vec3 n) pure nothrow @nogc {
     return Vec3(r.x * inv, r.y * inv, r.z * inv);
 }
 
-/// Parse a .gltf file and return its first primitive as CPU geometry.
+/// Parse a `.gltf`/`.glb` file and return its first primitive as CPU geometry,
+/// with the first instancing node's world transform baked into the vertices.
 GltfMesh parseGltfMesh(string gltfPath) @trusted {
-    ubyte[] rawJson;
-    enforce(readAssetBytes(gltfPath, rawJson), "glTF file not found: " ~ gltfPath);
-    auto text = cast(string) rawJson;
-    auto root = parseJSON(text);
-    enforce("meshes" in root, "glTF: no meshes");
-    auto meshes = root["meshes"].array;
+    auto doc = parseGltfDocument(gltfPath);
+    return parseFirstMesh(doc);
+}
+
+private GltfMesh parseFirstMesh(ref GltfDocument doc) @trusted {
+    enforce("meshes" in doc.root, "glTF: no meshes");
+    auto meshes = doc.root["meshes"].array;
     enforce(meshes.length > 0, "glTF: empty meshes array");
     auto primitives = meshes[0]["primitives"].array;
     enforce(primitives.length > 0, "glTF: no primitives in first mesh");
     auto prim = primitives[0];
-    auto attrs = prim["attributes"].object;
+    immutable hasNormals = ("NORMAL" in prim["attributes"].object) !is null;
 
-    enforce("POSITION" in attrs, "glTF: primitive missing POSITION");
-    immutable int posAcc   = cast(int) attrs["POSITION"].integer;
-    immutable int normAcc  = ("NORMAL"     in attrs) ? cast(int) attrs["NORMAL"].integer     : -1;
-    immutable int uvAcc    = ("TEXCOORD_0" in attrs) ? cast(int) attrs["TEXCOORD_0"].integer : -1;
-    immutable int tanAcc   = ("TANGENT"    in attrs) ? cast(int) attrs["TANGENT"].integer    : -1;
-    enforce("indices" in prim, "glTF: primitive missing indices (non-indexed meshes unsupported)");
-    immutable int idxAcc   = cast(int) prim["indices"].integer;
-
-    auto accessors   = root["accessors"].array;
-    auto bufferViews = root["bufferViews"].array;
-    auto buffers     = root["buffers"].array;
-
-    const(ubyte)[][] bufferData;
-    bufferData.length = buffers.length;
-    immutable baseDir = dirName(gltfPath);
-    foreach (i, b; buffers) {
-        enforce("uri" in b.object, "glTF: embedded base64 buffers not supported");
-        immutable uri = b["uri"].str;
-        enforce(uri.length < 5 || uri[0 .. 5] != "data:",
-                "glTF: data: URIs not supported — use external .bin");
-        ubyte[] binBytes;
-        immutable binPath = buildPath(baseDir, uri);
-        enforce(readAssetBytes(binPath, binBytes), "glTF: missing external buffer: " ~ binPath);
-        bufferData[i] = binBytes;
-    }
-
-    // Decode EXT_meshopt_compression before any accessor read. The decoded
-    // bytes replace that bufferView; accessor byteOffset is relative to them.
-    ubyte[][] meshoptViews;
-    meshoptViews.length = bufferViews.length;
-    foreach (vi, ref bv; bufferViews) {
-        if ("extensions" !in bv.object)
-            continue;
-        auto exts = bv["extensions"];
-        if ("EXT_meshopt_compression" !in exts.object)
-            continue;
-        meshoptViews[vi] = decodeMeshoptView(exts["EXT_meshopt_compression"], bufferData);
-    }
-
-    const(ubyte)[] viewBytes(int bvIndex, ref size_t baseOff) {
-        auto bv = bufferViews[bvIndex];
-        if (meshoptViews[bvIndex].length) {
-            baseOff = 0;
-            return meshoptViews[bvIndex];
-        }
-        immutable size_t bufIdx = cast(size_t) bv["buffer"].integer;
-        baseOff = ("byteOffset" in bv.object) ? cast(size_t) bv["byteOffset"].integer : 0;
-        return bufferData[bufIdx];
-    }
-
-    float[] readFloatVec(int accessorIndex, uint expectedComponents) @trusted {
-        auto acc = accessors[accessorIndex];
-        immutable uint ct = cast(uint) acc["componentType"].integer;
-        immutable bool normalized = jsonFlag(acc, "normalized");
-        immutable string type = acc["type"].str;
-        uint comps = 0;
-        if (type == "VEC2") comps = 2;
-        else if (type == "VEC3") comps = 3;
-        else if (type == "VEC4") comps = 4;
-        else enforce(false, "glTF: unsupported accessor type " ~ type);
-        enforce(comps == expectedComponents, "glTF: accessor component count mismatch");
-        immutable size_t count = cast(size_t) acc["count"].integer;
-        immutable int bvIndex  = cast(int) acc["bufferView"].integer;
-        auto bv = bufferViews[bvIndex];
-        size_t baseOff;
-        auto src = viewBytes(bvIndex, baseOff);
-        immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
-        immutable size_t elem = componentSize(ct) * comps;
-        immutable size_t stride = ("byteStride" in bv.object) ? cast(size_t) bv["byteStride"].integer : elem;
-        enforce(stride >= elem, "glTF: byteStride smaller than the element");
-        immutable size_t totalOff = baseOff + accOff;
-        enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
-                "glTF: accessor out of buffer bounds");
-        auto dst = new float[count * comps];
-        if (ct == CT_FLOAT && stride == elem) {
-            auto fSrc = cast(const(float)*) (src.ptr + totalOff);
-            foreach (i; 0 .. count * comps) dst[i] = fSrc[i];
-            return dst;
-        }
-        foreach (v; 0 .. count) {
-            size_t at = totalOff + v * stride;
-            foreach (c; 0 .. comps) {
-                if (ct == CT_FLOAT) {
-                    uint bits = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
-                    import engine.meshopt.internal.bits : bitsFloat;
-                    dst[v * comps + c] = bitsFloat(bits);
-                    at += 4;
-                } else {
-                    int raw = readComponent(src, at, ct);
-                    dst[v * comps + c] = dequantizeComponent(raw, ct, normalized);
-                    at += componentSize(ct);
-                }
-            }
-        }
-        return dst;
-    }
-
-    uint[] readIndices(int accessorIndex) @trusted {
-        auto acc = accessors[accessorIndex];
-        immutable uint ct = cast(uint) acc["componentType"].integer;
-        immutable string type = acc["type"].str;
-        enforce(type == "SCALAR", "glTF: indices must be SCALAR");
-        immutable size_t count = cast(size_t) acc["count"].integer;
-        immutable int bvIndex  = cast(int) acc["bufferView"].integer;
-        auto bv = bufferViews[bvIndex];
-        size_t baseOff;
-        auto src = viewBytes(bvIndex, baseOff);
-        immutable size_t accOff = ("byteOffset" in acc.object) ? cast(size_t) acc["byteOffset"].integer : 0;
-        immutable size_t elem = componentSize(ct);
-        immutable size_t stride = ("byteStride" in bv.object && meshoptViews[bvIndex].length == 0)
-                ? cast(size_t) bv["byteStride"].integer : elem;
-        immutable size_t totalOff = baseOff + accOff;
-        enforce(count == 0 || totalOff + (count - 1) * stride + elem <= src.length,
-                "glTF: index accessor out of buffer bounds");
-        auto dst = new uint[count];
-        if (ct == CT_USHORT && stride == 2) {
-            auto p = cast(const(ushort)*) (src.ptr + totalOff);
-            foreach (i; 0 .. count) dst[i] = p[i];
-        } else if (ct == CT_UINT && stride == 4) {
-            auto p = cast(const(uint)*) (src.ptr + totalOff);
-            foreach (i; 0 .. count) dst[i] = p[i];
-        } else if (ct == CT_UBYTE && stride == 1) {
-            auto p = cast(const(ubyte)*) (src.ptr + totalOff);
-            foreach (i; 0 .. count) dst[i] = p[i];
-        } else if (ct == CT_USHORT || ct == CT_UINT || ct == CT_UBYTE) {
-            foreach (i; 0 .. count) {
-                size_t at = totalOff + i * stride;
-                if (ct == CT_UINT) {
-                    dst[i] = src[at] | (cast(uint) src[at + 1] << 8) | (cast(uint) src[at + 2] << 16) | (cast(uint) src[at + 3] << 24);
-                } else {
-                    int raw = readComponent(src, at, ct);
-                    enforce(raw >= 0, "glTF: negative index");
-                    dst[i] = cast(uint) raw;
-                }
-            }
-        } else {
-            enforce(false, "glTF: unsupported index component type");
-        }
-        return dst;
-    }
-
-    auto positions = readFloatVec(posAcc, 3);
-    immutable size_t vcount = positions.length / 3;
-    float[] normals; float[] uvs; float[] tans;
-    if (normAcc >= 0) normals = readFloatVec(normAcc, 3);
-    if (uvAcc   >= 0) uvs     = readFloatVec(uvAcc,   2);
-    if (tanAcc  >= 0) tans    = readFloatVec(tanAcc,  4);
-
-    GltfMesh out_;
-    out_.vertices.length = vcount;
-    foreach (i; 0 .. vcount) {
-        TexVert v;
-        v.pos[0] = positions[i*3 + 0];
-        v.pos[1] = positions[i*3 + 1];
-        v.pos[2] = positions[i*3 + 2];
-        if (normals.length) {
-            v.normal[0] = normals[i*3 + 0];
-            v.normal[1] = normals[i*3 + 1];
-            v.normal[2] = normals[i*3 + 2];
-        } else {
-            v.normal = [0, 1, 0];
-        }
-        if (uvs.length) {
-            v.uv[0] = uvs[i*2 + 0];
-            v.uv[1] = uvs[i*2 + 1];
-        } else {
-            v.uv = [0, 0];
-        }
-        out_.vertices[i] = v;
-    }
-    if (tans.length) {
-        enforce(tans.length == vcount * 4, "glTF: TANGENT count mismatch");
-        out_.tangents.length = vcount;
-        foreach (i; 0 .. vcount)
-            out_.tangents[i] = [tans[i * 4 + 0], tans[i * 4 + 1], tans[i * 4 + 2], tans[i * 4 + 3]];
-    }
-    Mat4 world = meshNodeWorld(root);
+    GltfMesh out_ = readPrimitiveGeometry(doc, prim);
+    Mat4 world = meshNodeWorld(doc.root);
     Mat4 ident = Mat4.identity;
-    bool hasXform = world.m != ident.m;
-    if (hasXform) {
+    if (world.m != ident.m) {
         Mat4 inv = world.inverse();
         foreach (ref v; out_.vertices) {
             Vec4 p = world * Vec4(v.pos[0], v.pos[1], v.pos[2], 1);
             v.pos = [p.x, p.y, p.z];
-            if (normals.length) {
+            if (hasNormals) {
                 Vec3 n = transformNormal(inv, Vec3(v.normal[0], v.normal[1], v.normal[2]));
                 v.normal = [n.x, n.y, n.z];
             }
         }
-        if (out_.tangents.length) {
-            foreach (ref t; out_.tangents) {
-                Vec3 n = transformNormal(inv, Vec3(t[0], t[1], t[2]));
-                t[0] = n.x;
-                t[1] = n.y;
-                t[2] = n.z;
-            }
+        foreach (ref t; out_.tangents) {
+            Vec3 n = transformNormal(inv, Vec3(t[0], t[1], t[2]));
+            t[0] = n.x;
+            t[1] = n.y;
+            t[2] = n.z;
         }
     }
-    out_.indices = readIndices(idxAcc);
-    finalizeImportedMesh(gltfPath, out_.vertices, out_.indices, out_.shadowIndices, out_.tangents);
+    finalizeImportedMesh(doc.path, out_.vertices, out_.indices, out_.shadowIndices, out_.tangents);
     return out_;
 }
 
@@ -902,4 +1275,114 @@ GltfMesh parseGltfMesh(string gltfPath) @trusted {
     assert(desc.params.thinFilmThickness == 620.0f);
     assert(desc.params.emissionLuminance == 4.5f);
     assert(desc.params.specularAnisotropy == 0.55f);
+}
+
+version (unittest) {
+    /// Little-endian bytes of a POD array.
+    private ubyte[] leBytes(T)(const(T)[] values) @trusted {
+        return (cast(const(ubyte)[]) values).dup;
+    }
+
+    /// Two meshes / three primitives / two materials / three nodes, one BIN
+    /// chunk carrying geometry plus an embedded "PNG" image bufferView.
+    package(engine) ubyte[] makeTestVehicleGlb() @trusted {
+        float[9] pos = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+        ushort[4] idx = [0, 1, 2, 0]; // 3 indices + pad to 4-byte alignment
+        ubyte[8] fakeImage = [0x89, 'P', 'N', 'G', 1, 2, 3, 4];
+        ubyte[] bin = leBytes(pos[]) ~ leBytes(idx[]) ~ fakeImage[].dup;
+        string json = `{
+          "asset":{"version":"2.0"},
+          "scene":0,
+          "scenes":[{"nodes":[0]}],
+          "buffers":[{"byteLength":` ~ bin.length.to!string ~ `}],
+          "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":6},
+            {"buffer":0,"byteOffset":44,"byteLength":8}
+          ],
+          "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}
+          ],
+          "images":[{"bufferView":2,"mimeType":"image/png"}],
+          "textures":[{"source":0}],
+          "materials":[
+            {"name":"paint","pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicFactor":0.5}},
+            {"name":"glass","pbrMetallicRoughness":{"baseColorFactor":[1,0,0,0.5],"roughnessFactor":0.1}}
+          ],
+          "meshes":[
+            {"name":"body","primitives":[
+              {"attributes":{"POSITION":0},"indices":1,"material":0},
+              {"attributes":{"POSITION":0},"indices":1,"material":1}]},
+            {"name":"door","primitives":[{"attributes":{"POSITION":0},"indices":1}]}
+          ],
+          "nodes":[
+            {"name":"body","mesh":0,"translation":[0,1,0],"children":[1]},
+            {"name":"door_fl","mesh":1,"translation":[1,0,0],"children":[2]},
+            {"name":"handle","scale":[2,2,2]}
+          ]
+        }`;
+        return buildGlb(json, bin);
+    }
+}
+
+@("gltf.glbScene") @trusted unittest {
+    auto glb = makeTestVehicleGlb();
+    assert(isGlb(glb));
+    auto doc = parseGltfDocumentBytes(glb, "/nonexistent-dir");
+    assert(doc.buffers.length == 1 && doc.buffers[0].length == 52);
+
+    auto scene = parseGltfScene(doc);
+    assert(scene.meshes.length == 2);
+    assert(scene.meshes[0].name == "body" && scene.meshes[0].primitives.length == 2);
+    assert(scene.meshes[0].primitives[0].material == 0);
+    assert(scene.meshes[0].primitives[1].material == 1);
+    assert(scene.meshes[1].primitives[0].material == -1);
+    assert(scene.meshes[1].primitives[0].mesh.indices.length == 3);
+
+    // Node transforms are kept, never baked into the vertices.
+    auto door = scene.meshes[1].primitives[0].mesh;
+    float maxX = -1;
+    foreach (v; door.vertices) if (v.pos[0] > maxX) maxX = v.pos[0];
+    assert(maxX > 0.99f && maxX < 1.01f);
+
+    assert(scene.nodes.length == 3 && scene.roots == [0]);
+    assert(scene.nodes[0].name == "body" && scene.nodes[0].parent == -1 && scene.nodes[0].mesh == 0);
+    assert(scene.nodes[1].name == "door_fl" && scene.nodes[1].parent == 0 && scene.nodes[1].mesh == 1);
+    assert(scene.nodes[2].parent == 1 && scene.nodes[2].mesh == -1);
+    assert(scene.nodes[0].local.m[13] == 1.0f);
+    assert(scene.nodes[1].local.m[12] == 1.0f);
+    assert(scene.nodes[2].local.m[0] == 2.0f);
+
+    // Materials: embedded image reference, per-index factors.
+    assert(scene.materials.length == 2);
+    assert(scene.materials[0].baseColorImage == 0 && scene.materials[0].baseColorUri.length == 0);
+    assert(scene.materials[0].params.baseMetalness == 0.5f);
+    assert(scene.materials[1].baseColorImage == -1);
+    assert(scene.materials[1].params.baseColor[0] == 1.0f && scene.materials[1].params.geometryOpacity == 0.5f);
+
+    auto img = resolveGltfImage(doc, 0);
+    assert(img.uri.length == 0 && img.mimeType == "image/png");
+    assert(img.bytes.length == 8 && img.bytes[1] == 'P');
+}
+
+@("gltf.dataUriBuffer") @trusted unittest {
+    import std.base64 : Base64;
+    float[9] pos = [0, 0, 0, 2, 0, 0, 0, 2, 0];
+    auto b64 = Base64.encode(leBytes(pos[]));
+    string json = `{"asset":{"version":"2.0"},
+      "buffers":[{"uri":"data:application/octet-stream;base64,` ~ cast(string) b64 ~ `","byteLength":36}],
+      "bufferViews":[{"buffer":0,"byteLength":36}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}`;
+    auto doc = parseGltfDocumentBytes(cast(const(ubyte)[]) json, ".");
+    assert(!isGlb(cast(const(ubyte)[]) json));
+    auto scene = parseGltfScene(doc);
+    // No node graph: each mesh becomes a root node; non-indexed gets 0,1,2.
+    assert(scene.nodes.length == 1 && scene.roots == [0] && scene.nodes[0].mesh == 0);
+    auto g = scene.meshes[0].primitives[0].mesh;
+    assert(g.indices.length == 3);
+    float maxX = -1;
+    foreach (v; g.vertices) if (v.pos[0] > maxX) maxX = v.pos[0];
+    assert(maxX == 2.0f);
 }

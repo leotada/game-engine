@@ -13,24 +13,8 @@ import engine.scene.graph : Transform;
 
 @safe:
 
-/// Axis-aligned bounding box in world space.
-struct Aabb {
-    Vec3 min = Vec3(0, 0, 0);
-    Vec3 max = Vec3(0, 0, 0);
-
-    Vec3 center() const nothrow @nogc {
-        return Vec3(
-            (min.x + max.x) * 0.5f,
-            (min.y + max.y) * 0.5f,
-            (min.z + max.z) * 0.5f,
-        );
-    }
-
-    /// Full extents (max - min), matching `GizmoRenderer.box`.
-    Vec3 extents() const nothrow @nogc {
-        return Vec3(max.x - min.x, max.y - min.y, max.z - min.z);
-    }
-}
+/// Axis-aligned bounding box (shared with culling and glTF bounds).
+public import engine.math.bounds : Aabb;
 
 /// Result of a scene pick.
 struct PickHit {

@@ -6,6 +6,7 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.graphics.types : Vert;
 import engine.graphics.primitives;
+import engine.math.bounds : Aabb, BoundingSphere;
 
 @safe:
 
@@ -21,6 +22,10 @@ struct Mesh {
     package(engine) WGPUIndexFormat indexFormat;
     /// Byte stride of `vertexBuffer` (`Vert.sizeof`).
     package(engine) uint vertexStride;
+    /// Object-space bounds computed from the vertex positions at upload.
+    Aabb localBounds;
+    /// Object-space bounding sphere (from `localBounds`), used for culling.
+    BoundingSphere localSphere;
 
     @disable this(this);
 
@@ -102,6 +107,8 @@ if (is(I == ushort) || is(I == uint)) {
     m.vertexBufSize = verts.length * Vert.sizeof;
     m.indexBufSize = indices.length * I.sizeof;
     m.vertexStride = Vert.sizeof;
+    m.localBounds = Aabb.fromPositions(verts);
+    m.localSphere = BoundingSphere.fromAabb(m.localBounds);
     static if (is(I == uint))
         m.indexFormat = WGPUIndexFormat.uint32;
     else

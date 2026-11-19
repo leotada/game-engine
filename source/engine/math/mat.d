@@ -10,6 +10,7 @@ pure nothrow @nogc @safe:
 /// Column-major 4×4 matrix stored as float[16].
 /// Layout: m[col * 4 + row], matching OpenGL/Vulkan/WGSL conventions.
 struct Mat4 {
+pure nothrow @nogc:
     float[16] m = [
         1,0,0,0,
         0,1,0,0,

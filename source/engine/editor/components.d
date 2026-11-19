@@ -12,6 +12,7 @@ import engine.core.pod : isPod;
 import engine.core.strings : StringId;
 import engine.ecs.store : EntityId;
 import engine.ecs.world : World;
+import engine.graphics.lod : selectLod;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
@@ -219,42 +220,14 @@ void lodSelectSystem(W)(ref W world, Vec3 cameraPos, float fovYRadians, float sc
         if (sz > worldScale)
             worldScale = sz;
         Vec3 delta = Vec3(xform.position.x - cameraPos.x, xform.position.y - cameraPos.y, xform.position.z - cameraPos.z);
-        float distance = delta.length();
-        ubyte chosen = 0;
-        foreach (i; 0 .. lod.levelCount) {
-            if (lodPixels(lod.errors[i], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias <= 1)
-                chosen = cast(ubyte) i;
-        }
-        if (chosen > lod.current) {
-            float px = lodPixels(lod.errors[chosen], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias;
-            if (px > 0.8f)
-                chosen = lod.current;
-        } else if (chosen < lod.current && lod.current < lod.levelCount) {
-            float px = lodPixels(lod.errors[lod.current], lod.meshScale, worldScale, distance, fovYRadians, screenHeight) * lod.bias;
-            if (px < 1.2f)
-                chosen = lod.current;
-        }
-        lod.current = chosen;
+        immutable levels = lod.levelCount > 8 ? 8 : lod.levelCount;
+        lod.current = selectLod(lod.errors[0 .. levels], lod.current, lod.meshScale, worldScale,
+                                delta.length(), fovYRadians, screenHeight, lod.bias);
     }
 }
 
 private float absF(float v) pure nothrow @nogc {
     return v < 0 ? -v : v;
-}
-
-private float tanF(float x) nothrow @nogc @trusted {
-    import core.stdc.math : tanf;
-    alias F = float function(float) nothrow @nogc @trusted;
-    return (cast(F) &tanf)(x);
-}
-
-private float lodPixels(float relativeError, float meshScale, float worldScale, float distance, float fovYRadians, float screenHeight) nothrow @nogc {
-    if (distance < 1e-4f)
-        distance = 1e-4f;
-    float denom = 2.0f * distance * tanF(fovYRadians * 0.5f);
-    if (!(denom > 0))
-        return float.max;
-    return relativeError * meshScale * worldScale * screenHeight / denom;
 }
 
 /// Default editor ECS registry (ED-1…ED-5).

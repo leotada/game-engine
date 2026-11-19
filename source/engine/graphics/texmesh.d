@@ -5,6 +5,7 @@ import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.graphics.types : TexTanVert, TexVert;
+import engine.math.bounds : Aabb, BoundingSphere;
 
 @safe:
 
@@ -38,6 +39,14 @@ struct TexMesh {
     package(engine) ubyte lodLevels;
     package(engine) uint[8] lodFirst;
     package(engine) uint[8] lodDrawCount;
+    /// Mesh-relative simplifier error per LOD (`buildLodChain`), for screen-space selection.
+    package(engine) float[8] lodErrors;
+    /// `simplifyScale` of the vertex buffer: converts relative errors to object units.
+    package(engine) float lodMeshScale = 1;
+    /// Object-space bounds computed from the vertex positions at upload.
+    Aabb localBounds;
+    /// Object-space bounding sphere (from `localBounds`), used for culling.
+    BoundingSphere localSphere;
 
     @disable this(this);
 
@@ -127,6 +136,9 @@ struct TexMesh {
         return LodRange(lodFirst[l], lodDrawCount[l]);
     }
 
+    /// True when `localBounds` was computed (any non-empty upload).
+    bool hasBounds() const pure nothrow @nogc { return !localBounds.empty; }
+
     /// Number of LOD levels (1 when the mesh has no chain).
     ubyte lodCount() const pure nothrow @nogc { return lodLevels <= 1 ? 1 : lodLevels; }
 
@@ -141,13 +153,25 @@ struct TexMesh {
     }
 
     /// Record concatenated LOD ranges. `first.length` is the level count (max 8).
-    void setLodChain(scope const(uint)[] first, scope const(uint)[] counts) pure nothrow @nogc {
+    /// `errors` are the mesh-relative simplifier errors per level and
+    /// `meshScale` the `simplifyScale` of the vertex buffer; both drive
+    /// automatic screen-space LOD selection.
+    void setLodChain(scope const(uint)[] first, scope const(uint)[] counts,
+                     scope const(float)[] errors = null, float meshScale = 1) pure nothrow @nogc {
         assert(first.length == counts.length && first.length <= 8);
+        assert(errors.length == 0 || errors.length == first.length);
         lodLevels = cast(ubyte) first.length;
+        lodMeshScale = meshScale;
         foreach (i; 0 .. 8) {
             lodFirst[i] = i < first.length ? first[i] : 0;
             lodDrawCount[i] = i < counts.length ? counts[i] : 0;
+            lodErrors[i] = i < errors.length ? errors[i] : 0;
         }
+    }
+
+    /// Simplifier errors of the chain (empty without a chain).
+    const(float)[] lodErrorList() const return pure nothrow @nogc {
+        return lodLevels <= 1 ? null : lodErrors[0 .. lodLevels];
     }
 
     /// Update vertex buffer contents in-place without reallocating GPU memory.
@@ -242,6 +266,8 @@ if ((is(I == ushort) || is(I == uint)) && V.sizeof % 4 == 0) {
     m.vertexBufSize = verts.length * V.sizeof;
     m.indexBufSize = indices.length * I.sizeof;
     m.vertexStride = cast(uint) V.sizeof;
+    m.localBounds = Aabb.fromPositions(verts);
+    m.localSphere = BoundingSphere.fromAabb(m.localBounds);
     static if (is(I == uint))
         m.indexFormat = WGPUIndexFormat.uint32;
     else

@@ -6,3 +6,4 @@ public import engine.math.mat3;
 public import engine.math.quat;
 public import engine.math.ray;
 public import engine.math.noise;
+public import engine.math.bounds;

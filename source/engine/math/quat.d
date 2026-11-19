@@ -11,6 +11,7 @@ private enum float DEG2RAD = PI / 180.0f;
 private enum float RAD2DEG = 180.0f / PI;
 
 struct Quat {
+pure nothrow @nogc:
     float x = 0, y = 0, z = 0, w = 1;
 
     static Quat identity() { return Quat.init; }

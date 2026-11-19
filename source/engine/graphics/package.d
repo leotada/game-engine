@@ -10,3 +10,6 @@ public import engine.graphics.material;
 public import engine.graphics.particles;
 public import engine.graphics.shapes;
 public import engine.graphics.sprite;
+public import engine.graphics.lod;
+public import engine.graphics.material_pool;
+public import engine.graphics.model;

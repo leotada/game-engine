@@ -8,7 +8,8 @@ import std.json : JSONType, JSONValue, parseJSON;
 import engine.gpu.context : GpuContext;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.types : TexTanVert, TexVert;
-import engine.meshopt.pipeline : MeshOptSettings, optimizeMesh;
+import engine.meshopt.pipeline : LodChain, LodLevel, LodSettings, MeshOptSettings, buildLodChain, optimizeMesh;
+import engine.meshopt.simplify.points : simplifyScale;
 import engine.meshopt.tangent : generateTangents;
 import engine.meshopt.types : FloatStream, TangentOptions, positionsOf;
 
@@ -118,6 +119,47 @@ TexMesh uploadOptimizedMesh(ref GpuContext gpu, const(TexVert)[] vertices, const
     return TexMesh.fromData(gpu, vertices, indices, shadowIndices);
 }
 
+/**
+ * Build a simplified LOD chain at load time and upload it as one `TexMesh`
+ * whose index buffer holds LOD0..N back to back (`TexMesh.setLodChain`).
+ * The chain reorders the vertex buffer, so the position-welded shadow index
+ * buffer is dropped; shadow passes use the next-coarser LOD range instead.
+ */
+TexMesh uploadLodMesh(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices,
+                      const(uint)[] shadowIndices, const(float[4])[] tangents,
+                      LodSettings settings = LodSettings.init) {
+    if (settings.maxLods > 8) settings.maxLods = 8;
+    if (indices.length == 0 || vertices.length == 0)
+        return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents);
+    if (tangents.length == vertices.length && tangents.length > 0)
+        return uploadChain(gpu, buildLodChain(packTangents(vertices, tangents), indices, settings));
+    return uploadChain(gpu, buildLodChain(vertices, indices, settings));
+}
+
+/// Concatenate LOD index lists; writes each level's first index, count and error.
+uint[] concatLodLevels(scope const(LodLevel!uint)[] levels, scope uint[] first, scope uint[] counts,
+                       scope float[] errors) pure {
+    assert(first.length >= levels.length && counts.length >= levels.length && errors.length >= levels.length);
+    uint[] concat;
+    foreach (i, ref level; levels) {
+        first[i] = cast(uint) concat.length;
+        counts[i] = cast(uint) level.indices.length;
+        errors[i] = level.error;
+        concat ~= level.indices;
+    }
+    return concat;
+}
+
+private TexMesh uploadChain(V)(ref GpuContext gpu, LodChain!(V, uint) chain) {
+    immutable n = chain.levels.length > 8 ? 8 : chain.levels.length;
+    uint[8] first, counts;
+    float[8] errors;
+    auto concat = concatLodLevels(chain.levels[0 .. n], first[], counts[], errors[]);
+    auto mesh = TexMesh.fromData(gpu, chain.vertices, concat);
+    mesh.setLodChain(first[0 .. n], counts[0 .. n], errors[0 .. n], simplifyScale(positionsOf!V(chain.vertices)));
+    return mesh;
+}
+
 private TexTanVert[] packTangents(const(TexVert)[] vertices, const(float[4])[] tangents) {
     auto packed = new TexTanVert[vertices.length];
     foreach (i, v; vertices) {
@@ -209,4 +251,20 @@ private bool jsonBool(ref JSONValue obj, string key, bool fallback) {
             negative = true;
     }
     assert(negative);
+}
+
+@("gltfOptimize.concatLodLevels") @safe unittest {
+    LodLevel!uint[3] levels;
+    levels[0].indices = [0, 1, 2, 2, 3, 0];
+    levels[0].error = 0;
+    levels[1].indices = [0, 1, 2];
+    levels[1].error = 0.01f;
+    levels[2].indices = [];
+    levels[2].error = 0.2f;
+    uint[3] first, counts;
+    float[3] errors;
+    auto concat = concatLodLevels(levels[], first[], counts[], errors[]);
+    assert(concat == [0, 1, 2, 2, 3, 0, 0, 1, 2]);
+    assert(first == [0, 6, 9] && counts == [6, 3, 0]);
+    assert(errors[1] == 0.01f && errors[2] == 0.2f);
 }
