@@ -23,8 +23,9 @@ import engine.gpu.shadow :
 import engine.graphics.types : Color4;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.graphics.material : Material;
-import engine.graphics.lod : LOD_NONE, selectLod;
-import engine.math.bounds : maxAxisScale;
+import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
+import engine.math.bounds : BoundingSphere, maxAxisScale;
+import engine.math.frustum : Frustum;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
@@ -77,6 +78,37 @@ static assert(GpuSpotLightUbo.sizeof == 128);
 /// `drawMatrix` LOD argument: pick the level from the camera distance and the
 /// mesh's simplifier errors (LOD0 for meshes without a chain).
 enum ubyte LOD_AUTO = 0xFF;
+
+/// Per-frame counters from `Scene3DTextured` (reset in `begin`).
+struct RenderStats {
+    /// (mesh, material, lod) batches with at least one instance.
+    uint batches;
+    /// Color-pass draw calls (dynamic batches + static ranges).
+    uint drawCalls;
+    /// Shadow-pass draw calls over every light view.
+    uint shadowDrawCalls;
+    /// Dynamic instances submitted through `draw` / `drawMatrix`.
+    uint instancesSubmitted;
+    /// Dynamic instances that survived frustum / distance culling.
+    uint instancesVisible;
+    /// Static instances drawn in the color pass (`StaticInstanceBuffer`).
+    uint staticInstancesVisible;
+    /// Static ranges submitted after merging.
+    uint staticRangesDrawn;
+}
+
+/// Stable counting sort of `items` by `classes[i] ∈ 0..3` through `scratch`.
+/// Returns the size of each class; classes end up contiguous in order 0..3.
+uint[4] partitionByClass(TexInstanceData[] items, scope const(ubyte)[] classes,
+                         TexInstanceData[] scratch) pure nothrow @nogc {
+    assert(classes.length >= items.length && scratch.length >= items.length);
+    uint[4] counts;
+    foreach (c; classes[0 .. items.length]) counts[c & 3]++;
+    uint[4] cursor = [0, counts[0], counts[0] + counts[1], counts[0] + counts[1] + counts[2]];
+    foreach (i, ref it; items) scratch[cursor[classes[i] & 3]++] = it;
+    items[] = scratch[0 .. items.length];
+    return counts;
+}
 
 /// CPU mirror of WGSL FrameUniforms (720 bytes).
 struct FrameUniforms {
@@ -133,8 +165,22 @@ struct Scene3DTextured {
         WGPUBuffer instanceBuf;
         size_t     capacity;
         bool       uploaded = false;
+        /// Culling partition (see `prepareBatch`): color pass draws
+        /// `[colorFirst, colorFirst + colorCount)`, the directional shadow
+        /// pass `[dirFirst, dirFirst + dirCount)`; point / spot shadows draw all.
+        bool       prepared = false;
+        uint       colorFirst, colorCount, dirFirst, dirCount;
     }
     private BatchMap batchMap;
+
+    // Culling state, captured in `begin`.
+    private Frustum cameraFrustum;
+    private bool cullingEnabled = true;
+    private float cullMaxDistance = 0;
+    private float cullMinPixels = 0;
+    private RenderStats frameStats;
+    private PodBuffer!TexInstanceData partitionScratch;
+    private PodBuffer!ubyte partitionClasses;
 
     private enum uint SHADOW_VP_STRIDE = 256;
     private enum uint MAX_SHADOW_PASS_SLOTS = 1 + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
@@ -455,10 +501,29 @@ struct Scene3DTextured {
         lodBias = bias > 0 ? bias : 1;
     }
 
+    /// Enable / disable per-instance frustum culling (default on).
+    void setCulling(bool enabled) nothrow @nogc { cullingEnabled = enabled; }
+
+    /// Drop instances farther than `maxDistance` (0 = unlimited) or whose
+    /// bounding sphere projects to fewer than `minPixelSize` pixels (0 = off).
+    void setDistanceCull(float maxDistance, float minPixelSize = 0) nothrow @nogc {
+        cullMaxDistance = maxDistance > 0 ? maxDistance : 0;
+        cullMinPixels = minPixelSize > 0 ? minPixelSize : 0;
+    }
+
+    /// Counters of the frame recorded since the last `begin`.
+    RenderStats stats() const nothrow @nogc { return frameStats; }
+
+    /// Camera frustum of the current frame (valid after `begin`).
+    ref const(Frustum) frustum() const return nothrow @nogc { return cameraFrustum; }
+
     void begin(ref const Camera camera) @trusted {
         lodCameraPos = camera.position;
         lodFovY = camera.fovY;
-        frameData.viewProj = camera.viewProjection().m;
+        immutable vp = camera.viewProjection();
+        cameraFrustum = Frustum.fromViewProj(vp);
+        frameStats = RenderStats.init;
+        frameData.viewProj = vp.m;
         frameData.cameraPos = [camera.position.x, camera.position.y, camera.position.z];
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
 
@@ -544,9 +609,15 @@ struct Scene3DTextured {
 
         ensureShadowResources();
 
+        // Directional-light frustum for caster culling; point/spot views draw every instance.
+        Frustum dirFrustum;
+        immutable bool cullDir = resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null;
+        if (cullDir)
+            dirFrustum = Frustum.fromViewProj(resolved.dir.viewProj);
         uint casterBatches = 0;
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
+            prepareBatch(b, cullDir ? &dirFrustum : null);
             ensureBatchUploaded(b);
             casterBatches++;
         }
@@ -590,7 +661,7 @@ struct Scene3DTextured {
         scope(exit) frame.resumeScenePass();
 
         if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
-            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0);
+            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0, true);
         }
         foreach (i; 0 .. frameData.pointCount) {
             immutable int slot = pointLightsData[i].shadowSlot;
@@ -600,7 +671,7 @@ struct Scene3DTextured {
                     frame.encoder,
                     pointShadows[slot].faceViews[face],
                     1 + cast(uint) slot * 6 + face,
-                    casterBatches > 0);
+                    casterBatches > 0, false);
             }
         }
         foreach (i; 0 .. frameData.spotCount) {
@@ -610,7 +681,7 @@ struct Scene3DTextured {
                 frame.encoder,
                 spotShadows[slot].depthView,
                 1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot,
-                casterBatches > 0);
+                casterBatches > 0, false);
         }
     }
 
@@ -653,13 +724,16 @@ struct Scene3DTextured {
     }
 
     private void encodeShadowView(WGPUCommandEncoder encoder, WGPUTextureView targetView,
-                                  uint vpSlot, bool drawBatches) nothrow @nogc @trusted {
+                                  uint vpSlot, bool drawBatches, bool dirView) nothrow @nogc @trusted {
         auto pass = beginShadowPassView(encoder, targetView, /*clear=*/true);
         if (drawBatches) {
             immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
             foreach (ref b; batches[0 .. batchCount]) {
                 if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
+                immutable uint first = dirView ? b.dirFirst : 0;
+                immutable uint count = dirView ? b.dirCount : cast(uint) b.instances.length;
+                if (count == 0) continue;
                 auto p = shadowPipe.pipelineFor(b.mesh.vertexStride, b.material.renderState.doubleSided);
                 wgpuRenderPassEncoderSetPipeline(pass, p);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
@@ -669,7 +743,8 @@ struct Scene3DTextured {
                 WGPUBuffer indexBuf = lod.useLodRange ? b.mesh.indexBuffer : b.mesh.shadowDrawBuffer();
                 ulong indexBytes = lod.useLodRange ? b.mesh.indexBufSize : b.mesh.shadowDrawBytes();
                 wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, b.mesh.indexFormat, 0, indexBytes);
-                wgpuRenderPassEncoderDrawIndexed(pass, lod.count, cast(uint) b.instances.length, lod.first, 0, 0);
+                wgpuRenderPassEncoderDrawIndexed(pass, lod.count, count, lod.first, 0, first);
+                frameStats.shadowDrawCalls++;
             }
         }
         endShadowPass(pass);
@@ -733,18 +808,27 @@ struct Scene3DTextured {
 
         // Pass 0: depth-writing batches in submission order. Pass 1: alpha
         // batches without depth write, back to front. Pass 2: additive.
+        foreach (ref b; batches[0 .. batchCount]) {
+            if (b.instances.length == 0) continue;
+            prepareBatch(b, null);
+            frameStats.batches++;
+            frameStats.instancesSubmitted += cast(uint) b.instances.length;
+            frameStats.instancesVisible += b.colorCount;
+        }
+
         uint orderCount = 0;
         foreach (pass; 0 .. 3) {
             orderCount = 0;
             foreach (i, ref b; batches[0 .. batchCount]) {
-                if (b.instances.length == 0) continue;
+                if (b.colorCount == 0) continue;
                 immutable st = b.material.renderState;
                 immutable p = st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
                 if (p != pass) continue;
                 if (pass == 1) {
-                    b.instances[].sort!((x, y) => distSq(x, cam) > distSq(y, cam));
+                    b.instances[b.colorFirst .. b.colorFirst + b.colorCount]
+                        .sort!((x, y) => distSq(x, cam) > distSq(y, cam));
                     b.uploaded = false;
-                    sortFarthest[i] = distSq(b.instances[0], cam);
+                    sortFarthest[i] = distSq(b.instances[b.colorFirst], cam);
                 }
                 sortOrder[orderCount++] = cast(uint) i;
             }
@@ -752,6 +836,57 @@ struct Scene3DTextured {
                 sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
             foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
         }
+    }
+
+    /**
+     * Cull a batch once per frame. Instances are reordered into
+     * `[camera only | camera + light | light only | culled]` so the color
+     * pass and the directional shadow pass each draw one contiguous range
+     * of the single uploaded instance buffer.
+     */
+    private void prepareBatch(ref Batch b, scope const(Frustum)* light) nothrow @nogc {
+        if (b.prepared) return;
+        b.prepared = true;
+        b.uploaded = false;
+        immutable n = cast(uint) b.instances.length;
+        if (!cullingEnabled || !b.mesh.hasBounds || n == 0) {
+            b.colorFirst = 0;
+            b.colorCount = n;
+            b.dirFirst = 0;
+            b.dirCount = n;
+            return;
+        }
+        immutable local = b.mesh.localSphere;
+        partitionClasses.resize(n);
+        partitionScratch.resize(n);
+        foreach (i, ref inst; b.instances[]) {
+            Mat4 model;
+            model.m = inst.model;
+            immutable ws = local.transformed(model);
+            immutable bool cam = cameraFrustum.intersectsSphere(ws) && passesDistanceCull(ws);
+            immutable bool lit = light !is null && light.intersectsSphere(ws);
+            partitionClasses[i] = cam ? (lit ? 1 : 0) : (lit ? 2 : 3);
+        }
+        immutable counts = partitionByClass(b.instances[], partitionClasses[], partitionScratch[]);
+        b.colorFirst = 0;
+        b.colorCount = counts[0] + counts[1];
+        if (light !is null) {
+            b.dirFirst = counts[0];
+            b.dirCount = counts[1] + counts[2];
+        } else {
+            b.dirFirst = 0;
+            b.dirCount = n;
+        }
+    }
+
+    private bool passesDistanceCull(BoundingSphere ws) const nothrow @nogc {
+        if (cullMaxDistance <= 0 && cullMinPixels <= 0) return true;
+        immutable d = (ws.center - lodCameraPos).length();
+        if (cullMaxDistance > 0 && d - ws.radius > cullMaxDistance) return false;
+        if (cullMinPixels > 0 && d > ws.radius
+                && projectedPixels(2 * ws.radius, d, lodFovY, lodScreenHeight) < cullMinPixels)
+            return false;
+        return true;
     }
 
     private void ensureBatchUploaded(ref Batch b) @trusted {
@@ -779,7 +914,8 @@ struct Scene3DTextured {
         frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
         frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
         immutable range = b.mesh.colorLodRange(b.lod);
-        frame.drawIndexed(range.count, cast(uint) b.instances.length, range.first);
+        frame.drawIndexed(range.count, b.colorCount, range.first, 0, b.colorFirst);
+        frameStats.drawCalls++;
     }
 
     /// Pipeline for a surface shader id + render state, built on first use.
@@ -837,6 +973,8 @@ struct Scene3DTextured {
             destroyBuffer(b.instanceBuf);
             b.instances.release();
         }
+        partitionScratch.release();
+        partitionClasses.release();
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -1025,6 +1163,7 @@ struct Scene3DTextured {
         b.lod = lod;
         b.instances.clear();
         b.uploaded = false;
+        b.prepared = false;
         batchMap.insert(meshKey, matKey, lod, batchCount);
         batchCount++;
         return b;
@@ -1146,4 +1285,16 @@ package(engine) struct BatchMap {
     auto resolved = Scene3DTextured.resolveLightsForShadows(ls);
     assert(resolved.spots[0].viewProj.m != Mat4.identity().m);
     assert(resolved.spots[1].viewProj.m == customVP.m);
+}
+
+@("scene3dTextured.partition") @safe nothrow @nogc unittest {
+    TexInstanceData[6] items;
+    foreach (i, ref it; items) it.model[12] = i;
+    immutable ubyte[6] classes = [3, 0, 2, 1, 0, 2];
+    TexInstanceData[6] scratch;
+    immutable counts = partitionByClass(items[], classes[], scratch[]);
+    assert(counts == [2, 1, 2, 1]);
+    // Stable order inside each class: 1,4 | 3 | 2,5 | 0
+    immutable float[6] expected = [1, 4, 3, 2, 5, 0];
+    foreach (i; 0 .. 6) assert(items[i].model[12] == expected[i]);
 }

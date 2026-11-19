@@ -14,3 +14,4 @@ version (NoSceneFile) {
 } else {
     public import engine.scene.scene_file;
 }
+public import engine.scene.spatial_grid;

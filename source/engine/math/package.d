@@ -7,3 +7,4 @@ public import engine.math.quat;
 public import engine.math.ray;
 public import engine.math.noise;
 public import engine.math.bounds;
+public import engine.math.frustum;

@@ -7,6 +7,7 @@ import engine.math.vec;
 pure nothrow @nogc @safe:
 
 struct Camera {
+pure nothrow @nogc:
     float fovY   = 0.9;
     float aspect = 16.0 / 9.0;
     float near   = 0.1;
