@@ -49,7 +49,7 @@ This is a commercial-grade 3D game engine written in **D**, targeting Bevy Engin
 
 - **All documentation must be written in English.** This applies to all files in `docs/`, architecture documents, roadmaps, implementation plans, code comments, docstrings, and commit messages. Never write documentation or plans in Portuguese or any other language. All existing and future documentation must be maintained in English.
 - **Document every change or new feature in the engine's markdown documentation.** Whenever you add a feature or modify existing behavior, update the relevant markdown files in `docs/` (such as `docs/graphics.md`, `docs/editor-guide.md`, `docs/export-guide.md`, `docs/scripting-guide.md`, `docs/README.md`, etc.) and `CHANGELOG.md` as appropriate.
-- **Keep the development usage guide (`docs/game-development-guide.md`) clear on how to use every feature.** Any user-facing or developer-facing feature or change must be clearly explained in `docs/game-development-guide.md` with accurate usage instructions, configuration options, and practical code examples so developers can immediately understand how to use it.
+- **Keep the development usage guide (`docs/game-development-guide.md`) concise and practical, linking to deep-dive docs for complex features.** In `docs/game-development-guide.md`, provide a clear, high-level overview of how to use every user-facing or developer-facing feature (quick-start usage, key options, and a short example), and link to the dedicated markdown files in `docs/` (e.g., `docs/graphics.md`, `docs/animation-guide.md`, `docs/scripting-guide.md`, `docs/editor-guide.md`, `docs/export-guide.md`) for in-depth architecture, edge cases, and full reference details.
 
 ### Workflow: Commits and Memory
 
