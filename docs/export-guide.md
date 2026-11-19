@@ -312,6 +312,11 @@ dub run --config=export --compiler=dmd -- \
 - **Compiler Auto-Selection & Static Phobos:** `ExportPipeline.hasLdcStaticPhobos()` checks for `libphobos2-ldc.a`. On Linux hosts where system `ldc2` only ships shared Phobos (`libphobos2-ldc-shared.so`), `--compiler=dmd` (or omitting `--compiler`) links `/usr/lib64/libphobos2.a` statically (`-defaultlib=libphobos2.a`) and excludes `hotreload/loader.d` + `hotreload/reload.d` so `rt_loadLibrary` is never referenced.
 - **Post-Build Verification (`verifyStaticBinary` & `verifyPakObfuscation`):** Unless `--no-verify` is passed, `ExportPipeline` inspects `readelf -d` (rejecting any `RPATH`/`RUNPATH` or non-base `DT_NEEDED` libraries outside `libc.so.6`, `libm.so.6`, `libgcc_s.so.1`, `ld-linux-x86-64.so.2`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`), verifies `ldd` has zero unresolved or engine/D shared libraries, and ensures plaintext asset names/headers do not leak into the `.pak`.
 
+### 6.3 Known Limitations (`GEPK` v1 Memory & Key Model)
+
+- **Full-Archive Memory Footprint:** `mountAssetPakFile` currently reads the entire `.pak` file into RAM via `std.file.read`, and `--embed-pak` (`import("assets.pak")`) embeds the container in the executable's `.rodata` section (OS demand-paged, though large paks slow down compilation and inflate binary size). This is ideal for compact projects (under ~100 MB); for larger games or streamed levels (>100–250 MB), update `mountAssetPakFile` in `source/engine/assets/pak.d` to keep an open `File` handle and `seek` + `rawRead(size)` per entry using the `offset`/`size` fields already stored in the `GEPK` v1 TOC.
+- **Client-Side Obfuscation Key:** For offline builds, the 64-bit decryption key lives in the game binary. `GEPK` v1 prevents casual asset browsing and automated file-carver extraction (`strings`, `binwalk`, `foremost`), not dedicated reverse engineering of the executable.
+
 ---
 
 ## 7. Third-Party License Attribution
