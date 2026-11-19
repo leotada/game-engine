@@ -2,6 +2,7 @@ module engine.physics.world;
 
 import bindings.box3d;
 import bindings.box3d.ids : b3IsNonNull;
+import core.stdc.stdlib : free, realloc;
 import engine.math.vec : Vec3;
 import engine.physics.convert : toB3Vec3;
 
@@ -11,6 +12,12 @@ struct PhysicsWorld {
     @disable this(this);
 
     private b3WorldId _world;
+    private b3MeshData** _ownedMeshes;
+    private size_t _ownedMeshCount;
+    private size_t _ownedMeshCap;
+    private b3HeightFieldData** _ownedHeightFields;
+    private size_t _ownedHeightFieldCount;
+    private size_t _ownedHeightFieldCap;
 
     this(Vec3 gravity,
          bool enableSleep = true,
@@ -29,9 +36,30 @@ struct PhysicsWorld {
     }
 
     ~this() nothrow @nogc @trusted {
+        // Destroy world first so shapes release references before cooked geometry is freed.
         if (b3IsNonNull(_world)) {
             b3DestroyWorldD(_world);
             _world = b3WorldId.init;
+        }
+        if (_ownedMeshes !is null) {
+            foreach (i; 0 .. _ownedMeshCount) {
+                if (_ownedMeshes[i] !is null)
+                    b3DestroyMeshD(_ownedMeshes[i]);
+            }
+            free(_ownedMeshes);
+            _ownedMeshes = null;
+            _ownedMeshCount = 0;
+            _ownedMeshCap = 0;
+        }
+        if (_ownedHeightFields !is null) {
+            foreach (i; 0 .. _ownedHeightFieldCount) {
+                if (_ownedHeightFields[i] !is null)
+                    b3DestroyHeightFieldD(_ownedHeightFields[i]);
+            }
+            free(_ownedHeightFields);
+            _ownedHeightFields = null;
+            _ownedHeightFieldCount = 0;
+            _ownedHeightFieldCap = 0;
         }
     }
 
@@ -68,4 +96,36 @@ struct PhysicsWorld {
     void setHitEventThreshold(float value) nothrow @nogc @trusted {
         b3World_SetHitEventThresholdD(_world, value);
     }
+
+    /// Number of awake dynamic/kinematic bodies currently simulated.
+    int awakeBodyCount() const nothrow @nogc @trusted {
+        if (!valid())
+            return 0;
+        return b3World_GetAwakeBodyCountD(_world);
+    }
+
+    /// Transfer ownership of convenience cooked mesh data to this world.
+    package bool adoptCookedMesh(b3MeshData* mesh) nothrow @nogc @trusted {
+        return appendOwnedPtr(_ownedMeshes, _ownedMeshCount, _ownedMeshCap, mesh);
+    }
+
+    /// Transfer ownership of convenience cooked heightfield data to this world.
+    package bool adoptCookedHeightField(b3HeightFieldData* hf) nothrow @nogc @trusted {
+        return appendOwnedPtr(_ownedHeightFields, _ownedHeightFieldCount, _ownedHeightFieldCap, hf);
+    }
+}
+
+private bool appendOwnedPtr(T)(ref T** items, ref size_t count, ref size_t cap, T* item) nothrow @nogc @trusted {
+    if (item is null)
+        return false;
+    if (count == cap) {
+        immutable nextCap = cap == 0 ? 16 : cap * 2;
+        auto nextBuf = cast(T**) realloc(items, nextCap * (T*).sizeof);
+        if (nextBuf is null)
+            return false;
+        items = nextBuf;
+        cap = nextCap;
+    }
+    items[count++] = item;
+    return true;
 }

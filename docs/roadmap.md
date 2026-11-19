@@ -12,7 +12,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 
 | # | Feature | Document | Priority | Dependencies / Rationale |
 |---:|:---|:---|:---|:---|
-| 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (P5 mesh deferred) | Gameplay foundation; `pong3d` demo, etc. |
+| 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (`P0–P6` + `OW-1`) | Gameplay foundation + heightfields, per-triangle materials, breakable/spherical/wheel joints, filters, CCD, sleep |
 | 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
 | 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **In Progress** | Compiler card-marking across Linux/Win/Android/macOS/iOS |
 | 3 | OpenPBR Surface v1.1 + IBL + Shadows | [plan-openpbr.md](plan-openpbr.md) | **Phase 1 Done** (`PBR-0–5`, `OPBR-1–5`); **Phase 2 Pending** (`OPBR-6–9`) | Single-pass OpenPBR v1.1 + IBL + PCF done; remaining: per-pixel layer maps (`OPBR-6`), refractive transmission (`OPBR-7`), SSS/translucency (`OPBR-8`), local probes/SSR (`OPBR-9`) |
@@ -25,11 +25,11 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 | 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
-| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **High (Phase 1 next)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics, culling/LOD/CSM/terrain/decals/weather, 3D/DSP/OGG audio, ozz-physics ragdoll + UI circle clip/rotate, Recast C-shim nav, chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
+| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **In Progress (`OW-1` Done · `OW-2` next)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather, 3D/DSP/OGG audio, ozz-physics ragdoll + UI circle clip/rotate, Recast C-shim nav, chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
 
 ### Ordering Notes
 
-- **Open-World Readiness (#13) — Phase 1 (`OW-1`) starts next:** Completing Box3D bindings and wrappers in `engine.physics` (heightfields, per-triangle materials, spherical/wheel/filter joints, constraint force/breakables, contact impulses, filters, CCD, sleep/wake) has zero upstream blockers and supersedes the deferred P5 static mesh/heightfield maintenance note below.
+- **Open-World Readiness (#13) — Phase 1 (`OW-1`) Done · Phase 2 (`OW-2`) next:** Phase 1 completed Box3D bindings and `@nogc` wrappers in `engine.physics` (RAII `CookedMesh`/`CookedHeightField`, per-triangle/cell surface materials, `RayCastHit.surfaceMaterialId`, `PhysicsHitEvent` contact impulses, spherical/wheel/prismatic/filter joints, `BreakableJointTracker`, collision filters, CCD, and sleep/body-type control). Phase 2 (`OW-2`) targets zero-GC rendering, multi-node glTF, frustum culling, retained static instancing, and runtime LODs.
 
 - **steadygc (#2b):** Direct compiler card barrier (`-version=Symgc_cards`) and custom runtime integration across all 5 engine target platforms; pairs with engine's `Pod!T` DOD storage (`BlkAttr.NO_SCAN`) for sub-millisecond GC pauses.
 - **PBR + Post:** Scene renders into `rgba16float`; bloom + ACES + FXAA detailed in [`plan-post-processing.md`](plan-post-processing.md). Swapchain presentation remains SDR.
@@ -52,11 +52,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 - **Post-Processing:** HDR scene RT (`rgba16float`), bloom (Karis average downsample + tent upsample), ACES tone mapping, FXAA; `app.resolvePost(frame)` before UI
 - **Audio:** WAV playback via SDL3 audio streams
 - **DevTools:** 3D gizmos + FPS/label debug overlay
-- **Gameplay Physics:** `PhysicsWorld`, boxes/spheres/capsules/cylinders, sensors, raycasts + overlaps, joints (distance/revolute/weld), character controller, contact/sensor/hit events (Box3D) — [physics-quickstart.md](physics-quickstart.md)
+- **Gameplay Physics:** `PhysicsWorld`, primitives, convex hulls, static triangle meshes (`CookedMesh`), heightfield terrain (`CookedHeightField`), per-triangle/cell `PhysicsSurfaceMaterial`, sensors, raycasts (`surfaceMaterialId`) + overlaps, distance/revolute/weld/spherical/wheel/prismatic/filter joints, `@nogc` `BreakableJointTracker`, collision filters, CCD, sleep/body-type control, character controller, and contact impulses (`PhysicsHitEvent`) — [physics-quickstart.md](physics-quickstart.md)
 - **GC-Safe Primitives:** `Pod!T`, `Handle!T`, `StringId`, `FrameArena`, static lint (`dub run --config=lint`) — see [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md)
 - **Editor UX v1:** Full level editor (`dub run --config=editor`) — raycast picking, TRS gizmos + snapping, multi-selection, undo/redo stack, hierarchy/inspector panels, lighting + shadows, play/pause physics simulation, `*.scene.json` and `*.asset.json` pipelines — see [plan-editor-ux.md](plan-editor-ux.md)
 - **Media Pipeline & Multiplatform Export:** `SDL3_image` + `SDL3_ttf` (`FreeType` SDF & hinted bitmap, kerning, fallback fonts; `stb` removed), static `player-static` builds via `ldc2`, and `ExportPipeline` + CLI (`dub run --config=export`) / Editor File menu release export for Linux, Windows, macOS, and Web (WASM + WebGPU) — see [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md)
-
-## Pending Maintenance (Non-Feature)
-
-- Static mesh collider (plan-physics-api P5) — optional, when required by specific game use cases

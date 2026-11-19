@@ -3,7 +3,7 @@
 Gameplay physics lives in `engine.physics`. Import that module — **do not**
 import `bindings.box3d` from game code.
 
-Backend: Box3D (C). Thin D wrappers use `Vec3` / `Quat` from `engine.math`.
+Backend: Box3D (C). Thin D wrappers use `Vec3` / `Quat` from `engine.math` and enforce `@safe nothrow @nogc` + POD storage.
 
 ## Happy path
 
@@ -27,7 +27,7 @@ immutable xform = readBodyTransform(ball); // sync mesh / camera
 Frame order: **step → drain events → read transforms** (or write kinematic
 transforms before step).
 
-## Bodies and shapes
+## Bodies, descriptors, and shapes
 
 | Helper | Motion |
 |:---|:---|
@@ -35,15 +35,51 @@ transforms before step).
 | `createStaticSphere` / `createKinematicSphere` / `createDynamicSphere` | sphere |
 | `createStaticCapsule` / `createDynamicCapsule` / `createSensorCapsule` | capsule (Y axis) |
 | `createStaticCylinder` / `createDynamicCylinder` | cylinder hull |
-| `createSensorBox` | static sensor box |
-| `createGroundSlab` | large static floor |
+| `createStaticHull` / `createKinematicHull` / `createDynamicHull` | convex hull from point cloud |
+| `createStaticMesh` | static triangle mesh (RAII `CookedMesh` or world-owned) |
+| `createHeightField` | static terrain heightfield (RAII `CookedHeightField` or world-owned) |
+| `createSensorBox` / `createGroundSlab` | static sensor box / large static floor |
+
+For full control over filters, surface material IDs, CCD (`isBullet`), initial sleep state (`startAwake`), sleep threshold, and damping, pass `BodyDesc` to `createBoxBody`, `createSphereBody`, `createCapsuleBody`, `createCylinderBody`, or `createHullBody`:
+
+```d
+BodyDesc bulletDesc;
+bulletDesc.type = PhysicsBodyType.dynamic;
+bulletDesc.position = Vec3(-5, 2, 0);
+bulletDesc.isBullet = true; // continuous collision detection
+bulletDesc.startAwake = true;
+bulletDesc.enableHitEvents = true;
+bulletDesc.material = PhysicsSurfaceMaterial(0.6f, 0.1f, 0.0f, /*userMaterialId*/ 42);
+bulletDesc.filter = CollisionFilter(/*category*/ 0x2, /*mask*/ 0x1, /*groupIndex*/ -7);
+auto b = createBoxBody(world, bulletDesc, Vec3(0.2f, 0.2f, 0.2f));
+```
 
 Pass an optional `EntityId` to map bodies to ECS entities (stored in Box3D
 userData). Recover with `getBodyEntity` / `getShapeEntity`.
 
-Motion helpers: `set/getLinearVelocity`, `set/getAngularVelocity`,
-`applyForceToCenter`, `applyLinearImpulseToCenter`, damping, restitution,
-`destroyBody`, `writeBodyTransform` / `readBodyTransform`.
+Runtime body and shape helpers: `set/getLinearVelocity`, `set/getAngularVelocity`,
+`applyForceToCenter`, `applyLinearImpulse`, `applyLinearImpulseToCenter`, `applyAngularImpulse`,
+`setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
+`setBodyType` / `getBodyType`, `isBodyAwake` / `setBodyAwake`, `enableBodySleep` /
+`setBodySleepThreshold`, `setBodyBullet` / `isBodyBullet`, `setBodyFilter` / `setShapeFilter`,
+`setBodySurfaceMaterial` / `setShapeSurfaceMaterial`, `destroyBody`, and
+`writeBodyTransform` / `readBodyTransform`. `world.awakeBodyCount()` reports awake bodies.
+
+## Static meshes & heightfields
+
+Dynamic triangle meshes are intentionally forbidden (Box3D only generates mesh contacts on static bodies). Both `createStaticMesh` and `createHeightField` accept per-triangle / per-cell `materialIndices` plus a `PhysicsSurfaceMaterial[]` table:
+
+```d
+PhysicsSurfaceMaterial[2] mats = [
+    PhysicsSurfaceMaterial(0.95f, 0.0f, 0.0f, /*asphalt*/ 101),
+    PhysicsSurfaceMaterial(0.25f, 0.0f, 0.0f, /*mud*/ 202),
+];
+// Use `heightFieldHole` (0xFF) in `cellMaterials` to punch terrain holes.
+auto terrain = createHeightField(world, Vec3.init, heights, countX, countZ,
+    Vec3(2.0f, 1.0f, 2.0f), cellMaterials, mats, terrainEntity);
+```
+
+For streaming chunks where geometry lifetime is managed explicitly across reloads, pre-cook once into move-only RAII handles `CookedMesh.create(...)` or `CookedHeightField.create(...)` (keep the cooked object alive while shapes reference it).
 
 ## Sensors and contact events
 
@@ -60,27 +96,41 @@ world.step(dt);
 drainPhysicsEvents(world, listener);
 ```
 
+`PhysicsHitEvent` includes `materialIdA`, `materialIdB`, `approachSpeed`, `normalImpulse`, and `frictionImpulse`.
+
 ## Queries
 
 ```d
-// Closest ray
+// Closest ray (returns `hit.entityId` and `hit.surfaceMaterialId`)
 auto hit = castRayClosest(world, origin, direction, maxDist);
 
-// AABB / sphere overlap (callback may stop early by returning false)
+// Filtered ray or AABB / sphere overlap (callback returns false to stop early)
+auto filter = makeQueryFilter(/*category*/ 0x1, /*mask*/ 0x3);
+auto filteredHit = castRayClosest(world, origin, direction, maxDist, filter);
 overlapAabb(world, minCorner, maxCorner, &onOverlap, &ctx);
 overlapSphere(world, center, radius, &onOverlap, &ctx);
 ```
 
-`defaultPhysicsQueryFilter()` sets default category/mask bits. Pass a custom
-`b3QueryFilter` overload when you need layers.
+## Joints & breakable constraints
 
-## Joints
+| Helper | Purpose |
+|:---|:---|
+| `createDistanceJoint` | fixed or bounded distance constraint |
+| `createRevoluteJoint` | hinge with optional `RevoluteJointConfig` (limits, spring, motor) |
+| `createWeldJoint` | rigid or compliant (`WeldJointConfig`) attachment |
+| `createSphericalJoint` | ball-socket / ragdoll cone-twist limits & damping (`SphericalJointConfig`) |
+| `createWheelJoint` | vehicle suspension + steering + spin motor (`WheelJointConfig`) |
+| `createPrismaticJoint` | linear slider along axis (`PrismaticJointConfig`) |
+| `createFilterJoint` | disable collisions between a specific pair of bodies |
+
+Use `@nogc` `BreakableJointTracker` to break welds/hinges automatically when reaction forces exceed thresholds:
 
 ```d
-auto j = createDistanceJoint(world, bodyA, bodyB, anchorA, anchorB);
-auto h = createRevoluteJoint(world, bodyA, bodyB, worldAnchor, axis);
-auto w = createWeldJoint(world, bodyA, bodyB, worldAnchor);
-destroyJoint(j);
+BreakableJointTracker breakables;
+breakables.registerJoint(weld, /*breakForce*/ 500.0f, /*breakTorque*/ 250.0f, /*tag*/ 7);
+
+// After `world.step(dt)`:
+breakables.update(world, &onJointBroken, &ctx);
 ```
 
 ## Character controller
@@ -102,14 +152,15 @@ player.move(world, wishDir, dt, jumpPressed);
 |:---|:---|
 | `dub run --config=pong3d` | kinematic paddles, sensors, hits, zero gravity |
 | `dub run --config=marble-run` | dynamics, impulses, sensors |
-| `dub run --config=test-physics-box3d` | headless smoke: stack, sensors, ray, capsule, overlap, joints, character |
+| `dub run --config=test-physics-box3d` | headless suite: primitives, heightfields, materials, hit impulses, breakable/ragdoll joints, filters, sleeping, CCD |
 
 ## Rules of thumb
 
 1. Game code: `import engine.physics;` only.
-2. Components stay POD; store `b3BodyId` / entity ids, not class refs.
+2. Components stay POD; store `b3BodyId` / `b3JointId` / `EntityId`, not class refs.
 3. No allocations inside the physics step path in engine code (`@nogc`).
-4. Mesh / heightfield colliders are not wrapped yet (see plan P5).
+4. Keep `CookedMesh` / `CookedHeightField` alive longer than any bodies referencing them (or let `PhysicsWorld` own convenience meshes/heightfields).
 
-Remaining work / history: [plan-physics-api.md](plan-physics-api.md),
+History & planning: [plan-physics-api.md](plan-physics-api.md),
+[plan-open-world-readiness.md](plan-open-world-readiness.md),
 [physics-box3d-benchmark.md](physics-box3d-benchmark.md).

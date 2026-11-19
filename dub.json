@@ -159,17 +159,17 @@
             "targetType": "executable",
             "targetName": "game-engine-test-physics-box3d",
             "mainSourceFile": "source/demo/test_physics_box3d.d",
-            "excludedSourceFiles": [
-                "source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d",
-                "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d",
-                "source/demo/test_physics.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d",
-                "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d",
-                "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
-                "source/engine/assets/asset_file.d",
-                "source/engine/scene/scene_file.d",
-                "source/engine/editor/*",
-                "source/engine/editor/ui/*"
+            "sourcePaths": ["source/engine/physics", "source/bindings/box3d"],
+            "importPaths": ["source", "source/bindings/box3d"],
+            "sourceFiles": [
+                "source/bindings/box3d/box3d_import.c",
+                "source/engine/math/vec.d",
+                "source/engine/math/mat.d",
+                "source/engine/math/quat.d",
+                "source/engine/ecs/store.d",
+                "source/engine/core/pod.d"
             ],
+            "excludedSourceFiles": [],
             "libs": ["box3d", "m"],
             "versions": ["NoSDL", "NoWGPU", "NoAssetFile", "NoSceneFile"]
         },

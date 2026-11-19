@@ -1,6 +1,7 @@
 module engine.physics.body;
 
 import bindings.box3d;
+import engine.core.pod : isPod;
 import engine.ecs.store : EntityId;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
@@ -10,6 +11,182 @@ import engine.physics.world : PhysicsWorld;
 @safe:
 
 enum EntityId noPhysicsEntity = EntityId.max;
+
+/// Material index reserved by Box3D heightfields to punch holes in terrain grids.
+enum ubyte heightFieldHole = 0xFF;
+
+/// Rigid body motion category.
+enum PhysicsBodyType : ubyte {
+    static_,
+    kinematic,
+    dynamic
+}
+
+/// Physical surface material properties attached to a shape or per-triangle slot.
+struct PhysicsSurfaceMaterial {
+    float friction = 0.7f;
+    float restitution = 0.0f;
+    float rollingResistance = 0.0f;
+    ulong userMaterialId = 0;
+}
+
+/// Bitmask and group index used to filter shape-vs-shape and query collisions.
+/// A negative `groupIndex` disables collisions among shapes sharing that index.
+struct CollisionFilter {
+    ulong categoryBits = ulong.max;
+    ulong maskBits = ulong.max;
+    int groupIndex = 0;
+}
+
+/// Complete POD descriptor for creating a physics body and its primary shape.
+struct BodyDesc {
+    PhysicsBodyType type = PhysicsBodyType.dynamic;
+    Vec3 position = Vec3(0.0f, 0.0f, 0.0f);
+    Quat rotation = Quat.init;
+    float density = 1.0f;
+    EntityId entityId = noPhysicsEntity;
+    PhysicsSurfaceMaterial material = PhysicsSurfaceMaterial.init;
+    CollisionFilter filter = CollisionFilter.init;
+    bool isSensor = false;
+    bool enableHitEvents = false;
+    bool isBullet = false;
+    bool startAwake = true;
+    bool enableSleep = true;
+    float sleepThreshold = 0.05f;
+    float linearDamping = 0.0f;
+    float angularDamping = 0.0f;
+}
+
+static assert(isPod!PhysicsSurfaceMaterial);
+static assert(isPod!CollisionFilter);
+static assert(isPod!BodyDesc);
+
+/// Move-only RAII wrapper owning cooked Box3D static triangle mesh data.
+/// Must outlive any static body/shape created from it.
+struct CookedMesh {
+    @disable this(this);
+
+    private b3MeshData* _data;
+
+    static CookedMesh create(scope const(Vec3)[] vertices,
+                             scope const(int)[] indices,
+                             scope const(ubyte)[] materialIndices = null,
+                             bool weldVertices = false,
+                             float weldTolerance = 0.0f,
+                             bool useMedianSplit = false,
+                             bool identifyEdges = true) nothrow @nogc @trusted {
+        CookedMesh result;
+        result._data = cookMeshData(vertices, indices, materialIndices,
+            weldVertices, weldTolerance, useMedianSplit, identifyEdges);
+        return result;
+    }
+
+    ~this() nothrow @nogc @trusted {
+        destroy();
+    }
+
+    bool valid() const pure nothrow @nogc {
+        return _data !is null;
+    }
+
+    const(b3MeshData)* handle() const pure nothrow @nogc {
+        return _data;
+    }
+
+    void destroy() nothrow @nogc @trusted {
+        if (_data !is null) {
+            b3DestroyMeshD(_data);
+            _data = null;
+        }
+    }
+}
+
+/// Move-only RAII wrapper owning cooked Box3D heightfield terrain data.
+/// Must outlive any static body/shape created from it.
+struct CookedHeightField {
+    @disable this(this);
+
+    private b3HeightFieldData* _data;
+
+    static CookedHeightField create(scope const(float)[] heights,
+                                    int countX,
+                                    int countZ,
+                                    Vec3 scale = Vec3(1.0f, 1.0f, 1.0f),
+                                    scope const(ubyte)[] materialIndices = null,
+                                    float globalMinHeight = float.nan,
+                                    float globalMaxHeight = float.nan,
+                                    bool clockwiseWinding = false) nothrow @nogc @trusted {
+        CookedHeightField result;
+        result._data = cookHeightFieldData(heights, countX, countZ, scale,
+            materialIndices, globalMinHeight, globalMaxHeight, clockwiseWinding);
+        return result;
+    }
+
+    ~this() nothrow @nogc @trusted {
+        destroy();
+    }
+
+    bool valid() const pure nothrow @nogc {
+        return _data !is null;
+    }
+
+    const(b3HeightFieldData)* handle() const pure nothrow @nogc {
+        return _data;
+    }
+
+    void destroy() nothrow @nogc @trusted {
+        if (_data !is null) {
+            b3DestroyHeightFieldD(_data);
+            _data = null;
+        }
+    }
+}
+
+b3BodyType toB3BodyType(PhysicsBodyType type) pure nothrow @nogc {
+    final switch (type) {
+        case PhysicsBodyType.static_: return b3_staticBody;
+        case PhysicsBodyType.kinematic: return b3_kinematicBody;
+        case PhysicsBodyType.dynamic: return b3_dynamicBody;
+    }
+}
+
+PhysicsBodyType fromB3BodyType(b3BodyType type) pure nothrow @nogc {
+    if (type == b3_staticBody)
+        return PhysicsBodyType.static_;
+    if (type == b3_kinematicBody)
+        return PhysicsBodyType.kinematic;
+    return PhysicsBodyType.dynamic;
+}
+
+b3SurfaceMaterial toB3SurfaceMaterial(const PhysicsSurfaceMaterial mat) nothrow @nogc @trusted {
+    b3SurfaceMaterial raw = b3DefaultSurfaceMaterialD();
+    raw.friction = mat.friction;
+    raw.restitution = mat.restitution;
+    raw.rollingResistance = mat.rollingResistance;
+    raw.userMaterialId = mat.userMaterialId;
+    return raw;
+}
+
+PhysicsSurfaceMaterial fromB3SurfaceMaterial(const b3SurfaceMaterial raw) pure nothrow @nogc {
+    PhysicsSurfaceMaterial mat;
+    mat.friction = raw.friction;
+    mat.restitution = raw.restitution;
+    mat.rollingResistance = raw.rollingResistance;
+    mat.userMaterialId = raw.userMaterialId;
+    return mat;
+}
+
+b3Filter toB3Filter(const CollisionFilter filter) pure nothrow @nogc {
+    b3Filter raw;
+    raw.categoryBits = filter.categoryBits;
+    raw.maskBits = filter.maskBits;
+    raw.groupIndex = filter.groupIndex;
+    return raw;
+}
+
+CollisionFilter fromB3Filter(const b3Filter raw) pure nothrow @nogc {
+    return CollisionFilter(raw.categoryBits, raw.maskBits, raw.groupIndex);
+}
 
 void* encodeEntityUserData(const EntityId entityId) nothrow @nogc @trusted {
     if (entityId == noPhysicsEntity)
@@ -41,15 +218,96 @@ bool isBodyValid(const b3BodyId bodyId) nothrow @nogc @trusted {
     return b3Body_IsValidD(bodyId);
 }
 
+// --- Full BodyDesc creation helpers ---
+
+/// Create a box rigid body configured by `BodyDesc`.
+b3BodyId createBoxBody(ref PhysicsWorld world, const BodyDesc desc, Vec3 halfExtent) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+    b3BoxHull hull = b3MakeBoxHullD(halfExtent.x, halfExtent.y, halfExtent.z);
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    b3CreateHullShapeD(bodyId, &shapeDef, &hull.base);
+    return bodyId;
+}
+
+/// Create a sphere rigid body configured by `BodyDesc`.
+b3BodyId createSphereBody(ref PhysicsWorld world, const BodyDesc desc, float radius) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+    b3Sphere sphere;
+    sphere.center = b3Vec3(0.0f, 0.0f, 0.0f);
+    sphere.radius = radius;
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    b3CreateSphereShapeD(bodyId, &shapeDef, &sphere);
+    return bodyId;
+}
+
+/// Create a Y-axis capsule rigid body configured by `BodyDesc`.
+b3BodyId createCapsuleBody(ref PhysicsWorld world, const BodyDesc desc, float height, float radius) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+    b3Capsule capsule = makeYAxisCapsule(height, radius);
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    b3CreateCapsuleShapeD(bodyId, &shapeDef, &capsule);
+    return bodyId;
+}
+
+/// Create a cylinder hull rigid body configured by `BodyDesc`.
+b3BodyId createCylinderBody(ref PhysicsWorld world,
+                            const BodyDesc desc,
+                            float height,
+                            float radius,
+                            int sides = 12) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+    immutable sideCount = sides < 3 ? 3 : sides;
+    b3HullData* hull = b3CreateCylinderD(height, radius, 0.0f, sideCount);
+    if (hull is null)
+        return bodyId;
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    b3CreateHullShapeD(bodyId, &shapeDef, hull);
+    b3DestroyHullD(hull);
+    return bodyId;
+}
+
+/// Create a convex hull rigid body from local points configured by `BodyDesc`.
+b3BodyId createHullBody(ref PhysicsWorld world,
+                        const BodyDesc desc,
+                        scope const(Vec3)[] points,
+                        int maxVertexCount = 64) nothrow @nogc @trusted {
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+    if (points.length < 3 || maxVertexCount < 3)
+        return bodyId;
+
+    immutable pointCount = cast(int) points.length;
+    immutable maxVerts = maxVertexCount < pointCount ? maxVertexCount : pointCount;
+    b3HullData* hull = b3CreateHullD(cast(const(b3Vec3)*) points.ptr, pointCount, maxVerts);
+    if (hull is null)
+        return bodyId;
+
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    b3CreateHullShapeD(bodyId, &shapeDef, hull);
+    b3DestroyHullD(hull);
+    return bodyId;
+}
+
+// --- Convenience primitive helpers (backwards compatible) ---
+
 b3BodyId createStaticBox(ref PhysicsWorld world,
                          Vec3 position,
                          Vec3 halfExtent,
                          EntityId entityId = noPhysicsEntity,
                          float friction = 0.7f,
                          float restitution = 0.0f,
-                         bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                         bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createStaticBox(ref PhysicsWorld world,
@@ -59,9 +317,9 @@ b3BodyId createStaticBox(ref PhysicsWorld world,
                          EntityId entityId = noPhysicsEntity,
                          float friction = 0.7f,
                          float restitution = 0.0f,
-                         bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, rotation, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                         bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, rotation,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createKinematicBox(ref PhysicsWorld world,
@@ -70,9 +328,9 @@ b3BodyId createKinematicBox(ref PhysicsWorld world,
                             EntityId entityId = noPhysicsEntity,
                             float friction = 0.7f,
                             float restitution = 0.0f,
-                            bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_kinematicBody, position, halfExtent, Quat.init, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                            bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.kinematic, position, Quat.init,
+        1.0f, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createKinematicBox(ref PhysicsWorld world,
@@ -82,9 +340,9 @@ b3BodyId createKinematicBox(ref PhysicsWorld world,
                             EntityId entityId = noPhysicsEntity,
                             float friction = 0.7f,
                             float restitution = 0.0f,
-                            bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_kinematicBody, position, halfExtent, rotation, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                            bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.kinematic, position, rotation,
+        1.0f, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createDynamicBox(ref PhysicsWorld world,
@@ -94,9 +352,9 @@ b3BodyId createDynamicBox(ref PhysicsWorld world,
                           EntityId entityId = noPhysicsEntity,
                           float friction = 0.7f,
                           float restitution = 0.0f,
-                          bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_dynamicBody, position, halfExtent, Quat.init, density,
-        entityId, friction, restitution, false, enableHitEvents);
+                          bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, Quat.init,
+        density, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createDynamicBox(ref PhysicsWorld world,
@@ -107,9 +365,9 @@ b3BodyId createDynamicBox(ref PhysicsWorld world,
                           EntityId entityId = noPhysicsEntity,
                           float friction = 0.7f,
                           float restitution = 0.0f,
-                          bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_dynamicBody, position, halfExtent, rotation, density,
-        entityId, friction, restitution, false, enableHitEvents);
+                          bool enableHitEvents = false) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, rotation,
+        density, entityId, friction, restitution, false, enableHitEvents), halfExtent);
 }
 
 b3BodyId createDynamicSphere(ref PhysicsWorld world,
@@ -119,9 +377,9 @@ b3BodyId createDynamicSphere(ref PhysicsWorld world,
                              EntityId entityId = noPhysicsEntity,
                              float friction = 0.7f,
                              float restitution = 0.0f,
-                             bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createSphereBody(world, b3_dynamicBody, position, radius, density,
-        entityId, friction, restitution, false, enableHitEvents);
+                             bool enableHitEvents = false) nothrow @nogc {
+    return createSphereBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, Quat.init,
+        density, entityId, friction, restitution, false, enableHitEvents), radius);
 }
 
 b3BodyId createStaticSphere(ref PhysicsWorld world,
@@ -130,9 +388,9 @@ b3BodyId createStaticSphere(ref PhysicsWorld world,
                             EntityId entityId = noPhysicsEntity,
                             float friction = 0.7f,
                             float restitution = 0.0f,
-                            bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createSphereBody(world, b3_staticBody, position, radius, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                            bool enableHitEvents = false) nothrow @nogc {
+    return createSphereBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), radius);
 }
 
 b3BodyId createKinematicSphere(ref PhysicsWorld world,
@@ -141,9 +399,9 @@ b3BodyId createKinematicSphere(ref PhysicsWorld world,
                                EntityId entityId = noPhysicsEntity,
                                float friction = 0.7f,
                                float restitution = 0.0f,
-                               bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createSphereBody(world, b3_kinematicBody, position, radius, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                               bool enableHitEvents = false) nothrow @nogc {
+    return createSphereBody(world, makeSimpleDesc(PhysicsBodyType.kinematic, position, Quat.init,
+        1.0f, entityId, friction, restitution, false, enableHitEvents), radius);
 }
 
 b3BodyId createDynamicCapsule(ref PhysicsWorld world,
@@ -154,9 +412,9 @@ b3BodyId createDynamicCapsule(ref PhysicsWorld world,
                               EntityId entityId = noPhysicsEntity,
                               float friction = 0.7f,
                               float restitution = 0.0f,
-                              bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createCapsuleBody(world, b3_dynamicBody, position, height, radius, density,
-        entityId, friction, restitution, false, enableHitEvents);
+                              bool enableHitEvents = false) nothrow @nogc {
+    return createCapsuleBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, Quat.init,
+        density, entityId, friction, restitution, false, enableHitEvents), height, radius);
 }
 
 b3BodyId createStaticCapsule(ref PhysicsWorld world,
@@ -166,18 +424,18 @@ b3BodyId createStaticCapsule(ref PhysicsWorld world,
                              EntityId entityId = noPhysicsEntity,
                              float friction = 0.7f,
                              float restitution = 0.0f,
-                             bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createCapsuleBody(world, b3_staticBody, position, height, radius, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                             bool enableHitEvents = false) nothrow @nogc {
+    return createCapsuleBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), height, radius);
 }
 
 b3BodyId createSensorCapsule(ref PhysicsWorld world,
                              Vec3 position,
                              float height,
                              float radius,
-                             EntityId entityId = noPhysicsEntity) nothrow @nogc @trusted {
-    return createCapsuleBody(world, b3_staticBody, position, height, radius, 0.0f,
-        entityId, 0.0f, 0.0f, true, false);
+                             EntityId entityId = noPhysicsEntity) nothrow @nogc {
+    return createCapsuleBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, 0.0f, 0.0f, true, false), height, radius);
 }
 
 b3BodyId createDynamicCylinder(ref PhysicsWorld world,
@@ -189,9 +447,9 @@ b3BodyId createDynamicCylinder(ref PhysicsWorld world,
                                float friction = 0.7f,
                                float restitution = 0.0f,
                                bool enableHitEvents = false,
-                               int sides = 12) nothrow @nogc @trusted {
-    return createCylinderBody(world, b3_dynamicBody, position, height, radius, density,
-        entityId, friction, restitution, false, enableHitEvents, sides);
+                               int sides = 12) nothrow @nogc {
+    return createCylinderBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, Quat.init,
+        density, entityId, friction, restitution, false, enableHitEvents), height, radius, sides);
 }
 
 b3BodyId createStaticCylinder(ref PhysicsWorld world,
@@ -202,24 +460,24 @@ b3BodyId createStaticCylinder(ref PhysicsWorld world,
                               float friction = 0.7f,
                               float restitution = 0.0f,
                               bool enableHitEvents = false,
-                              int sides = 12) nothrow @nogc @trusted {
-    return createCylinderBody(world, b3_staticBody, position, height, radius, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents, sides);
+                              int sides = 12) nothrow @nogc {
+    return createCylinderBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), height, radius, sides);
 }
 
 b3BodyId createSensorBox(ref PhysicsWorld world,
                          Vec3 position,
                          Vec3 halfExtent,
-                         EntityId entityId = noPhysicsEntity) nothrow @nogc @trusted {
-    return createBoxBody(world, b3_staticBody, position, halfExtent, Quat.init, 0.0f,
-        entityId, 0.0f, 0.0f, true, false);
+                         EntityId entityId = noPhysicsEntity) nothrow @nogc {
+    return createBoxBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, 0.0f, 0.0f, true, false), halfExtent);
 }
 
 b3BodyId createGroundSlab(ref PhysicsWorld world,
                           float y,
                           Vec3 halfExtentXZ,
                           float halfExtentY,
-                          EntityId entityId = noPhysicsEntity) nothrow @nogc @trusted {
+                          EntityId entityId = noPhysicsEntity) nothrow @nogc {
     immutable pos = Vec3(0.0f, y - halfExtentY, 0.0f);
     immutable extents = Vec3(halfExtentXZ.x, halfExtentY, halfExtentXZ.z);
     return createStaticBox(world, pos, extents, entityId, 1.0f);
@@ -233,9 +491,9 @@ b3BodyId createStaticHull(ref PhysicsWorld world,
                           EntityId entityId = noPhysicsEntity,
                           float friction = 0.7f,
                           float restitution = 0.0f,
-                          bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createHullBody(world, b3_staticBody, position, Quat.init, points, maxVertexCount, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                          bool enableHitEvents = false) nothrow @nogc {
+    return createHullBody(world, makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init,
+        0.0f, entityId, friction, restitution, false, enableHitEvents), points, maxVertexCount);
 }
 
 b3BodyId createDynamicHull(ref PhysicsWorld world,
@@ -246,9 +504,9 @@ b3BodyId createDynamicHull(ref PhysicsWorld world,
                            EntityId entityId = noPhysicsEntity,
                            float friction = 0.7f,
                            float restitution = 0.0f,
-                           bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createHullBody(world, b3_dynamicBody, position, Quat.init, points, maxVertexCount, density,
-        entityId, friction, restitution, false, enableHitEvents);
+                           bool enableHitEvents = false) nothrow @nogc {
+    return createHullBody(world, makeSimpleDesc(PhysicsBodyType.dynamic, position, Quat.init,
+        density, entityId, friction, restitution, false, enableHitEvents), points, maxVertexCount);
 }
 
 b3BodyId createKinematicHull(ref PhysicsWorld world,
@@ -258,14 +516,32 @@ b3BodyId createKinematicHull(ref PhysicsWorld world,
                              EntityId entityId = noPhysicsEntity,
                              float friction = 0.7f,
                              float restitution = 0.0f,
-                             bool enableHitEvents = false) nothrow @nogc @trusted {
-    return createHullBody(world, b3_kinematicBody, position, Quat.init, points, maxVertexCount, 0.0f,
-        entityId, friction, restitution, false, enableHitEvents);
+                             bool enableHitEvents = false) nothrow @nogc {
+    return createHullBody(world, makeSimpleDesc(PhysicsBodyType.kinematic, position, Quat.init,
+        1.0f, entityId, friction, restitution, false, enableHitEvents), points, maxVertexCount);
+}
+
+// --- Static triangle mesh & heightfield colliders (dynamic mesh intentionally forbidden) ---
+
+/// Attach a caller-owned `CookedMesh` to a new static rigid body.
+/// `mesh` must remain alive while the created body/shape exists in `world`.
+b3BodyId createStaticMesh(ref PhysicsWorld world,
+                          Vec3 position,
+                          ref const CookedMesh mesh,
+                          scope const(PhysicsSurfaceMaterial)[] materials = null,
+                          EntityId entityId = noPhysicsEntity,
+                          Vec3 scale = Vec3(1.0f, 1.0f, 1.0f),
+                          CollisionFilter filter = CollisionFilter.init,
+                          bool enableHitEvents = false) nothrow @nogc @trusted {
+    if (!mesh.valid())
+        return b3BodyId.init;
+    return createStaticMeshShapeBody(world, position, mesh.handle, 0.7f, 0.0f,
+        materials, entityId, scale, filter, enableHitEvents);
 }
 
 /// Triangle mesh collider (static only). `indices` length must be `triangleCount * 3`.
 /// Triangles are single-sided — winding must face the colliding side (normals outward/up).
-/// Cooked mesh data is retained for the shape lifetime (Box3D does not clone it).
+/// Cooked mesh lifetime is owned by `world` and freed when `world` is destroyed.
 /// Dynamic mesh is intentionally not exposed — Box3D only generates mesh contacts on static bodies.
 b3BodyId createStaticMesh(ref PhysicsWorld world,
                           Vec3 position,
@@ -275,40 +551,70 @@ b3BodyId createStaticMesh(ref PhysicsWorld world,
                           float friction = 0.7f,
                           float restitution = 0.0f,
                           bool enableHitEvents = false,
-                          Vec3 scale = Vec3(1.0f, 1.0f, 1.0f)) nothrow @nogc @trusted {
-    if (vertices.length < 3 || indices.length < 3 || (indices.length % 3) != 0)
+                          Vec3 scale = Vec3(1.0f, 1.0f, 1.0f),
+                          scope const(ubyte)[] materialIndices = null,
+                          scope const(PhysicsSurfaceMaterial)[] materials = null,
+                          CollisionFilter filter = CollisionFilter.init) nothrow @nogc @trusted {
+    b3MeshData* mesh = cookMeshData(vertices, indices, materialIndices, false, 0.0f, false, true);
+    if (mesh is null)
         return b3BodyId.init;
 
-    b3BodyId bodyId = createBodyShell(world, b3_staticBody, position, Quat.init, entityId);
-
-    b3MeshDef meshDef;
-    meshDef.vertices = cast(b3Vec3*) vertices.ptr;
-    meshDef.indices = cast(int*) indices.ptr;
-    meshDef.materialIndices = null;
-    meshDef.weldTolerance = 0.0f;
-    meshDef.vertexCount = cast(int) vertices.length;
-    meshDef.triangleCount = cast(int)(indices.length / 3);
-    meshDef.weldVertices = false;
-    meshDef.useMedianSplit = false;
-    meshDef.identifyEdges = true;
-
-    b3MeshData* mesh = b3CreateMeshD(&meshDef, null, 0);
-    if (mesh is null) {
-        destroyBody(bodyId);
+    if (!world.adoptCookedMesh(mesh)) {
+        b3DestroyMeshD(mesh);
         return b3BodyId.init;
     }
 
-    // Retain mesh: b3CreateMeshShape holds a reference (not a clone).
-    retainCookedMesh(mesh);
-
-    b3ShapeDef shapeDef = defaultShapeDef(0.0f, entityId, friction, restitution, false, enableHitEvents);
-    immutable shapeId = b3CreateMeshShapeD(bodyId, &shapeDef, mesh, toB3Vec3(scale));
-    if (!b3Shape_IsValidD(shapeId)) {
-        destroyBody(bodyId);
-        return b3BodyId.init;
-    }
-    return bodyId;
+    return createStaticMeshShapeBody(world, position, mesh, friction, restitution,
+        materials, entityId, scale, filter, enableHitEvents);
 }
+
+/// Attach a caller-owned `CookedHeightField` to a new static rigid body.
+/// `hf` must remain alive while the created body/shape exists in `world`.
+b3BodyId createHeightField(ref PhysicsWorld world,
+                           Vec3 position,
+                           ref const CookedHeightField hf,
+                           scope const(PhysicsSurfaceMaterial)[] materials = null,
+                           EntityId entityId = noPhysicsEntity,
+                           CollisionFilter filter = CollisionFilter.init,
+                           bool enableHitEvents = false) nothrow @nogc @trusted {
+    if (!hf.valid())
+        return b3BodyId.init;
+    return createHeightFieldShapeBody(world, position, hf.handle, materials,
+        entityId, filter, enableHitEvents);
+}
+
+/// Static heightfield terrain collider (`heights.length == countX * countZ`).
+/// Optional `materialIndices` has `(countX - 1) * (countZ - 1)` entries (`heightFieldHole` punches holes).
+/// Cooked heightfield lifetime is owned by `world` and freed when `world` is destroyed.
+b3BodyId createHeightField(ref PhysicsWorld world,
+                           Vec3 position,
+                           scope const(float)[] heights,
+                           int countX,
+                           int countZ,
+                           Vec3 scale = Vec3(1.0f, 1.0f, 1.0f),
+                           scope const(ubyte)[] materialIndices = null,
+                           scope const(PhysicsSurfaceMaterial)[] materials = null,
+                           EntityId entityId = noPhysicsEntity,
+                           float globalMinHeight = float.nan,
+                           float globalMaxHeight = float.nan,
+                           bool clockwiseWinding = false,
+                           CollisionFilter filter = CollisionFilter.init,
+                           bool enableHitEvents = false) nothrow @nogc @trusted {
+    b3HeightFieldData* hf = cookHeightFieldData(heights, countX, countZ, scale,
+        materialIndices, globalMinHeight, globalMaxHeight, clockwiseWinding);
+    if (hf is null)
+        return b3BodyId.init;
+
+    if (!world.adoptCookedHeightField(hf)) {
+        b3DestroyHeightFieldD(hf);
+        return b3BodyId.init;
+    }
+
+    return createHeightFieldShapeBody(world, position, hf, materials,
+        entityId, filter, enableHitEvents);
+}
+
+// --- Runtime body and shape manipulation ---
 
 void setLinearVelocity(const b3BodyId bodyId, Vec3 velocity) nothrow @nogc @trusted {
     b3Body_SetLinearVelocityD(bodyId, toB3Vec3(velocity));
@@ -330,8 +636,18 @@ void applyForceToCenter(const b3BodyId bodyId, Vec3 force, bool wake = true) not
     b3Body_ApplyForceToCenterD(bodyId, toB3Vec3(force), wake);
 }
 
+void applyLinearImpulse(const b3BodyId bodyId, Vec3 impulse, Vec3 worldPoint, bool wake = true) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_ApplyLinearImpulseD(bodyId, toB3Vec3(impulse), toB3Pos(worldPoint), wake);
+}
+
 void applyLinearImpulseToCenter(const b3BodyId bodyId, Vec3 impulse, bool wake = true) nothrow @nogc @trusted {
     b3Body_ApplyLinearImpulseToCenterD(bodyId, toB3Vec3(impulse), wake);
+}
+
+void applyAngularImpulse(const b3BodyId bodyId, Vec3 impulse, bool wake = true) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_ApplyAngularImpulseD(bodyId, toB3Vec3(impulse), wake);
 }
 
 void setLinearDamping(const b3BodyId bodyId, float damping) nothrow @nogc @trusted {
@@ -347,15 +663,127 @@ void enableBodyHitEvents(const b3BodyId bodyId, bool enabled) nothrow @nogc @tru
         b3Body_EnableHitEventsD(bodyId, enabled);
 }
 
+void setBodyType(const b3BodyId bodyId, PhysicsBodyType type) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetTypeD(bodyId, toB3BodyType(type));
+}
+
+PhysicsBodyType getBodyType(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return PhysicsBodyType.static_;
+    return fromB3BodyType(b3Body_GetTypeD(bodyId));
+}
+
+bool isBodyAwake(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return false;
+    return b3Body_IsAwakeD(bodyId);
+}
+
+void setBodyAwake(const b3BodyId bodyId, bool awake) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetAwakeD(bodyId, awake);
+}
+
+void enableBodySleep(const b3BodyId bodyId, bool enabled) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_EnableSleepD(bodyId, enabled);
+}
+
+bool isBodySleepEnabled(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return false;
+    return b3Body_IsSleepEnabledD(bodyId);
+}
+
+void setBodySleepThreshold(const b3BodyId bodyId, float threshold) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetSleepThresholdD(bodyId, threshold);
+}
+
+void setBodyBullet(const b3BodyId bodyId, bool isBullet) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetBulletD(bodyId, isBullet);
+}
+
+bool isBodyBullet(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return false;
+    return b3Body_IsBulletD(bodyId);
+}
+
+void setBodyFilter(const b3BodyId bodyId, CollisionFilter filter, bool invokeContacts = true) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return;
+    b3ShapeId[16] shapes;
+    immutable count = b3Body_GetShapesD(bodyId, shapes.ptr, cast(int) shapes.length);
+    immutable raw = toB3Filter(filter);
+    foreach (i; 0 .. count) {
+        if (b3Shape_IsValidD(shapes[i]))
+            b3Shape_SetFilterD(shapes[i], raw, invokeContacts);
+    }
+}
+
+void setShapeFilter(const b3ShapeId shapeId, CollisionFilter filter, bool invokeContacts = true) nothrow @nogc @trusted {
+    if (b3Shape_IsValidD(shapeId))
+        b3Shape_SetFilterD(shapeId, toB3Filter(filter), invokeContacts);
+}
+
+CollisionFilter getShapeFilter(const b3ShapeId shapeId) nothrow @nogc @trusted {
+    if (!b3Shape_IsValidD(shapeId))
+        return CollisionFilter.init;
+    return fromB3Filter(b3Shape_GetFilterD(shapeId));
+}
+
 void setBodyRestitution(const b3BodyId bodyId, float restitution) nothrow @nogc @trusted {
     if (!b3Body_IsValidD(bodyId))
         return;
-    b3ShapeId[8] shapes;
+    b3ShapeId[16] shapes;
     immutable count = b3Body_GetShapesD(bodyId, shapes.ptr, cast(int) shapes.length);
     foreach (i; 0 .. count) {
         if (b3Shape_IsValidD(shapes[i]))
             b3Shape_SetRestitutionD(shapes[i], restitution);
     }
+}
+
+void setBodyDensity(const b3BodyId bodyId, float density) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return;
+    b3ShapeId[16] shapes;
+    immutable count = b3Body_GetShapesD(bodyId, shapes.ptr, cast(int) shapes.length);
+    foreach (i; 0 .. count) {
+        if (b3Shape_IsValidD(shapes[i]))
+            b3Shape_SetDensityD(shapes[i], density, false);
+    }
+    b3Body_ApplyMassFromShapesD(bodyId);
+}
+
+void setBodySurfaceMaterial(const b3BodyId bodyId, PhysicsSurfaceMaterial material) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return;
+    b3ShapeId[16] shapes;
+    immutable count = b3Body_GetShapesD(bodyId, shapes.ptr, cast(int) shapes.length);
+    immutable raw = toB3SurfaceMaterial(material);
+    foreach (i; 0 .. count) {
+        if (b3Shape_IsValidD(shapes[i]))
+            b3Shape_SetSurfaceMaterialD(shapes[i], raw);
+    }
+}
+
+void setShapeSurfaceMaterial(const b3ShapeId shapeId, PhysicsSurfaceMaterial material) nothrow @nogc @trusted {
+    if (b3Shape_IsValidD(shapeId))
+        b3Shape_SetSurfaceMaterialD(shapeId, toB3SurfaceMaterial(material));
+}
+
+PhysicsSurfaceMaterial getShapeSurfaceMaterial(const b3ShapeId shapeId) nothrow @nogc @trusted {
+    if (!b3Shape_IsValidD(shapeId))
+        return PhysicsSurfaceMaterial.init;
+    return fromB3SurfaceMaterial(b3Shape_GetSurfaceMaterialD(shapeId));
+}
+
+void setShapeMeshMaterial(const b3ShapeId shapeId, PhysicsSurfaceMaterial material, int index) nothrow @nogc @trusted {
+    if (b3Shape_IsValidD(shapeId) && index >= 0 && index < b3Shape_GetMeshMaterialCountD(shapeId))
+        b3Shape_SetMeshMaterialD(shapeId, toB3SurfaceMaterial(material), index);
 }
 
 void destroyBody(const b3BodyId bodyId) nothrow @nogc @trusted {
@@ -368,136 +796,198 @@ Vec3 getPosition(const b3BodyId bodyId) nothrow @nogc @trusted {
     return Vec3(cast(float) p.x, cast(float) p.y, cast(float) p.z);
 }
 
-private b3BodyId createBoxBody(ref PhysicsWorld world,
-                               b3BodyType type,
-                               Vec3 position,
-                               Vec3 halfExtent,
-                               Quat rotation,
-                               float density,
-                               EntityId entityId,
-                               float friction,
-                               float restitution,
-                               bool sensor,
-                               bool enableHitEvents) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, type, position, rotation, entityId);
-    b3BoxHull hull = b3MakeBoxHullD(halfExtent.x, halfExtent.y, halfExtent.z);
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
-    b3CreateHullShapeD(bodyId, &shapeDef, &hull.base);
-    return bodyId;
-}
+// --- Private helpers ---
 
-private b3BodyId createSphereBody(ref PhysicsWorld world,
-                                  b3BodyType type,
-                                  Vec3 position,
-                                  float radius,
-                                  float density,
-                                  EntityId entityId,
-                                  float friction,
-                                  float restitution,
-                                  bool sensor,
-                                  bool enableHitEvents) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, type, position, Quat.init, entityId);
-    b3Sphere sphere;
-    sphere.center = b3Vec3(0.0f, 0.0f, 0.0f);
-    sphere.radius = radius;
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
-    b3CreateSphereShapeD(bodyId, &shapeDef, &sphere);
-    return bodyId;
-}
-
-private b3BodyId createCapsuleBody(ref PhysicsWorld world,
-                                   b3BodyType type,
-                                   Vec3 position,
-                                   float height,
-                                   float radius,
-                                   float density,
-                                   EntityId entityId,
-                                   float friction,
-                                   float restitution,
-                                   bool sensor,
-                                   bool enableHitEvents) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, type, position, Quat.init, entityId);
-    b3Capsule capsule = makeYAxisCapsule(height, radius);
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
-    b3CreateCapsuleShapeD(bodyId, &shapeDef, &capsule);
-    return bodyId;
-}
-
-private b3BodyId createCylinderBody(ref PhysicsWorld world,
-                                    b3BodyType type,
-                                    Vec3 position,
-                                    float height,
-                                    float radius,
-                                    float density,
-                                    EntityId entityId,
-                                    float friction,
-                                    float restitution,
-                                    bool sensor,
-                                    bool enableHitEvents,
-                                    int sides) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, type, position, Quat.init, entityId);
-    immutable sideCount = sides < 3 ? 3 : sides;
-    b3HullData* hull = b3CreateCylinderD(height, radius, 0.0f, sideCount);
-    if (hull is null)
-        return bodyId;
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
-    b3CreateHullShapeD(bodyId, &shapeDef, hull);
-    b3DestroyHullD(hull);
-    return bodyId;
-}
-
-private b3BodyId createHullBody(ref PhysicsWorld world,
-                                b3BodyType type,
+private BodyDesc makeSimpleDesc(PhysicsBodyType type,
                                 Vec3 position,
                                 Quat rotation,
-                                scope const(Vec3)[] points,
-                                int maxVertexCount,
                                 float density,
                                 EntityId entityId,
                                 float friction,
                                 float restitution,
-                                bool sensor,
-                                bool enableHitEvents) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, type, position, rotation, entityId);
-    if (points.length < 3 || maxVertexCount < 3)
-        return bodyId;
+                                bool isSensor,
+                                bool enableHitEvents) pure nothrow @nogc {
+    BodyDesc desc;
+    desc.type = type;
+    desc.position = position;
+    desc.rotation = rotation;
+    desc.density = density;
+    desc.entityId = entityId;
+    desc.material.friction = friction;
+    desc.material.restitution = restitution;
+    desc.isSensor = isSensor;
+    desc.enableHitEvents = enableHitEvents;
+    return desc;
+}
 
-    immutable pointCount = cast(int) points.length;
-    immutable maxVerts = maxVertexCount < pointCount ? maxVertexCount : pointCount;
-    b3HullData* hull = b3CreateHullD(cast(const(b3Vec3)*) points.ptr, pointCount, maxVerts);
-    if (hull is null)
-        return bodyId;
+private b3BodyId createBodyShell(ref PhysicsWorld world, const BodyDesc desc) nothrow @nogc @trusted {
+    b3BodyDef bodyDef = b3DefaultBodyDefD();
+    bodyDef.type = toB3BodyType(desc.type);
+    bodyDef.position = toB3Pos(desc.position);
+    bodyDef.rotation = toB3Quat(desc.rotation);
+    bodyDef.userData = encodeEntityUserData(desc.entityId);
+    bodyDef.isBullet = desc.isBullet;
+    bodyDef.isAwake = desc.startAwake;
+    bodyDef.enableSleep = desc.enableSleep;
+    bodyDef.sleepThreshold = desc.sleepThreshold;
+    bodyDef.linearDamping = desc.linearDamping;
+    bodyDef.angularDamping = desc.angularDamping;
+    return b3CreateBodyD(world.handle, &bodyDef);
+}
 
-    b3ShapeDef shapeDef = defaultShapeDef(density, entityId, friction, restitution, sensor, enableHitEvents);
-    b3CreateHullShapeD(bodyId, &shapeDef, hull);
-    b3DestroyHullD(hull);
+private b3ShapeDef makeShapeDef(const BodyDesc desc) nothrow @nogc @trusted {
+    b3ShapeDef shapeDef = b3DefaultShapeDefD();
+    shapeDef.userData = encodeEntityUserData(desc.entityId);
+    shapeDef.density = desc.density;
+    shapeDef.baseMaterial = toB3SurfaceMaterial(desc.material);
+    shapeDef.filter = toB3Filter(desc.filter);
+    shapeDef.isSensor = desc.isSensor;
+    shapeDef.enableSensorEvents = true;
+    shapeDef.enableContactEvents = !desc.isSensor;
+    shapeDef.enableHitEvents = desc.enableHitEvents && !desc.isSensor;
+    return shapeDef;
+}
+
+private void populateShapeMaterials(ref b3ShapeDef shapeDef,
+                                    ref b3SurfaceMaterial[256] buf,
+                                    scope const(PhysicsSurfaceMaterial)[] materials) nothrow @nogc @trusted {
+    if (materials.length == 0)
+        return;
+    immutable count = materials.length <= buf.length ? cast(int) materials.length : cast(int) buf.length;
+    foreach (i; 0 .. count)
+        buf[i] = toB3SurfaceMaterial(materials[i]);
+    shapeDef.materials = buf.ptr;
+    shapeDef.materialCount = count;
+}
+
+private b3BodyId createStaticMeshShapeBody(ref PhysicsWorld world,
+                                           Vec3 position,
+                                           const(b3MeshData)* mesh,
+                                           float friction,
+                                           float restitution,
+                                           scope const(PhysicsSurfaceMaterial)[] materials,
+                                           EntityId entityId,
+                                           Vec3 scale,
+                                           CollisionFilter filter,
+                                           bool enableHitEvents) nothrow @nogc @trusted {
+    auto desc = makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init, 0.0f,
+        entityId, friction, restitution, false, enableHitEvents);
+    desc.filter = filter;
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
+
+    b3SurfaceMaterial[256] b3Mats;
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    populateShapeMaterials(shapeDef, b3Mats, materials);
+
+    immutable shapeId = b3CreateMeshShapeD(bodyId, &shapeDef, mesh, toB3Vec3(scale));
+    if (!b3Shape_IsValidD(shapeId)) {
+        destroyBody(bodyId);
+        return b3BodyId.init;
+    }
     return bodyId;
 }
 
-/// Process-lifetime retain for cooked triangle meshes referenced by shapes.
-private enum size_t MAX_RETAINED_MESHES = 256;
-private __gshared b3MeshData*[MAX_RETAINED_MESHES] retainedMeshes;
-private __gshared size_t retainedMeshCount;
+private b3BodyId createHeightFieldShapeBody(ref PhysicsWorld world,
+                                            Vec3 position,
+                                            const(b3HeightFieldData)* hf,
+                                            scope const(PhysicsSurfaceMaterial)[] materials,
+                                            EntityId entityId,
+                                            CollisionFilter filter,
+                                            bool enableHitEvents) nothrow @nogc @trusted {
+    auto desc = makeSimpleDesc(PhysicsBodyType.static_, position, Quat.init, 0.0f,
+        entityId, 0.7f, 0.0f, false, enableHitEvents);
+    desc.filter = filter;
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId))
+        return b3BodyId.init;
 
-private void retainCookedMesh(b3MeshData* mesh) nothrow @nogc @trusted {
-    if (mesh is null)
-        return;
-    if (retainedMeshCount < MAX_RETAINED_MESHES)
-        retainedMeshes[retainedMeshCount++] = mesh;
-    // Overflow: still leave mesh alive (leak) so the shape stays valid.
+    b3SurfaceMaterial[256] b3Mats;
+    b3ShapeDef shapeDef = makeShapeDef(desc);
+    populateShapeMaterials(shapeDef, b3Mats, materials);
+
+    immutable shapeId = b3CreateHeightFieldShapeD(bodyId, &shapeDef, hf);
+    if (!b3Shape_IsValidD(shapeId)) {
+        destroyBody(bodyId);
+        return b3BodyId.init;
+    }
+    return bodyId;
 }
 
-private b3BodyId createBodyShell(ref PhysicsWorld world,
-                                 b3BodyType type,
-                                 Vec3 position,
-                                 Quat rotation,
-                                 EntityId entityId) nothrow @nogc @trusted {
-    b3BodyDef bodyDef = b3DefaultBodyDefD();
-    bodyDef.type = type;
-    bodyDef.position = toB3Pos(position);
-    bodyDef.rotation = toB3Quat(rotation);
-    bodyDef.userData = encodeEntityUserData(entityId);
-    return b3CreateBodyD(world.handle, &bodyDef);
+private b3MeshData* cookMeshData(scope const(Vec3)[] vertices,
+                                 scope const(int)[] indices,
+                                 scope const(ubyte)[] materialIndices,
+                                 bool weldVertices,
+                                 float weldTolerance,
+                                 bool useMedianSplit,
+                                 bool identifyEdges) nothrow @nogc @trusted {
+    if (vertices.length < 3 || indices.length < 3 || (indices.length % 3) != 0)
+        return null;
+    immutable triCount = indices.length / 3;
+    if (materialIndices.length > 0 && materialIndices.length != triCount)
+        return null;
+
+    b3MeshDef meshDef;
+    meshDef.vertices = cast(b3Vec3*) vertices.ptr;
+    meshDef.indices = cast(int*) indices.ptr;
+    meshDef.materialIndices = materialIndices.length > 0 ? cast(ubyte*) materialIndices.ptr : null;
+    meshDef.weldTolerance = weldTolerance;
+    meshDef.vertexCount = cast(int) vertices.length;
+    meshDef.triangleCount = cast(int) triCount;
+    meshDef.weldVertices = weldVertices;
+    meshDef.useMedianSplit = useMedianSplit;
+    meshDef.identifyEdges = identifyEdges;
+
+    return b3CreateMeshD(&meshDef, null, 0);
+}
+
+private b3HeightFieldData* cookHeightFieldData(scope const(float)[] heights,
+                                               int countX,
+                                               int countZ,
+                                               Vec3 scale,
+                                               scope const(ubyte)[] materialIndices,
+                                               float globalMinHeight,
+                                               float globalMaxHeight,
+                                               bool clockwiseWinding) nothrow @nogc @trusted {
+    if (countX < 2 || countZ < 2)
+        return null;
+    immutable expectedHeights = cast(size_t) countX * cast(size_t) countZ;
+    if (heights.length != expectedHeights)
+        return null;
+    if (scale.x <= 0.0f || scale.y <= 0.0f || scale.z <= 0.0f)
+        return null;
+
+    immutable expectedCells = cast(size_t)(countX - 1) * cast(size_t)(countZ - 1);
+    if (materialIndices.length > 0 && materialIndices.length != expectedCells)
+        return null;
+
+    float minH = globalMinHeight;
+    float maxH = globalMaxHeight;
+    if (minH != minH || maxH != maxH) {
+        minH = heights[0];
+        maxH = heights[0];
+        foreach (h; heights) {
+            if (h < minH) minH = h;
+            if (h > maxH) maxH = h;
+        }
+    }
+    if (minH >= maxH) {
+        minH -= 1.0f;
+        maxH += 1.0f;
+    }
+
+    b3HeightFieldDef hfDef;
+    hfDef.heights = cast(float*) heights.ptr;
+    hfDef.materialIndices = materialIndices.length > 0 ? cast(ubyte*) materialIndices.ptr : null;
+    hfDef.scale = toB3Vec3(scale);
+    hfDef.countX = countX;
+    hfDef.countZ = countZ;
+    hfDef.globalMinimumHeight = minH;
+    hfDef.globalMaximumHeight = maxH;
+    hfDef.clockwiseWinding = clockwiseWinding;
+
+    return b3CreateHeightFieldD(&hfDef);
 }
 
 private b3Capsule makeYAxisCapsule(float height, float radius) pure nothrow @nogc {
@@ -510,20 +1000,12 @@ private b3Capsule makeYAxisCapsule(float height, float radius) pure nothrow @nog
     return capsule;
 }
 
-private b3ShapeDef defaultShapeDef(float density,
-                                   EntityId entityId,
-                                   float friction,
-                                   float restitution,
-                                   bool sensor,
-                                   bool enableHitEvents) nothrow @nogc @trusted {
-    b3ShapeDef shapeDef = b3DefaultShapeDefD();
-    shapeDef.userData = encodeEntityUserData(entityId);
-    shapeDef.density = density;
-    shapeDef.baseMaterial.friction = friction;
-    shapeDef.baseMaterial.restitution = restitution;
-    shapeDef.isSensor = sensor;
-    shapeDef.enableSensorEvents = true;
-    shapeDef.enableContactEvents = !sensor;
-    shapeDef.enableHitEvents = enableHitEvents && !sensor;
-    return shapeDef;
+@safe nothrow @nogc unittest {
+    static assert(isPod!PhysicsSurfaceMaterial);
+    static assert(isPod!CollisionFilter);
+    static assert(isPod!BodyDesc);
+    CollisionFilter f;
+    assert(f.categoryBits == ulong.max);
+    assert(f.maskBits == ulong.max);
+    assert(f.groupIndex == 0);
 }

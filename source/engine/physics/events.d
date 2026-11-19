@@ -1,6 +1,8 @@
 module engine.physics.events;
 
 import bindings.box3d;
+import core.stdc.math : sqrtf;
+import engine.core.pod : isPod;
 import engine.ecs.store : EntityId;
 import engine.math.vec : Vec3;
 import engine.physics.body : getBodyEntity, getShapeEntity, noPhysicsEntity;
@@ -33,10 +35,18 @@ struct PhysicsHitEvent {
     b3BodyId bodyB;
     EntityId entityA = noPhysicsEntity;
     EntityId entityB = noPhysicsEntity;
+    ulong materialIdA = 0;
+    ulong materialIdB = 0;
     Vec3 point;
     Vec3 normal;
     float approachSpeed = 0.0f;
+    float normalImpulse = 0.0f;
+    float frictionImpulse = 0.0f;
 }
+
+static assert(isPod!PhysicsContactEvent);
+static assert(isPod!PhysicsSensorEvent);
+static assert(isPod!PhysicsHitEvent);
 
 alias ContactEventCallback = void function(PhysicsContactEvent event, void* context) nothrow @nogc @safe;
 alias SensorEventCallback = void function(PhysicsSensorEvent event, void* context) nothrow @nogc @safe;
@@ -130,6 +140,8 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
     PhysicsHitEvent event;
     event.shapeA = raw.shapeIdA;
     event.shapeB = raw.shapeIdB;
+    event.materialIdA = raw.userMaterialIdA;
+    event.materialIdB = raw.userMaterialIdB;
     event.point = Vec3(cast(float) raw.point.x, cast(float) raw.point.y, cast(float) raw.point.z);
     event.normal = Vec3(raw.normal.x, raw.normal.y, raw.normal.z);
     event.approachSpeed = raw.approachSpeed;
@@ -144,5 +156,24 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
         event.entityB = getBodyEntity(event.bodyB);
     }
 
+    if (b3Contact_IsValidD(raw.contactId)) {
+        b3ContactData data = b3Contact_GetDataD(raw.contactId);
+        foreach (mi; 0 .. data.manifoldCount) {
+            const m = data.manifolds[mi];
+            foreach (pi; 0 .. m.pointCount)
+                event.normalImpulse += m.points[pi].totalNormalImpulse;
+            immutable fx = m.frictionImpulse.x;
+            immutable fy = m.frictionImpulse.y;
+            immutable fz = m.frictionImpulse.z;
+            event.frictionImpulse += sqrtf(fx * fx + fy * fy + fz * fz);
+        }
+    }
+
     return event;
+}
+
+@safe nothrow @nogc unittest {
+    static assert(isPod!PhysicsContactEvent);
+    static assert(isPod!PhysicsSensorEvent);
+    static assert(isPod!PhysicsHitEvent);
 }

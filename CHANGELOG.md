@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Complete Box3D Physics API (`OW-1`, `2026-11-19`):**
+  - Expanded `source/bindings/box3d/functions.d` with native Box3D C99 bindings for heightfields, per-shape/mesh surface materials, collision filters, contact manifold data (`b3Contact_GetData`, `b3Body_GetContactData`), body type/CCD/sleep/mass controls, and spherical/wheel/prismatic/filter joints plus constraint force/torque queries and joint events.
+  - Replaced the fixed `retainedMeshes[256]` leak in `source/engine/physics/body.d` with move-only RAII `CookedMesh` and `CookedHeightField` handles plus world-owned cleanup in `PhysicsWorld.~this()` (`source/engine/physics/world.d`), and added `createHeightField` (with `heightFieldHole` and per-cell `PhysicsSurfaceMaterial[]`).
+  - Added POD descriptors (`BodyDesc`, `CollisionFilter`, `PhysicsSurfaceMaterial`, `PhysicsBodyType`) and `@nogc` runtime helpers (`setBodyType`, `setBodyDensity`, `isBodyAwake`/`setBodyAwake`, `setBodyBullet`, `setBodyFilter`, `setShapeSurfaceMaterial`, `applyLinearImpulse`, `applyAngularImpulse`, `PhysicsWorld.awakeBodyCount`).
+  - Extended `RayCastHit` (`source/engine/physics/queries.d`) with `entityId` and `surfaceMaterialId` + `makeQueryFilter`, and `PhysicsHitEvent` (`source/engine/physics/events.d`) with `materialIdA`, `materialIdB`, `normalImpulse`, and `frictionImpulse`.
+  - Added `createSphericalJoint`, `createWheelJoint`, `createPrismaticJoint`, `createFilterJoint`, joint config structs, runtime joint motor/angle/reaction helpers, and `@nogc` `BreakableJointTracker` in `source/engine/physics/joints.d`.
+  - Fixed the `test-physics-box3d` DUB configuration in `dub.json` and expanded `source/demo/test_physics_box3d.d` with headless tests covering heightfields, surface materials, hit impulses, breakable weld joints, spherical ragdoll chains, filter joints, dynamic type toggles, sleeping/wake, and CCD.
+
 - **2D Instanced `SpriteRenderer`, `Camera2D`, `SpriteRegion` & `SpriteAnim` (`2026-11-19`)** — commit `f614d28`:
   - Created `source/engine/graphics/sprite.d` (re-exported by `engine.graphics`) and `assets/shaders/sprite2d.wgsl` (`sprite2dShaderSource` in `source/engine/gpu/shaders.d`).
   - Added POD 2D primitives (`Camera2D`, `Transform2D`, `SpriteRegion`, `SpriteAnim`, `Sprite`, `SpriteBlendMode`) and instanced `@nogc` `SpriteRenderer` supporting both the HDR scene pass (pre-`resolvePost`) and the LDR present pass (post-`resolvePost`), `(layer, zOrder, sequence)` sorting, draw-call coalescing, `nearest`/`linear` sampling, `drawRect`, and transactional `reloadShader`.

@@ -377,7 +377,7 @@ hero.move(phys, wishDir, dt, jumpPressed);
 immutable hit = castRayClosest(phys, origin, dir, 100.0f);
 ```
 
-Supports boxes, spheres, capsules, cylinders, sensors, AABB/sphere overlaps, and distance/revolute/weld joints. Deep dive: [physics-quickstart.md](physics-quickstart.md).
+Supports boxes, spheres, capsules, cylinders, convex hulls, static meshes/heightfields, per-triangle surface materials, sensors, AABB/sphere overlaps, distance/revolute/weld/spherical/wheel/prismatic/filter/breakable joints, collision filters, CCD, and sleep control. Deep dive: [physics-quickstart.md](physics-quickstart.md).
 
 ### 11.2 Skeletal Animation (`engine.animation`)
 

@@ -3,6 +3,7 @@ module engine.physics.queries;
 import bindings.box3d;
 import bindings.box3d.constants : b3DefaultMaskBits;
 import core.stdc.math : sqrtf;
+import engine.core.pod : isPod;
 import engine.ecs.store : EntityId;
 import engine.math.vec : Vec3;
 import engine.physics.body : getShapeEntity, noPhysicsEntity;
@@ -15,10 +16,14 @@ struct RayCastHit {
     bool hit;
     b3ShapeId shapeId;
     b3BodyId bodyId;
+    EntityId entityId = noPhysicsEntity;
+    ulong surfaceMaterialId = 0;
     Vec3 point;
     Vec3 normal;
     float fraction;
 }
+
+static assert(isPod!RayCastHit);
 
 alias OverlapCallback = bool function(b3ShapeId shapeId, b3BodyId bodyId, EntityId entityId, void* context) nothrow @nogc @safe;
 
@@ -51,6 +56,8 @@ RayCastHit castRayClosest(ref PhysicsWorld world,
     hit.hit = true;
     hit.shapeId = result.shapeId;
     hit.bodyId = b3Shape_IsValidD(result.shapeId) ? b3Shape_GetBodyD(result.shapeId) : b3BodyId.init;
+    hit.entityId = getShapeEntity(result.shapeId);
+    hit.surfaceMaterialId = result.userMaterialId;
     hit.point = toEngineVec3(result.point);
     hit.normal = toEngineVec3(result.normal);
     hit.fraction = result.fraction;
@@ -125,6 +132,14 @@ b3QueryFilter defaultPhysicsQueryFilter() nothrow @nogc @trusted {
     return filter;
 }
 
+/// Build a query filter from explicit category and mask bitsets without importing `bindings.box3d`.
+b3QueryFilter makeQueryFilter(ulong categoryBits, ulong maskBits) nothrow @nogc @trusted {
+    b3QueryFilter filter = b3DefaultQueryFilterD();
+    filter.categoryBits = categoryBits;
+    filter.maskBits = maskBits;
+    return filter;
+}
+
 private struct OverlapCtx {
     OverlapCallback callback;
     void* userContext;
@@ -145,4 +160,8 @@ private extern(C) bool overlapResultThunk(b3ShapeId shapeId, void* context) noth
 
     ctx.count += 1;
     return ctx.callback(shapeId, bodyId, entityId, ctx.userContext);
+}
+
+@safe nothrow @nogc unittest {
+    static assert(isPod!RayCastHit);
 }

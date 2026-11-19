@@ -23,7 +23,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | Document | Status | Scope |
 |:---|:---|:---|
 | [roadmap.md](roadmap.md) | Active | Work backlog, priorities, and implementation order |
-| [plan-physics-api.md](plan-physics-api.md) | P0–P4+P6 done; P5 mesh deferred | Complete gameplay API on top of Box3D (#1) |
+| [plan-physics-api.md](plan-physics-api.md) | Done (`P0–P6` + `OW-1`) | Complete gameplay API on top of Box3D (#1) |
 | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | Done (#9 deferred) | GC-safe adoption + static lint (#2) |
 | [plan-openpbr.md](plan-openpbr.md) | Phase 1 Done (`PBR-0–5`, `OPBR-1–5`); `OPBR-6–9` pending | Real-time OpenPBR Surface v1.1, IBL, PCF shadows, transmission, SSS & probes (#3) |
 | [plan-meshoptimizer.md](plan-meshoptimizer.md) | Done through M9; M10 not started | Pure-D meshoptimizer v1.3: import optimization, tangents, LODs, codecs, meshlets |
@@ -38,7 +38,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-split-screen.md](plan-split-screen.md) | Pending | Split-screen local co-op: multi-viewport rendering + gamepads (#11) |
 | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Delivered | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
 | [plan-navigation-recast.md](plan-navigation-recast.md) | Pending (pure-D deferred; C shim first) | 3D NavMesh, TileCache dynamic obstacles & Crowd navigation (`engine.nav`) |
-| [plan-open-world-readiness.md](plan-open-world-readiness.md) | Pending (Phase 1 next) | Semi-open-world 9 km² readiness: Box3D physics, open-world rendering, spatial/DSP/OGG audio, ragdoll/sockets, UI clip/rotate, Recast nav, streaming, Windows steadygc, Blender/hot-reload (#13) |
+| [plan-open-world-readiness.md](plan-open-world-readiness.md) | In Progress (`OW-1` Done · `OW-2` next) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering, spatial/DSP/OGG audio, ragdoll/sockets, UI clip/rotate, Recast nav, streaming, Windows steadygc, Blender/hot-reload (#13) |
 
 ## History / Cancelled
 

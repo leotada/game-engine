@@ -1,6 +1,6 @@
 # Plan: Semi-Open-World Engine Readiness (9 km² Scale)
 
-> **Status:** Pending — Phase 1 (`OW-1`: Complete Box3D Physics API) queued as the first implementation milestone · See [roadmap.md](roadmap.md)
+> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) next · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -101,31 +101,31 @@ Phase 6 (OW-6: NavMesh & TileCache) ─────── [Depends only on OW-1 
 
 ## Phases
 
-### Phase 1 — Complete Box3D Physics API (`OW-1`, Blocking — Start Here)
+### Phase 1 — Complete Box3D Physics API (`OW-1`, Blocking — Done)
 
 Expose native Box3D capabilities through [source/bindings/box3d/functions.d](../source/bindings/box3d/functions.d) and [source/engine/physics/](../source/engine/physics/package.d) with zero GC allocations on the frame path.
 
-- [ ] **P1.1 — Missing Box3D C Bindings (`source/bindings/box3d/functions.d`):**
+- [x] **P1.1 — Missing Box3D C Bindings (`source/bindings/box3d/functions.d`):**
   - Heightfields: `b3CreateHeightField`, `b3DestroyHeightField`, `b3CreateHeightFieldShape`, `b3Shape_GetHeightField`.
   - Surface materials & contacts: `b3Shape_SetSurfaceMaterial`, `b3Shape_GetSurfaceMaterial`, `b3Shape_SetMeshMaterial`, `b3Shape_GetMeshSurfaceMaterial`, `b3Contact_GetData`, `b3Body_GetContactData`.
-  - Filters, CCD, sleeping & body type: `b3Shape_GetFilter`, `b3Shape_SetFilter`, `b3Body_SetBullet`, `b3Body_IsBullet`, `b3Body_IsAwake`, `b3Body_SetAwake`, `b3Body_EnableSleep`, `b3Body_IsSleepEnabled`, `b3Body_SetSleepThreshold`, `b3Body_SetType`, `b3World_GetAwakeBodyCount`.
+  - Filters, CCD, sleeping & body type: `b3Shape_GetFilter`, `b3Shape_SetFilter`, `b3Body_SetBullet`, `b3Body_IsBullet`, `b3Body_IsAwake`, `b3Body_SetAwake`, `b3Body_EnableSleep`, `b3Body_IsSleepEnabled`, `b3Body_SetSleepThreshold`, `b3Body_SetType`, `b3Body_ApplyMassFromShapes`, `b3Shape_SetDensity`, `b3World_GetAwakeBodyCount`.
   - Advanced joints & reaction forces: `b3DefaultSphericalJointDef`, `b3CreateSphericalJoint`, `b3DefaultWheelJointDef`, `b3CreateWheelJoint`, `b3DefaultPrismaticJointDef`, `b3CreatePrismaticJoint`, `b3DefaultFilterJointDef`, `b3CreateFilterJoint`, `b3Joint_GetConstraintForce`, `b3Joint_GetConstraintTorque`, and limit/spring/motor setters for spherical, revolute, wheel, weld, and prismatic joints.
-- [ ] **P1.2 — RAII `CookedMesh` & `CookedHeightField` + Per-Triangle/Cell Materials (`source/engine/physics/body.d`):**
-  - Replace the fixed leaking `retainedMeshes[256]` array with move-only RAII resources (`CookedMesh` calling `b3DestroyMeshD`, `CookedHeightField` calling `b3DestroyHeightFieldD`, `@disable this(this)`), safe for chunked streaming load/unload.
-  - Extend `createStaticMesh` and add `createHeightField` accepting `const(ubyte)[] materialIndices` and `const(PhysicsSurfaceMaterial)[] materials`, supporting `B3_HEIGHT_FIELD_HOLE = 0xFF` and `globalMinHeight`/`globalMaxHeight` for seamless tile borders.
-- [ ] **P1.3 — Surface Material IDs & Contact Impulses (`queries.d`, `events.d`):**
-  - Populate `ulong surfaceMaterialId` on `RayCastHit` (`result.userMaterialId`).
-  - Populate `ulong materialIdA`, `ulong materialIdB`, `float normalImpulse`, and `float frictionImpulse` on `PhysicsHitEvent` via `b3Contact_GetData` when `contactId` is valid.
-- [ ] **P1.4 — Filters, CCD, Explicit Sleeping & Body Type Control (`body.d`):**
-  - Add POD `CollisionFilter` (`categoryBits`, `maskBits`, `groupIndex`) and `BodyDesc` (`isBullet`, `startAwake`, `enableSleep`, `sleepThreshold`, `surfaceMaterialId`, `filter`) overloads.
-  - Add `@nogc` helpers `setBodyAwake`, `isBodyAwake`, `setBodyBullet`, `setBodyType`, `setShapeFilter`, and `setShapeSurfaceMaterial`.
-- [ ] **P1.5 — Ragdoll, Vehicle & Breakable Joints (`joints.d`):**
-  - Add `createSphericalJoint` (cone + twist limits, spring hertz, damping ratio), `createWheelJoint`, `createPrismaticJoint`, `createFilterJoint`, and limit/spring configuration options on `createRevoluteJoint`.
-  - Implement `@nogc` POD `BreakableJointTracker`: registers `(b3JointId, breakForce, breakTorque, userTag)` entries, samples `b3Joint_GetConstraintForce`/`Torque` after `PhysicsWorld.step()`, destroys exceeded joints, and dispatches `onJointBroken` callbacks.
-- [ ] **P1.6 — Headless Verification (`source/demo/test_physics_box3d.d`):**
-  - Add automated tests covering multi-material heightfield raycasts, `B3_HEIGHT_FIELD_HOLE` drop-through, `weld` joint breaking on high-speed impact, limited `SphericalJoint` chain with negative `groupIndex` non-self-collision, sleeping pile wake-on-impact, and CCD bullet body penetration prevention.
+- [x] **P1.2 — RAII `CookedMesh` & `CookedHeightField` + Per-Triangle/Cell Materials (`source/engine/physics/body.d`, `world.d`):**
+  - Replaced the fixed leaking `retainedMeshes[256]` array with move-only RAII resources (`CookedMesh` calling `b3DestroyMeshD`, `CookedHeightField` calling `b3DestroyHeightFieldD`, `@disable this(this)`), plus world-owned cleanup in `PhysicsWorld.~this()`.
+  - Extended `createStaticMesh` and added `createHeightField` accepting `const(ubyte)[] materialIndices` and `const(PhysicsSurfaceMaterial)[] materials`, supporting `heightFieldHole` (`0xFF`) and `globalMinHeight`/`globalMaxHeight` for seamless tile borders.
+- [x] **P1.3 — Surface Material IDs & Contact Impulses (`queries.d`, `events.d`):**
+  - Populated `entityId` and `ulong surfaceMaterialId` on `RayCastHit` (`result.userMaterialId`), plus `makeQueryFilter`.
+  - Populated `ulong materialIdA`, `ulong materialIdB`, `float normalImpulse`, and `float frictionImpulse` on `PhysicsHitEvent` via `b3Contact_GetDataD` when `contactId` is valid.
+- [x] **P1.4 — Filters, CCD, Explicit Sleeping & Body Type Control (`body.d`):**
+  - Added POD `CollisionFilter` (`categoryBits`, `maskBits`, `groupIndex`), `PhysicsSurfaceMaterial`, `PhysicsBodyType`, and `BodyDesc` overloads (`createBoxBody`, `createSphereBody`, `createCapsuleBody`, `createCylinderBody`, `createHullBody`).
+  - Added `@nogc` helpers `setBodyAwake`, `isBodyAwake`, `enableBodySleep`, `setBodySleepThreshold`, `setBodyBullet`, `isBodyBullet`, `setBodyType`, `getBodyType`, `setBodyDensity`, `setBodyFilter`, `setShapeFilter`, `setBodySurfaceMaterial`, and `setShapeSurfaceMaterial`.
+- [x] **P1.5 — Ragdoll, Vehicle & Breakable Joints (`joints.d`):**
+  - Added `createSphericalJoint` (cone + twist limits, spring hertz, damping ratio), `createWheelJoint`, `createPrismaticJoint`, `createFilterJoint`, and `RevoluteJointConfig`/`WeldJointConfig` options plus runtime motor/angle helpers.
+  - Implemented `@nogc` POD `BreakableJointTracker`: registers `(b3JointId, breakForce, breakTorque, userTag)` entries, inspects `b3World_GetJointEventsD` and `b3Joint_GetConstraintForceD`/`TorqueD` after `PhysicsWorld.step()`, destroys exceeded joints, and dispatches `onJointBroken` callbacks.
+- [x] **P1.6 — Headless Verification (`source/demo/test_physics_box3d.d`):**
+  - Added automated headless tests covering multi-material heightfield raycasts, `heightFieldHole` drop-through, 300-iteration RAII mesh/heightfield cleanup, hit impulses + material IDs, `BreakableJointTracker` breaking a weld joint under impact, limited `SphericalJoint` ragdoll chain with negative `groupIndex` non-self-collision, `createFilterJoint`, `setBodyType`/`setBodyDensity`, sleeping wake-on-impact, and CCD bullet collision (`dub run --config=test-physics-box3d` + `dub test --config=library` passing).
 
-**DoD:** All new physics features work exclusively through `engine.physics` (no direct `bindings.box3d` imports required in user code), `CookedMesh`/`CookedHeightField` leak zero memory across load/unload cycles, and `dub run --config=test-physics-box3d` + `dub test --config=library` pass.
+**DoD:** All new physics features work exclusively through `engine.physics` (no direct `bindings.box3d` imports required in user code), `CookedMesh`/`CookedHeightField` leak zero memory across load/unload cycles, and `dub run --config=test-physics-box3d` + `dub test --config=library` pass. ✅
 
 ---
 

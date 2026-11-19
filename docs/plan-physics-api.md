@@ -1,6 +1,6 @@
 # Plan: Gameplay Physics API (Box3D)
 
-> **Status:** P0–P4 + P6 completed · P5 (mesh) deferred · See [roadmap.md](roadmap.md)
+> **Status:** P0–P6 completed (including P5 static mesh + heightfield colliders via `OW-1`) · See [roadmap.md](roadmap.md) · [plan-open-world-readiness.md](plan-open-world-readiness.md)
 
 ## Objective
 
@@ -75,16 +75,16 @@ Demos: `pong3d`, `marble_run`, `test_physics_box3d`.
 
 **DoD:** Character controller functional. ✅
 
-### P5 — Static Mesh & Terrain Colliders (Deferred)
+### P5 — Static Mesh & Terrain Colliders
 
-Pre-requisite for [plan-editor-ux.md](plan-editor-ux.md) ED-5b. Generic convex hulls (PHY-H) use existing bindings; triangle meshes require new bindings.
+Pre-requisite for [plan-editor-ux.md](plan-editor-ux.md) ED-5b and [plan-open-world-readiness.md](plan-open-world-readiness.md) `OW-1`.
 
-- [ ] **Static** triangle mesh from `TexMesh` / glTF (`b3CreateMeshShape`)
-- [ ] Generic hull helpers: `createStaticHull` / `createDynamicHull` (PHY-H)
-- [ ] API deliberately **forbids** dynamic triangle meshes in v1 (engine stability policy)
-- [ ] Heightfield colliders when required by terrain editor
+- [x] **Static** triangle mesh from vertices/indices or RAII `CookedMesh` (`createStaticMesh` + per-triangle `materialIndices`)
+- [x] Generic hull helpers: `createStaticHull` / `createKinematicHull` / `createDynamicHull` (PHY-H)
+- [x] API deliberately **forbids** dynamic triangle meshes (engine stability policy)
+- [x] Heightfield colliders (`createHeightField` + RAII `CookedHeightField` with `heightFieldHole` and per-cell materials)
 
-**DoD:** Bouncing dynamic sphere against static glTF mesh collider; dynamic convex hull smoke test passes.
+**DoD:** Bouncing dynamic sphere against static triangle mesh + heightfield colliders; dynamic convex hull smoke test passes (`dub run --config=test-physics-box3d`). ✅
 
 ### P6 — Jolt Physics Cleanup
 

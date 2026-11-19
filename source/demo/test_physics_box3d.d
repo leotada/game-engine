@@ -189,6 +189,357 @@ private bool testHullAndMesh() {
     return pass;
 }
 
+private bool testHeightFieldAndMaterials() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+
+    // 5x5 flat grid at y=0, scale=(2,1,2) => covers X=[0,8], Z=[0,8]
+    float[25] heights = 0.0f;
+    ubyte[16] cellMaterials = 0;
+    cellMaterials[0] = 0;                 // col 0, row 0 => X=[0,2], Z=[0,2] (asphalt)
+    cellMaterials[1] = 1;                 // col 1, row 0 => X=[2,4], Z=[0,2] (mud)
+    cellMaterials[2] = heightFieldHole;   // col 2, row 0 => X=[4,6], Z=[0,2] (hole)
+
+    PhysicsSurfaceMaterial[2] mats;
+    mats[0] = PhysicsSurfaceMaterial(0.95f, 0.0f, 0.0f, 101);
+    mats[1] = PhysicsSurfaceMaterial(0.25f, 0.0f, 0.0f, 202);
+
+    auto hfBody = createHeightField(world, Vec3(0.0f, 0.0f, 0.0f),
+        heights[], 5, 5, Vec3(2.0f, 1.0f, 2.0f), cellMaterials[], mats[], 500);
+
+    // 300-iteration RAII Cook/Destroy loop + 280 world-owned static meshes (> 256 old cap).
+    foreach (_; 0 .. 300) {
+        auto cookedHf = CookedHeightField.create(heights[], 5, 5, Vec3(2.0f, 1.0f, 2.0f), cellMaterials[]);
+        if (!cookedHf.valid()) {
+            writeln("[test-physics-box3d] FAIL: CookedHeightField.create failed");
+            return false;
+        }
+        auto cookedMesh = CookedMesh.create(meshFloorVerts[], meshFloorIndices[]);
+        if (!cookedMesh.valid()) {
+            writeln("[test-physics-box3d] FAIL: CookedMesh.create failed");
+            return false;
+        }
+    }
+    foreach (i; 0 .. 280) {
+        auto mBody = createStaticMesh(world, Vec3(1000.0f + cast(float) i * 20.0f, -50.0f, 0.0f),
+            meshFloorVerts[], meshFloorIndices[], cast(EntityId)(5000 + i));
+        if (!isBodyValid(mBody)) {
+            writefln("[test-physics-box3d] FAIL: static mesh #%d invalid", i);
+            return false;
+        }
+    }
+
+    // Cast rays against the bare heightfield before dropping spheres over those coordinates.
+    immutable rayAsphalt = castRayClosest(world, Vec3(1.0f, 5.0f, 1.0f), Vec3(0.0f, -1.0f, 0.0f), 10.0f);
+    immutable rayMud     = castRayClosest(world, Vec3(3.0f, 5.0f, 1.0f), Vec3(0.0f, -1.0f, 0.0f), 10.0f);
+    immutable rayHole    = castRayClosest(world, Vec3(5.0f, 5.0f, 1.0f), Vec3(0.0f, -1.0f, 0.0f), 10.0f);
+
+    auto solidSphere = createDynamicSphere(world, Vec3(1.0f, 2.0f, 1.0f), 0.35f, 1.0f, 501);
+    auto holeSphere  = createDynamicSphere(world, Vec3(5.0f, 2.0f, 1.0f), 0.35f, 1.0f, 502);
+
+    foreach (_; 0 .. 120)
+        world.step(dt, 4);
+
+    bool pass = true;
+    if (!isBodyValid(hfBody)) {
+        writeln("[test-physics-box3d] FAIL: heightfield body invalid");
+        pass = false;
+    }
+    if (!rayAsphalt.hit || rayAsphalt.entityId != 500 || rayAsphalt.surfaceMaterialId != 101) {
+        writefln("[test-physics-box3d] FAIL: asphalt ray hit=%s ent=%u mat=%u",
+            rayAsphalt.hit, rayAsphalt.entityId, rayAsphalt.surfaceMaterialId);
+        pass = false;
+    }
+    if (!rayMud.hit || rayMud.surfaceMaterialId != 202) {
+        writefln("[test-physics-box3d] FAIL: mud ray hit=%s mat=%u",
+            rayMud.hit, rayMud.surfaceMaterialId);
+        pass = false;
+    }
+    if (rayHole.hit) {
+        writeln("[test-physics-box3d] FAIL: ray hit hole cell");
+        pass = false;
+    }
+    immutable solidY = getPosition(solidSphere).y;
+    immutable holeY  = getPosition(holeSphere).y;
+    if (fabs(solidY - 0.35f) > 0.25f) {
+        writefln("[test-physics-box3d] FAIL: sphere on heightfield rested at y=%.3f", solidY);
+        pass = false;
+    }
+    if (holeY > -2.0f) {
+        writefln("[test-physics-box3d] FAIL: sphere over hole did not fall y=%.3f", holeY);
+        pass = false;
+    }
+    return pass;
+}
+
+private struct HitImpulseState {
+    bool gotHit;
+    float maxNormalImpulse = 0.0f;
+    ulong matA;
+    ulong matB;
+}
+
+private void onImpulseHit(PhysicsHitEvent event, void* context) nothrow @nogc @trusted {
+    auto s = cast(HitImpulseState*) context;
+    if (s is null)
+        return;
+    s.gotHit = true;
+    if (event.normalImpulse > s.maxNormalImpulse) {
+        s.maxNormalImpulse = event.normalImpulse;
+        s.matA = event.materialIdA;
+        s.matB = event.materialIdB;
+    }
+}
+
+private bool testHitEventImpulseAndMaterials() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+    world.setHitEventThreshold(0.5f);
+
+    BodyDesc floorDesc;
+    floorDesc.type = PhysicsBodyType.static_;
+    floorDesc.position = Vec3(0.0f, 0.0f, 0.0f);
+    floorDesc.entityId = 601;
+    floorDesc.material.userMaterialId = 20;
+    floorDesc.enableHitEvents = true;
+    createBoxBody(world, floorDesc, Vec3(5.0f, 0.5f, 5.0f));
+
+    BodyDesc boxDesc;
+    boxDesc.type = PhysicsBodyType.dynamic;
+    boxDesc.position = Vec3(0.0f, 5.0f, 0.0f);
+    boxDesc.entityId = 602;
+    boxDesc.material.userMaterialId = 10;
+    boxDesc.enableHitEvents = true;
+    createBoxBody(world, boxDesc, Vec3(0.5f, 0.5f, 0.5f));
+
+    HitImpulseState hitState;
+    ContactListener listener;
+    listener.onContactHit = &onImpulseHit;
+    listener.context = &hitState;
+
+    foreach (_; 0 .. 120) {
+        world.step(dt, 4);
+        drainPhysicsEvents(world, listener);
+    }
+
+    immutable matsMatch = (hitState.matA == 10 && hitState.matB == 20) ||
+                          (hitState.matA == 20 && hitState.matB == 10);
+    if (!hitState.gotHit || hitState.maxNormalImpulse <= 0.0f || !matsMatch) {
+        writefln("[test-physics-box3d] FAIL: hit impulse=%s normImp=%.3f mats=(%u,%u)",
+            hitState.gotHit, hitState.maxNormalImpulse, hitState.matA, hitState.matB);
+        return false;
+    }
+    return true;
+}
+
+private struct BrokenJointState {
+    int count;
+    ulong lastTag;
+}
+
+private void onJointBroken(BreakableJointEvent event, void* context) nothrow @nogc @trusted {
+    auto s = cast(BrokenJointState*) context;
+    if (s is null)
+        return;
+    s.count += 1;
+    s.lastTag = event.userTag;
+}
+
+private bool testBreakableJoint() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+
+    auto pillar = createStaticBox(world, Vec3(0.0f, 3.0f, 0.0f), Vec3(0.3f, 0.3f, 0.3f), 700);
+    auto block  = createDynamicBox(world, Vec3(0.8f, 3.0f, 0.0f), Vec3(0.4f, 0.4f, 0.4f), 1.0f, 701);
+    auto weld   = createWeldJoint(world, pillar, block, Vec3(0.4f, 3.0f, 0.0f));
+
+    BreakableJointTracker tracker;
+    if (!tracker.registerJoint(weld, 50.0f, 50.0f, 777)) {
+        writeln("[test-physics-box3d] FAIL: registerJoint failed");
+        return false;
+    }
+
+    auto projectile = createDynamicSphere(world, Vec3(0.8f, 3.0f, -3.5f), 0.5f, 5.0f, 702);
+    setLinearVelocity(projectile, Vec3(0.0f, 0.0f, 35.0f));
+
+    BrokenJointState broken;
+    foreach (_; 0 .. 90) {
+        world.step(dt, 4);
+        tracker.update(world, &onJointBroken, &broken);
+    }
+
+    immutable blockPos = getPosition(block);
+    if (broken.count != 1 || broken.lastTag != 777 || tracker.count != 0 || isJointValid(weld)) {
+        writefln("[test-physics-box3d] FAIL: breakable joint count=%d tag=%u rem=%u valid=%s",
+            broken.count, broken.lastTag, tracker.count, isJointValid(weld));
+        return false;
+    }
+    if (blockPos.z < 1.0f && blockPos.y > 2.5f) {
+        writefln("[test-physics-box3d] FAIL: detached block stayed put (%.3f, %.3f, %.3f)",
+            blockPos.x, blockPos.y, blockPos.z);
+        return false;
+    }
+    return true;
+}
+
+private bool testSphericalRagdollAndFilters() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+
+    createGroundSlab(world, 0.0f, Vec3(20.0f, 0.0f, 20.0f), 0.5f, 800);
+
+    // 3-body spherical ragdoll chain sharing negative groupIndex=-7 (no self-collision).
+    BodyDesc limbDesc;
+    limbDesc.type = PhysicsBodyType.dynamic;
+    limbDesc.filter = CollisionFilter(0x2, 0x1, -7);
+
+    limbDesc.position = Vec3(0.0f, 4.0f, 0.0f);
+    limbDesc.entityId = 801;
+    auto pelvis = createCapsuleBody(world, limbDesc, 0.6f, 0.2f);
+
+    limbDesc.position = Vec3(0.0f, 4.4f, 0.0f);
+    limbDesc.entityId = 802;
+    auto torso = createCapsuleBody(world, limbDesc, 0.6f, 0.2f);
+
+    limbDesc.position = Vec3(0.0f, 4.8f, 0.0f);
+    limbDesc.entityId = 803;
+    auto head = createSphereBody(world, limbDesc, 0.2f);
+
+    SphericalJointConfig jcfg;
+    jcfg.enableConeLimit = true;
+    jcfg.coneAngle = 0.45f;
+    jcfg.enableTwistLimit = true;
+    jcfg.lowerTwistAngle = -0.3f;
+    jcfg.upperTwistAngle = 0.3f;
+    jcfg.enableSpring = true;
+    jcfg.hertz = 4.0f;
+    jcfg.dampingRatio = 0.7f;
+    jcfg.collideConnected = true; // groupIndex=-7 still suppresses self-collision.
+
+    auto j1 = createSphericalJoint(world, pelvis, torso, Vec3(0.0f, 4.2f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), jcfg);
+    auto j2 = createSphericalJoint(world, torso, head, Vec3(0.0f, 4.6f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), jcfg);
+
+    // Filter joint disables collision between two overlapping dynamic boxes.
+    auto overlapA = createDynamicBox(world, Vec3(5.0f, 3.0f, 0.0f), Vec3(0.4f, 0.4f, 0.4f), 1.0f, 804);
+    auto overlapB = createDynamicBox(world, Vec3(5.1f, 3.0f, 0.0f), Vec3(0.4f, 0.4f, 0.4f), 1.0f, 805);
+    auto fJoint = createFilterJoint(world, overlapA, overlapB);
+
+    // Kinematic -> Dynamic type transition.
+    auto toggleBall = createKinematicSphere(world, Vec3(10.0f, 4.0f, 0.0f), 0.35f, 806);
+
+    foreach (_; 0 .. 30)
+        world.step(dt, 4);
+
+    if (fabs(getPosition(toggleBall).y - 4.0f) > 0.01f) {
+        writefln("[test-physics-box3d] FAIL: kinematic ball moved y=%.3f", getPosition(toggleBall).y);
+        return false;
+    }
+
+    setBodyType(toggleBall, PhysicsBodyType.dynamic);
+    setBodyDensity(toggleBall, 2.0f);
+    setBodyAwake(toggleBall, true);
+
+    foreach (_; 0 .. 90)
+        world.step(dt, 4);
+
+    bool pass = true;
+    if (!isJointValid(j1) || !isJointValid(j2) || !isJointValid(fJoint)) {
+        writeln("[test-physics-box3d] FAIL: spherical/filter joint invalid");
+        pass = false;
+    }
+    immutable headY = getPosition(head).y;
+    if (headY < 0.1f || headY > 4.0f) {
+        writefln("[test-physics-box3d] FAIL: ragdoll head settled at y=%.3f", headY);
+        pass = false;
+    }
+    immutable sepX = fabs(getPosition(overlapA).x - getPosition(overlapB).x);
+    if (sepX > 0.25f) {
+        writefln("[test-physics-box3d] FAIL: filter joint boxes pushed apart sepX=%.3f", sepX);
+        pass = false;
+    }
+    if (getBodyType(toggleBall) != PhysicsBodyType.dynamic || getPosition(toggleBall).y > 3.0f) {
+        writefln("[test-physics-box3d] FAIL: dynamic toggle ball y=%.3f", getPosition(toggleBall).y);
+        pass = false;
+    }
+    return pass;
+}
+
+private bool testSleepingAndWake() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, -9.81f, 0.0f));
+    createGroundSlab(world, 0.0f, Vec3(20.0f, 0.0f, 20.0f), 0.5f, 900);
+
+    BodyDesc sleepDesc;
+    sleepDesc.type = PhysicsBodyType.dynamic;
+    sleepDesc.position = Vec3(0.0f, 0.5f, 0.0f);
+    sleepDesc.entityId = 901;
+    sleepDesc.startAwake = false;
+    sleepDesc.enableSleep = true;
+    auto sleepBox = createBoxBody(world, sleepDesc, Vec3(0.5f, 0.5f, 0.5f));
+
+    foreach (_; 0 .. 10)
+        world.step(dt, 4);
+
+    if (isBodyAwake(sleepBox)) {
+        writeln("[test-physics-box3d] FAIL: sleeping box woke up prematurely");
+        return false;
+    }
+
+    auto wakeBall = createDynamicSphere(world, Vec3(0.0f, 3.0f, 0.0f), 0.4f, 2.0f, 902);
+    setLinearVelocity(wakeBall, Vec3(0.0f, -10.0f, 0.0f));
+
+    bool wokeOnImpact = false;
+    foreach (_; 0 .. 45) {
+        world.step(dt, 4);
+        if (isBodyAwake(sleepBox)) {
+            wokeOnImpact = true;
+            break;
+        }
+    }
+    if (!wokeOnImpact) {
+        writeln("[test-physics-box3d] FAIL: sleeping box did not wake on impact");
+        return false;
+    }
+
+    setBodyAwake(sleepBox, false);
+    if (isBodyAwake(sleepBox)) {
+        writeln("[test-physics-box3d] FAIL: setBodyAwake(false) failed");
+        return false;
+    }
+    setBodyAwake(sleepBox, true);
+    if (!isBodyAwake(sleepBox)) {
+        writeln("[test-physics-box3d] FAIL: setBodyAwake(true) failed");
+        return false;
+    }
+    return true;
+}
+
+private bool testCcdBullet() {
+    enum float dt = 1.0f / 60.0f;
+    auto world = PhysicsWorld(Vec3(0.0f, 0.0f, 0.0f));
+
+    createStaticBox(world, Vec3(0.0f, 2.0f, 0.0f), Vec3(0.05f, 2.0f, 4.0f), 1000);
+
+    BodyDesc bulletDesc;
+    bulletDesc.type = PhysicsBodyType.dynamic;
+    bulletDesc.position = Vec3(-5.0f, 2.0f, 0.0f);
+    bulletDesc.entityId = 1001;
+    bulletDesc.isBullet = true;
+    auto bullet = createBoxBody(world, bulletDesc, Vec3(0.2f, 0.2f, 0.2f));
+    setLinearVelocity(bullet, Vec3(120.0f, 0.0f, 0.0f));
+
+    foreach (_; 0 .. 30)
+        world.step(dt, 4);
+
+    immutable x = getPosition(bullet).x;
+    if (!isBodyBullet(bullet) || x > 0.0f) {
+        writefln("[test-physics-box3d] FAIL: CCD bullet tunneled or flag unset bullet=%s x=%.3f",
+            isBodyBullet(bullet), x);
+        return false;
+    }
+    return true;
+}
+
 int main() {
     enum float dt = 1.0f / 60.0f;
     enum int totalFrames = 240;
@@ -293,6 +644,24 @@ int main() {
         pass = false;
 
     if (!testHullAndMesh())
+        pass = false;
+
+    if (!testHeightFieldAndMaterials())
+        pass = false;
+
+    if (!testHitEventImpulseAndMaterials())
+        pass = false;
+
+    if (!testBreakableJoint())
+        pass = false;
+
+    if (!testSphericalRagdollAndFilters())
+        pass = false;
+
+    if (!testSleepingAndWake())
+        pass = false;
+
+    if (!testCcdBullet())
         pass = false;
 
     if (pass) {
