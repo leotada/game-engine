@@ -45,7 +45,7 @@ source/
 │   ├── ecs/               # Sparse-set ComponentStore + World!(Components...)
 │   ├── editor/            # Scene editor UX (picking, gizmos, inspector, I/O)
 │   ├── gpu/               # WGPU context, pipelines, shadows, IBL, post, text
-│   ├── graphics/          # Mesh, TexMesh, Texture, Material, primitives
+│   ├── graphics/          # Mesh, TexMesh, Texture, Material, SpriteRenderer/Camera2D, primitives
 │   ├── math/              # Vec, Mat4, Quat, Ray
 │   ├── physics/           # Box3D gameplay API (bodies, queries, joints, character)
 │   ├── platform/          # SDL3 window + per-frame input

@@ -515,6 +515,93 @@ app.input   // InputState — keyboard/mouse state
 
 ---
 
+## 2D Rendering with `SpriteRenderer` (`engine.graphics.sprite`)
+
+For 2D games, spritesheets, particle glows, and pixel-accurate overlays, `engine.graphics.sprite` provides an instanced 2D sprite renderer (`SpriteRenderer`), orthographic 2D camera (`Camera2D`), UV sub-rectangles (`SpriteRegion`), flipbook animations (`SpriteAnim`), and POD 2D components (`Transform2D`, `Sprite`, `SpriteBlendMode`).
+
+### HDR Scene Pass vs. LDR Present Pass
+
+Every frame in `App` / `Renderer` goes through two distinct color targets separated by `app.resolvePost(frame)`:
+
+| Stage | Triggered By | Target Format | Depth Buffer | Color Range & Behavior | Best Used For |
+|:---|:---|:---|:---|:---|:---|
+| **HDR Scene Pass** (`frame.postResolved == false`) | `app.beginFrame(...)` | `rgba16Float` (offscreen HDR RT) | `depth24Plus` | Linear floating-point colors; values `> 1.0` trigger bloom (`bloomThreshold`) and pass through `PostStage.beforeTonemap`, tone mapping (ACES/Reinhard/Linear/AgX), and FXAA | 3D scenes, `GizmoRenderer`, and 2D sprites that need **bloom, HDR glow** (e.g. `Color4(2.5f, 0.8f, 0.2f, 1.0f)` + `SpriteBlendMode.additive`), or full-screen post-processing |
+| **LDR Present Pass** (`frame.postResolved == true`) | `app.resolvePost(frame)` | Swapchain (`bgra8Unorm` / `rgba8Unorm`) | None | Display-ready `[0.0, 1.0]` values after bloom, tone mapping, and FXAA; drawn straight to the screen | `UiBatchRenderer`, `TextRenderer`, HUDs, menus, pixel art, and 2D games that want **exact, un-tonemapped sprite colors** |
+
+> **Important:** Calling `app.endFrame(frame)` automatically calls `resolvePost(frame)` if you did not call it explicitly. `SpriteRenderer.end(frame)` inspects `frame.postResolved` and binds the matching pipeline (`hdrAlpha`/`hdrAdditive` with `depthCompare = always` and `depthWriteEnabled = false`, or `ldrAlpha`/`ldrAdditive` without depth).
+
+### Complete 2D Example
+
+```d
+import engine.app;
+import engine.graphics.sprite;
+import engine.graphics.texture : Texture, TextureFilter;
+import engine.graphics.types : Color4;
+import engine.math.vec : Vec2;
+import engine.platform.input : Key;
+
+void main() {
+    auto app = App.create("2D Sprite Demo", 1280, 720);
+    scope(exit) app.destroy();
+
+    auto sprites = SpriteRenderer.create(app.gpu);
+    scope(exit) sprites.destroy();
+    sprites.setFilter(TextureFilter.nearest); // crisp pixel art (or TextureFilter.linear)
+
+    auto sheet = Texture.fromImageFile(app.gpu, "assets/player_sheet.png");
+    scope(exit) sheet.destroy();
+
+    auto anim = SpriteAnim.create(columns: 4, rows: 2, startFrame: 0, frameCount: 4, fps: 10.0f);
+    auto cam2d = Camera2D.screen(app.window.width(), app.window.height());
+
+    app.run((float dt) {
+        app.pollEvents();
+        app.handleResize();
+        if (app.input.keyPressed(Key.escape)) app.close();
+
+        cam2d.viewportSize = Vec2(app.window.width(), app.window.height());
+        anim.update(dt);
+
+        // Convert mouse pixel position into 2D world coordinates
+        immutable mouseWorld = cam2d.screenToWorld(
+            Vec2(app.input.mx(), app.input.my())
+        );
+
+        auto frame = app.beginFrame(Color4(0.05f, 0.06f, 0.10f, 1.0f));
+        if (!frame.valid) return;
+
+        // Option A: Draw before resolvePost() if you want HDR glow/bloom on sprites:
+        // sprites.begin(cam2d);
+        // sprites.drawRect(mouseWorld, Vec2(24, 24), Color4(2.0f, 0.8f, 0.2f, 1.0f),
+        //                  blend: SpriteBlendMode.additive);
+        // sprites.end(frame);
+
+        app.resolvePost(frame);
+
+        // Option B: Draw after resolvePost() for crisp LDR colors without tone-map shift:
+        sprites.begin(cam2d);
+        sprites.drawRect(Vec2(640, 360), Vec2(220, 140), Color4(0.12f, 0.14f, 0.22f, 0.9f), layer: 0);
+        sprites.drawAnim(sheet, anim, mouseWorld, Vec2(64, 64), layer: 1, zOrder: 1.0f);
+        sprites.end(frame);
+
+        app.endFrame(frame);
+    });
+}
+```
+
+### 2D API Reference (`engine.graphics.sprite`)
+
+| Type | Purpose | Key Methods / Fields |
+|:---|:---|:---|
+| `Camera2D` | 2D orthographic camera (`isPod`) | `Camera2D.screen(w, h)` (`yDown = true`), `Camera2D.world(w, h, center, zoom)` (`yDown = false`), `viewProjection()`, `screenToWorld()`, `worldToScreen()` |
+| `Transform2D` | POD 2D transform component (`isPod`) | `position`, `scale`, `rotation` |
+| `SpriteRegion` | Normalized UV sub-rectangle (`isPod`) | `full()`, `fromPixels(x, y, w, h, texW, texH)`, `fromGrid(col, row, cols, rows)`, `fromFrameIndex(idx, cols, rows)`, `flipped(flipX, flipY)` |
+| `SpriteAnim` | Grid flipbook animation state (`isPod`) | `create(cols, rows, start, count, fps, loop)`, `update(dt)`, `reset()`, `currentFrame()`, `currentRegion()`, `finished()` |
+| `Sprite` | POD sprite descriptor / ECS component (`isPod`) | `position`, `size`, `origin`, `rotation`, `tint`, `region`, `layer`, `zOrder`, `flipX`, `flipY`, `blend`, `transformed(Transform2D)` |
+| `SpriteRenderer` | Instanced `@nogc` 2D batch renderer | `create(gpu, maxSprites, defaultFilter)`, `setFilter`, `setSorting`, `begin(cam2d)`, `beginScreen(w, h)`, `beginMat(vp, yUp)`, `draw`, `drawRegion`, `drawAnim`, `drawRect`, `end(frame)`, `reloadShader` |
+
+---
+
 ## Architecture Layers
 
 ### When to Use Each Layer
@@ -523,6 +610,7 @@ app.input   // InputState — keyboard/mouse state
 |:---|:---|
 | Draw 3D objects with colors | `Scene3D` + `Mesh` + `Camera` |
 | Draw 3D objects with textures | `Scene3DTextured` + `TexMesh` + `Material` |
+| Draw 2D sprites, spritesheets, or 2D games | `SpriteRenderer` + `Camera2D` + `SpriteRegion` + `SpriteAnim` (`engine.graphics.sprite`) |
 | Parent/child transforms (solar systems, rigs) | `SceneGraph` |
 | Orbit / fly / first-person camera | `engine.scene.controllers` |
 | Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-openpbr.md](plan-openpbr.md) |
@@ -690,6 +778,9 @@ See [export-guide.md](export-guide.md) for per-target linker arguments, `BuildEx
 - **3D Shapes & Procedural Noise**:
   - `engine.graphics.shapes` (`MeshData` + `transform`/`merge`/`toTexMesh`): `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus`.
   - `engine.math.noise`: `valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`, paired with `Mat4.trs(pos, rot, scale)`.
+- **2D Sprites & Orthographic Camera (`engine.graphics.sprite`)**:
+  - `SpriteRenderer` batches and sorts 2D quads by `(layer, zOrder, sequence)` with `@nogc` draw-call coalescing, `TextureFilter.nearest`/`linear`, `SpriteBlendMode.alpha`/`additive`, `drawRect`, and transactional `reloadShader`.
+  - Runs in either the **HDR scene pass** (before `resolvePost` for bloom/tonemapping) or the **LDR present pass** (after `resolvePost` for exact display colors), paired with `Camera2D`, `Transform2D`, `SpriteRegion`, and `SpriteAnim`.
 - **2D UI, SDF/Hinted Text & Textures (`engine.ui`)**:
   - `Font` (`engine.ui.text.font`) uses `SDL3_ttf` + FreeType 2 supporting both scaled SDF atlases and hinted bitmap rendering (`setHinting`, `TTF_HintingFlags`), kerning (`getKerning`), fallback fonts (`addFallbackFont`), file loading (`loadFromFile`), auto-growing atlases, full Unicode codepoints, and explicit cleanup (`destroy()`).
   - `UiBatchRenderer` (`engine.ui.render.batch`): `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **2D Instanced `SpriteRenderer`, `Camera2D`, `SpriteRegion` & `SpriteAnim` (`2026-11-19`)** — commit `f614d28`:
+  - Created `source/engine/graphics/sprite.d` (re-exported by `engine.graphics`) and `assets/shaders/sprite2d.wgsl` (`sprite2dShaderSource` in `source/engine/gpu/shaders.d`).
+  - Added POD 2D primitives (`Camera2D`, `Transform2D`, `SpriteRegion`, `SpriteAnim`, `Sprite`, `SpriteBlendMode`) and instanced `@nogc` `SpriteRenderer` supporting both the HDR scene pass (pre-`resolvePost`) and the LDR present pass (post-`resolvePost`), `(layer, zOrder, sequence)` sorting, draw-call coalescing, `nearest`/`linear` sampling, `drawRect`, and transactional `reloadShader`.
 - **Multiplatform Static Release Exporter (`EXPORT-NATIVE`, `EXPORT-WEB`, `2026-11-18`)** — commits `751c1fd`, `ea382cb`, `ade89b7`, `2efdc97`:
   - Dependency build script `tools/build_sdl3_deps.sh` to clone and compile static `SDL3` (`release-3.4.0`), `SDL3_image` (`release-3.2.4`), `SDL3_ttf` (`release-3.2.2`), and `FreeType 2` (`VER-2-13-3`) archives under `libs/<target>/` (with host `linux-x86_64` build and dev `.so` symlinks).
   - Dual-mode C linkage (`version (StaticSDLDeps)` static release linkage vs. lazy `SDL_LoadObject` dynamic loading during local development) in `source/bindings/sdl3_image.d` and `source/bindings/sdl3_ttf.d`.

@@ -16,8 +16,9 @@ The engine uses **WGPU-native** as its GPU abstraction and **SDL3** for windowin
 │  Graphics Layer — Graphic assets (engine/graphics/*) │
 │  ├── Mesh       → vertex/index (pos+normal)          │
 │  ├── TexMesh    → vertex/index (pos+normal+uv)       │
-│  ├── Texture    → GPU texture + TGA loader           │
+│  ├── Texture    → GPU texture + SDL3_image / TGA     │
 │  ├── Material   → PBR bind group (params + maps)     │
+│  ├── Sprite     → SpriteRenderer, Camera2D, SpriteAnim│
 │  ├── Color4     → RGBA float                         │
 │  └── primitives → cube, pyramid, diamond, quad, etc. │
 ├──────────────────────────────────────────────────────┤
@@ -53,6 +54,7 @@ The engine uses **WGPU-native** as its GPU abstraction and **SDL3** for windowin
 |:---|:---|
 | Draw colored 3D meshes | `Scene3D` + `Mesh` + `Camera` |
 | Draw textured 3D meshes | `Scene3DTextured` + `TexMesh` + `Material` |
+| Draw 2D sprites & spritesheets | `SpriteRenderer` + `Camera2D` + `SpriteRegion` + `SpriteAnim` (`engine.graphics.sprite`) |
 | Transform hierarchy (solar systems, joints, attachments) | `SceneGraph` |
 | Orbital / Fly / First-person camera control | `engine.scene.controllers` |
 | Directional shadows | `ShadowMap` + textured pipeline |
@@ -103,16 +105,27 @@ For detailed multiplatform architecture, see [multiplatform-and-shaders.md](mult
 
 ```
 1. beginFrame → offscreen HDR render pass (rgba16float + depth24Plus)
-2.   Scene3D / Scene3DTextured / gizmos draw into HDR target
+2.   Scene3D / Scene3DTextured / GizmoRenderer (and optional HDR SpriteRenderer) draw into HDR target
 3. resolvePost → end HDR pass
 4.   bloom pass (threshold / downsample / upsample) when enabled
-5.   tone map ACES (+ exposure) → LDR
+5.   tone map (ACES / Reinhard / Linear / AgX + exposure / saturation / contrast) → LDR
 6.   FXAA pass when enabled → swapchain
-7.   reopen present pass (load-op) for text/UI overlay
+7.   reopen present pass (load-op, no depth) for LDR SpriteRenderer / UiBatchRenderer / TextRenderer
 8. endFrame → submit command buffer + wgpuSurfacePresent()
 ```
 
-The optional shadow depth pass runs as a separate submit **before** `beginFrame`.
+The optional shadow depth pass runs as a separate submit **before** `beginFrame`, or inside the frame via `Scene3DTextured.renderShadows(frame, lights)`.
+
+#### HDR Scene Pass vs. LDR Present Pass
+
+The renderer splits each frame across two color spaces and formats:
+
+| Pass | Frame State | Color Format | Depth | Purpose & Renderers |
+|:---|:---|:---|:---|:---|
+| **HDR Scene Pass** | `frame.postResolved == false` (between `beginFrame` and `resolvePost`) | `WGPUTextureFormat.rgba16Float` (linear HDR) | `depth24Plus` | Linear scene lighting, values `> 1.0` for emissive glow and bloom. Runs `Scene3D`, `Scene3DTextured`, `GizmoRenderer`, and optionally `SpriteRenderer` (`hdrAlpha` / `hdrAdditive`). |
+| **LDR Present Pass** | `frame.postResolved == true` (between `resolvePost` and `endFrame`) | Swapchain (`bgra8Unorm` / `rgba8Unorm`) | None | Post-processed display image (`[0.0, 1.0]`). Runs `UiBatchRenderer`, `TextRenderer`, and optionally `SpriteRenderer` (`ldrAlpha` / `ldrAdditive`) when crisp UI/2D colors without bloom or tone-map compression are desired. |
+
+`PostProcessor` (`engine/gpu/post.d`) bridges the two passes inside `resolvePost`, converting the `rgba16Float` scene buffer into the swapchain format (with optional custom `PostStage.beforeTonemap`, `afterTonemap`, and `afterUi` passes).
 
 ## Render Pipelines
 
@@ -135,6 +148,16 @@ Pipeline for bitmap text (FPS overlay, debug text):
 - **Depth** — depth24Plus, depthWrite=false, depthCompare=always (overlay)
 - **Font atlas** — 128×48 R8Unorm texture, 8×8 CP437 glyphs (ASCII 32-127)
 - **Shader** — WGSL with screen size uniform, sampler + texture binding
+
+### SpriteRenderer (2D Instanced Pipeline)
+
+Pipeline for batched, sorted 2D sprites (`engine/graphics/sprite.d`):
+
+- **Vertex buffer 0** — unit quad `float32x2 unitPos` in `[0, 1]²` (stride=8, 6 `uint16` indices)
+- **Vertex buffer 1** — per-instance `SpriteInstance` (stride=64, `step=instance`): `posSize` (`vec4f`), `uvRect` (`vec4f`), `color` (`vec4f`), `originSinCos` (`vec4f`)
+- **Bind group (`@group(0)`)** — `binding 0` = 64-byte `Mat4 viewProj` uniform, `binding 1` = `nearest` or `linear` clamp sampler, `binding 2` = `texture_2d<f32>`
+- **Four pipeline variants** — `ldrAlpha` / `ldrAdditive` targeting swapchain format with no depth attachment (`frame.postResolved == true`), and `hdrAlpha` / `hdrAdditive` targeting `Renderer.sceneFormat()` (`rgba16Float`) with `depth24Plus`, `depthWriteEnabled = false`, `depthCompare = always` (`frame.postResolved == false`)
+- **Sorting & Coalescing** — in-place `@nogc` ShellSort over `Pod!SpriteCmd` indices by `(layer, zOrder, sequence)`, merging consecutive runs with matching `(viewKey, blend, filter)` into single `drawIndexed(6, runCount)` calls
 
 ### Pipeline3D Textured (OpenPBR Surface v1.1)
 
@@ -229,6 +252,17 @@ Vertex shader for text quads in screen space. Fragment shader samples R8Unorm at
 @group(0) @binding(0) var<uniform> screenSize: vec2f;
 @group(0) @binding(1) var fontSampler: sampler;
 @group(0) @binding(2) var fontTexture: texture_2d<f32>;
+```
+
+### sprite2d.wgsl
+
+Instanced 2D sprite shader transforming unit quads around a normalized `origin` with per-instance rotation `(sin, cos)`, UV sub-rectangle interpolation (`mix(uvRect.xy, uvRect.zw, unitPos)`), RGBA tint, and alpha cutout (`tex.a <= 0.001`):
+
+```wgsl
+struct SpriteUniforms { viewProj: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> spriteU: SpriteUniforms;
+@group(0) @binding(1) var spriteSampler: sampler;
+@group(0) @binding(2) var spriteTexture: texture_2d<f32>;
 ```
 
 ## Textures and Materials
