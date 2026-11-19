@@ -6,8 +6,9 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 
 | Document | Description |
 |:---|:---|
-| [game-development-guide.md](game-development-guide.md) | How to build a 3D game using the high-level API |
+| [game-development-guide.md](game-development-guide.md) | Concise practical guide to building 2D and 3D games across all engine subsystems |
 | [physics-quickstart.md](physics-quickstart.md) | Box3D gameplay physics API: world, shapes, sensors, queries, joints, character |
+| [animation-guide.md](animation-guide.md) | Skeletal animation (`ozz-animation` port), IK, ECS integration, and GPU skinning |
 | [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU) |
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |

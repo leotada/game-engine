@@ -1,730 +1,474 @@
 # Game Development Guide
 
-This guide explains how to build a 3D game using the engine's high-level API. The engine follows a Godot-inspired 3-layer model:
-
-| Layer | Purpose | Modules |
-|:------|:--------|:--------|
-| **Scene** | Game-level: camera, controllers, scene graph, batched renderers | `engine.scene.*` |
-| **Graphics** | Resources: meshes, textures, materials, primitives | `engine.graphics.*` |
-| **GPU** | Low-level WGPU wrappers (power users) | `engine.gpu.*` |
-| **Physics** | Rigid bodies via Box3D (shapes, sensors, queries, joints, character) | `engine.physics.*` |
-| **Assets** | Disk loaders (PNG, JPG, WEBP, QOI, SVG, BMP, TGA, glTF) | `engine.assets.*` |
-| **Audio** | WAV playback via SDL3 streams | `engine.audio.*` |
-| **DevTools** | In-engine gizmos + debug overlay | `engine.devtools.*` |
-
-Most games only need `engine.app`, `engine.scene`, `engine.graphics`, and `engine.math`. Pull in `engine.physics`, `engine.assets`, `engine.audio`, and `engine.devtools` as you need them — a single `import engine;` re-exports everything.
+A concise, practical guide to building 2D and 3D games with the engine's high-level D API (`@safe:` + DIP1000). Use this guide for quick-start usage, key options, and short examples, and follow the linked deep-dive docs for full architecture and edge cases.
 
 ---
 
-## Quick Start — Minimal 3D Game
+## 1. Module Map & Imports
+
+A single `import engine;` re-exports the core runtime (`core`, `ecs`, `math`, `platform`, `gpu`, `graphics`, `meshopt`, `scene`, `assets`, `audio`, `devtools`, `physics`, `app`). Subsystems outside the core runtime are imported explicitly when needed:
+
+| Area | Primary Modules | Deep Dive |
+|:---|:---|:---|
+| **App, Window & Loop** | `engine.app`, `engine.platform.*` | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) |
+| **3D, OpenPBR, IBL, Shadows & Post** | `engine.scene.*`, `engine.graphics.*`, `engine.gpu.*` | [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-post-processing.md](plan-post-processing.md) |
+| **2D Sprites & Cameras** | `engine.graphics.sprite` | [graphics.md](graphics.md) |
+| **2D UI & Fonts (`SDL3_ttf`)** | `engine.ui` (opt-in), `engine.gpu.text` | [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md) |
+| **ECS, Scripts & GC-Safe Memory** | `engine.ecs.*`, `engine.core.*`, `engine.script` (opt-in) | [scripting-guide.md](scripting-guide.md) · [why-this-is-fast.md](why-this-is-fast.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) |
+| **Assets & Mesh Optimization** | `engine.assets.*`, `engine.meshopt.*` | [export-guide.md](export-guide.md) · [plan-meshoptimizer.md](plan-meshoptimizer.md) |
+| **Physics (Box3D)** | `engine.physics` | [physics-quickstart.md](physics-quickstart.md) |
+| **Skeletal Animation (`ozz`)** | `engine.animation` (opt-in), `engine.animation.ecs` | [animation-guide.md](animation-guide.md) |
+| **Audio** | `engine.audio` | — |
+| **DevTools & Hot-Reload** | `engine.devtools.*`, `engine.hotreload.*` (opt-in) | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) |
+| **Visual Editor & Release Export** | `source/editor/*`, `tools/export_main.d` | [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md) |
+
+---
+
+## 2. Quick Start & Game Loop
+
+`App` owns the SDL3 window, `GpuContext`, `Renderer` (offscreen HDR target + post-processing), `InputState`, and per-frame `FrameArena`. Every frame follows one pass order:
+
+```
+pollEvents -> handleResize -> logic/physics -> scene.begin / draw* -> beginFrame
+  -> renderShadows / scene.end / gizmos / HDR sprites -> resolvePost -> LDR sprites / UI / text -> endFrame
+```
 
 ```d
 module mygame;
 
-import engine.app;
-import engine.gpu.text;
-import engine.math.vec;
-import engine.graphics.types : Color4;
-import engine.graphics.mesh : Mesh;
-import engine.scene.camera : Camera;
-import engine.scene.scene3d : Scene3D;
-import engine.platform.input : Key;
+import engine;
+
+@safe:
 
 void main() {
     auto app = App.create("My Game", 1280, 720);
-
-    auto scene   = Scene3D.create(app.gpu);
-    scope(exit) scene.destroy();
-    auto cube    = Mesh.cube(app.gpu);
-    scope(exit) cube.destroy();
-    auto camera  = Camera.create(0.9, 1280, 720);
-    auto textRenderer = TextRenderer.create(app.gpu, 1280, 720);
-    scope(exit) textRenderer.destroy();
-    auto fps = FpsCounter.create();
-
-    while (app.running()) {
-        app.pollEvents();
-        fps.tick();
-        if (app.input.keyPressed(Key.escape)) break;
-
-        camera.lookAt(Vec3(0, 5, 10), Vec3(0, 0, 0));
-        scene.begin(camera);
-        scene.draw(cube, Vec3(0, 0, 0), Vec3(1, 1, 1), Color4.white());
-        
-        auto frame = app.beginFrame(Color4(0.1, 0.1, 0.15));
-        if (!frame.valid) continue;
-        scene.end(frame);
-
-        textRenderer.beginFrame();
-        textRenderer.drawText(frame, fps.text(), 10, 10, 2);
-        app.endFrame(frame);
-    }
-}
-```
-
----
-
-## Step-by-Step Setup
-
-### 1. Create the Application
-
-`App` ties together the window, GPU context, renderer, and input system.
-
-```d
-auto app = App.create("Window Title", 1280, 720);
-```
-
-This creates an SDL3 window, initializes WGPU (instance → adapter → device → surface), and sets up input tracking. The app owns all these resources and cleans up on destruction.
-
-### 2. Create a Scene3D
-
-`Scene3D` manages the 3D render pipeline, uniform buffers, bind groups, and per-mesh instance batches internally. You never touch pipelines or GPU buffers directly.
-
-```d
-auto scene = Scene3D.create(app.gpu);
-scope(exit) scene.destroy();
-```
-
-**Important:** Create `Scene3D` before creating meshes. One `Scene3D` per game is typical.
-
-### 3. Create Meshes
-
-`Mesh` owns GPU vertex and index buffers for a 3D shape. Built-in primitives are available as static factories:
-
-```d
-auto cube    = Mesh.cube(app.gpu);
-auto pyramid = Mesh.pyramid(app.gpu);
-auto diamond = Mesh.diamond(app.gpu);
-scope(exit) cube.destroy();
-scope(exit) pyramid.destroy();
-scope(exit) diamond.destroy();
-```
-
-For custom geometry, use `Mesh.fromData`:
-
-```d
-import engine.graphics.types : Vert;
-
-auto myMesh = Mesh.fromData(app.gpu, myVertices[], myIndices[]);
-scope(exit) myMesh.destroy();
-```
-
-Each `Vert` has `float[3] pos` and `float[3] normal`.
-
-### 4. Create a Camera
-
-`Camera` holds perspective projection parameters and view position.
-
-```d
-// From aspect ratio
-auto camera = Camera.create(0.9, 16.0 / 9.0);
-
-// From pixel dimensions (convenience)
-auto camera = Camera.create(0.9, 1280, 720);
-
-// With custom near/far planes
-auto camera = Camera.create(0.9, 1280, 720, 0.1, 200.0);
-```
-
-Update the camera each frame:
-
-```d
-camera.lookAt(eyePosition, targetPosition);
-```
-
-### 5. Create a TextRenderer (Optional)
-
-`TextRenderer` provides bitmap font text rendering (8×8 pixel CP437 font, 96 ASCII glyphs).
-
-```d
-auto textRenderer = TextRenderer.create(app.gpu, 1280, 720);
-scope(exit) textRenderer.destroy();
-```
-
-### 6. FpsCounter (Optional)
-
-```d
-auto fps = FpsCounter.create();
-// In game loop:
-immutable dt = fps.tick();  // returns delta time in seconds
-fps.text();                 // returns "FPS: 60" style string
-```
-
----
-
-## The Game Loop
-
-The game loop follows this order every frame:
-
-```
-pollEvents → game logic → camera update → scene.begin → scene.draw* → beginFrame → scene.end → text → endFrame
-```
-
-### Frame Structure
-
-```d
-while (app.running()) {
-    // 1. Poll input events
-    app.pollEvents();
-    immutable dt = fps.tick();
-    if (app.input.keyPressed(Key.escape)) break;
-
-    // 2. Game logic (physics, AI, collision, etc.)
-    updateGameState(dt);
-
-    // 3. Update camera
-    camera.lookAt(eyePos, targetPos);
-
-    // 4. Queue draw calls (CPU-side batching)
-    scene.begin(camera);
-    scene.draw(cube, position, scale, color);
-    scene.draw(cube, otherPos, otherScale, otherColor, rotationY);
-    scene.drawMatrix(pyramid, modelMatrix, color);
-
-    // 5. Begin GPU frame (acquire surface, clear)
-    auto frame = app.beginFrame(Color4(0.05, 0.06, 0.12));
-    if (!frame.valid) continue;
-
-    // 6. Submit 3D scene to GPU
-    scene.end(frame);
-
-    // 7. Draw HUD text (on top of 3D scene)
-    textRenderer.beginFrame();
-    textRenderer.drawText(frame, "Score: 10", 10, 10, 2);
-
-    // 8. Present
-    app.endFrame(frame);
-}
-```
-
-**Why this order?** Scene draw calls are CPU-side batching — they collect instance data into arrays. Only `scene.end(frame)` actually uploads to the GPU and issues draw commands. This lets you call `scene.draw` freely without worrying about GPU state.
-
----
-
-## API Reference
-
-### Color4
-
-RGBA color with float components. Used everywhere in the high-level API.
-
-```d
-// Manual construction
-Color4(0.2, 0.35, 0.2)       // RGB, alpha defaults to 1.0
-Color4(0.2, 0.35, 0.2, 0.5)  // RGBA
-
-// Named colors
-Color4.white()
-Color4.red()
-Color4.green()
-Color4.blue()
-Color4.yellow()
-Color4.black()
-```
-
-### Vec3 / Mat4
-
-```d
-// Vectors
-auto pos = Vec3(1.0, 2.0, 3.0);
-auto dir = pos.normalized();
-auto len = pos.length();
-auto sum = pos + Vec3(1, 0, 0);
-auto scaled = pos * 2.0;
-
-// Matrices
-auto model = Mat4.translation(x, y, z)
-           * Mat4.rotationY(angle)
-           * Mat4.scaling(sx, sy, sz);
-
-auto view = Mat4.lookAt(eye, target, up);
-auto proj = Mat4.perspective(fovY, aspect, near, far);
-```
-
-### Scene3D
-
-```d
-auto scene = Scene3D.create(app.gpu);
-
-// Per frame:
-scene.begin(camera);                              // reset batches, upload VP matrix
-scene.draw(mesh, position, scale, color);          // queue instance (uniform scale)
-scene.draw(mesh, pos, scale, color, rotationY);    // with Y-axis rotation
-scene.drawMatrix(mesh, modelMatrix, color);        // full transform control
-scene.end(frame);                                  // upload + draw all batches
-
-scene.destroy();
-```
-
-`Scene3D` supports up to **16 different meshes** and **256 instances per mesh** per frame. Instances of the same mesh are automatically batched into a single instanced draw call.
-
-### Camera
-
-```d
-auto camera = Camera.create(fovY, width, height);
-camera.lookAt(eyePosition, targetPosition);
-
-// Access/modify fields directly:
-camera.fovY   = 1.2;
-camera.near   = 0.5;
-camera.far    = 200.0;
-camera.up     = Vec3(0, 1, 0);
-```
-
-### Mesh
-
-```d
-// Built-in primitives
-auto cube    = Mesh.cube(app.gpu);       // 24 vertices, 36 indices
-auto pyramid = Mesh.pyramid(app.gpu);    // 16 vertices, 18 indices
-auto diamond = Mesh.diamond(app.gpu);    // 24 vertices, 24 indices
-
-// Custom geometry
-auto mesh = Mesh.fromData(app.gpu, vertices[], indices[]);
-
-mesh.destroy();  // releases GPU buffers
-```
-
-Meshes are move-only (no copying). Use `ref` when passing to functions.
-
-### TextRenderer
-
-```d
-auto text = TextRenderer.create(app.gpu, screenWidth, screenHeight);
-
-// Per frame:
-text.beginFrame();
-text.drawText(frame, "Hello World", x, y, scale);  // scale: 1=8px, 2=16px, 3=24px
-
-text.destroy();
-```
-
-### Scene3DTextured + Texture + Material
-
-For textured OpenPBR 3D rendering, use `Scene3DTextured` with `TexMesh` and `Material`:
-
-```d
-import engine.graphics.texmesh : TexMesh;
-import engine.graphics.texture : Texture, Sampler;
-import engine.graphics.material : Material, MaterialParams;
-import engine.scene.scene3d_textured : Scene3DTextured;
-
-auto scene = Scene3DTextured.create(app.gpu);
-scope(exit) scene.destroy();
-
-auto texture  = Texture.loadTga(app.gpu, "assets/crate.tga");
-scope(exit) texture.destroy();
-
-auto sampler  = Sampler.linearRepeat(app.gpu);
-scope(exit) sampler.destroy();
-
-MaterialParams params;
-params.baseMetalness = 0.0f;
-params.specularRoughness = 0.35f;
-params.coatWeight = 0.4f; // optional clearcoat, fuzzWeight, thinFilmWeight, specularIor, etc.
-
-auto material = Material.create(app.gpu, scene.materialLayout, sampler, texture, params);
-scope(exit) material.destroy();
-
-auto cube = TexMesh.cube(app.gpu);
-scope(exit) cube.destroy();
-
-// Per frame:
-scene.begin(camera);
-scene.draw(cube, material, Vec3(0, 0, 0), Vec3(1, 1, 1), Color4.white());
-scene.drawMatrix(cube, material, modelMatrix, Color4.white());
-scene.end(frame);
-```
-
-Instances of the same `(TexMesh, Material)` pair are batched into a single instanced draw call.
-
-### SceneGraph — Transform Hierarchy
-
-For objects with parent/child relationships (solar systems, characters, vehicles):
-
-```d
-import engine.scene.graph : SceneGraph, Transform, ROOT;
-
-auto graph = SceneGraph.create();
-
-auto sun    = graph.addChild(ROOT, Transform(Vec3(0, 0, 0), Vec3(2, 2, 2), 0));
-auto earth  = graph.addChild(sun,  Transform(Vec3(8, 0, 0), Vec3(1, 1, 1), 0));
-auto moon   = graph.addChild(earth, Transform(Vec3(2, 0, 0), Vec3(0.3, 0.3, 0.3), 0));
-
-// Per frame: animate, then propagate world matrices.
-graph.transform(earth).rotationY += dt * 0.5;
-graph.transform(moon).rotationY  += dt * 2.0;
-graph.updateWorld();
-
-// Draw each node using its world matrix.
-scene.drawMatrix(sphereMesh, sunMat,   graph.worldMatrix(sun),   Color4.white());
-scene.drawMatrix(sphereMesh, earthMat, graph.worldMatrix(earth), Color4.white());
-scene.drawMatrix(sphereMesh, moonMat,  graph.worldMatrix(moon),  Color4.white());
-```
-
-The graph stores parent indices and local transforms in flat arrays, and propagates world matrices in a single O(N) sweep.
-
-### Camera Controllers
-
-`engine.scene.controllers` provides three ready-to-use controllers. They do not replace `Camera` — they drive it via `lookAt`:
-
-```d
-import engine.scene.controllers : OrbitCamera, FlyCamera, FirstPersonCamera;
-
-// Orbit around a target (editor / model viewer)
-auto orbit = OrbitCamera.create(Vec3(0, 0, 0), 10.0);
-orbit.update(app.input, dt, camera);
-
-// Free-flying 6-DOF camera (debug / showcase)
-auto fly = FlyCamera.create(Vec3(0, 5, 10));
-fly.update(app.input, dt, camera);
-
-// First-person look (gameplay — caller owns position)
-auto fp = FirstPersonCamera.create();
-fp.update(app.input, playerEyePosition, camera);
-```
-
-### Audio
-
-```d
-import engine.audio : AudioEngine, AudioClip;
-
-auto audio = AudioEngine.create();
-scope(exit) audio.destroy();
-
-auto click = AudioClip.loadWav("assets/click.wav");
-scope(exit) click.destroy();
-
-// Trigger playback — non-blocking, multiple overlapping plays are OK.
-audio.play(click);
-```
-
-Only uncompressed WAV is supported. Each `play()` queues a copy into the shared output stream.
-
-### Assets (SDL3_image + BMP + glTF)
-
-```d
-import engine.assets.image : decodeImageFile, decodeImageBytes, decodeSvgBytesSized, saveRgbaJpg;
-import engine.assets.gltf  : loadGltfMesh, loadGltfPbr;
-import engine.graphics.texture : Texture;
-
-// PNG, JPG, WEBP, AVIF, QOI, TGA, BMP via SDL3_image -> GPU texture
-auto tex = Texture.fromImageFile(app.gpu, "assets/ground.png");
-
-// Sized rasterization of SVG UI/vector assets
-auto svgTex = Texture.fromSvgBytes(app.gpu, svgBytes, 128, 128);
-
-// First primitive of the first mesh of a .gltf file -> TexMesh
-auto mesh = loadGltfMesh(app.gpu, "assets/chair.gltf");
-
-// Or load mesh + OpenPBR material textures/params (KHR_materials_* extensions)
-auto loaded = loadGltfPbr(app.gpu, scene.materialLayout, sampler, "assets/crate.gltf");
-```
-
-`Texture.fromImageFile`, `Texture.fromImageBytes`, `Texture.fromSurface`, and `loadGltfPbr` decode `.png`, `.jpg`, `.jpeg`, `.webp`, `.qoi`, `.gif`, `.avif`, `.svg`, `.tga`, and `.bmp` textures via `engine.assets.image` (`SDL3_image`). `loadGltfMesh` loads indexed triangle primitives (`POSITION`, `NORMAL`, `TEXCOORD_0`, and tangents when needed) from an external `.bin` buffer. Skins, animations, and `.glb` containers are not yet supported.
-
-### DevTools — Gizmos and Debug Overlay
-
-```d
-import engine.devtools.gizmos  : GizmoRenderer;
-import engine.devtools.overlay : DebugOverlay;
-
-auto gizmos  = GizmoRenderer.create(app.gpu);
-scope(exit) gizmos.destroy();
-auto overlay = DebugOverlay.create();
-
-// Per frame, after scene rendering:
-gizmos.begin(camera.viewProjection());
-gizmos.axes(Vec3(0, 0, 0), 1.0);
-gizmos.grid(20, 1.0, Color4(0.3, 0.3, 0.3, 1));
-gizmos.line(Vec3(0, 0, 0), playerPos, Color4.yellow());
-gizmos.render(frame);
-
-overlay.beginFrame(fps.fps(), fps.deltaTimeMs());
-overlay.label("pos", camera.eye.x, ",", camera.eye.y, ",", camera.eye.z);
-overlay.label("entities", world.aliveCount());
-overlay.render(textRenderer, frame);
-```
-
-Gizmos use a `lineList` topology with overlay depth (always visible). The debug overlay layers structured FPS + labels on top of `TextRenderer`.
-
-### Shadows
-
-`Scene3DTextured` supports directional, point, and spot shadow maps with 3×3 PCF filtering ([plan-openpbr.md](plan-openpbr.md)).
-
-```d
-import engine.gpu.shadow :
-    ShadowMap, ShadowPipeline, createShadowPipeline,
-    beginShadowPass, endShadowPass, directionalLightVP;
-
-auto shadow = ShadowMap.create(app.gpu, 2048);  // square resolution
-scope(exit) shadow.destroy();
-auto shadowPipe = createShadowPipeline(app.gpu.getDevice());
-scope(exit) shadowPipe.release();
-
-// Per frame, BEFORE the main color pass:
-immutable lightVP = directionalLightVP(Vec3(-1, -1, -0.5), Vec3(0, 0, 0), 20.0f);
-// write lightVP into a uniform + bind group for shadowPipe...
-auto shadowPass = beginShadowPass(encoder, shadow);
-//   bind shadowPipe + light bind group, draw shadow casters
-endShadowPass(shadowPass);
-
-// Bind directional lighting + shadow map for PCF sampling in textured3d_pbr.wgsl:
-scene.setLighting(lightDir, lightVP, shadow);
-```
-
-### Input
-
-```d
-// Pressed this frame (rising edge)
-if (app.input.keyPressed(Key.space)) { ... }
-
-// Held down (continuous)
-if (app.input.keyDown(Key.w)) { ... }
-
-// Available keys: Key.w, Key.a, Key.s, Key.d, Key.space, Key.escape,
-//                 Key.left, Key.right, Key.up, Key.down, etc.
-```
-
-### App
-
-```d
-auto app = App.create("Title", width, height);
-
-app.running()      // true until window close or app.close()
-app.close()        // request exit
-app.pollEvents()   // process SDL3 events, update input state
-
-// Managed desktop / Emscripten main loop
-app.run((float dt) {
-    app.pollEvents();
-    app.handleResize();
-    // update & draw...
-});
-
-// Window icon from decoded RGBA8 pixels (e.g. via decodeImageFile)
-app.window.setIcon(rgba, iconW, iconH);
-
-// Frame management
-auto frame = app.beginFrame(Color4(r, g, b));  // clear + begin render pass
-app.endFrame(frame);                            // submit + present
-
-// Access subsystems
-app.gpu     // GpuContext — pass to Mesh/Scene3D/TextRenderer factories
-app.input   // InputState — keyboard/mouse state
-```
-
----
-
-## 2D Rendering with `SpriteRenderer` (`engine.graphics.sprite`)
-
-For 2D games, spritesheets, particle glows, and pixel-accurate overlays, `engine.graphics.sprite` provides an instanced 2D sprite renderer (`SpriteRenderer`), orthographic 2D camera (`Camera2D`), UV sub-rectangles (`SpriteRegion`), flipbook animations (`SpriteAnim`), and POD 2D components (`Transform2D`, `Sprite`, `SpriteBlendMode`).
-
-### HDR Scene Pass vs. LDR Present Pass
-
-Every frame in `App` / `Renderer` goes through two distinct color targets separated by `app.resolvePost(frame)`:
-
-| Stage | Triggered By | Target Format | Depth Buffer | Color Range & Behavior | Best Used For |
-|:---|:---|:---|:---|:---|:---|
-| **HDR Scene Pass** (`frame.postResolved == false`) | `app.beginFrame(...)` | `rgba16Float` (offscreen HDR RT) | `depth24Plus` | Linear floating-point colors; values `> 1.0` trigger bloom (`bloomThreshold`) and pass through `PostStage.beforeTonemap`, tone mapping (ACES/Reinhard/Linear/AgX), and FXAA | 3D scenes, `GizmoRenderer`, and 2D sprites that need **bloom, HDR glow** (e.g. `Color4(2.5f, 0.8f, 0.2f, 1.0f)` + `SpriteBlendMode.additive`), or full-screen post-processing |
-| **LDR Present Pass** (`frame.postResolved == true`) | `app.resolvePost(frame)` | Swapchain (`bgra8Unorm` / `rgba8Unorm`) | None | Display-ready `[0.0, 1.0]` values after bloom, tone mapping, and FXAA; drawn straight to the screen | `UiBatchRenderer`, `TextRenderer`, HUDs, menus, pixel art, and 2D games that want **exact, un-tonemapped sprite colors** |
-
-> **Important:** Calling `app.endFrame(frame)` automatically calls `resolvePost(frame)` if you did not call it explicitly. `SpriteRenderer.end(frame)` inspects `frame.postResolved` and binds the matching pipeline (`hdrAlpha`/`hdrAdditive` with `depthCompare = always` and `depthWriteEnabled = false`, or `ldrAlpha`/`ldrAdditive` without depth).
-
-### Complete 2D Example
-
-```d
-import engine.app;
-import engine.graphics.sprite;
-import engine.graphics.texture : Texture, TextureFilter;
-import engine.graphics.types : Color4;
-import engine.math.vec : Vec2;
-import engine.platform.input : Key;
-
-void main() {
-    auto app = App.create("2D Sprite Demo", 1280, 720);
     scope(exit) app.destroy();
 
-    auto sprites = SpriteRenderer.create(app.gpu);
-    scope(exit) sprites.destroy();
-    sprites.setFilter(TextureFilter.nearest); // crisp pixel art (or TextureFilter.linear)
+    auto scene = Scene3D.create(app.gpu);
+    scope(exit) scene.destroy();
+    auto cube = Mesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto text = TextRenderer.create(app.gpu, 1280, 720);
+    scope(exit) text.destroy();
 
-    auto sheet = Texture.fromImageFile(app.gpu, "assets/player_sheet.png");
-    scope(exit) sheet.destroy();
-
-    auto anim = SpriteAnim.create(columns: 4, rows: 2, startFrame: 0, frameCount: 4, fps: 10.0f);
-    auto cam2d = Camera2D.screen(app.window.width(), app.window.height());
+    auto camera = Camera.create(0.9f, 1280, 720);
+    camera.lookAt(Vec3(0, 3, 6), Vec3(0, 0, 0));
+    auto fps = FpsCounter.create();
+    float angle = 0;
 
     app.run((float dt) {
         app.pollEvents();
         app.handleResize();
+        fps.tick();
         if (app.input.keyPressed(Key.escape)) app.close();
 
-        cam2d.viewportSize = Vec2(app.window.width(), app.window.height());
-        anim.update(dt);
-
-        // Convert mouse pixel position into 2D world coordinates
-        immutable mouseWorld = cam2d.screenToWorld(
-            Vec2(app.input.mx(), app.input.my())
-        );
-
-        auto frame = app.beginFrame(Color4(0.05f, 0.06f, 0.10f, 1.0f));
+        angle += dt;
+        auto frame = app.beginFrame(Color4(0.06f, 0.08f, 0.12f));
         if (!frame.valid) return;
 
-        // Option A: Draw before resolvePost() if you want HDR glow/bloom on sprites:
-        // sprites.begin(cam2d);
-        // sprites.drawRect(mouseWorld, Vec2(24, 24), Color4(2.0f, 0.8f, 0.2f, 1.0f),
-        //                  blend: SpriteBlendMode.additive);
-        // sprites.end(frame);
+        scene.begin(camera);
+        scene.draw(cube, Vec3(0, 0, 0), Vec3(1, 1, 1), Color4.white(), angle);
+        scene.end(frame);
 
-        app.resolvePost(frame);
-
-        // Option B: Draw after resolvePost() for crisp LDR colors without tone-map shift:
-        sprites.begin(cam2d);
-        sprites.drawRect(Vec2(640, 360), Vec2(220, 140), Color4(0.12f, 0.14f, 0.22f, 0.9f), layer: 0);
-        sprites.drawAnim(sheet, anim, mouseWorld, Vec2(64, 64), layer: 1, zOrder: 1.0f);
-        sprites.end(frame);
-
+        app.resolvePost(frame); // closes HDR scene pass, runs bloom/tonemap/FXAA, opens LDR pass
+        text.beginFrame();
+        text.drawText(frame, fps.text(), 12, 12, 2);
         app.endFrame(frame);
     });
 }
 ```
 
-### 2D API Reference (`engine.graphics.sprite`)
+> **Tip:** Prefer `app.run((float dt) { ... })` over a raw `while (app.running())` loop — it drives native `MonoTime` delta time on desktop and `emscripten_set_main_loop_arg` on WebAssembly. Calling `app.endFrame(frame)` runs `resolvePost(frame)` automatically if you omitted it.
 
-| Type | Purpose | Key Methods / Fields |
-|:---|:---|:---|
-| `Camera2D` | 2D orthographic camera (`isPod`) | `Camera2D.screen(w, h)` (`yDown = true`), `Camera2D.world(w, h, center, zoom)` (`yDown = false`), `viewProjection()`, `screenToWorld()`, `worldToScreen()` |
-| `Transform2D` | POD 2D transform component (`isPod`) | `position`, `scale`, `rotation` |
-| `SpriteRegion` | Normalized UV sub-rectangle (`isPod`) | `full()`, `fromPixels(x, y, w, h, texW, texH)`, `fromGrid(col, row, cols, rows)`, `fromFrameIndex(idx, cols, rows)`, `flipped(flipX, flipY)` |
-| `SpriteAnim` | Grid flipbook animation state (`isPod`) | `create(cols, rows, start, count, fps, loop)`, `update(dt)`, `reset()`, `currentFrame()`, `currentRegion()`, `finished()` |
-| `Sprite` | POD sprite descriptor / ECS component (`isPod`) | `position`, `size`, `origin`, `rotation`, `tint`, `region`, `layer`, `zOrder`, `flipX`, `flipY`, `blend`, `transformed(Transform2D)` |
-| `SpriteRenderer` | Instanced `@nogc` 2D batch renderer | `create(gpu, maxSprites, defaultFilter)`, `setFilter`, `setSorting`, `begin(cam2d)`, `beginScreen(w, h)`, `beginMat(vp, yUp)`, `draw`, `drawRegion`, `drawAnim`, `drawRect`, `end(frame)`, `reloadShader` |
+### `App` & `Window` Key Options
+
+- **Present mode & VSync:** `App.create(title, w, h, WGPUPresentMode.fifo)` (`fifo` = VSync, `mailbox` / `immediate` = uncapped). Toggle at runtime via `app.setVsync(bool)` or `app.setPresentMode(mode)`; set frame budget for `steadygc` slack stepping with `app.setTargetFps(fps)` (`0` = uncapped).
+- **Window flags & runtime controls:** `Window.create(title, w, h, WindowOptions(fullscreen, borderless, resizable, highPixelDensity, hidden))`; at runtime call `app.window.setFullscreen(bool)`, `setTitle(text)`, `setResizable(bool)`, `setBordered(bool)`, `setIcon(rgba, w, h)`, `setCursorVisible(bool)`, `setCustomCursor(rgba, w, h, hotX, hotY)`, `resetCursor()`, and `setRelativeMouseMode(bool)`.
+- **Screenshots:** Call `app.saveScreenshot("shot.png")` before `app.endFrame(frame)` to capture the presented frame via SDL3 (`SDL_SavePNG`).
 
 ---
 
-## Architecture Layers
+## 3. 3D Rendering, OpenPBR Lighting & Shadows
 
-### When to Use Each Layer
+### 3.1 Colored 3D (`Scene3D` + `Mesh`)
 
-| I want to... | Use |
-|:---|:---|
-| Draw 3D objects with colors | `Scene3D` + `Mesh` + `Camera` |
-| Draw 3D objects with textures | `Scene3DTextured` + `TexMesh` + `Material` |
-| Draw 2D sprites, spritesheets, or 2D games | `SpriteRenderer` + `Camera2D` + `SpriteRegion` + `SpriteAnim` (`engine.graphics.sprite`) |
-| Parent/child transforms (solar systems, rigs) | `SceneGraph` |
-| Orbit / fly / first-person camera | `engine.scene.controllers` |
-| Directional shadows (depth infra) | `ShadowMap` + `beginShadowPass` — PCF: [plan-openpbr.md](plan-openpbr.md) |
-| Physics (Box3D) | `engine.physics` — [physics-quickstart.md](physics-quickstart.md) |
-| Load PNG, JPG, WEBP, SVG, BMP, or glTF from disk | `engine.assets.image`, `Texture.fromImageFile`, `engine.assets.bmp`, `engine.assets.gltf` |
-| Play WAV sound effects | `engine.audio` |
-| Render HUD text | `TextRenderer` |
-| Debug: 3D lines, axes, grid, bounding boxes | `engine.devtools.gizmos` |
-| Debug: structured FPS + labels | `engine.devtools.overlay` |
-| Create custom mesh shapes | `Mesh.fromData` + `Vert` |
-| Custom shader/pipeline | `engine.gpu.pipeline`, `engine.gpu.shader` |
-| Direct GPU buffer management | `engine.gpu.buffer` |
-| Raw WGPU calls | `bindings.wgpu` |
-
-### Data Flow
-
-```
-Camera ─────────────────────┐
-                            ▼
-Mesh.cube() ───► Scene3D.draw() ───► scene.begin(camera)
-Mesh.pyramid()                       scene.draw(mesh, pos, scale, color)
-Mesh.diamond()                       scene.draw(mesh, pos, scale, color)
-                                     ...
-                                     ▼
-                              app.beginFrame(clearColor)
-                                     ▼
-                              scene.end(frame)  ← uploads + draws all batches
-                                     ▼
-                              textRenderer.drawText(frame, ...)
-                                     ▼
-                              app.endFrame(frame) ← submit + present
-```
-
----
-
-## Building
-
-```bash
-# Build the game
-dub build --config=game
-
-# Run the game
-dub run --config=game
-
-# Build with optimizations
-dub build --config=game --build=release
-
-# Other demos
-dub run --config=demo        # minimal clear-screen
-dub run --config=benchmark   # 1000 cubes + FPS (low-level API)
-dub run --config=showcase    # solar system (scene graph + textures)
-dub run --config=editor      # gizmos + debug overlay
-```
-
-### Requirements
-
-- **D compiler**: DMD or LDC2
-- **SDL3**: `libSDL3.so` (system package or built from source)
-- **WGPU-native**: `libwgpu_native.a` in `libs/`
-- **OS**: Linux with Wayland
-
-### Installing WGPU-native
-
-```bash
-curl -sL https://github.com/gfx-rs/wgpu-native/releases/latest/download/wgpu-linux-x86_64-release.zip \
-  -o /tmp/wgpu.zip
-unzip -o /tmp/wgpu.zip -d /tmp/wgpu
-cp /tmp/wgpu/lib/libwgpu_native.a libs/
-```
-
----
-
-## Physics (Box3D)
-
-Rigid-body physics lives in `engine.physics` (Box3D backend):
-
-- `PhysicsWorld` — step, gravity, sleep, CCD
-- Bodies — boxes, spheres, capsules, cylinders, sensors
-- `drainPhysicsEvents` — contacts, sensors, hits
-- `castRayClosest`, `overlapAabb`, `overlapSphere`
-- Joints — distance, revolute, weld
-- `CharacterController` — kinematic capsule mover
-
-Full guide: [physics-quickstart.md](physics-quickstart.md). Demos: `pong3d`,
-`marble_run`, `test_physics_box3d`.
+`Scene3D` batches up to **16 mesh kinds** and **8,192 instances per mesh** per frame:
 
 ```d
-import engine.physics;
-
-auto world = PhysicsWorld.createDefault();
-auto floor = createGroundSlab(world, 0.0f, Vec3(20, 0, 20), 0.5f);
-auto ball  = createDynamicSphere(world, Vec3(0, 5, 0), 0.5f, 1.0f);
-
-// each frame:
-world.step(dt);
-drainPhysicsEvents(world, listener);
-immutable hit = castRayClosest(world, origin, dir, 100.0f);
+auto cube = Mesh.cube(app.gpu);        // also: pyramid, diamond, sphere, plane
+auto custom = Mesh.fromData(app.gpu, verts[], indices[]); // Vert(pos, normal)
+scene.begin(camera);
+scene.draw(cube, pos, scale, color, rotationY);
+scene.drawMatrix(cube, modelMatrix, color);
+scene.end(frame);
 ```
 
+### 3.2 Textured OpenPBR 3D (`Scene3DTextured` + `TexMesh` + `Material`)
+
+`Scene3DTextured` batches `(TexMesh, Material)` pairs using single-pass **OpenPBR Surface v1.1** shading, multi-light PCF shadows, and split-sum IBL.
+
+- **Key `MaterialParams` fields:** `baseColor`, `baseWeight`, `baseMetalness`, `baseDiffuseRoughness`, `specularWeight`, `specularRoughness`, `specularColor` ($F_{82}$ edge tint on metals), `specularIor`, `specularAnisotropy`, `coatWeight`, `coatRoughness`, `coatIor`, `coatColor`, `coatDarkening`, `fuzzWeight`, `fuzzColor`, `fuzzRoughness`, `thinFilmWeight`, `thinFilmThickness`, `thinFilmIor`, `emissionColor`, `emissionLuminance`, `geometryOpacity`, and `flags` (`MaterialFlags.metallicRoughness`, `normal`, `occlusion`, `emissive`, `unlit`).
+- **Key `Material` options:** `mat.renderState = RenderState(BlendMode.alpha /* or additive/opaque */, depthWrite: true, doubleSided: false)`, `mat.updateParams(app.gpu, params)`, custom surface WGSL shaders via `scene.createSurfaceShader(wgsl)` (`mat.surfaceShader = id; mat.updateSurfaceParams(app.gpu, float16);`), and per-instance `custom` vec4 via `scene.drawMatrix(mesh, mat, model, tint, custom)`.
+
+```d
+auto scene = Scene3DTextured.create(app.gpu);
+auto ibl = IblEnvironment.createGradient(
+    app.gpu, scene.iblLayout(),
+    [0.18f, 0.30f, 0.55f], [0.45f, 0.55f, 0.65f], [0.12f, 0.10f, 0.08f]
+);
+scene.setEnvironment(ibl);
+scene.setIblIntensity(1.0f);
+
+auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+auto albedo  = Texture.fromImageFile(app.gpu, "assets/crate.png");
+auto mesh    = TexMesh.cube(app.gpu); // also: quad, sphere(segments, rings, withTangents)
+
+MaterialParams p;
+p.baseMetalness = 0.0f;
+p.specularRoughness = 0.35f;
+p.coatWeight = 0.4f;
+auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, albedo, p, null, null, null, null);
+```
+
+### 3.3 Multi-Light & Automatic Shadows (`LightSet` + `renderShadows`)
+
+`LightSet` supports **1 directional**, **32 point**, and **4 spot** lights per frame, with automatic shadow rendering across **1 dir (2048²)**, **4 point cubemaps (512²/face)**, and **2 spot (1024²)** shadow casters:
+
+```d
+LightSet lights;
+lights.dirEnabled = true;
+lights.dir.direction = Vec3(0.45f, 1.0f, 0.35f).normalized(); // surface -> light
+lights.dir.viewProj = directionalLightVP(lights.dir.direction, Vec3(0, 0, 0), 20.0f);
+lights.dir.castShadows = true;
+lights.points[0] = GpuPointLight(Vec3(-2, 3, 1), Vec3(0.3f, 0.8f, 1.0f), 12.0f, 18.0f, true);
+lights.pointCount = 1;
+
+scene.begin(camera);
+scene.drawMatrix(mesh, mat, model, Color4.white());
+scene.renderShadows(frame, lights); // automatic depth pass before color submission
+scene.end(frame);
+```
+
+> **Water & Refraction:** Call `app.renderer.snapshotOpaque(frame)` after opaque geometry to capture HDR color and `depth32Float` for refractive/SSR shaders with zero cost on scenes that do not use it (`dub run --config=water`).
+
+### 3.4 SceneGraph, Camera Controllers & Procedural Geometry
+
+- **Transform hierarchy (`engine.scene.graph`):** Flat-array `SceneGraph` with O(N) world-matrix propagation:
+  ```d
+  auto graph = SceneGraph.create();
+  auto sun   = graph.addChild(ROOT, Transform(Vec3(0, 0, 0), Vec3(2, 2, 2)));
+  auto moon  = graph.addChild(sun,  Transform(Vec3(5, 0, 0), Vec3(0.4f, 0.4f, 0.4f)));
+  graph.transform(sun).rotation = Quat.fromAxisAngle(Vec3(0, 1, 0), angle);
+  graph.updateWorld();
+  scene.drawMatrix(mesh, mat, graph.worldMatrix(moon), Color4.white());
+  ```
+- **Camera controllers (`engine.scene.controllers`):** `OrbitCamera.create(target, dist)`, `FlyCamera.create(startPos)`, and `FirstPersonCamera.create()` — update via `.update(app.input, dt, camera)` (or `.update(app.input, dt, eyePos, camera)` for first-person).
+- **Math, procedural shapes & noise:** `Mat4.trs(pos, rot, scale)` pairs with `engine.graphics.shapes` (`MeshData` builders: `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus` with `.transform()`, `.merge()`, `.toTexMesh(gpu)`) and `engine.math.noise` (`valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`).
+
+### 3.5 Billboard Particles (`engine.graphics.particles`)
+
+```d
+auto particles = ParticleSystem.create(2000);
+ParticleEmitter plume;
+plume.rate = 90.0f; plume.coneDeg = 12.0f; plume.speedMin = 4.0f; plume.speedMax = 8.0f;
+plume.colorStart = Color4(0.4f, 1.2f, 1.8f, 1.0f);
+
+// Per frame:
+plume.position = emitterPos;
+plume.emit(particles, dt); // or plume.burst(particles, 32)
+particles.update(dt);
+particles.draw(scene, quadMesh, glowMat, camera); // pair with Texture.softDisc + BlendMode.additive
+```
+
+Deep dive: [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-water-realism.md](plan-water-realism.md).
+
 ---
 
-## Tips
+## 4. Post-Processing (`app.post()` & Custom Passes)
 
-- **`scope(exit)`** — Always pair resource creation with `scope(exit) resource.destroy()` to ensure cleanup.
-- **`@safe`** — Mark your game module `@safe:` at the top. The engine API is fully `@safe`.
-- **Delta time** — Use `fps.tick()` return value for frame-independent movement: `pos = pos + velocity * dt`.
-- **GC is allowed** — Game code can freely use dynamic arrays, `format`, closures. The engine core is `@nogc` internally so GC pauses stay minimal.
-- **Multiple meshes** — `Scene3D` batches instances of the same mesh automatically. Drawing 100 cubes at different positions costs one draw call.
+Scenes render into `rgba16Float` HDR and resolve into the swapchain inside `app.resolvePost(frame)`. Configure built-in effects via `app.post()`:
+
+- **Tone mapping (`tonemapMode`):** `0` = ACES, `1` = Reinhard, `2` = Linear, `3` = AgX, plus `exposure`, `saturation`, and `contrast`.
+- **Bloom & AA:** `bloom` (`bool`), `bloomThreshold`, `bloomKnee`, `bloomStrength`, `bloomClamp`, `bloomRadius` (`3..7` mip levels), `bloomScreen` (`bool`), and `fxaa` (`bool`).
+- **Custom fullscreen WGSL passes:** Inject passes at `PostStage.beforeTonemap` (HDR), `PostStage.afterTonemap` (LDR pre-UI), or `PostStage.afterUi`:
+
+```d
+app.post.tonemapMode = 3; // AgX
+app.post.bloomRadius = 6;
+app.post.exposure    = 1.15f;
+
+immutable passId = app.renderer.addPostPass(q{
+    @fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+        let c = textureSample(srcTex, srcSamp, uv);
+        return vec4<f32>(c.rgb * params.p0.xyz, c.a);
+    }
+}, 64, PostStage.afterTonemap);
+app.renderer.updatePostPassParams(passId, tintValues); // e.g. float[4] tintValues = [1, 0.95f, 0.9f, 1];
+```
+
+Deep dive: [graphics.md](graphics.md) · [plan-post-processing.md](plan-post-processing.md).
 
 ---
 
-## Using `game-engine` as an External DUB Dependency
+## 5. 2D Sprites & Cameras (`engine.graphics.sprite`)
 
-You can live in your own repository outside `game-engine/` and consume the engine as a standard DUB path dependency. Notice [examples/external-game](file:///home/leonardo/Projetos/game-engine/examples/external-game/dub.json):
+`SpriteRenderer` batches and sorts 2D quads by `(layer, zOrder, sequence)` with `@nogc` draw-call coalescing. Choose HDR or LDR per draw pass based on `app.resolvePost(frame)`:
+
+| Stage | Target | Best Used For |
+|:---|:---|:---|
+| **Before `resolvePost`** (`HDR`) | `rgba16Float` + `depth24Plus` (`depthCompare = always`) | Glowing particles/bullets (`Color4 > 1.0` + `SpriteBlendMode.additive`) that feed into bloom & tone mapping |
+| **After `resolvePost`** (`LDR`) | Swapchain (no depth) | Crisp pixel art, 2D games, and HUD sprites with exact display colors |
+
+```d
+auto sprites = SpriteRenderer.create(app.gpu, maxSprites: 4096, defaultFilter: TextureFilter.nearest);
+scope(exit) sprites.destroy();
+auto sheet = Texture.fromImageFile(app.gpu, "assets/player_sheet.png");
+scope(exit) sheet.destroy();
+auto anim = SpriteAnim.create(columns: 4, rows: 2, startFrame: 0, frameCount: 4, fps: 10.0f);
+auto cam2d = Camera2D.screen(app.window.width(), app.window.height()); // or Camera2D.world(w, h)
+
+// Inside app.run:
+anim.update(dt);
+immutable mouseWorld = cam2d.screenToWorld(Vec2(app.input.mx(), app.input.my()));
+app.resolvePost(frame);
+sprites.begin(cam2d);
+sprites.drawRect(Vec2(640, 360), Vec2(220, 120), Color4(0.12f, 0.14f, 0.22f, 0.9f), layer: 0);
+sprites.drawAnim(sheet, anim, mouseWorld, Vec2(64, 64), layer: 1, zOrder: 1.0f);
+sprites.end(frame);
+```
+
+Also includes POD ECS components `Transform2D` and `Sprite`, `SpriteRegion.fromPixels` / `fromGrid` / `fromFrameIndex`, `setFilter`, `setSorting`, and transactional `reloadShader`. Deep dive: [graphics.md](graphics.md).
+
+---
+
+## 6. 2D UI, Vector Primitives & Fonts (`engine.ui`, `engine.gpu.text`)
+
+Import `engine.ui` for retained flexbox layouts, widgets, docking, vector primitives, and TrueType Unicode fonts via `SDL3_ttf` + FreeType 2:
+
+- **Widgets (`engine.ui.widgets`):** `label`, `button`, `iconButton`, `checkbox`, `slider`, `dragValue`, `textField`, `image`, `scrollView`, `splitter`, `tabBar`, `treeView`, and `menu`, plus `DockSpace` (`engine.ui.dock`).
+- **Fonts (`engine.ui.text.font.Font`):** `loadFromFile(path, pxHeight, useSdf = true)` or `loadFromMemory(...)`, `setHinting(TTF_HintingFlags.normal | light | mono | none | lightSubpixel)`, `addFallbackFont(bytes)`, and automatic kerning (`getKerning`).
+- **Immediate 2D primitives (`UiBatchRenderer`):** `drawRect`, `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.
+
+```d
+import engine.ui;
+
+Font font;
+font.loadFromFile("assets/fonts/default.ttf", 16.0f, /*useSdf=*/true);
+auto tree = UiTree.create();
+UiBatchRenderer ui;
+ui.init(app.gpu.getDevice(), app.gpu.getQueue(), app.gpu.getFormat(), font);
+
+// Per frame after app.resolvePost(frame):
+computeLayout(tree, tree.root, app.window.width(), app.window.height());
+ui.begin();
+ui.renderTree(tree, tree.root, font);
+ui.flush(frame.pass, app.window.width(), app.window.height());
+```
+
+For zero-asset debug HUD text, use `TextRenderer` (`engine.gpu.text`, embedded 8×8 CP437 ASCII font). Testbed: `dub run --config=ui-gallery`. Deep dives: [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md).
+
+---
+
+## 7. ECS, Scripting & GC-Safe Memory (`engine.ecs`, `engine.script`, `engine.core`)
+
+### 7.1 Compile-Time ECS (`World!(Components...)`) & Gameplay Scripts (`SceneWorld`)
+
+All components must pass `isPod!T` (no `string`, slices, classes, or delegates):
+
+```d
+struct Position { float x = 0, y = 0, z = 0; }
+struct Velocity { float x = 0, y = 0, z = 0; }
+alias GameWorld = World!(Position, Velocity);
+
+GameWorld world;
+auto e = world.spawn();
+world.set(e, Position(0, 0, 0));
+world.set(e, Velocity(1, 0, 0));
+foreach (id; world.query!(Position, Velocity)()) {
+    world.get!Position(id).x += world.get!Velocity(id).x * dt;
+}
+```
+
+For editor-integrated dynamic ECS and hot-reloadable D gameplay scripts (`import engine.script;`), annotate POD structs with `@component` (`@export_`, `@range`, `@tooltip`, `@header`, `@hide`, `@formerlyNamed`, `@runInEditor`) and lifecycle hooks (`onStart`, `onUpdate`, `onFixedUpdate`, `onLateUpdate`, `onDestroy`, `onValidate`), or mark free functions `@system(Stage.update, 0)`.
+
+### 7.2 GC-Safe Storage Primitives & Optional `steadygc`
+
+- **Engine storage rules:** Use `Pod!T` for buffers, `Handle!T` for resource references, `StringId` + `StringTable` for interned identifiers, and `app.arena()` (`FrameArena`, reset automatically in `endFrame()`) for per-frame `alloc!T` and `fmt(...)` without GC allocations.
+- **Optional 3-tier GC:** Stock DMD/LDC GC runs by default (Tier 1); pass `--DRT-gcopt=gc:sdcq` to enable `steadygc` concurrent sweeping (Tier 2), or build `--config=player-symgc` / `benchmark-symgc` with card barriers (`-preview=gcbarrier` / `-gc-card-marking`) for ~0.09–0.13 ms p99 pauses (Tier 3).
+
+Deep dives: [scripting-guide.md](scripting-guide.md) · [why-this-is-fast.md](why-this-is-fast.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md).
+
+---
+
+## 8. Input: Keyboard, Mouse, Gamepads & Action Maps (`engine.platform`)
+
+Query devices directly or bind cross-device actions on `app.input.actions` (`InputMap`, max 32 actions × 4 bindings, JSON persistence):
+
+```d
+app.input.actions.bindKey("jump", Key.space);
+app.input.actions.bindPadButton("jump", PadButton.a);
+app.input.actions.bindAxis2D("left", "right", "down", "up", Key.a, Key.d, Key.s, Key.w);
+app.input.actions.bindStick("left", "right", "down", "up", PadAxis.leftX, PadAxis.leftY);
+
+// Per frame:
+if (app.input.actionPressed("jump")) { ... }
+immutable move = app.input.axis2D("left", "right", "down", "up");
+if (app.input.padConnected(0) && app.input.padPressed(PadButton.x, 0)) {
+    app.gamepads.rumble(0, 0.7f, 0.9f, 250);
+    app.gamepads.rumbleTriggers(0, 0.8f, 0.8f, 250); // Xbox impulse triggers
+}
+```
+
+Direct queries include `keyPressed`/`keyDown`/`keyUp`, `mousePressed`/`mouseDown`/`mouseUp`, `mx`/`my`/`mdx`/`mdy`, `wheelX`/`wheelY`, `textInput()`, `padLeftStick`/`padRightStick`, and `padLeftTrigger`/`padRightTrigger`. Gamepad demo: `dub run --config=gamepad`.
+
+---
+
+## 9. Timing, Tweens & Timers (`engine.core.clock`, `engine.core.tween`)
+
+Zero-allocation POD utilities for fixed-step simulation (`GameClock`), eased interpolation (`Tweens`), and countdowns (`Timers`):
+
+```d
+auto clock = GameClock.create(60.0f); // optional: clock.timeScale = 0.5f;
+Tweens tweens;
+Timers timers;
+auto fadeId = tweens.start(0.0f, 1.0f, 0.4f, Ease.outCubic);
+auto tickId = timers.every(1.0f); // or timers.after(0.5f, &callback)
+
+// Per frame:
+immutable step = clock.advance(dt);
+foreach (_; 0 .. step.steps) fixedTick(step.fixedDt);
+tweens.update(step.scaledDt);
+timers.update(step.scaledDt);
+float alpha;
+if (tweens.tryGet(fadeId, alpha)) { ... }
+if (timers.fired(tickId)) { ... }
+```
+
+Available easing curves (`Ease`): `linear`, `inQuad`, `outQuad`, `inOutQuad`, `inCubic`, `outCubic`, `inOutCubic`, `outBack`, `outBounce`.
+
+---
+
+## 10. Assets & Mesh Optimization (`engine.assets`, `engine.meshopt`)
+
+- **Images (`SDL3_image`):** `Texture.fromImageFile(gpu, path)`, `Texture.fromImageBytes(gpu, bytes)`, and `Texture.fromSvgBytes(gpu, svgBytes, w, h)` decode **PNG, JPG, QOI, SVG, BMP, TGA, GIF** (plus **WEBP/AVIF** when enabled on host). Raw helpers: `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaPng`, `saveRgbaJpg`, `loadBmpTexture`, `Texture.fromTgaFile`.
+- **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; supports `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` and `EXT_meshopt_compression`). Skins and animations use [animation-guide.md](animation-guide.md); `.glb` containers are not yet supported.
+- **Mesh optimization (`engine.meshopt.pipeline`):** `loadGltfMesh` / `loadGltfPbr` automatically optimize imported geometry via `.meta` `MeshOptSettings`. For procedural or custom meshes at load time (never inside the frame loop), call `optimizeMesh(verts, indices, settings)` (`reindex`, `vertexCache`, `overdrawThreshold`, `vertexFetch`, `shadowIndices`).
+
+Deep dives: [export-guide.md](export-guide.md) (media format matrix) · [plan-meshoptimizer.md](plan-meshoptimizer.md).
+
+---
+
+## 11. Physics (Box3D) & Skeletal Animation (`engine.physics`, `engine.animation`)
+
+### 11.1 Rigid-Body Physics (`engine.physics`)
+
+Import `engine.physics` (do not import `bindings.box3d` from game code):
+
+```d
+auto phys  = PhysicsWorld.createDefault(); // or PhysicsWorld(Vec3(0, -9.81f, 0))
+auto floor = createGroundSlab(phys, 0.0f, Vec3(20, 0, 20), 0.5f);
+auto ball  = createDynamicSphere(phys, Vec3(0, 5, 0), 0.5f, 1.0f);
+auto hero  = CharacterController(Vec3(0, 1, 0), 1.8f, 0.35f);
+
+// Per frame:
+phys.step(dt);
+drainPhysicsEvents(phys, contactListener);
+hero.move(phys, wishDir, dt, jumpPressed);
+immutable hit = castRayClosest(phys, origin, dir, 100.0f);
+```
+
+Supports boxes, spheres, capsules, cylinders, sensors, AABB/sphere overlaps, and distance/revolute/weld joints. Deep dive: [physics-quickstart.md](physics-quickstart.md).
+
+### 11.2 Skeletal Animation (`engine.animation`)
+
+Pure-D runtime port of `ozz-animation` (`@nogc` evaluation jobs + `AnimAssets` / `PosePool` ECS integration + `SkinnedRenderer` GPU palette up to 1024 joints):
+
+```d
+import engine.animation;
+import engine.animation.ecs;
+
+AnimAssets animAssets;
+PosePool posePool;
+string err;
+auto sk   = loadSkeletonFile(animAssets.skeletons, "skeleton.ozz", err);
+auto walk = loadAnimationFile(animAssets.animations, "walk.ozz", err);
+// Spawn entity with AnimSkeleton(sk, posePool.acquire(numJoints)) + AnimPlayback(walk, 0, 1, true)
+// Per frame: advancePlaybackSystem -> sampleSystem -> blendSystem -> localToModelSystem -> skinPaletteSystem
+```
+
+Deep dive: [animation-guide.md](animation-guide.md).
+
+---
+
+## 12. Audio (`engine.audio`)
+
+Load WAV clips with `AudioClip.loadWav` (or resample via `clip.convertTo(48_000, 2)` / synthesize with `AudioClip.fromInterleavedF32`). Use `AudioEngine` for simple one-shot playback or `AudioMixer` for 32 polyphonic voices with buses, pitch, and looping:
+
+```d
+auto mixer = AudioMixer.create();
+scope(exit) mixer.destroy();
+auto click = AudioClip.loadWav("assets/click.wav");
+scope(exit) click.destroy();
+
+mixer.setBusGain(AudioBus.sfx, 0.8f);
+immutable v = mixer.play(click, AudioBus.sfx, volume: 1.0f, pitch: 1.05f, loop: false);
+```
+
+Deep tip: Call `excludeAudioThreadFromGc()` on custom real-time audio callbacks to keep them out of GC stop-the-world handshakes.
+
+---
+
+## 13. DevTools, Shader Hot-Reload & Visual Editor
+
+- **Gizmos & Debug Overlay (`engine.devtools`):**
+  ```d
+  auto gizmos  = GizmoRenderer.create(app.gpu);
+  auto overlay = DebugOverlay.create();
+
+  // In HDR pass (before resolvePost):
+  gizmos.begin(camera.viewProjection());
+  gizmos.axes(Vec3(0, 0, 0), 1.0f);
+  gizmos.grid(20.0f, 20, Color4(0.3f, 0.3f, 0.3f, 1.0f));
+  gizmos.render(frame);
+
+  // In LDR pass (after resolvePost):
+  overlay.beginFrame(dt);
+  overlay.label("pos", camera.position.x, ",", camera.position.y, ",", camera.position.z);
+  overlay.label("entities", world.entityCount());
+  overlay.addGcStats();
+  overlay.render(text, frame); // renders through TextRenderer
+  ```
+- **WGSL Shader Hot-Reload (`engine.hotreload.shader_reload`):** `ShaderHotReloader` watches `assets/shaders/` (supporting `#include`, `#define`, `#ifdef`) and transactionally swaps pipelines without dropping frames on syntax errors. Deep dive: [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
+- **Visual Editor (`dub run --config=editor`):** Unity/Godot-style docked editor with Hierarchy, Scene/Game View, reflected Inspector, Project Browser (128-bit GUIDs + `.meta`), Console, Prefabs (`*.prefab.json`), Scenes (`*.scene.json`), and non-destructive Play/Pause/Step mode. Deep dive: [editor-guide.md](editor-guide.md).
+
+---
+
+## 14. Building, External Projects & Multiplatform Export
+
+### 14.1 Requirements & Common DUB Commands
+
+- **Tools:** DMD (dev) or LDC2 (release), `libwgpu_native.a` and `libbox3d.a` in `libs/`, and `libSDL3.so` on the host (`SDL3_image` and `SDL3_ttf` load lazily via `SDL_LoadObject` in dev builds).
+- **Linux Wayland/X11:** Wayland primary, automatic X11 fallback in standalone builds.
+
+```bash
+dub run --config=editor              # Visual Scene Editor
+dub run --config=game                # Crystal Collector 3D gameplay demo
+dub run --config=pbr                 # OpenPBR Surface v1.1 + multi-light shadows demo
+dub run --config=water               # OpenPBR ocean/river water + SSR + compute foam
+dub run --config=showcase            # SceneGraph + textured materials + shadows
+dub run --config=benchmark           # 1000 instanced cubes benchmark
+dub run --config=ui-gallery          # Retained UI & SDL3_ttf fonts gallery
+dub run --config=anim-viewer         # Skeletal animation + GPU skinning viewer
+dub run --config=pong3d              # Box3D physics demo
+dub run --config=golf                # Drag + Magnus lift + wind physics demo
+dub run --config=gamepad             # SDL3 gamepad & Xbox trigger rumble monitor
+dub run --config=lint                # GC-safe storage static lint
+dub test --config=library            # Engine unit test suite
+```
+
+### 14.2 External DUB Dependency
+
+Consume `game-engine` from a separate game repository (see [examples/external-game/dub.json](../examples/external-game/dub.json)):
 
 ```json
 {
@@ -735,61 +479,24 @@ You can live in your own repository outside `game-engine/` and consume the engin
 }
 ```
 
-Ensure `libSDL3.so` is installed on the host (`SDL3_image` and `SDL3_ttf` load lazily via `SDL_LoadObject` in development builds) and your `game-engine/libs/` directory contains `libwgpu_native.a`, `libbox3d.a`, and `libsymgc-cards.a`. For standalone static release exports (`-version=StaticSDLDeps`), run `./tools/build_sdl3_deps.sh <target>` to populate static `SDL3`, `SDL3_image`, `SDL3_ttf`, and `FreeType` archives under `libs/<target>/`.
+### 14.3 Static Multiplatform Release Export
 
-### Exporting Multiplatform Releases
+Build static `SDL3` / `SDL3_image` / `SDL3_ttf` / `FreeType` archives under `libs/<target>/` and package standalone bundles from the CLI or the Editor's **Arquivo → Exportar Release** menu:
 
 ```bash
-# 1. Build/stage static SDL3, SDL3_image, SDL3_ttf, FreeType archives
 ./tools/build_sdl3_deps.sh linux-x86_64
-
-# 2. Direct static Linux player build via LDC2
 dub build --config=player-static --compiler=ldc2 --build=release
-
-# 3. Package standalone release bundle (Linux, Windows, macOS, or Web)
 dub run --config=export -- --check-toolchains
 dub run --config=export -- --target=linux-x86_64 --release --archive
 ```
 
-| `--target=<value>` | Aliases | LLVM Triple | Required Libs Dir | Bundle Output |
-|:---|:---|:---|:---|:---|
-| `linux-x86_64` | `linux`, `linux_x86_64` | `x86_64-unknown-linux-gnu` | `libs/linux-x86_64/` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
-| `linux-arm64` | `linux-aarch64` | `aarch64-unknown-linux-gnu` | `libs/linux-arm64/` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
-| `windows-x86_64` | `windows`, `win64` | `x86_64-pc-windows-msvc` | `libs/windows-x86_64/` | `game-player.exe` + `.zip` |
-| `macos-arm64` | `darwin-arm64` | `arm64-apple-macos12.0` | `libs/macos-arm64/` | `<Title>.app` + `.zip` |
-| `macos-x86_64` | `darwin-x86_64` | `x86_64-apple-macos11.0` | `libs/macos-x86_64/` | `<Title>.app` + `.zip` |
-| `macos-universal` | `macos`, `darwin` | `arm64` + `x86_64` | `libs/macos-arm64/` + `macos-x86_64/` | Universal `.app` (`lipo` + `codesign`) + `.zip` |
-| `web-wasm32` | `web`, `wasm`, `wasm32` | `wasm32-unknown-emscripten` | `libs/web-wasm32/` | `<name>.html` + `.js` + `.wasm` + `.data` + `.zip` |
+| `--target=<value>` | Aliases | LLVM Triple | Bundle Output |
+|:---|:---|:---|:---|
+| `linux-x86_64` | `linux`, `linux_x86_64` | `x86_64-unknown-linux-gnu` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
+| `linux-arm64` | `linux-aarch64` | `aarch64-unknown-linux-gnu` | Static ELF + `run.sh` + `.desktop` + `.tar.gz` |
+| `windows-x86_64` | `windows`, `win64` | `x86_64-pc-windows-msvc` | `game-player.exe` + `.zip` |
+| `macos-arm64` / `macos-x86_64` | `darwin-arm64` / `darwin-x86_64` | `arm64-apple-macos12.0` / `x86_64-apple-macos11.0` | `<Title>.app` + `.zip` |
+| `macos-universal` | `macos`, `darwin` | `arm64` + `x86_64` | Universal `.app` (`lipo` + `codesign`) + `.zip` |
+| `web-wasm32` | `web`, `wasm`, `wasm32` | `wasm32-unknown-emscripten` | `<name>.html` + `.js` + `.wasm` + `.data` + `.zip` |
 
-See [export-guide.md](export-guide.md) for per-target linker arguments, `BuildExportOptions` fields, WebGPU shell configuration, and supported `SDL3_image`/`SDL3_ttf` formats.
-
----
-
-## Extended Engine Features
-
-- **Lighting, IBL & Shadows (`TexturedScene3D`)**:
-  - Supports 1 directional sun, up to **32 point lights** (storage buffer), and 8 spotlights.
-  - Procedural gradient IBL: `IblEnvironment.createGradient(gpu, scene.iblLayout(), skyRgb, horizonRgb, groundRgb)` or 6-face cubemap `IblEnvironment.createFromEnvFaces(...)`, plus `scene.setIblIntensity(val)`.
-  - Zero-boilerplate shadow pass: call `scene.renderShadows(frame, lights)` inside an active `FrameContext` before `scene.end(frame)`.
-  - Configure draw-batch capacity via `TexturedScene3D.create(gpu, maxBatches)`.
-- **Post-Processing (`app.post()` & Custom Passes)**:
-  - Tone-mapping modes: ACES (`0`), Reinhard (`1`), Neutral (`2`), and AgX (`3`), plus `bloomRadius`, `saturation`, and `contrast`.
-  - Inject custom full-screen WGSL passes at `PostStage.beforeTonemap`, `PostStage.afterTonemap`, or `PostStage.afterUi` using `app.renderer.addPostPass(...)`.
-- **3D Shapes & Procedural Noise**:
-  - `engine.graphics.shapes` (`MeshData` + `transform`/`merge`/`toTexMesh`): `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus`.
-  - `engine.math.noise`: `valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`, paired with `Mat4.trs(pos, rot, scale)`.
-- **2D Sprites & Orthographic Camera (`engine.graphics.sprite`)**:
-  - `SpriteRenderer` batches and sorts 2D quads by `(layer, zOrder, sequence)` with `@nogc` draw-call coalescing, `TextureFilter.nearest`/`linear`, `SpriteBlendMode.alpha`/`additive`, `drawRect`, and transactional `reloadShader`.
-  - Runs in either the **HDR scene pass** (before `resolvePost` for bloom/tonemapping) or the **LDR present pass** (after `resolvePost` for exact display colors), paired with `Camera2D`, `Transform2D`, `SpriteRegion`, and `SpriteAnim`.
-- **2D UI, SDF/Hinted Text & Textures (`engine.ui`)**:
-  - `Font` (`engine.ui.text.font`) uses `SDL3_ttf` + FreeType 2 supporting both scaled SDF atlases and hinted bitmap rendering (`setHinting`, `TTF_HintingFlags`), kerning (`getKerning`), fallback fonts (`addFallbackFont`), file loading (`loadFromFile`), auto-growing atlases, full Unicode codepoints, and explicit cleanup (`destroy()`).
-  - `UiBatchRenderer` (`engine.ui.render.batch`): `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.
-  - `Texture.fromImageFile(gpu, path)`, `fromImageBytes(gpu, bytes)`, and `fromSvgBytes(gpu, bytes, w, h)` decode PNG/JPG/WEBP/QOI/SVG/TGA/BMP via `SDL3_image` (`engine.assets.image`).
-- **Window, Audio & Action Input (`engine.platform`, `engine.audio`)**:
-  - `Window` supports `WindowOptions`, `setFullscreen`, `setTitle`, `setResizable`, `setBordered`, `setCursorVisible`, `setCustomCursor`, `resetCursor`; `App.setPresentMode` / `App.setVsync(bool)`.
-  - `AudioMixer` mixes up to 32 simultaneous polyphonic voices (`sfx`/`music` buses, pitch resampling, loop, per-voice & master gain); `AudioClip.convertTo` resamples WAV assets.
-  - `InputMap` (`app.input.actions`) binds keyboard, mouse, and gamepad buttons/axes to named actions and serializes bindings to JSON.
-- **Timing, Tweens & PNG Screenshots (`engine.core`, `engine.app`)**:
-  - `GameClock` (`engine.core.clock`) provides a fixed-timestep accumulator (`advance(realDt) -> StepResult`).
-  - `Tweens` & `Timers` (`engine.core.tween`) provide zero-alloc easing curves (`Ease.outCubic`, `Ease.outBack`, `Ease.outBounce`, etc.) and countdown/interval timers.
-  - Call `app.saveScreenshot("shot.png")` (backed by SDL3 `SDL_SavePNG`) to save the rendered frame at the end of `endFrame()`.
+Deep dive: [export-guide.md](export-guide.md) (per-target flags, `BuildExportOptions`, WebGPU shell, and media format matrix).
