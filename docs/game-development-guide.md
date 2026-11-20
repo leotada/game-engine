@@ -165,7 +165,43 @@ scene.end(frame);
 - **Camera controllers (`engine.scene.controllers`):** `OrbitCamera.create(target, dist)`, `FlyCamera.create(startPos)`, and `FirstPersonCamera.create()` — update via `.update(app.input, dt, camera)` (or `.update(app.input, dt, eyePos, camera)` for first-person).
 - **Math, procedural shapes & noise:** `Mat4.trs(pos, rot, scale)` pairs with `engine.graphics.shapes` (`MeshData` builders: `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus` with `.transform()`, `.merge()`, `.toTexMesh(gpu)`) and `engine.math.noise` (`valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`).
 
-### 3.5 Billboard Particles (`engine.graphics.particles`)
+### 3.5 Open-World Scenes: glTF Assets, Static Props, Culling & LOD
+
+```d
+import engine.graphics.model, engine.graphics.material_pool;
+import engine.scene.static_instances;
+
+// Multi-node glTF/GLB with mips and load-time LOD chains.
+GltfLoadOptions lo; lo.generateLods = true;
+auto car  = loadGltfAsset(app.gpu, "assets/models/car.glb", scene.materialLayout(), sampler, lo);
+auto rock = loadGltfAsset(app.gpu, "assets/models/rock_boulder.gltf", scene.materialLayout(), sampler, lo);
+
+// Thousands of static props: sorted into cells and uploaded once.
+StaticInstanceDesc[] props;   // (meshIndex, materialIndex, model)
+auto rocks = StaticInstanceBuffer.build(app.gpu, [&rock.subMeshes[0]], [rock.materialPtr(0)], props);
+
+// Per-instance state is POD: hide parts, swap materials, detach a door.
+ModelInstance inst;
+inst.setMaterialOverride(0, pool.add(bluePaint));
+auto door = detachSubMesh(car, inst, "door_fl", carWorld); // spawn a body from door.world / door.localBounds
+
+// Frame loop (zero GC): culling and LOD are automatic.
+scene.begin(camera);
+scene.submitStatic(rocks);
+drawModel(scene, car, inst, carWorld, pool);
+scene.renderShadows(frame, lights);
+scene.end(frame);
+auto st = scene.stats();      // draw calls, visible instances, LOD histogram
+```
+
+- **Culling:** frustum culling is on by default (`scene.setCulling(false)` to disable); add `scene.setDistanceCull(maxDistance, minPixelSize)` for small dynamic props and `StaticBuildOptions` / `sib.setMeshCull` for static ones.
+- **LOD:** `drawMatrix` defaults to `LOD_AUTO` (screen-space error, `scene.setLodScreenHeight(h)`, `setLodBias`); static buffers pick one LOD per 128 m cell.
+- **Textures:** `TextureDesc.mipped()`, `SamplerDesc.maxAnisotropy`, `TextureArray`, `Texture.fromR16` / `fromR32F`.
+- **Dynamic queries:** `SpatialGrid` (64 m loose grid) returns the entity ids inside a frustum and distance.
+
+Deep dive: [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2) · benchmark: `dub run --config=openworld-bench`.
+
+### 3.6 Billboard Particles (`engine.graphics.particles`)
 
 ```d
 auto particles = ParticleSystem.create(2000);
@@ -351,7 +387,7 @@ Available easing curves (`Ease`): `linear`, `inQuad`, `outQuad`, `inOutQuad`, `i
 ## 10. Assets & Mesh Optimization (`engine.assets`, `engine.meshopt`)
 
 - **Images (`SDL3_image`):** `Texture.fromImageFile(gpu, path)`, `Texture.fromImageBytes(gpu, bytes)`, and `Texture.fromSvgBytes(gpu, svgBytes, w, h)` decode **PNG, JPG, QOI, SVG, BMP, TGA, GIF** (plus **WEBP/AVIF** when enabled on host). Raw helpers: `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaPng`, `saveRgbaJpg`, `loadBmpTexture`, `Texture.fromTgaFile`.
-- **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; supports `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` and `EXT_meshopt_compression`). Skins and animations use [animation-guide.md](animation-guide.md); `.glb` containers are not yet supported.
+- **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; supports `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` and `EXT_meshopt_compression`). Skins and animations use [animation-guide.md](animation-guide.md). For whole models (`.gltf`/`.glb`, every mesh, primitive, material and node) use `loadGltfAsset` — see §3.5.
 - **Mesh optimization (`engine.meshopt.pipeline`):** `loadGltfMesh` / `loadGltfPbr` automatically optimize imported geometry via `.meta` `MeshOptSettings`. For procedural or custom meshes at load time (never inside the frame loop), call `optimizeMesh(verts, indices, settings)` (`reindex`, `vertexCache`, `overdrawThreshold`, `vertexFetch`, `shadowIndices`).
 
 Deep dives: [export-guide.md](export-guide.md) (media format matrix) · [plan-meshoptimizer.md](plan-meshoptimizer.md).

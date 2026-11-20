@@ -1,6 +1,6 @@
 # Plan: Semi-Open-World Engine Readiness (9 km² Scale)
 
-> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) next · See [roadmap.md](roadmap.md)
+> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`) next · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -133,24 +133,30 @@ Expose native Box3D capabilities through [source/bindings/box3d/functions.d](../
 
 Remove GC allocations from 3D rendering, introduce multi-sub-mesh glTF models for vehicle destruction, and make 9 km² scenes scale at 60 FPS.
 
-- [ ] **P2.1 — GPU Texture Infrastructure & Zero-GC Frame Submission (`texture.d`, `bindings/wgpu.d`, `scene3d_textured.d`, `renderer.d`):**
+- [x] **P2.1 — GPU Texture Infrastructure & Zero-GC Frame Submission (`texture.d`, `bindings/wgpu.d`, `scene3d_textured.d`, `renderer.d`):**
   - Add `WGPUTextureFormat.r16Unorm` / `r32Float` bindings in [source/bindings/wgpu.d](../source/bindings/wgpu.d).
   - Upgrade `Texture` / `Sampler` ([source/engine/graphics/texture.d](../source/engine/graphics/texture.d)) with mipmap generation (`mipLevelCount > 1`), configurable `maxAnisotropy` (4×/8×), and `TextureArray` (`dim2DArray`).
   - Eliminate GC allocations in `Scene3DTextured` ([source/engine/scene/scene3d_textured.d](../source/engine/scene/scene3d_textured.d)): replace `b.instances ~= inst` with pre-allocated `Pod!TexInstanceData[]` pools + counters; replace the 64-entry linear batch scan with an open-addressed POD hash map; cache shadow/sampler `WGPUTextureView` handles in `setLights()` so `rebuildFrameBindGroup()` only fires when handles actually change.
   - Expose `FrameContext.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance)` in [source/engine/gpu/renderer.d](../source/engine/gpu/renderer.d).
-- [ ] **P2.2 — Multi-Node / Multi-Primitive glTF + `.glb` (`gltf.d`, `engine/graphics/model.d`):**
+- [x] **P2.2 — Multi-Node / Multi-Primitive glTF + `.glb` (`gltf.d`, `engine/graphics/model.d`):**
   - Upgrade [source/engine/assets/gltf.d](../source/engine/assets/gltf.d) to parse `.glb` binary containers, embedded `bufferView` images, multiple `meshes`, multiple `primitives` per mesh with distinct `material` assignments, and the node hierarchy (`nodes[]` names + TRS matrices) without destructively baking node transforms into vertices.
   - Split shared immutable GPU ownership **`GltfAsset`** (meshes, textures, default materials, `StringTable` mapping `StringId → nodeIndex`) from lightweight POD **`ModelInstance`** (per-node visibility bitmask, per-sub-mesh `MaterialHandle` overrides, local transform overrides).
   - Implement `detachSubMesh(nodeName)` helper returning world transform + mesh/material references to spawn an independent rigid body/entity (e.g., `door_fl`, `wheel_fr`, `bumper_f`, `lightbar`).
-- [ ] **P2.3 — Frustum Culling & Spatial Partitioning (`engine/math/frustum.d`, `engine/scene/spatial_grid.d`):**
+- [x] **P2.3 — Frustum Culling & Spatial Partitioning (`engine/math/frustum.d`, `engine/scene/spatial_grid.d`):**
   - Implement `Frustum` (6-plane Gribb-Hartmann extraction calibrated for WebGPU clip space Z ∈ `[0, 1]`, where near plane = `row2`) + `@nogc` `intersectsAabb` and `intersectsSphere`.
   - Compute and cache `localBounds` (`Aabb` + bounding sphere) on `TexMesh` and `Mesh`.
   - Implement `@nogc` POD `SpatialGrid` / loose BVH over 64 m × 64 m world cells culling main camera draws and per-cascade shadow draws.
-- [ ] **P2.4 — Retained Static GPU Instancing, Runtime LODs & Distance Culling (`scene3d_textured.d`, `texmesh.d`, `components.d`):**
+- [x] **P2.4 — Retained Static GPU Instancing, Runtime LODs & Distance Culling (`scene3d_textured.d`, `texmesh.d`, `components.d`):**
   - Add `StaticInstanceBuffer` storing static world prop instances in GPU buffers without per-frame CPU reconstruction or re-upload, submitting visible cell ranges via `firstInstance`/`instanceCount`.
   - Wire existing `TexMesh.lodFirst`/`lodDrawCount` and `lodSelectSystem` ([source/engine/editor/components.d](../source/engine/editor/components.d)) into `Scene3DTextured` color and shadow passes: key batches by `(TexMesh*, Material*, ubyte lod)`, pass `firstIndex = lodFirst[lod]`, run `buildLodChain` on asset import/load, and enforce `maxDistance` / `minPixelSize` culling on small props.
 
 **DoD:** 10,000+ instanced glTF props distributed across 3 km × 3 km render with frustum culling, automatic LOD0/1/2 switching, sub-mesh visibility/override/detach passing unit tests, and 0 bytes GC allocation in `--headless-frames=600 --assert-no-gc`.
+
+**Status: Done** (commits `1629ea4`, `cb53446`, `3067572`, `ad31363`). `dub run --config=openworld-bench -- --headless-frames=600 --assert-no-gc` renders 12,000 static rock props (1,697 cell ranges) plus 200 multi-node vehicles: 0 GC bytes over 600 frames, LOD0/1/2/3+ all used, ~38 draw calls and ~13 ms/frame on the dev machine. Deviations and open items:
+- Point/spot shadow views draw every dynamic caster of a batch (only the directional view is partitioned); static ranges are culled against every light view.
+- `SpatialGrid` is a standalone query structure for gameplay entities; `Scene3DTextured` culls per instance and `StaticInstanceBuffer` per cell instead of consuming a grid bitset. Per-cascade culling arrives with CSM in `OW-3`.
+- LOD chains are built through `GltfLoadOptions.generateLods`; a `.meta` `settings.lod.enabled` switch for the legacy `loadGltfMesh` path is not wired yet.
+- Static buffers render in the opaque pass only (depth-writing materials).
 
 ---
 

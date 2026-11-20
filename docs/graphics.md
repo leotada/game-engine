@@ -277,7 +277,72 @@ struct SpriteUniforms { viewProj: mat4x4<f32> };
 |:---|:---|:---|
 | TGA (uncompressed) | `engine.graphics.texture` | 24/32-bpp, minimal loader |
 | BMP (24/32-bpp, uncompressed) | `engine.assets.bmp` | Flips row order vertically |
-| glTF 2.0 (mesh + OpenPBR) | `engine.assets.gltf` | `loadGltfMesh` / `loadGltfPbr` with `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}`; skinning/anim/`.glb` deferred |
+| glTF 2.0 / GLB (mesh + OpenPBR) | `engine.assets.gltf`, `engine.graphics.model` | `loadGltfMesh` / `loadGltfPbr` (first primitive) and `loadGltfAsset` (all meshes, primitives, materials, node tree; `.glb`, `data:` buffers, embedded images) with `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` |
+
+## Open-World Rendering (OW-2)
+
+Phase 2 of [plan-open-world-readiness.md](plan-open-world-readiness.md). Everything listed here is `nothrow @nogc` in the frame path; allocations happen only at load time. The DoD is proven by `dub run --config=openworld-bench -- --headless-frames=600 --assert-no-gc`.
+
+### Textures: mips, anisotropy, arrays, formats
+
+| API | Purpose |
+|:---|:---|
+| `TextureDesc{generateMips, normalMap}` (`TextureDesc.mipped()`, `.mippedNormal()`) | Opt-in CPU 2×2 box-filter mip chains, generated at load time (non-power-of-two safe; normal maps are renormalized per level). Passed to `fromPixels`, `fromImageFile`, `fromImageBytes`, `fromTgaFile`, `loadBmpTexture`. |
+| `Texture.fromR16` / `Texture.fromR32F` | Single-channel heightmaps (`r16Unorm`, `r32Float`). `r32Float` is not filterable without `float32-filterable`: use nearest sampling or `textureLoad`. |
+| `TextureArray.fromLayers(gpu, layers, w, h, mips)` | `texture_2d_array` (`dim2DArray` view) for terrain splat layers. |
+| `SamplerDesc{filter, wrap, maxAnisotropy}` + `Sampler.create(gpu, desc)` | Anisotropy is clamped to 1..16 and forced to 1 for nearest filtering (WebGPU rule). |
+
+UI and 2D textures keep a single mip; the glTF loaders (`loadGltfPbr`, `loadGltfAsset`) mipmap by default.
+
+### Zero-GC `Scene3DTextured`
+
+- Batches are keyed by `(TexMesh*, Material*, lod)` in an open-addressed `BatchMap` with epoch reset (O(1) `begin`, up to `DEFAULT_MAX_BATCHES = 256`). Instance lists are malloc-backed `PodBuffer`s that only grow during warm-up.
+- `setLights` rebuilds the frame bind group only when the sampler or one of the shadow views changes.
+- `FrameContext.drawIndexed(indexCount, instanceCount, firstIndex = 0, baseVertex = 0, firstInstance = 0)` exposes the full WebGPU signature; the color pass now draws only the batch's LOD index range.
+
+### Culling and LOD for dynamic draws
+
+- `begin(camera)` extracts a `Frustum` (`engine.math.frustum`, Gribb–Hartmann for WebGPU `z ∈ [0,1]`, near = row 2). `TexMesh` and `Mesh` carry `localBounds` (`Aabb`) and `localSphere` computed at upload.
+- In `renderShadows` / `end`, each batch is culled once and stably partitioned into `[camera | camera+light | light | culled]`, so the color pass and the directional shadow pass each draw one contiguous `firstInstance` range of a single upload. Point and spot shadow views draw every caster of the batch.
+- `setCulling(bool)` (default on) and `setDistanceCull(maxDistance, minPixelSize)` (0 disables either test).
+- `drawMatrix(..., lod = LOD_AUTO)` picks the LOD per instance from `selectLod` (`engine.graphics.lod`): the coarsest level whose projected simplifier error stays under one pixel, given `setLodScreenHeight` (default 1080) and `setLodBias`. Pass an explicit level (e.g. `MeshLod.current` from `lodSelectSystem`) to get hysteresis.
+- `stats()` returns `RenderStats`: batches, draw calls, shadow draw calls, dynamic submitted/visible, static visible/ranges, and a per-LOD instance histogram.
+
+### LOD chains at load time
+
+`uploadLodMesh(gpu, vertices, indices, shadowIndices, tangents, LodSettings)` (`engine.assets.gltf_optimize`) runs `buildLodChain`, concatenates every level into one index buffer and records each level's `firstIndex`, count and relative error with `TexMesh.setLodChain`. `loadGltfAsset` calls it when `GltfLoadOptions.generateLods` is set. With a chain, shadows use the LOD index ranges instead of the welded shadow index buffer (the vertex buffer is reordered by the simplifier).
+
+### Retained static instancing (`engine.scene.static_instances`)
+
+```d
+TexMesh*[]  meshes = [&rock.subMeshes[0], &tree.subMeshes[0]];
+Material*[] mats   = [rock.materialPtr(0), tree.materialPtr(0)];
+StaticInstanceDesc[] props = ...;              // (mesh, material, model, tint)
+StaticBuildOptions o; o.maxDistance = 1600; o.minPixelSize = 1.5f;
+auto sib = StaticInstanceBuffer.build(gpu, meshes, mats, props, o);
+sib.setMeshCull(1, 800, 2);                    // per-mesh override
+// every frame, between scene.begin and scene.end:
+scene.submitStatic(sib);
+```
+
+- Built once: instances are sorted by `(mesh × material group, 128 m cell)` and uploaded into one vertex buffer. Nothing is rebuilt per frame.
+- Per frame, `collectVisibleRuns` tests each `(group, cell)` range's world AABB against the frustum and the group's distance / pixel-size limits, picks **one LOD per range** from its nearest distance, and merges adjacent ranges with the same group and LOD into one `drawIndexed(count, run, firstIndex = LOD range, 0, firstInstance = run start)`.
+- Shadows reuse the same ranges culled against each light's frustum, with the LOD still chosen from the camera so shadows match the visible geometry.
+- Static buffers draw in the opaque pass: use depth-writing materials. Up to `MAX_STATIC_SUBMISSIONS = 8` per frame. The meshes and materials must outlive the buffer.
+- `updateInstance(i, model)` / `hideInstance(i)` rewrite one instance on the GPU (slow path for rare edits; keep the new position inside the original cell).
+
+### `SpatialGrid` (`engine.scene.spatial_grid`)
+
+A loose XZ grid (default 64 m cells) for dynamic objects: `insert(userId, sphere)`, `update`, `remove` are O(1) (intrusive per-cell lists, malloc storage, free-list reuse); `query(frustum, camPos, maxDistance, outIds)` writes visible ids into a caller buffer. Spheres larger than half a cell or outside the grid go to an always-tested overflow list. Use it to skip whole groups of gameplay entities before they reach `drawModel`.
+
+### Multi-node glTF / GLB assets (`engine.graphics.model`)
+
+- `parseGltfDocument` reads `.gltf` and `.glb` (binary chunk), `data:` base64 buffers, and images from a URI, a `bufferView` or a data URI. `parseGltfScene` returns every mesh, primitive, material and the node tree **without baking node transforms**. The legacy `parseGltfMesh` / `loadGltfMesh` / `loadGltfPbr` keep their first-primitive, baked-transform behavior.
+- `GltfAsset` (move-only, shared): one `TexMesh` per primitive, materials (plus a trailing default), textures, a parents-first `GltfNode` table (≤ `MAX_MODEL_NODES = 256`) and node names in a `StringTable`. Load with `loadGltfAsset(gpu, path, scene.materialLayout(), sampler, GltfLoadOptions)`.
+- `ModelInstance` (POD, `isPod`): a 256-bit hidden-node mask (hiding a node hides its subtree), up to 8 `MaterialHandle` overrides per sub-mesh and 8 local transform overrides.
+- `MaterialPool` (`engine.graphics.material_pool`): fixed-capacity generational pool; `add` moves a `Material` in and returns a `MaterialHandle`, `get` returns null for stale handles (the asset material is used instead).
+- `drawModel(scene, asset, inst, world, pool)` computes node worlds on the stack and submits each visible sub-mesh through `drawMatrix` (culling + auto LOD apply).
+- `detachSubMesh(asset, inst, "door_fl", world)` hides the node in the instance and returns a `DetachedPart` (world matrix, sub-mesh range, local bounds) to spawn an independent rigid body; draw it with `drawSubMesh`.
 
 ## SceneGraph
 
@@ -354,6 +419,10 @@ dub run --config=pbr
 
 # OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)
 dub run --config=water
+
+# Open-world bench: 12k static props over 3 km², 200 multi-node vehicles, LOD + culling stats
+dub run --config=openworld-bench
+dub run --config=openworld-bench -- --headless-frames=600 --assert-no-gc
 
 # Visual editor (gizmos + debug overlay + shadows + docking)
 dub run --config=editor

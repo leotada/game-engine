@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Open-World Rendering Foundation & Multi-Node glTF (`OW-2`, `2026-11-19`)** — commits `1629ea4`, `cb53446`, `3067572`, `ad31363`:
+  - Textures: opt-in CPU mip chains (`TextureDesc`), `SamplerDesc` anisotropy, `TextureArray`, `Texture.fromR16` / `fromR32F`, and `r16Unorm`/`r32Float`/`r16Float`/`rg16Float`/`rgba32Float` formats in `source/bindings/wgpu.d`.
+  - Zero-GC `Scene3DTextured`: malloc-backed `PodBuffer` instance lists, open-addressed `BatchMap` keyed by `(mesh, material, lod)`, cached frame bind group, and the full `FrameContext.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance)` signature (the color pass now draws only the batch's LOD range).
+  - glTF: `.glb` containers, `data:` buffers, embedded images, all meshes/primitives/materials and the node tree (`parseGltfDocument`, `parseGltfScene`); `GltfAsset`, POD `ModelInstance` (visibility, `MaterialHandle` overrides, transform overrides), `MaterialPool`, `drawModel`, `detachSubMesh` and `loadGltfAsset` in `engine.graphics.model`.
+  - Culling: `Aabb`/`BoundingSphere` (`engine.math.bounds`), `Frustum` (`engine.math.frustum`), mesh bounds, per-instance frustum and distance/min-pixel culling partitioned for the color and directional shadow passes, `SpatialGrid` (`engine.scene.spatial_grid`), `RenderStats`.
+  - LOD: shared `selectLod` (`engine.graphics.lod`), `uploadLodMesh` load-time LOD chains, `LOD_AUTO` per-instance selection in `drawMatrix`.
+  - `StaticInstanceBuffer` (`engine.scene.static_instances`) with per-cell culling, per-cell LOD and run merging; `Scene3DTextured.submitStatic`.
+  - `openworld-bench` demo (`source/demo/openworld_bench.d`): 12,000 props over 3 km × 3 km + 200 multi-node vehicles, **0 GC bytes** over 600 frames with LOD0/1/2 in use.
+  - `Mat4`, `Quat` and `Camera` members are now `pure nothrow @nogc`; the editor picking `Aabb` is now `engine.math.bounds.Aabb`.
+
 - **Encrypted Asset Packs (`engine.assets.pak`) & External Static Project Export (`2026-11-19`):**
   - Added `source/engine/assets/pak.d` (re-exported by `engine.assets`) implementing the `GEPK` v1 container format with FNV-1a 64-bit normalized path hashing, SplitMix64 XOR stream encryption for both TOC (with 64-bit verification tag) and payloads, and a mounted VFS (`mountAssetPak`, `mountAssetPakFile`, `readAssetBytes`, `assetExists`, `packDirectoryToPak`).
   - Integrated transparent VFS asset loading into `Font.loadFromFile` (`source/engine/ui/text/font.d`), `Texture.fromImageFile` (`source/engine/graphics/texture.d`), and `source/engine/assets/gltf.d` (`parseGltfMaterial`, `parseGltfMesh`, `loadImageTexture`).
