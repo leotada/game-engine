@@ -91,6 +91,8 @@ struct RenderStats {
     uint drawCalls;
     /// Shadow-pass draw calls over every light view.
     uint shadowDrawCalls;
+    /// Dynamic caster instances drawn over every shadow view (after culling).
+    uint shadowInstancesDrawn;
     /// Dynamic instances submitted through `draw` / `drawMatrix`.
     uint instancesSubmitted;
     /// Dynamic instances that survived frustum / distance culling.
@@ -114,6 +116,45 @@ uint[4] partitionByClass(TexInstanceData[] items, scope const(ubyte)[] classes,
     foreach (i, ref it; items) scratch[cursor[classes[i] & 3]++] = it;
     items[] = scratch[0 .. items.length];
     return counts;
+}
+
+/// Instance range of one batch in one local (point face / spot) shadow view.
+struct CasterRange {
+    uint first;
+    uint count;
+    /// No culling possible (culling off or mesh without bounds): draw the
+    /// batch's own instance buffer `[0, length)` instead of the caster buffer.
+    bool all;
+}
+
+/**
+ * Cull `items` for the shadow views of one local light. Instances whose
+ * world sphere is outside the light's range sphere (`range <= 0` skips this
+ * test) are rejected once; survivors are tested against each view frustum
+ * and appended to `staging`, contiguously per view. `outRanges[k]` receives
+ * the `staging` range of view `k`. Scratch buffers are reused across calls.
+ */
+void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere localSphere,
+                        Vec3 lightPos, float range, scope const(Frustum)[] views,
+                        ref PodBuffer!TexInstanceData staging, scope CasterRange[] outRanges,
+                        ref PodBuffer!uint candScratch, ref PodBuffer!BoundingSphere sphereScratch) nothrow @nogc {
+    assert(outRanges.length >= views.length);
+    candScratch.clear();
+    sphereScratch.clear();
+    foreach (i, ref inst; items) {
+        Mat4 model;
+        model.m = inst.model;
+        immutable ws = localSphere.transformed(model);
+        if (range > 0 && (ws.center - lightPos).length() > range + ws.radius) continue;
+        candScratch.put(cast(uint) i);
+        sphereScratch.put(ws);
+    }
+    foreach (k, ref f; views) {
+        immutable first = cast(uint) staging.length;
+        foreach (c, idx; candScratch[])
+            if (f.intersectsSphere(sphereScratch[c])) staging.put(items[idx]);
+        outRanges[k] = CasterRange(first, cast(uint) staging.length - first, false);
+    }
 }
 
 /// CPU mirror of WGSL FrameUniforms (720 bytes).
@@ -187,6 +228,16 @@ struct Scene3DTextured {
     private RenderStats frameStats;
     private PodBuffer!TexInstanceData partitionScratch;
     private PodBuffer!ubyte partitionClasses;
+
+    // Per-view dynamic caster lists for point-face / spot shadow views,
+    // indexed `[vpSlot * batchCount + batch]`; valid when `localCulled[vpSlot]`.
+    private PodBuffer!TexInstanceData casterStaging;
+    private PodBuffer!CasterRange casterRanges;
+    private PodBuffer!uint casterCandidates;
+    private PodBuffer!BoundingSphere casterSpheres;
+    private bool[MAX_SHADOW_PASS_SLOTS] localCulled;
+    private WGPUBuffer casterBuf;
+    private size_t casterCapacity;
 
     // Retained static instance buffers submitted this frame.
     private StaticInstanceBuffer*[MAX_STATIC_SUBMISSIONS] staticBufs;
@@ -686,6 +737,28 @@ struct Scene3DTextured {
         if (maxSlotUsed == 0) return;
         wgpuQueueWriteBuffer(queue, shadowVpBuf, 0, shadowVpStaging.ptr, maxSlotUsed * SHADOW_VP_STRIDE);
 
+        // Cull dynamic casters per point-face / spot view (the directional
+        // view uses the batch partition from `prepareBatch`).
+        localCulled[] = false;
+        casterStaging.clear();
+        if (casterBatches > 0) {
+            casterRanges.resize(MAX_SHADOW_PASS_SLOTS * batchCount);
+            foreach (i; 0 .. frameData.pointCount) {
+                immutable int slot = pointLightsData[i].shadowSlot;
+                if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
+                uint[6] slots;
+                foreach (face; 0 .. 6) slots[face] = 1 + cast(uint) slot * 6 + face;
+                gatherLocalCasters(slots[], resolved.points[i].position, pointShadows[slot].farPlane);
+            }
+            foreach (i; 0 .. frameData.spotCount) {
+                immutable int slot = frameData.spots[i].shadowSlot;
+                if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
+                uint[1] slots = [1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot];
+                gatherLocalCasters(slots[], resolved.spots[i].position, resolved.spots[i].range);
+            }
+            uploadCasterStaging();
+        }
+
         frame.suspendScenePass();
         scope(exit) frame.resumeScenePass();
 
@@ -758,22 +831,35 @@ struct Scene3DTextured {
         if (drawBatches) {
             immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
-            foreach (ref b; batches[0 .. batchCount]) {
+            foreach (bi, ref b; batches[0 .. batchCount]) {
                 if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
-                immutable uint first = dirView ? b.dirFirst : 0;
-                immutable uint count = dirView ? b.dirCount : cast(uint) b.instances.length;
+                uint first = 0, count = cast(uint) b.instances.length;
+                WGPUBuffer instBuf = b.instanceBuf;
+                ulong instBytes = b.instances.length * TexInstanceData.sizeof;
+                if (dirView) {
+                    first = b.dirFirst;
+                    count = b.dirCount;
+                } else if (localCulled[vpSlot]) {
+                    immutable r = casterRanges[vpSlot * batchCount + bi];
+                    if (!r.all) {
+                        first = r.first;
+                        count = r.count;
+                        instBuf = casterBuf;
+                        instBytes = casterStaging.length * TexInstanceData.sizeof;
+                    }
+                }
                 if (count == 0) continue;
                 auto p = shadowPipe.pipelineFor(b.mesh.vertexStride, b.material.renderState.doubleSided);
                 wgpuRenderPassEncoderSetPipeline(pass, p);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
-                wgpuRenderPassEncoderSetVertexBuffer(
-                    pass, 1, b.instanceBuf, 0, b.instances.length * TexInstanceData.sizeof);
+                wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instBuf, 0, instBytes);
                 ShadowLodDraw lod = b.mesh.shadowLodDraw(b.lod);
                 WGPUBuffer indexBuf = lod.useLodRange ? b.mesh.indexBuffer : b.mesh.shadowDrawBuffer();
                 ulong indexBytes = lod.useLodRange ? b.mesh.indexBufSize : b.mesh.shadowDrawBytes();
                 wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, b.mesh.indexFormat, 0, indexBytes);
                 wgpuRenderPassEncoderDrawIndexed(pass, lod.count, count, lod.first, 0, first);
                 frameStats.shadowDrawCalls++;
+                frameStats.shadowInstancesDrawn += count;
             }
             if (staticCount > 0) {
                 Mat4 lightVp;
@@ -785,6 +871,43 @@ struct Scene3DTextured {
             }
         }
         endShadowPass(pass);
+    }
+
+    /// Fill `casterRanges` for the views `slots` of one local light.
+    private void gatherLocalCasters(scope const(uint)[] slots, Vec3 lightPos, float range) nothrow @nogc {
+        Frustum[6] views;
+        foreach (k, slot; slots) {
+            Mat4 vp;
+            import core.stdc.string : memcpy;
+            () @trusted { memcpy(vp.m.ptr, shadowVpStaging.ptr + slot * SHADOW_VP_STRIDE, 64); }();
+            views[k] = Frustum.fromViewProj(vp);
+            localCulled[slot] = true;
+        }
+        CasterRange[6] ranges;
+        foreach (bi, ref b; batches[0 .. batchCount]) {
+            if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
+            if (!cullingEnabled || !b.mesh.hasBounds) {
+                foreach (slot; slots) casterRanges[slot * batchCount + bi] = CasterRange(0, 0, true);
+                continue;
+            }
+            gatherLightCasters(b.instances[], b.mesh.localSphere, lightPos, range, views[0 .. slots.length],
+                               casterStaging, ranges[0 .. slots.length], casterCandidates, casterSpheres);
+            foreach (k, slot; slots) casterRanges[slot * batchCount + bi] = ranges[k];
+        }
+    }
+
+    /// Upload this frame's per-view caster lists into one shared buffer.
+    private void uploadCasterStaging() nothrow @nogc @trusted {
+        if (casterStaging.length == 0) return;
+        if (casterStaging.length > casterCapacity) {
+            size_t cap = casterCapacity ? casterCapacity : 256;
+            while (cap < casterStaging.length) cap *= 2;
+            destroyBuffer(casterBuf);
+            casterBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
+            casterCapacity = cap;
+        }
+        wgpuQueueWriteBuffer(queue, casterBuf, 0, casterStaging[].ptr,
+                             casterStaging.length * TexInstanceData.sizeof);
     }
 
     private StaticViewParams staticView(bool distanceCull) const nothrow @nogc {
@@ -1083,6 +1206,13 @@ struct Scene3DTextured {
         partitionScratch.release();
         partitionClasses.release();
         staticRuns.release();
+        destroyBuffer(casterBuf);
+        casterBuf = null;
+        casterCapacity = 0;
+        casterStaging.release();
+        casterRanges.release();
+        casterCandidates.release();
+        casterSpheres.release();
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -1405,4 +1535,46 @@ package(engine) struct BatchMap {
     // Stable order inside each class: 1,4 | 3 | 2,5 | 0
     immutable float[6] expected = [1, 4, 3, 2, 5, 0];
     foreach (i; 0 .. 6) assert(items[i].model[12] == expected[i]);
+}
+
+@("scene3dTextured.lightCasters") unittest {
+    import engine.gpu.shadow : pointLightFaceVPs;
+    // Five unit spheres along +X from a point light at the origin, range 10.
+    TexInstanceData[5] items;
+    immutable float[5] xs = [3, 8, 12, 30, -4];
+    foreach (i, ref it; items) {
+        it.model[] = 0;
+        it.model[0] = it.model[5] = it.model[10] = it.model[15] = 1;
+        it.model[12] = xs[i];
+    }
+    immutable local = BoundingSphere(Vec3(0, 0, 0), 1);
+    immutable vps = pointLightFaceVPs(Vec3(0, 0, 0), 0.1f, 10.0f);
+    Frustum[6] views;
+    foreach (f; 0 .. 6) views[f] = Frustum.fromViewProj(vps[f]);
+
+    PodBuffer!TexInstanceData staging;
+    PodBuffer!uint cand;
+    PodBuffer!BoundingSphere spheres;
+    CasterRange[6] ranges;
+    gatherLightCasters(items[], local, Vec3(0, 0, 0), 10, views[], staging, ranges[], cand, spheres);
+
+    // x = 12 is within range + radius? 12 > 11 → rejected; x = 30 rejected.
+    // Faces are 90° frusta: +X face sees x = 3 and x = 8, -X face sees x = -4.
+    uint total = 0, plusX = 0, minusX = 0;
+    foreach (f; 0 .. 6) {
+        total += ranges[f].count;
+        foreach (ref it; staging[][ranges[f].first .. ranges[f].first + ranges[f].count]) {
+            assert(it.model[12] != 12 && it.model[12] != 30);
+            if (it.model[12] > 0) plusX++;
+            else minusX++;
+        }
+        if (f > 0) assert(ranges[f].first == ranges[f - 1].first + ranges[f - 1].count);
+    }
+    assert(plusX >= 2 && minusX >= 1);
+    // Unit spheres touch neighbouring faces at most along edges, so far
+    // fewer copies than 6 faces × 5 instances.
+    assert(total < 12 && total == staging.length);
+    staging.release();
+    cand.release();
+    spheres.release();
 }

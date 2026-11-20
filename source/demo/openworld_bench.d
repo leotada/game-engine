@@ -8,7 +8,9 @@
  *   along the camera path with per-instance material overrides
  *   (`MaterialPool`) and node visibility toggles (doors), drawn through
  *   `drawModel` with automatic per-instance LOD and culling.
- * - Directional light with shadows following the camera.
+ * - Directional light with shadows following the camera, plus a
+ *   shadow-casting point light and spot light near the vehicles (per-view
+ *   caster culling). `--no-cull` disables culling for comparison.
  *
  * Usage:
  *   dub run --config=openworld-bench
@@ -41,7 +43,7 @@ import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
-import engine.scene.light : LightSet;
+import engine.scene.light : GpuPointLight, GpuSpotLight, LightSet;
 import engine.scene.scene3d_textured : Scene3DTextured, RenderStats;
 import engine.scene.static_instances : StaticBuildOptions, StaticInstanceBuffer, StaticInstanceDesc;
 
@@ -57,6 +59,7 @@ private struct Options {
     uint props = 12_000;
     uint headlessFrames = 0;
     bool assertNoGc = false;
+    bool noCull = false;
 }
 
 private Options parseArgs(string[] args) {
@@ -66,6 +69,7 @@ private Options parseArgs(string[] args) {
         if (a.startsWith("--props=")) o.props = a["--props=".length .. $].to!uint;
         else if (a.startsWith("--headless-frames=")) o.headlessFrames = a["--headless-frames=".length .. $].to!uint;
         else if (a == "--assert-no-gc") o.assertNoGc = true;
+        else if (a == "--no-cull") o.noCull = true;
     }
     return o;
 }
@@ -174,6 +178,7 @@ void main(string[] args) @trusted {
     auto scene = Scene3DTextured.create(app.gpu);
     scope(exit) scene.destroy();
     scene.setLodScreenHeight(H);
+    scene.setCulling(!opts.noCull);
     auto layout = scene.materialLayout();
 
     SamplerDesc sd;
@@ -284,7 +289,7 @@ void main(string[] args) @trusted {
     immutable totalFrames = headless ? opts.headlessFrames + WARMUP : uint.max;
     size_t gcBefore = 0;
     ulong[4] lodTotals;
-    ulong visibleTotal = 0, drawTotal = 0;
+    ulong visibleTotal = 0, drawTotal = 0, shadowTotal = 0, shadowDrawTotal = 0;
     uint measuredFrames = 0;
     float maxFrameMs = 0;
     MonoTime measureStart;
@@ -322,6 +327,20 @@ void main(string[] args) @trusted {
         lights.dir.intensity = 2.5f;
         lights.dir.castShadows = true;
         lights.shadowBias = 0.0006f;
+        // Local shadow casters around the vehicle stream ahead of the camera.
+        lights.points[0] = GpuPointLight(Vec3(ahead.x, 6, ahead.z), Vec3(1.0f, 0.6f, 0.3f), 30.0f, 40.0f, true);
+        lights.pointCount = 1;
+        GpuSpotLight spot;
+        spot.position = Vec3(eye.x, eye.y + 2, eye.z);
+        spot.direction = (Vec3(ahead.x, 0, ahead.z) - spot.position).normalized();
+        spot.color = Vec3(0.6f, 0.8f, 1.0f);
+        spot.intensity = 40.0f;
+        spot.range = 250.0f;
+        spot.innerConeDeg = 15.0f;
+        spot.outerConeDeg = 25.0f;
+        spot.castShadows = true;
+        lights.spots[0] = spot;
+        lights.spotCount = 1;
 
         auto frame = app.beginFrame(Color4(0.45f, 0.6f, 0.8f, 1));
         if (!frame.valid) continue;
@@ -345,9 +364,9 @@ void main(string[] args) @trusted {
         immutable RenderStats st = scene.stats();
         import std.format : sformat;
         text.beginFrame();
-        text.drawText(frame, sformat(line[], "FPS %.0f  draws %u (+%u shadow)  static %u/%u  dynamic %u/%u",
-            fps.fps, st.drawCalls, st.shadowDrawCalls, st.staticInstancesVisible, rocksBuf.length(),
-            st.instancesVisible, st.instancesSubmitted), 16, 16, 2);
+        text.drawText(frame, sformat(line[], "FPS %.0f  draws %u (+%u shadow, %u casters)  static %u/%u  dynamic %u/%u",
+            fps.fps, st.drawCalls, st.shadowDrawCalls, st.shadowInstancesDrawn, st.staticInstancesVisible,
+            rocksBuf.length(), st.instancesVisible, st.instancesSubmitted), 16, 16, 2);
         text.drawText(frame, sformat(line[], "LOD0 %u  LOD1 %u  LOD2 %u  LOD3+ %u   ranges %u",
             st.lodHistogram[0], st.lodHistogram[1], st.lodHistogram[2], st.lodHistogram[3],
             st.staticRangesDrawn), 16, 44, 2);
@@ -357,6 +376,8 @@ void main(string[] args) @trusted {
             foreach (l; 0 .. 4) lodTotals[l] += st.lodHistogram[l];
             visibleTotal += st.staticInstancesVisible + st.instancesVisible;
             drawTotal += st.drawCalls;
+            shadowTotal += st.shadowInstancesDrawn;
+            shadowDrawTotal += st.shadowDrawCalls;
             measuredFrames++;
             immutable ms = (MonoTime.currTime - frameStart).total!"usecs" / 1000.0f;
             if (ms > maxFrameMs) maxFrameMs = ms;
@@ -373,6 +394,8 @@ void main(string[] args) @trusted {
         writefln("  avg frame %.2f ms, max %.2f ms", elapsedMs / n, maxFrameMs);
         writefln("  avg draws %.1f, avg visible instances %.1f", cast(double) drawTotal / n,
                  cast(double) visibleTotal / n);
+        writefln("  avg shadow draws %.1f, avg dynamic shadow casters %.1f (dir + 6 point faces + spot)%s",
+                 cast(double) shadowDrawTotal / n, cast(double) shadowTotal / n, opts.noCull ? " [no-cull]" : "");
         writefln("  LOD instance-frames: LOD0 %u  LOD1 %u  LOD2 %u  LOD3+ %u",
                  lodTotals[0], lodTotals[1], lodTotals[2], lodTotals[3]);
         if (opts.assertNoGc) {

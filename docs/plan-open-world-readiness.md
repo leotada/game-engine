@@ -153,7 +153,7 @@ Remove GC allocations from 3D rendering, introduce multi-sub-mesh glTF models fo
 **DoD:** 10,000+ instanced glTF props distributed across 3 km × 3 km render with frustum culling, automatic LOD0/1/2 switching, sub-mesh visibility/override/detach passing unit tests, and 0 bytes GC allocation in `--headless-frames=600 --assert-no-gc`.
 
 **Status: Done** (commits `1629ea4`, `cb53446`, `3067572`, `ad31363`). `dub run --config=openworld-bench -- --headless-frames=600 --assert-no-gc` renders 12,000 static rock props (1,697 cell ranges) plus 200 multi-node vehicles: 0 GC bytes over 600 frames, LOD0/1/2/3+ all used, ~38 draw calls and ~13 ms/frame on the dev machine. Deviations and open items:
-- Point/spot shadow views draw every dynamic caster of a batch (only the directional view is partitioned); static ranges are culled against every light view.
+- ~~Point/spot shadow views draw every dynamic caster~~ — resolved: per-view caster lists (light range sphere + face/spot frustum) in one shared per-frame buffer; static ranges are culled against every light view.
 - `SpatialGrid` is a standalone query structure for gameplay entities; `Scene3DTextured` culls per instance and `StaticInstanceBuffer` per cell instead of consuming a grid bitset. Per-cascade culling arrives with CSM in `OW-3`.
 - LOD chains are built through `GltfLoadOptions.generateLods`; a `.meta` `settings.lod.enabled` switch for the legacy `loadGltfMesh` path is not wired yet.
 - Static buffers render in the opaque pass only (depth-writing materials).

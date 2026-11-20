@@ -303,7 +303,9 @@ UI and 2D textures keep a single mip; the glTF loaders (`loadGltfPbr`, `loadGltf
 ### Culling and LOD for dynamic draws
 
 - `begin(camera)` extracts a `Frustum` (`engine.math.frustum`, Gribb–Hartmann for WebGPU `z ∈ [0,1]`, near = row 2). `TexMesh` and `Mesh` carry `localBounds` (`Aabb`) and `localSphere` computed at upload.
-- In `renderShadows` / `end`, each batch is culled once and stably partitioned into `[camera | camera+light | light | culled]`, so the color pass and the directional shadow pass each draw one contiguous `firstInstance` range of a single upload. Point and spot shadow views draw every caster of the batch.
+- In `renderShadows` / `end`, each batch is culled once and stably partitioned into `[camera | camera+light | light | culled]`, so the color pass and the directional shadow pass each draw one contiguous `firstInstance` range of a single upload.
+- Point-light faces and spot views get their own caster lists: per light, each instance's world sphere is first tested against the light's range sphere, then against each view frustum (6 cube faces or the spot frustum); survivors are copied contiguously per view into one shared per-frame caster buffer, uploaded once (`gatherLightCasters`). In `openworld-bench` this cuts dynamic shadow casters from ~11,600 to ~110 per frame (one point + one spot light). With culling off, or for meshes without bounds, these views draw the whole batch.
+- `RenderStats.shadowInstancesDrawn` counts dynamic casters over every shadow view.
 - `setCulling(bool)` (default on) and `setDistanceCull(maxDistance, minPixelSize)` (0 disables either test).
 - `drawMatrix(..., lod = LOD_AUTO)` picks the LOD per instance from `selectLod` (`engine.graphics.lod`): the coarsest level whose projected simplifier error stays under one pixel, given `setLodScreenHeight` (default 1080) and `setLodBias`. Pass an explicit level (e.g. `MeshLod.current` from `lodSelectSystem`) to get hysteresis.
 - `stats()` returns `RenderStats`: batches, draw calls, shadow draw calls, dynamic submitted/visible, static visible/ranges, and a per-LOD instance histogram.
