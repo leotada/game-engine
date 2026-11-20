@@ -2,3 +2,4 @@
 module engine.audio;
 
 public import engine.audio.engine;
+public import engine.audio.spatial;

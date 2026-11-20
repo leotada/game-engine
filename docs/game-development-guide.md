@@ -451,6 +451,15 @@ mixer.setBusGain(AudioBus.sfx, 0.8f);
 immutable v = mixer.play(click, AudioBus.sfx, volume: 1.0f, pitch: 1.05f, loop: false);
 ```
 
+Stereo panning and 3D one-shots: `mixer.setPan(voice, -1..+1)` (or the `pan` argument of `play`) places a voice in the stereo field (mono sources are panned, stereo sources get balance). `play3D` in `engine.audio.spatial` derives pan from the listener's `right` vector and applies logarithmic (inverse-distance, -6 dB per doubling) attenuation plus pitch; sounds beyond `maxDistance` are skipped:
+
+```d
+Listener3D ear = { position: cam.position, right: cam.right };
+play3D(mixer, glassBreak, hitPos, ear, SpatialParams(refDistance: 2, maxDistance: 40),
+       volume: 1.0f, pitch: 0.95f);
+// moving emitter: updateVoice3D(mixer, voice, newPos, ear, params);
+```
+
 Deep tip: Call `excludeAudioThreadFromGc()` on custom real-time audio callbacks to keep them out of GC stop-the-world handshakes.
 
 ---

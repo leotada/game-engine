@@ -198,6 +198,18 @@ private struct MixerVoice {
     bool paused = false;
     bool active = false;
     uint generation = 1;
+    float pan = 0.0f; ///< -1 = full left, 0 = center, +1 = full right (stereo output only).
+}
+
+/// Per-channel gains for a stereo balance pan in `[-1, 1]`.
+/// Center is unity on both sides; the far side fades with a quarter-cosine
+/// curve (equal-power feel, no gain boost, no clipping risk on one-shots).
+void panGains(float pan, out float left, out float right) pure nothrow @nogc {
+    import core.stdc.math : cosf;
+    enum float HALF_PI = 1.57079632679f;
+    immutable float p = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
+    left  = p > 0.0f ? cosf(p * HALF_PI) : 1.0f;
+    right = p < 0.0f ? cosf(-p * HALF_PI) : 1.0f;
 }
 
 private struct MixerState {
@@ -231,6 +243,8 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
         immutable double safePitch = v.pitch > 0.01f ? v.pitch : 0.01f;
         immutable double step = (cast(double) v.sampleRate / cast(double) state.outputRate) * safePitch;
         immutable uint srcCh = v.channels > 0 ? v.channels : 1;
+        float panL = 1.0f, panR = 1.0f;
+        if (outCh == 2) panGains(v.pan, panL, panR);
 
         foreach (f; 0 .. outFrames) {
             if (v.framePos >= cast(double) v.frameCount) {
@@ -256,7 +270,8 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
                 immutable uint sc = c < srcCh ? c : 0;
                 immutable float s0 = readSampleNorm(v.data, v.format, f0, sc, srcCh);
                 immutable float s1 = readSampleNorm(v.data, v.format, f1, sc, srcCh);
-                outInterleaved[cast(size_t) f * outCh + c] += (s0 + (s1 - s0) * frac) * gain;
+                immutable float cg = outCh == 2 ? (c == 0 ? panL : panR) : 1.0f;
+                outInterleaved[cast(size_t) f * outCh + c] += (s0 + (s1 - s0) * frac) * gain * cg;
             }
 
             v.framePos += step;
@@ -366,7 +381,8 @@ struct AudioMixer {
         AudioBus bus = AudioBus.sfx,
         float volume = 1.0f,
         float pitch = 1.0f,
-        bool loop = false
+        bool loop = false,
+        float pan = 0.0f
     ) @trusted nothrow @nogc {
         if (!isReady || !clip.isValid) return 0;
         if (clip.spec.format != SDL_AudioFormat.SDL_AUDIO_F32LE
@@ -398,6 +414,7 @@ struct AudioMixer {
                 v.pitch = pitch > 0.01f ? pitch : 0.01f;
                 v.bus = bus;
                 v.loop = loop;
+                v.pan = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
                 v.paused = false;
                 v.generation = gen;
                 v.active = true;
@@ -450,6 +467,19 @@ struct AudioMixer {
         scope(exit) SDL_UnlockAudioStream(stream);
         auto v = &state.voices[idx];
         if (v.active && v.generation == gen) v.pitch = pitch > 0.01f ? pitch : 0.01f;
+    }
+
+    /// Set stereo pan for a voice: `-1` full left, `0` center, `+1` full right.
+    /// Mono sources are placed in the stereo field; stereo sources get balance.
+    /// Values are clamped; has no effect on non-stereo mixer outputs.
+    void setPan(VoiceId id, float pan) @trusted nothrow @nogc {
+        if (!isReady) return;
+        uint idx, gen;
+        if (!resolveVoice(id, idx, gen)) return;
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+        auto v = &state.voices[idx];
+        if (v.active && v.generation == gen) v.pan = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
     }
 
     bool isPlaying(VoiceId id) @trusted nothrow @nogc {
@@ -571,4 +601,19 @@ unittest {
     // Voice 0 (4 frames, non-looping) finished; Voice 1 (2 frames, looping) kept running
     assert(!st.voices[0].active);
     assert(st.voices[1].active);
+
+    // Pan: mono source, hard right silences left, center keeps unity.
+    static immutable float[4] mono = [1.0f, 1.0f, 1.0f, 1.0f];
+    MixerState sp;
+    sp.outputRate = 48_000;
+    sp.outputChannels = 2;
+    () @trusted {
+        sp.voices[0] = MixerVoice(cast(const(ubyte)*) mono.ptr, SDL_AudioFormat.SDL_AUDIO_F32LE, 4, 1, 48_000, 0.0, 1.0f, 1.0f, AudioBus.sfx, false, false, true, 1, 1.0f);
+    }();
+    float[4] pb = 0.0f;
+    () @trusted { mixVoicesInto(sp, pb[], 2); }();
+    assert(pb[0] < 0.001f && pb[1] > 0.999f);
+    sp.voices[0].active = true; sp.voices[0].framePos = 0; sp.voices[0].pan = 0.0f;
+    () @trusted { mixVoicesInto(sp, pb[], 2); }();
+    assert(pb[0] > 0.999f && pb[1] > 0.999f);
 }

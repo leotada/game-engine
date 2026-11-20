@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Audio: per-voice panning and 3D one-shot SFX (`2026-11-19`)**:
+  - `AudioMixer.setPan(VoiceId, float)` and a `pan` argument on `AudioMixer.play` (`-1` left … `+1` right; mono sources panned, stereo sources balanced, unity at center).
+  - `engine.audio.spatial`: `Listener3D`, `SpatialParams`, `distanceGain` (logarithmic inverse-distance model with smooth max-distance taper), `emitterPan`, `play3D` and `updateVoice3D`. Panning is applied in the mixer per voice, so no pre-panned clip pool is required.
+
 - **Editor: Abrir cena (`Ctrl+O`) (`2026-11-19`)**:
   - Cena → Abrir cena... and `Ctrl+O` open a centered picker listing every `*.scene.json` under `assets/` (`engine.editor.scene_picker`, `findScenePaths`). `Ctrl+O` previously only showed the Project panel.
   - Opening a scene over unsaved changes now logs a warning naming the scene whose changes are discarded.
