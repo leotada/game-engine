@@ -26,6 +26,7 @@ import engine.graphics.material : Material;
 import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
 import engine.math.bounds : BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
+import engine.scene.static_instances : collectVisibleRuns, StaticInstanceBuffer, StaticRun, StaticViewParams;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
@@ -79,6 +80,9 @@ static assert(GpuSpotLightUbo.sizeof == 128);
 /// mesh's simplifier errors (LOD0 for meshes without a chain).
 enum ubyte LOD_AUTO = 0xFF;
 
+/// Maximum `StaticInstanceBuffer`s submitted per frame.
+enum MAX_STATIC_SUBMISSIONS = 8;
+
 /// Per-frame counters from `Scene3DTextured` (reset in `begin`).
 struct RenderStats {
     /// (mesh, material, lod) batches with at least one instance.
@@ -95,6 +99,8 @@ struct RenderStats {
     uint staticInstancesVisible;
     /// Static ranges submitted after merging.
     uint staticRangesDrawn;
+    /// Color-pass instances per LOD level (index 3 counts LOD3 and coarser).
+    uint[4] lodHistogram;
 }
 
 /// Stable counting sort of `items` by `classes[i] ∈ 0..3` through `scratch`.
@@ -181,6 +187,11 @@ struct Scene3DTextured {
     private RenderStats frameStats;
     private PodBuffer!TexInstanceData partitionScratch;
     private PodBuffer!ubyte partitionClasses;
+
+    // Retained static instance buffers submitted this frame.
+    private StaticInstanceBuffer*[MAX_STATIC_SUBMISSIONS] staticBufs;
+    private uint staticCount;
+    private PodBuffer!StaticRun staticRuns;
 
     private enum uint SHADOW_VP_STRIDE = 256;
     private enum uint MAX_SHADOW_PASS_SLOTS = 1 + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
@@ -529,6 +540,24 @@ struct Scene3DTextured {
 
         batchCount = 0;
         batchMap.reset();
+        staticCount = 0;
+    }
+
+    /**
+     * Queue a retained `StaticInstanceBuffer` for this frame (between
+     * `begin` and `end`). Its ranges are culled and LOD-selected per cell in
+     * `renderShadows` / `end`; nothing is re-uploaded. Static buffers are
+     * drawn with the opaque pass and must use depth-writing materials.
+     * The buffer must stay alive until `end`. At most
+     * `MAX_STATIC_SUBMISSIONS` per frame; extra submissions are ignored.
+     */
+    void submitStatic(ref StaticInstanceBuffer sib) nothrow @nogc @trusted {
+        if (sib.instanceBuf is null || sib.ranges.length == 0) return;
+        if (staticCount >= MAX_STATIC_SUBMISSIONS) {
+            warn("Scene3DTextured: too many static submissions this frame");
+            return;
+        }
+        staticBufs[staticCount++] = &sib;
     }
 
     /// Render depth shadow passes automatically for all queued `depthWrite`
@@ -661,7 +690,7 @@ struct Scene3DTextured {
         scope(exit) frame.resumeScenePass();
 
         if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
-            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0, true);
+            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0 || staticCount > 0, true);
         }
         foreach (i; 0 .. frameData.pointCount) {
             immutable int slot = pointLightsData[i].shadowSlot;
@@ -671,7 +700,7 @@ struct Scene3DTextured {
                     frame.encoder,
                     pointShadows[slot].faceViews[face],
                     1 + cast(uint) slot * 6 + face,
-                    casterBatches > 0, false);
+                    casterBatches > 0 || staticCount > 0, false);
             }
         }
         foreach (i; 0 .. frameData.spotCount) {
@@ -681,7 +710,7 @@ struct Scene3DTextured {
                 frame.encoder,
                 spotShadows[slot].depthView,
                 1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot,
-                casterBatches > 0, false);
+                casterBatches > 0 || staticCount > 0, false);
         }
     }
 
@@ -746,8 +775,83 @@ struct Scene3DTextured {
                 wgpuRenderPassEncoderDrawIndexed(pass, lod.count, count, lod.first, 0, first);
                 frameStats.shadowDrawCalls++;
             }
+            if (staticCount > 0) {
+                Mat4 lightVp;
+                import core.stdc.string : memcpy;
+                memcpy(lightVp.m.ptr, shadowVpStaging.ptr + vpSlot * SHADOW_VP_STRIDE, 64);
+                immutable lightFrustum = Frustum.fromViewProj(lightVp);
+                foreach (sib; staticBufs[0 .. staticCount])
+                    encodeStaticShadow(pass, *sib, lightFrustum, dirView);
+            }
         }
         endShadowPass(pass);
+    }
+
+    private StaticViewParams staticView(bool distanceCull) const nothrow @nogc {
+        StaticViewParams v;
+        v.cameraPos = lodCameraPos;
+        v.fovY = lodFovY;
+        v.screenHeight = lodScreenHeight;
+        v.lodBias = lodBias;
+        v.distanceCull = distanceCull;
+        return v;
+    }
+
+    private size_t collectStaticRuns(ref StaticInstanceBuffer sib, ref const Frustum f,
+                                     bool distanceCull) nothrow @nogc {
+        if (staticRuns.length < sib.ranges.length) staticRuns.resize(sib.ranges.length);
+        return collectVisibleRuns(sib.groups, sib.ranges, f, staticView(distanceCull), staticRuns[]);
+    }
+
+    /// Static shadow casters: culled against the light view; LOD still from
+    /// the camera so shadows match the visible geometry. Distance culling
+    /// applies only to the directional view (props beyond the cull distance
+    /// are not drawn and should not cast either).
+    private void encodeStaticShadow(WGPURenderPassEncoder pass, ref StaticInstanceBuffer sib,
+                                    ref const Frustum lightFrustum, bool dirView) nothrow @nogc @trusted {
+        immutable n = collectStaticRuns(sib, lightFrustum, dirView);
+        foreach (ref run; staticRuns[0 .. n]) {
+            auto g = &sib.groups[run.group];
+            auto mesh = sib.meshes[g.mesh];
+            auto mat = sib.materials[g.material];
+            if (!mat.renderState.depthWrite) continue;
+            auto p = shadowPipe.pipelineFor(mesh.vertexStride, mat.renderState.doubleSided);
+            wgpuRenderPassEncoderSetPipeline(pass, p);
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 1, sib.instanceBuf, 0, sib.instanceCount * TexInstanceData.sizeof);
+            ShadowLodDraw lod = mesh.shadowLodDraw(run.lod);
+            WGPUBuffer indexBuf = lod.useLodRange ? mesh.indexBuffer : mesh.shadowDrawBuffer();
+            ulong indexBytes = lod.useLodRange ? mesh.indexBufSize : mesh.shadowDrawBytes();
+            wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, mesh.indexFormat, 0, indexBytes);
+            wgpuRenderPassEncoderDrawIndexed(pass, lod.count, run.count, lod.first, 0, run.firstInstance);
+            frameStats.shadowDrawCalls++;
+        }
+    }
+
+    /// Static color draws (opaque pass). Instance buffers are shared by all
+    /// runs of one `StaticInstanceBuffer`; only `firstInstance` changes.
+    private void drawStatic(ref FrameContext frame, ref StaticInstanceBuffer sib) @trusted {
+        immutable n = collectStaticRuns(sib, cameraFrustum, true);
+        foreach (ref run; staticRuns[0 .. n]) {
+            auto g = &sib.groups[run.group];
+            auto mesh = sib.meshes[g.mesh];
+            auto mat = sib.materials[g.material];
+            immutable tangent = mesh.vertexStride == 48;
+            auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, tangent);
+            if (pipe is null) continue;
+            frame.setPipeline(pipe);
+            frame.setBindGroup(1, mat.bindGroup);
+            frame.setVertexBuffer(0, mesh.vertexBuffer, mesh.vertexBufSize);
+            frame.setVertexBuffer(1, sib.instanceBuf, sib.instanceCount * TexInstanceData.sizeof);
+            frame.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat, mesh.indexBufSize);
+            immutable range = mesh.colorLodRange(run.lod);
+            frame.drawIndexed(range.count, run.count, range.first, 0, run.firstInstance);
+            frameStats.drawCalls++;
+            frameStats.staticRangesDrawn++;
+            frameStats.staticInstancesVisible += run.count;
+            frameStats.lodHistogram[run.lod < 3 ? run.lod : 3] += run.count;
+        }
     }
 
     void draw(ref TexMesh mesh, ref Material material,
@@ -835,6 +939,8 @@ struct Scene3DTextured {
             if (pass == 1)
                 sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
             foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
+            if (pass == 0)
+                foreach (sib; staticBufs[0 .. staticCount]) drawStatic(frame, *sib);
         }
     }
 
@@ -916,6 +1022,7 @@ struct Scene3DTextured {
         immutable range = b.mesh.colorLodRange(b.lod);
         frame.drawIndexed(range.count, b.colorCount, range.first, 0, b.colorFirst);
         frameStats.drawCalls++;
+        frameStats.lodHistogram[b.lod < 3 ? b.lod : 3] += b.colorCount;
     }
 
     /// Pipeline for a surface shader id + render state, built on first use.
@@ -975,6 +1082,7 @@ struct Scene3DTextured {
         }
         partitionScratch.release();
         partitionClasses.release();
+        staticRuns.release();
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;

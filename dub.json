@@ -22,14 +22,14 @@
             "targetType": "executable",
             "targetName": "game-engine-demo",
             "mainSourceFile": "source/demo/main.d",
-            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "benchmark",
             "targetType": "executable",
             "targetName": "game-engine-benchmark",
             "mainSourceFile": "source/demo/benchmark.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"],
             "dflags-release-gdc": ["-O3", "-march=native"]
         },
@@ -38,7 +38,7 @@
             "targetType": "executable",
             "targetName": "game-engine-benchmark-symgc",
             "mainSourceFile": "source/demo/benchmark.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"],
             "versions": ["Symgc_cards", "Symgc_druntime_hooks"],
             "dflags-dmd": ["-preview=gcbarrier"],
             "dflags-ldc": ["-gc-card-marking"]
@@ -48,7 +48,7 @@
             "targetType": "executable",
             "targetName": "game-engine-benchmark2",
             "mainSourceFile": "source/demo/benchmark2.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"],
             "dflags-release-gdc": ["-O3", "-march=native"]
         },
@@ -57,14 +57,14 @@
             "targetType": "executable",
             "targetName": "crystal-collector",
             "mainSourceFile": "source/demo/game.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "showcase",
             "targetType": "executable",
             "targetName": "game-engine-showcase",
             "mainSourceFile": "source/demo/showcase.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "editor",
@@ -170,21 +170,28 @@
             "targetType": "executable",
             "targetName": "game-engine-pbr",
             "mainSourceFile": "source/demo/pbr.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
+        },
+        {
+            "name": "openworld-bench",
+            "targetType": "executable",
+            "targetName": "game-engine-openworld-bench",
+            "mainSourceFile": "source/demo/openworld_bench.d",
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "water",
             "targetType": "executable",
             "targetName": "game-engine-water",
             "mainSourceFile": "source/demo/water.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/_legacy/*"]
         },
         {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
             "mainSourceFile": "source/demo/test_physics.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"],
             "libs": ["box3d", "m"],
             "versions": ["NoSDL", "NoWGPU"]
         },
@@ -214,7 +221,7 @@
             "mainSourceFile": "source/demo/gc_benchmark.d",
             "sourcePaths": ["source/demo"],
             "importPaths": ["source"],
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"],
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"],
             "dflags-release-ldc": ["-O3", "-mcpu=native"]
@@ -224,14 +231,14 @@
             "targetType": "executable",
             "targetName": "marble-run",
             "mainSourceFile": "source/demo/marble_run.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "pong3d",
             "targetType": "executable",
             "targetName": "pong3d",
             "mainSourceFile": "source/demo/pong3d.d",
-            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "golf",
@@ -244,7 +251,7 @@
             "name": "library",
             "targetType": "library",
             "targetName": "game-engine",
-            "excludedSourceFiles": ["source/demo/*", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*"]
+            "excludedSourceFiles": ["source/demo/*", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*"]
         },
         {
             "name": "lint",
@@ -256,7 +263,7 @@
             "excludedSourceFiles": [
                 "tools/export_main.d", "tools/spikes/*", "tools/ozz/*", "tools/meshopt-oracle/*", "tools/player/*", "tools/benchmarks/*",
                 "source/demo/*",
-                "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/engine/*",
                 "source/bindings/*",
                 "source/bindings/box3d/box3d_import.c"
@@ -273,7 +280,7 @@
             "sourcePaths": ["source/engine/animation", "source/demo"],
             "importPaths": ["source"],
             "sourceFiles": ["source/engine/math/vec.d", "source/engine/math/mat.d", "source/engine/math/quat.d", "source/engine/ecs/store.d", "source/engine/ecs/world.d", "source/engine/core/pod.d", "source/engine/reflect/attrs.d", "source/engine/core/handle.d", "source/engine/core/strings.d", "source/engine/graphics/types.d"],
-            "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c"],
+            "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c"],
             "buildOptions": ["unittests"],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
@@ -302,7 +309,7 @@
                 "source/demo/pong3d.d",
                 "source/demo/pbr.d",
                 "source/demo/test_asset.d",
-                "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/bindings/box3d/box3d_import.c"
             ],
             "libs": [],
@@ -332,7 +339,7 @@
                 "source/demo/pong3d.d",
                 "source/demo/pbr.d",
                 "source/demo/test_scene.d",
-                "source/demo/golf.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/bindings/box3d/box3d_import.c"
             ],
             "libs": [],

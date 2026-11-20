@@ -15,3 +15,4 @@ version (NoSceneFile) {
     public import engine.scene.scene_file;
 }
 public import engine.scene.spatial_grid;
+public import engine.scene.static_instances;
