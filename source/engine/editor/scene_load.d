@@ -30,12 +30,21 @@ import engine.scene.scene_file :
 @safe:
 
 /// Result of loading a scene into a world.
+/// A `customComponents` entry whose type the target world does not register.
+/// The entity still loads; the component is skipped.
+struct UnresolvedComponent {
+    EntityId entity;
+    string typeName;
+}
+
 struct SceneLoadResult {
     /// File entity id → live `EntityId`.
     EntityId[uint] fileIdToEntity;
     SceneValidationResult validation;
     /// How many `castShadows` flags were cleared to fit the shadow budget.
     uint shadowsClamped;
+    /// Custom components skipped because their type is not registered.
+    UnresolvedComponent[] unresolvedComponents;
 }
 
 /// Options for `loadSceneIntoWorld` / `worldToSceneFile`.
@@ -136,6 +145,8 @@ SceneLoadResult loadSceneIntoWorld(W)(
                     world.rawAdd(tid, id, defs);
                     auto slice = world.rawGet(tid, id);
                     deserializeComponent(world.types, tid, comp.data, slice, world.strings);
+                } else {
+                    result.unresolvedComponents ~= UnresolvedComponent(id, comp.typeName);
                 }
             }
         }
@@ -755,4 +766,22 @@ private string toStringy(uint v) {
     assert(world2.get!Camera3D(0).fovYDeg == 55);
     assert(world2.get!Camera3D(0).nearPlane == 0.25f);
     assert(world2.get!Camera3D(0).farPlane == 400);
+}
+
+@("sceneLoad.unresolvedComponents") unittest {
+    // "viatura.prop" is not registered in SceneWorld: the entity loads, the component is reported.
+    enum json = `{"format":"game-engine.scene","version":1,"meta":{"name":"t","units":"meters"},` ~
+        `"strings":["prop"],"settings":{"gravity":[0,-9.81,0],"iblPreset":"procedural_default"},` ~
+        `"entities":[{"id":1,"name":0,"parent":0,` ~
+        `"transform":{"pos":[1,2,3],"rot":[0,0,0,1],"scale":[1,1,1]},` ~
+        `"components":{"viatura.prop":{"kind":"crate"}}}]}`;
+    auto scene = parseSceneJson(json);
+    EditorWorld world;
+    SceneLightSettings lights;
+    auto res = loadSceneIntoWorld(world, scene, lights);
+    assert(res.validation.ok);
+    assert(world.entityCount == 1);
+    assert(res.unresolvedComponents.length == 1);
+    assert(res.unresolvedComponents[0].typeName == "viatura.prop");
+    assert(res.unresolvedComponents[0].entity == res.fileIdToEntity[1]);
 }
