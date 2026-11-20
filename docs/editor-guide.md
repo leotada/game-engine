@@ -59,6 +59,8 @@ See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2)
 - Directory tree and asset grid for `assets/` and `scripts/`.
 - Automatic 128-bit persistent GUID assignment and `.meta` sidecar generation.
 - **Cena → Abrir cena... (`Ctrl+O`)**: opens a picker listing every `*.scene.json` under `assets/`. Click a scene to load it. Opening a scene discards unsaved changes, and the console warns when there were any.
+- **Opening a scene frames the camera** on all of its entities (`engine.editor.scene_frame`, `framePose`), so the content is on screen instead of wherever the fly camera last was. An empty scene keeps the default camera.
+- **Components the editor cannot render**: scene components whose type is not registered in the editor (for example a game-defined `viatura.prop`) are loaded with their entity but not drawn as geometry. The console warns with the component types, and each one is drawn as an orange wireframe box at its entity's world position, with the local scale as its size. Real geometry for those components still comes from the game's own runtime code.
 - **+ Script D**: Creates a ready-to-use D script component from template in `scripts/`.
 - **+ Material**: Creates a new `.material.json` material definition.
 - **Refresh**: Re-scans the filesystem for external asset changes.

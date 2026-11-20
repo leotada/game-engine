@@ -22,13 +22,15 @@ import engine.editor.commands :
     spawnPrimitive;
 import engine.editor.components :
     Camera3D, MaterialOverride, Name, PhysicsBody, PhysicsMotion, PhysicsShapeKind,
-    Visual, VisualKind, defaultHalfExtents, worldPosition;
+    Visual, VisualKind, defaultHalfExtents, localTransform, worldPosition;
 import engine.editor.demo_level : findCurrentCamera, sceneCameraToGpu, spawnDemoLevel;
 import engine.editor.gizmo_tool : GizmoMode, GizmoSpace, GizmoTool;
 import engine.editor.light_panel : SceneLightSettings;
 import engine.editor.physics_sim;
 import engine.editor.picking : drawSelectionHighlights, pickClosestAabb;
-import engine.editor.scene_load : loadSceneIntoWorld, worldToSceneFile;
+import engine.editor.scene_frame : framePose;
+import engine.editor.scene_load :
+    SceneLoadResult, UnresolvedComponent, loadSceneIntoWorld, worldToSceneFile;
 import engine.editor.scene_picker : findScenePaths, isScenePath, scenePickerLabel;
 import engine.editor.scene_renderer : SceneRenderer;
 import engine.editor.selection : Selection, noSelection;
@@ -91,6 +93,16 @@ enum playTag = 0xAA01;
 enum pauseTag = 0xAA02;
 enum stopTag = 0xAA03;
 
+/// Wireframe box drawn for a scene component this build cannot render
+/// (for example a game-defined `viatura.prop`). Stores world-space values, not
+/// entity ids, so it stays valid across Play/Stop, which respawns entities.
+struct ScenePlaceholder {
+    Vec3 center;
+    /// Full extents, as `GizmoRenderer.box` expects (a unit box at scale 1).
+    Vec3 extent;
+    string typeName;
+}
+
 struct EditorApp {
     enum ActiveView : ubyte {
         none = 0,
@@ -110,6 +122,8 @@ struct EditorApp {
     SceneRenderer sceneRenderer;
     GizmoRenderer gizmos;
     bool gpuSceneReady = false;
+    /// Placeholders for components skipped by the last scene load.
+    ScenePlaceholder[] placeholders;
 
     ulong framesPresented = 0;
     ulong framesSkipped = 0;
@@ -337,6 +351,7 @@ struct EditorApp {
                         gizmos.grid(gizmoTool.gridSize, gizmoTool.gridCells,
                             Color4(0.25f, 0.25f, 0.28f, 1.0f), 0);
                     drawCameraFrustums();
+                    drawPlaceholders(gizmos);
                     drawSelectionHighlights(world, selection, gizmos);
                     gizmos.render(frame);
                 }
@@ -1027,7 +1042,7 @@ struct EditorApp {
         const validation = validateScene(sf, true);
         if (!validation.ok) {
             if (validation.errors.length > 0)
-                warn("Falha ao carregar cena: %s", validation.errors[0].message);
+                warn("Falha ao carregar cena: ", validation.errors[0].message);
             else
                 warn("Falha ao carregar cena: validação");
             return false;
@@ -1037,18 +1052,19 @@ struct EditorApp {
         if (nameDirty)
             commitName();
         if (sceneDirty)
-            warn("Alterações não salvas em %s serão descartadas.", currentScenePath);
+            warn("Alterações não salvas em ", currentScenePath, " serão descartadas.");
         SceneFile backup;
         try {
             backup = worldToSceneFile(world, lightSettings);
         } catch (Exception ex) {
-            warn("Falha ao carregar cena: %s", ex.msg);
+            warn("Falha ao carregar cena: ", ex.msg);
             return false;
         }
+        SceneLoadResult loaded;
         try {
-            loadSceneIntoWorld(world, sf, lightSettings);
+            loaded = loadSceneIntoWorld(world, sf, lightSettings);
         } catch (Exception ex) {
-            warn("Falha ao carregar cena: %s", ex.msg);
+            warn("Falha ao carregar cena: ", ex.msg);
             restoreSceneBackup(backup);
             return false;
         }
@@ -1059,9 +1075,79 @@ struct EditorApp {
         popup = PopupKind.none;
         currentScenePath = path;
         sceneDirty = false;
-        resetCamera();
-        info("Cena carregada no editor: %s", path);
+        buildPlaceholders(loaded.unresolvedComponents);
+        frameWorld();
+        info("Cena carregada no editor: ", path);
         return true;
+    }
+
+    /// Boxes for components the editor cannot render, one per skipped component.
+    /// Logs a single warning that names the missing types.
+    private void buildPlaceholders(const UnresolvedComponent[] unresolved) {
+        placeholders = null;
+        if (unresolved.length == 0)
+            return;
+        string types;
+        foreach (ref u; unresolved) {
+            if (!world.alive(u.entity) || !world.has!Transform(u.entity))
+                continue;
+            immutable scale = localTransform(world, u.entity).scale;
+            ScenePlaceholder p;
+            p.center = worldPosition(world, u.entity);
+            p.extent = scale;
+            p.typeName = u.typeName;
+            placeholders ~= p;
+            if (types.length == 0 || !typesHas(types, u.typeName))
+                types ~= (types.length == 0 ? "" : ", ") ~ u.typeName;
+        }
+        warn("Cena sem renderização no editor para ", unresolved.length,
+             " componente(s) (", types, "). Desenhados como caixas de wireframe.");
+    }
+
+    private static bool typesHas(const(char)[] list, const(char)[] name) {
+        import std.algorithm.searching : canFind;
+        return list.canFind(name);
+    }
+
+    /// Frames the camera on every entity of the loaded scene; falls back to the
+    /// default pose when the scene is empty.
+    private void frameWorld() {
+        bool any = false;
+        Vec3 lo, hi;
+        foreach (e; world.query!Transform()) {
+            if (!world.alive(e))
+                continue;
+            immutable p = worldPosition(world, e);
+            if (!any) {
+                lo = p;
+                hi = p;
+                any = true;
+            } else {
+                if (p.x < lo.x) lo.x = p.x;
+                if (p.y < lo.y) lo.y = p.y;
+                if (p.z < lo.z) lo.z = p.z;
+                if (p.x > hi.x) hi.x = p.x;
+                if (p.y > hi.y) hi.y = p.y;
+                if (p.z > hi.z) hi.z = p.z;
+            }
+        }
+        if (!any) {
+            resetCamera();
+            return;
+        }
+        immutable pose = framePose(lo, hi, camera.fovY);
+        flyCam.position = pose.position;
+        flyCam.yaw = pose.yaw;
+        flyCam.pitch = pose.pitch;
+        camera.far = pose.far;
+        camera.lookAt(flyCam.position, flyCam.position + flyCam.forward());
+    }
+
+    /// Wireframe boxes for skipped components, in the editor's gizmo pass.
+    private void drawPlaceholders(ref GizmoRenderer g) {
+        immutable Color4 col = Color4(1.0f, 0.55f, 0.1f, 1.0f);
+        foreach (ref p; placeholders)
+            g.box(p.center, p.extent, col);
     }
 
     /// Puts `backup` back after a load that already cleared the world.
@@ -1094,6 +1180,7 @@ struct EditorApp {
 
     private void spawnGroundAndCube() {
         world.ensureRegistered!Camera3D();
+        placeholders = null;
         spawnDemoLevel(world, selection);
         commands.clear();
         nameBound = noSelection;
@@ -1216,6 +1303,7 @@ struct EditorApp {
         flyCam.position = Vec3(0, 5, 10);
         flyCam.pitch = -0.35f;
         flyCam.yaw = -cast(float) PI * 0.5f;
+        camera.far = 1000.0f; // frameWorld may have raised it for a large scene
         camera.lookAt(flyCam.position, flyCam.position + flyCam.forward());
     }
 

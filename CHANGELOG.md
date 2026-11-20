@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Opening a scene over unsaved changes now logs a warning naming the scene whose changes are discarded.
   - The Cena menu lists its seven items; it previously reported two, which clipped the export entries.
 
+- **Editor: scene objects that were invisible after opening (`2026-11-19`)**:
+  - `loadSceneIntoWorld` reports custom components whose type is not registered (`SceneLoadResult.unresolvedComponents`). It used to skip them silently, so a scene with game-defined components showed only entity names.
+  - The editor logs one warning per scene naming those component types, and draws each one as an orange wireframe box at its world position (positions are stored, not entity ids, so Play/Stop keeps them).
+  - Opening a scene frames the camera on its entities (`engine.editor.scene_frame`, `framePose`) instead of the fixed default pose.
+  - Scene-open messages now format their arguments correctly; they printed `%s` literally before.
+
 - **Open-World Rendering Foundation & Multi-Node glTF (`OW-2`, `2026-11-19`)** — commits `1629ea4`, `cb53446`, `3067572`, `ad31363`:
   - Textures: opt-in CPU mip chains (`TextureDesc`), `SamplerDesc` anisotropy, `TextureArray`, `Texture.fromR16` / `fromR32F`, and `r16Unorm`/`r32Float`/`r16Float`/`rg16Float`/`rgba32Float` formats in `source/bindings/wgpu.d`.
   - Zero-GC `Scene3DTextured`: malloc-backed `PodBuffer` instance lists, open-addressed `BatchMap` keyed by `(mesh, material, lod)`, cached frame bind group, and the full `FrameContext.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance)` signature (the color pass now draws only the batch's LOD range).
