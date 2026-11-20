@@ -191,6 +191,7 @@ Deliver open-world outdoor rendering across 4 biomes while staying strictly with
 Extend [source/engine/audio/engine.d](../source/engine/audio/engine.d) while keeping SDL3's audio thread (`mixerStreamCallback`) strictly lock-free, `nothrow`, and `@nogc`.
 
 - [ ] **P4.1 — 3D Spatialization & Doppler (`source/engine/audio/engine.d`):**
+  - *Partial (2026-11-19, commit `b1fc252`):* per-voice `AudioMixer.setPan`, balance-law stereo panning and logarithmic one-shot attenuation (`distanceGain`, `emitterPan`, `play3D`, `updateVoice3D`) already exist in `source/engine/audio/spatial.d`. Still open: POD `AudioListener3D`/`AudioSource3D`, Doppler, spatial blend, per-chunk parameter smoothing (pan/volume changes are applied unsmoothed), and the `excludeAudioThreadFromGc()` call in the callback.
   - Add POD `AudioListener3D` (position, forward, up, velocity) and `AudioSource3D` (position, velocity, `refDistance`, `maxDistance`, `rolloffFactor`, `dopplerFactor`, `spatialBlend`).
   - Update `mixVoicesInto`: mono downmix for 3D emitters, equal-power stereo panning (`gainL`, `gainR` from `dot(dirToSource, listenerRight)`), clamped inverse/logarithmic distance attenuation, relative radial Doppler pitch modulation (`speedOfSound = 343 m/s`) separate from `basePitch`, and per-chunk parameter smoothing to eliminate zipper noise.
   - Ensure `mixerStreamCallback` invokes `excludeAudioThreadFromGc()` on audio-thread startup.
