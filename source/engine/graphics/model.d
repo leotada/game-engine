@@ -19,7 +19,7 @@ module engine.graphics.model;
 import core.lifetime : move;
 
 import engine.assets.gltf;
-import engine.assets.gltf_optimize : uploadOptimizedMesh, uploadLodMesh;
+import engine.assets.gltf_optimize : lodImportFor, uploadOptimizedMesh, uploadLodMesh;
 import engine.core.handle : Handle;
 import engine.core.log;
 import engine.core.pod : isPod, Pod;
@@ -410,6 +410,14 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
     auto doc = parseGltfDocument(path);
     auto scene = parseGltfScene(doc);
     GltfAsset asset;
+    // `.meta` `settings.lod.enabled` turns LOD generation on for this file.
+    if (!opts.generateLods) {
+        immutable metaLod = lodImportFor(path);
+        if (metaLod.enabled) {
+            opts.generateLods = true;
+            opts.lodSettings = metaLod.settings;
+        }
+    }
 
     // Textures: one slot per (image, usage) plus one solid fallback per material.
     size_t imageCount = ("images" in doc.root) ? doc.root["images"].array.length : 0;

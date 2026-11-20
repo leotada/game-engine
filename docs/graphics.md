@@ -337,6 +337,23 @@ scene.submitStatic(sib);
 
 A loose XZ grid (default 64 m cells) for dynamic objects: `insert(userId, sphere)`, `update`, `remove` are O(1) (intrusive per-cell lists, malloc storage, free-list reuse); `query(frustum, camPos, maxDistance, outIds)` writes visible ids into a caller buffer. Spheres larger than half a cell or outside the grid go to an always-tested overflow list. Use it to skip whole groups of gameplay entities before they reach `drawModel`.
 
+### Editor and player scenes (`engine.editor.scene_renderer`)
+
+`SceneRenderer` draws a `SceneWorld` (`Transform` + `Visual` + `MaterialOverride` + `Light`) through `Scene3DTextured`, and is shared by the editor's Scene/Game views and the standalone player:
+
+```d
+auto renderer = SceneRenderer.create(app.gpu);
+renderer.syncAssets(app.gpu, world);            // import referenced *.asset.json models up front
+// per frame, after frame.setViewport(...):
+renderer.render(app.gpu, world, frame, camera, lightSettings, viewportHeight);
+```
+
+- Mesh entities load their asset's glTF/GLB once into a cached `GltfAsset` (failures are remembered and drawn as a cube); primitives use built-in `TexMesh`es. `MaterialOverride.baseColor` / `geometryOpacity` become the instance tint.
+- Scene lights are packed with `packLightsFromWorld`; a scene without lights gets a default sun. Shadows, culling and LOD are the `Scene3DTextured` ones.
+- Zero GC once every referenced asset is loaded: `game-engine-player --headless-frames=600 --render --assert-no-gc` renders 600 real frames and asserts 0 bytes.
+- `FrameContext.resumeScenePass` (after shadow passes) re-applies the last `setViewport` rectangle, so panel viewports and split screens keep their rectangle.
+- `.meta` `settings.lod` (`enabled`, `maxLods`, `ratio`, `maxError`) builds LOD chains in every glTF loader (`lodImportFor`, `uploadImportedMesh`).
+
 ### Multi-node glTF / GLB assets (`engine.graphics.model`)
 
 - `parseGltfDocument` reads `.gltf` and `.glb` (binary chunk), `data:` base64 buffers, and images from a URI, a `bufferView` or a data URI. `parseGltfScene` returns every mesh, primitive, material and the node tree **without baking node transforms**. The legacy `parseGltfMesh` / `loadGltfMesh` / `loadGltfPbr` keep their first-primitive, baked-transform behavior.

@@ -388,6 +388,7 @@ Available easing curves (`Ease`): `linear`, `inQuad`, `outQuad`, `inOutQuad`, `i
 
 - **Images (`SDL3_image`):** `Texture.fromImageFile(gpu, path)`, `Texture.fromImageBytes(gpu, bytes)`, and `Texture.fromSvgBytes(gpu, svgBytes, w, h)` decode **PNG, JPG, QOI, SVG, BMP, TGA, GIF** (plus **WEBP/AVIF** when enabled on host). Raw helpers: `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaPng`, `saveRgbaJpg`, `loadBmpTexture`, `Texture.fromTgaFile`.
 - **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; supports `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` and `EXT_meshopt_compression`). Skins and animations use [animation-guide.md](animation-guide.md). For whole models (`.gltf`/`.glb`, every mesh, primitive, material and node) use `loadGltfAsset` — see §3.5.
+- **LOD chains from `.meta`:** add `"lod": {"enabled": true}` (optional `maxLods`, `ratio`, `maxError`) under `settings` in a glTF's `.meta` to build LODs at import in every loader; the editor and player then switch LODs automatically.
 - **Mesh optimization (`engine.meshopt.pipeline`):** `loadGltfMesh` / `loadGltfPbr` automatically optimize imported geometry via `.meta` `MeshOptSettings`. For procedural or custom meshes at load time (never inside the frame loop), call `optimizeMesh(verts, indices, settings)` (`reindex`, `vertexCache`, `overdrawThreshold`, `vertexFetch`, `shadowIndices`).
 
 Deep dives: [export-guide.md](export-guide.md) (media format matrix) · [plan-meshoptimizer.md](plan-meshoptimizer.md).
@@ -475,6 +476,7 @@ Deep tip: Call `excludeAudioThreadFromGc()` on custom real-time audio callbacks 
   overlay.render(text, frame); // renders through TextRenderer
   ```
 - **WGSL Shader Hot-Reload (`engine.hotreload.shader_reload`):** `ShaderHotReloader` watches `assets/shaders/` (supporting `#include`, `#define`, `#ifdef`) and transactionally swaps pipelines without dropping frames on syntax errors. Deep dive: [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
+- **Scene rendering (editor + player):** both draw scenes with the shared `SceneRenderer` (OpenPBR, glTF/GLB mesh assets, scene lights with shadows, culling, LOD); `game-engine-player --headless-frames=600 --render --assert-no-gc` checks zero GC with real rendering. See [editor-guide.md §2.3.1](editor-guide.md).
 - **Visual Editor (`dub run --config=editor`):** Unity/Godot-style docked editor with Hierarchy, Scene/Game View, reflected Inspector, Project Browser (128-bit GUIDs + `.meta`), Console, Prefabs (`*.prefab.json`), Scenes (`*.scene.json`), and non-destructive Play/Pause/Step mode. Deep dive: [editor-guide.md](editor-guide.md).
 
 ---

@@ -9,20 +9,18 @@ import engine.app : App;
 import engine.ecs.scene_world : SceneWorld;
 import engine.ecs.store : EntityId;
 import engine.physics.world : PhysicsWorld;
-import engine.editor.components : Camera3D, MaterialOverride, Visual, VisualKind, worldMatrix;
+import engine.editor.components : Camera3D;
 import engine.editor.demo_level : findCurrentCamera, sceneCameraToGpu;
 import engine.editor.light_panel : SceneLightSettings;
 import engine.editor.physics_sim : PhysicsSimSession;
 import engine.editor.scene_load : loadSceneIntoWorld;
 import engine.editor.selection : noSelection;
-import engine.graphics.mesh : Mesh;
 import engine.graphics.types : Color4;
 import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
-import engine.scene.graph : Transform;
 import engine.scene.scene_file : SceneFile, loadSceneFile;
-import engine.scene.scene3d : Scene3D;
+import engine.editor.scene_renderer : SceneRenderer;
 import engine.core.log : info, warn, err;
 
 version (Symgc_cards) {
@@ -32,36 +30,12 @@ version (Symgc_cards) {
 
 @safe:
 
-private void drawWorldMeshes(ref SceneWorld world, ref Scene3D scene,
-                             ref Mesh cubeMesh, ref Mesh sphereMesh, ref Mesh planeMesh) {
-    foreach (EntityId e; world.query!(Transform, Visual)()) {
-        if (!world.alive(e))
-            continue;
-        immutable v = world.get!Visual(e);
-        if (v.kind == VisualKind.none)
-            continue;
-
-        Color4 col = Color4(0.75f, 0.75f, 0.80f, 1.0f);
-        if (world.has!MaterialOverride(e)) {
-            immutable m = world.get!MaterialOverride(e);
-            col = Color4(m.baseColor[0], m.baseColor[1], m.baseColor[2], m.geometryOpacity);
-        }
-
-        immutable model = worldMatrix(world, e);
-        if (v.kind == VisualKind.sphere)
-            scene.drawMatrix(sphereMesh, model, col);
-        else if (v.kind == VisualKind.plane)
-            scene.drawMatrix(planeMesh, model, col);
-        else
-            scene.drawMatrix(cubeMesh, model, col);
-    }
-}
-
 void main(string[] args) {
     string scenePath = "assets/scenes/arena_01.scene.json";
     bool headless = false;
     uint headlessFrames = 0;
     bool assertNoGc = false;
+    bool renderHeadless = false;
 
     foreach (arg; args[1 .. $]) {
         if (arg.length > 8 && arg[0 .. 8] == "--scene=") {
@@ -72,6 +46,8 @@ void main(string[] args) {
             headlessFrames = arg[18 .. $].to!uint();
         } else if (arg == "--assert-no-gc") {
             assertNoGc = true;
+        } else if (arg == "--render") {
+            renderHeadless = true;
         }
     }
 
@@ -95,7 +71,7 @@ void main(string[] args) {
     PhysicsSimSession sim;
     sim.beginSimulate(world, physics, null);
 
-    if (headless) {
+    if (headless && !renderHeadless) {
         info("Player: running %u headless frames...", headlessFrames);
         size_t gcBefore = 0;
         if (assertNoGc) {
@@ -120,20 +96,15 @@ void main(string[] args) {
     }
 
     App app = App.create("Game Player", 1280, 720);
-    Scene3D scene = Scene3D.create(app.gpu);
-    Mesh cubeMesh = Mesh.cube(app.gpu);
-    Mesh sphereMesh = Mesh.sphere(app.gpu);
-    Mesh planeMesh = Mesh.plane(app.gpu);
+    SceneRenderer renderer = SceneRenderer.create(app.gpu);
+    renderer.syncAssets(app.gpu, world); // import every model before the first frame
 
     scope (exit) {
-        planeMesh.destroy();
-        sphereMesh.destroy();
-        cubeMesh.destroy();
-        scene.destroy();
+        renderer.destroy();
         sim.stopSimulate(world);
     }
 
-    app.run((float dt) {
+    void frameFn(float dt) {
         app.pollEvents();
         app.handleResize();
         if (app.input.keyPressed(Key.escape)) {
@@ -162,9 +133,7 @@ void main(string[] args) {
             viewCam.lookAt(Vec3(0.0f, 4.0f, 9.0f), Vec3(0.0f, 0.5f, 0.0f));
         }
 
-        scene.begin(viewCam);
-        drawWorldMeshes(world, scene, cubeMesh, sphereMesh, planeMesh);
-        scene.end(frame);
+        renderer.render(app.gpu, world, frame, viewCam, lightSettings, cast(float) winH);
 
         app.pumpEvents();
         app.resolvePost(frame);
@@ -176,7 +145,30 @@ void main(string[] args) {
         }
 
         app.endFrame(frame);
-    });
+    }
+
+    if (renderHeadless) {
+        // `--headless-frames=N --render`: render N real frames (window + GPU)
+        // after a short warm-up, then report GC growth and exit.
+        enum WARMUP = 5;
+        foreach (_; 0 .. WARMUP) frameFn(1.0f / 60.0f);
+        size_t gcBefore = 0;
+        if (assertNoGc) {
+            GC.collect();
+            gcBefore = GC.stats().allocatedInCurrentThread;
+        }
+        foreach (f; 0 .. headlessFrames) frameFn(1.0f / 60.0f);
+        if (assertNoGc) {
+            immutable delta = GC.stats().allocatedInCurrentThread - gcBefore;
+            writefln("GC allocations over %u rendered frames in Standalone Player: %u bytes (%u models loaded)",
+                     headlessFrames, delta, renderer.loadedAssetCount());
+            assert(delta == 0, "GC allocations detected in standalone player render loop!");
+        }
+        info("Player: rendered headless test completed successfully!");
+        return;
+    }
+
+    app.run(&frameFn);
 
     info("Player: exited cleanly.");
 }

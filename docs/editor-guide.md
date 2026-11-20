@@ -36,6 +36,16 @@ The visual editor (`--config=editor`) is built natively using the engine's custo
 - Preview of the gameplay camera as seen by the player.
 - Active camera rendering with lighting, materials, and physics simulation.
 
+### 2.3.1 Scene Rendering (`SceneRenderer`)
+The Scene View, the Game View and the standalone player all draw the scene with the same `engine.editor.scene_renderer.SceneRenderer`, built on `Scene3DTextured`, so what you see in the editor is what the player shows:
+- **Primitives** (Cubo, Esfera, Plano) use a white OpenPBR material; the entity's `MaterialOverride.baseColor` / `geometryOpacity` is applied as the instance tint. The other OpenPBR override fields (metalness, roughness, coat…) are not applied per entity yet.
+- **Mesh entities** (`Visual.kind = mesh`, `*.asset.json`) load the asset's glTF/GLB `render.source` once with `loadGltfAsset` — every node, primitive, material and texture (mipmapped, 8× anisotropic sampler). Assets that fail to load are logged once and drawn as a cube.
+- **Lights** come from the scene's `Light` components (`packLightsFromWorld`) with directional, point and spot shadows. A scene with no lights gets a default sun, so it is never black.
+- **Culling and LOD** are automatic (frustum culling, per-view shadow caster culling, screen-space LOD for meshes with LOD chains).
+- **LOD chains:** add `"lod": {"enabled": true, "maxLods": 4, "ratio": 0.5, "maxError": 0.05}` under `settings` in the glTF's `.meta` sidecar (e.g. `assets/models/rock_cliff.gltf.meta`). Every loader (`loadGltfAsset`, `loadGltfMesh`, `loadGltfPbr`) then builds the chain at import time. Missing keys keep the `LodSettings` defaults.
+
+See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2).
+
 ### 2.4 Inspector Panel (`Inspector`)
 - Dynamic compile-time reflection (`TypeRegistry` & `FieldDescriptor`):
   - Numeric fields with `@range(min, max)` sliders.

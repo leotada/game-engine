@@ -29,8 +29,8 @@ import engine.editor.light_panel : SceneLightSettings;
 import engine.editor.physics_sim;
 import engine.editor.picking : drawSelectionHighlights, pickClosestAabb;
 import engine.editor.scene_load : loadSceneIntoWorld, worldToSceneFile;
+import engine.editor.scene_renderer : SceneRenderer;
 import engine.editor.selection : Selection, noSelection;
-import engine.graphics.mesh : Mesh;
 import engine.graphics.types : Color4;
 import engine.hotreload.build_runner : Diagnostic;
 import engine.hotreload.reload : HotReloadManager;
@@ -45,7 +45,6 @@ import engine.project.asset_db : AssetDatabase;
 import engine.scene.camera : Camera;
 import engine.scene.controllers : FlyCamera;
 import engine.scene.graph : Transform;
-import engine.scene.scene3d : Scene3D;
 import engine.scene.scene_file : SceneFile, loadSceneFile, saveSceneFile, validateScene;
 import engine.ui;
 
@@ -104,10 +103,8 @@ struct EditorApp {
     UiInputContext inputCtx;
     UiEventQueue queue;
 
-    Scene3D scene;
-    Mesh cubeMesh;
-    Mesh sphereMesh;
-    Mesh planeMesh;
+    /// OpenPBR scene renderer shared with the player (assets, lights, shadows, LOD).
+    SceneRenderer sceneRenderer;
     GizmoRenderer gizmos;
     bool gpuSceneReady = false;
 
@@ -192,10 +189,7 @@ struct EditorApp {
         if (!headless) {
             app = App.create("Game Engine Editor — Unity/Godot style", 1280, 768);
             uiRenderer.init(app.gpu.getDevice(), app.gpu.getQueue(), app.gpu.getFormat(), font);
-            scene = Scene3D.create(app.gpu);
-            cubeMesh = Mesh.cube(app.gpu);
-            sphereMesh = Mesh.sphere(app.gpu);
-            planeMesh = Mesh.plane(app.gpu);
+            sceneRenderer = SceneRenderer.create(app.gpu);
             gizmos = GizmoRenderer.create(app.gpu);
             gpuSceneReady = true;
             shaderReloader.init("assets/shaders");
@@ -274,7 +268,7 @@ struct EditorApp {
             hotReload.pollAndReload(world, world.types, world.strings, dt, diags);
         }
         if (!isHeadless) {
-            shaderReloader.pollAndReload(&scene, null, &gizmos, &uiRenderer, &app.renderer, dt);
+            shaderReloader.pollAndReload(null, &sceneRenderer.scene, &gizmos, &uiRenderer, &app.renderer, dt);
         }
 
         if (!isHeadless && activeView == ActiveView.viewport && !flyCamActive)
@@ -326,9 +320,7 @@ struct EditorApp {
                 else
                     viewCam = camera;
 
-                scene.begin(viewCam);
-                drawMeshes();
-                scene.end(frame);
+                sceneRenderer.render(app.gpu, world, frame, viewCam, lightSettings, vpH);
 
                 if (!gameTab) {
                     gizmos.begin(viewCam.viewProjection());
@@ -422,10 +414,7 @@ struct EditorApp {
         hotReload.shutdown(world);
         if (gpuSceneReady) {
             gizmos.destroy();
-            planeMesh.destroy();
-            sphereMesh.destroy();
-            cubeMesh.destroy();
-            scene.destroy();
+            sceneRenderer.destroy();
             gpuSceneReady = false;
         }
         if (!isHeadless)
@@ -1295,34 +1284,6 @@ struct EditorApp {
                 selectEntity(hit.entity);
             else
                 clearSelection();
-        }
-    }
-
-    private void drawMeshes() {
-        foreach (EntityId e; world.query!(Transform, Visual)()) {
-            if (!world.alive(e))
-                continue;
-            immutable v = world.get!Visual(e);
-            if (v.kind == VisualKind.none)
-                continue;
-            immutable t = world.get!Transform(e);
-
-            Color4 col = Color4(0.75f, 0.75f, 0.80f, 1.0f);
-            if (world.has!MaterialOverride(e)) {
-                auto m = world.get!MaterialOverride(e);
-                col = Color4(m.baseColor[0], m.baseColor[1], m.baseColor[2], m.geometryOpacity);
-            }
-
-            auto model = Mat4.translation(t.position.x, t.position.y, t.position.z)
-                * t.rotation.toMat4()
-                * Mat4.scaling(t.scale.x, t.scale.y, t.scale.z);
-
-            if (v.kind == VisualKind.sphere)
-                scene.drawMatrix(sphereMesh, model, col);
-            else if (v.kind == VisualKind.plane)
-                scene.drawMatrix(planeMesh, model, col);
-            else
-                scene.drawMatrix(cubeMesh, model, col);
         }
     }
 

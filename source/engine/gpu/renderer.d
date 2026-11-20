@@ -591,6 +591,10 @@ struct FrameContext {
     WGPUTextureView        sceneDepthView;
     bool                   valid = false;
     bool                   postResolved = false;
+    /// Last `setViewport` rectangle, re-applied by `resumeScenePass`.
+    private bool           hasViewport = false;
+    private float[4]       viewportRect;
+    private uint[2]        viewportTarget;
     WGPUSurfaceGetCurrentTextureStatus acquireStatus;
 
     /// End the active HDR scene pass temporarily so auxiliary depth/compute
@@ -623,6 +627,11 @@ struct FrameContext {
         passDesc.colorAttachments     = &colorAtt;
         passDesc.depthStencilAttachment = &depthAtt;
         pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+        // A new pass starts with a full-target viewport: restore the panel
+        // rectangle (editor viewport, split screen) set before the suspend.
+        if (hasViewport)
+            setViewport(viewportRect[0], viewportRect[1], viewportRect[2], viewportRect[3],
+                        viewportTarget[0], viewportTarget[1]);
     }
 
     /// True when the swapchain wait failed and the surface should be reconfigured.
@@ -636,6 +645,9 @@ struct FrameContext {
     /// (viewport transform + scissor). Used to render a 3D scene into a UI panel.
     void setViewport(float x, float y, float w, float h, uint targetW, uint targetH) nothrow @nogc @trusted {
         if (w < 1 || h < 1) return;
+        hasViewport = true;
+        viewportRect = [x, y, w, h];
+        viewportTarget = [targetW, targetH];
         wgpuRenderPassEncoderSetViewport(pass, x, y, w, h, 0.0f, 1.0f);
         immutable uint sx = x < 0 ? 0 : cast(uint) x;
         immutable uint sy = y < 0 ? 0 : cast(uint) y;

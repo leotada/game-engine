@@ -63,3 +63,4 @@ public import engine.editor.physics_sim;
 public import engine.editor.physics_panel;
 public import engine.editor.scene_load;
 public import engine.editor.scene_io;
+public import engine.editor.scene_renderer;

@@ -21,6 +21,61 @@ struct MeshOptImport {
     MeshOptSettings settings;
 }
 
+/// Load-time LOD chain request from `.meta` `settings.lod`.
+struct LodImport {
+    bool enabled = false;
+    LodSettings settings;
+}
+
+/**
+ * Parse `settings.lod` of a `.meta` document:
+ * `{"settings":{"lod":{"enabled":true,"maxLods":4,"ratio":0.5,"maxError":0.05}}}`.
+ * Missing keys keep `LodSettings` defaults; a missing block means disabled.
+ */
+LodImport parseLodImport(JSONValue root) @trusted {
+    LodImport result;
+    if (root.type != JSONType.object || "settings" !in root) return result;
+    auto settings = root["settings"];
+    if (settings.type != JSONType.object || "lod" !in settings) return result;
+    auto lod = settings["lod"];
+    if (lod.type != JSONType.object) return result;
+    result.enabled = jsonBool(lod, "enabled", false);
+    float num(string key, float def) {
+        if (key !in lod) return def;
+        auto v = lod[key];
+        if (v.type == JSONType.float_) return cast(float) v.floating;
+        if (v.type == JSONType.integer) return cast(float) v.integer;
+        if (v.type == JSONType.uinteger) return cast(float) v.uinteger;
+        return def;
+    }
+    immutable maxLods = num("maxLods", result.settings.maxLods);
+    result.settings.maxLods = maxLods < 1 ? 1 : (maxLods > 8 ? 8 : cast(uint) maxLods);
+    result.settings.ratio = num("ratio", result.settings.ratio);
+    result.settings.maxError = num("maxError", result.settings.maxError);
+    return result;
+}
+
+/// `.meta` `settings.lod` of `assetPath` (disabled when absent or unreadable).
+LodImport lodImportFor(string assetPath) @trusted {
+    string metaPath = assetPath ~ ".meta";
+    if (!exists(metaPath))
+        return LodImport.init;
+    try {
+        return parseLodImport(parseJSON(cast(string) read(metaPath)));
+    } catch (Exception) {
+        return LodImport.init;
+    }
+}
+
+/// Upload an imported mesh, building a LOD chain when `.meta` asks for one.
+TexMesh uploadImportedMesh(ref GpuContext gpu, string assetPath, const(TexVert)[] vertices,
+                           const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents) {
+    immutable lod = lodImportFor(assetPath);
+    if (lod.enabled)
+        return uploadLodMesh(gpu, vertices, indices, shadowIndices, tangents, lod.settings);
+    return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents);
+}
+
 /// `assetPath` is the glTF (or other asset), not the `.meta` path.
 MeshOptImport meshOptImportFor(string assetPath) @trusted {
     MeshOptImport result;
@@ -267,4 +322,15 @@ private bool jsonBool(ref JSONValue obj, string key, bool fallback) {
     assert(concat == [0, 1, 2, 2, 3, 0, 0, 1, 2]);
     assert(first == [0, 6, 9] && counts == [6, 3, 0]);
     assert(errors[1] == 0.01f && errors[2] == 0.2f);
+}
+
+@("gltfOptimize.lodImport") @safe unittest {
+    auto none = parseLodImport(parseJSON(`{"guid":"x","settings":{}}`));
+    assert(!none.enabled);
+    auto on = parseLodImport(parseJSON(`{"settings":{"lod":{"enabled":true,"maxLods":12,"ratio":0.4,"maxError":0.1}}}`));
+    assert(on.enabled && on.settings.maxLods == 8);
+    assert(on.settings.ratio > 0.39f && on.settings.ratio < 0.41f);
+    assert(on.settings.maxError > 0.09f && on.settings.maxError < 0.11f);
+    auto defaults = parseLodImport(parseJSON(`{"settings":{"lod":{"enabled":true}}}`));
+    assert(defaults.enabled && defaults.settings.maxLods == LodSettings.init.maxLods);
 }

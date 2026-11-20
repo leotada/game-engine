@@ -33,7 +33,7 @@ import engine.graphics.types : TexVert;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3, Vec4;
-import engine.assets.gltf_optimize : finalizeImportedMesh, generateMissingTangents, uploadOptimizedMesh;
+import engine.assets.gltf_optimize : finalizeImportedMesh, generateMissingTangents, uploadImportedMesh;
 import engine.meshopt.codec.filter;
 import engine.meshopt.codec.index;
 import engine.meshopt.codec.vertex;
@@ -54,7 +54,7 @@ TexMesh loadGltfMesh(ref GpuContext gpu, string gltfPath) @trusted {
     auto mesh = parseGltfMesh(gltfPath);
     info("Loaded glTF: ", gltfPath, " (",
          mesh.vertices.length, " verts, ", mesh.indices.length, " indices)");
-    return uploadOptimizedMesh(gpu, mesh.vertices, mesh.indices, mesh.shadowIndices, mesh.tangents);
+    return uploadImportedMesh(gpu, gltfPath, mesh.vertices, mesh.indices, mesh.shadowIndices, mesh.tangents);
 }
 
 /// Parsed glTF mesh on the CPU (no GPU resources yet).
@@ -130,7 +130,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
         generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
     GltfModel model;
-    model.mesh = uploadOptimizedMesh(gpu, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
+    model.mesh = uploadImportedMesh(gpu, gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
     MaterialParams params = matDesc.params;
     params.flags = MaterialFlags.none;
