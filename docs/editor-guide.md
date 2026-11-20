@@ -58,6 +58,7 @@ See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2)
 ### 2.5 Project & Asset Browser (`Project`)
 - Directory tree and asset grid for `assets/` and `scripts/`.
 - Automatic 128-bit persistent GUID assignment and `.meta` sidecar generation.
+- **Cena → Abrir cena... (`Ctrl+O`)**: opens a picker listing every `*.scene.json` under `assets/`. Click a scene to load it. Opening a scene discards unsaved changes, and the console warns when there were any.
 - **+ Script D**: Creates a ready-to-use D script component from template in `scripts/`.
 - **+ Material**: Creates a new `.material.json` material definition.
 - **Refresh**: Re-scans the filesystem for external asset changes.

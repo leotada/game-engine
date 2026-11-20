@@ -29,6 +29,7 @@ import engine.editor.light_panel : SceneLightSettings;
 import engine.editor.physics_sim;
 import engine.editor.picking : drawSelectionHighlights, pickClosestAabb;
 import engine.editor.scene_load : loadSceneIntoWorld, worldToSceneFile;
+import engine.editor.scene_picker : findScenePaths, isScenePath, scenePickerLabel;
 import engine.editor.scene_renderer : SceneRenderer;
 import engine.editor.selection : Selection, noSelection;
 import engine.graphics.types : Color4;
@@ -59,6 +60,7 @@ enum PopupKind : uint {
     ajuda = 5,
     criar = 6,
     componente = 7,
+    scenePicker = 8,
 }
 
 enum MenuAction : uint {
@@ -82,6 +84,7 @@ enum MenuAction : uint {
     exportWindows = 31,
     exportMacOS = 32,
     exportWeb = 33,
+    openScene = 34,
 }
 
 enum playTag = 0xAA01;
@@ -144,6 +147,10 @@ struct EditorApp {
     float popupX = 0;
     float popupY = 0;
     float popupAnchorTop = 0;
+    /// Centered popups (the scene picker) ignore the menu-bar anchor.
+    bool popupCentered = false;
+    /// Scene files listed by Cena → Abrir cena, rebuilt each time it opens.
+    string[] scenePaths;
 
     char[64] nameBuf;
     uint nameLen = 0;
@@ -614,6 +621,7 @@ struct EditorApp {
             return;
         const n = &ui.get(node);
         popup = kind;
+        popupCentered = false;
         popupX = n.layoutX;
         popupAnchorTop = n.layoutY;
         popupY = n.layoutY + n.layoutHeight;
@@ -622,13 +630,14 @@ struct EditorApp {
     private uint popupItemCount() const {
         final switch (popup) {
             case PopupKind.none: return 0;
-            case PopupKind.arquivo: return 2;
+            case PopupKind.arquivo: return 7;
             case PopupKind.editar: return 4;
             case PopupKind.gameObject: return 0;
             case PopupKind.janela: return 6;
             case PopupKind.ajuda: return 0;
             case PopupKind.criar: return 4;
             case PopupKind.componente: return 0;
+            case PopupKind.scenePicker: return scenePaths.length == 0 ? 1 : cast(uint) scenePaths.length;
         }
     }
 
@@ -637,12 +646,16 @@ struct EditorApp {
         if (nItems == 0)
             return;
 
-        immutable float menuW = 220.0f;
+        immutable float menuW = popup == PopupKind.scenePicker ? 320.0f : 220.0f;
         immutable float menuH = nItems * 24.0f + 12.0f;
         float x = popupX;
         float y = popupY + 2.0f;
-        if (y + menuH > screenH && popupAnchorTop > menuH)
+        if (popupCentered) {
+            x = (screenW - menuW) * 0.5f;
+            y = screenH * 0.2f;
+        } else if (y + menuH > screenH && popupAnchorTop > menuH) {
             y = popupAnchorTop - menuH - 2.0f;
+        }
         if (x + menuW > screenW)
             x = screenW - menuW;
         if (x < 4)
@@ -664,8 +677,19 @@ struct EditorApp {
             case PopupKind.ajuda:
             case PopupKind.componente:
                 break;
+            case PopupKind.scenePicker:
+                if (scenePaths.length == 0) {
+                    menuItem(ui, menu, "Nenhuma cena em assets/", "", theme);
+                } else {
+                    foreach (i, path; scenePaths) {
+                        auto id = menuItem(ui, menu, scenePickerLabel(path), "", theme);
+                        ui.get(id).customTag = 0xD300_0000 | cast(uint) i;
+                    }
+                }
+                break;
             case PopupKind.arquivo:
                 item("Nova cena", "Ctrl+N", MenuAction.newScene);
+                item("Abrir cena...", "Ctrl+O", MenuAction.openScene);
                 item("Salvar cena", "Ctrl+S", MenuAction.saveScene);
                 item("Exportar Release (Linux)", "", MenuAction.exportLinux);
                 item("Exportar Release (Windows)", "", MenuAction.exportWindows);
@@ -708,8 +732,15 @@ struct EditorApp {
         if (chrome)
             return;
         if (action) {
-            runAction(tag & 0xFF);
             popup = PopupKind.none;
+            runAction(tag & 0xFF);
+            return;
+        }
+        if ((tag & 0xFF00_0000) == 0xD300_0000) {
+            popup = PopupKind.none;
+            immutable idx = tag & 0xFFFF;
+            if (idx < scenePaths.length)
+                openSceneFile(scenePaths[idx]);
             return;
         }
         if (popup != PopupKind.none)
@@ -804,7 +835,7 @@ struct EditorApp {
                 saveCurrentScene();
                 break;
             case EditorAction.openScene:
-                showPanel("Arquivos");
+                openScenePicker();
                 break;
             case EditorAction.newScene:
                 newScene();
@@ -868,6 +899,9 @@ struct EditorApp {
                 break;
             case MenuAction.saveScene:
                 saveCurrentScene();
+                break;
+            case MenuAction.openScene:
+                openScenePicker();
                 break;
             case MenuAction.undo:
                 if (nameDirty)
@@ -969,6 +1003,18 @@ struct EditorApp {
         spawnGroundAndCube();
     }
 
+    /// Cena → Abrir cena (Ctrl+O): lists the scene files under `assets/` in a centered picker.
+    private void openScenePicker() {
+        try {
+            scenePaths = findScenePaths("assets");
+        } catch (Exception ex) {
+            scenePaths = null;
+            warn("Falha ao listar cenas: %s", ex.msg);
+        }
+        popup = PopupKind.scenePicker;
+        popupCentered = true;
+    }
+
     private bool openSceneFile(string path) {
         world.ensureRegistered!Camera3D();
         SceneFile sf;
@@ -990,6 +1036,8 @@ struct EditorApp {
             stopPlay();
         if (nameDirty)
             commitName();
+        if (sceneDirty)
+            warn("Alterações não salvas em %s serão descartadas.", currentScenePath);
         SceneFile backup;
         try {
             backup = worldToSceneFile(world, lightSettings);
@@ -1754,13 +1802,6 @@ private EditorAction allowWhileTyping(EditorAction action) {
 
 private bool tabIs(scope const(char)[] title, scope const(char)[] a, scope const(char)[] b) {
     return title == a || title == b;
-}
-
-private bool isScenePath(scope const(char)[] path) {
-    enum suf = ".scene.json";
-    if (path.length < suf.length)
-        return false;
-    return path[$ - suf.length .. $] == suf;
 }
 
 private bool transformChanged(Transform a, Transform b) {
