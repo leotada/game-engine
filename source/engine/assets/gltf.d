@@ -576,6 +576,30 @@ GltfDocument parseGltfDocument(string path) @trusted {
     return parseGltfDocumentBytes(raw, dirName(path), path);
 }
 
+/**
+ * Files whose edits change what `path` loads: the glTF/GLB itself, its
+ * `.meta` sidecar (LOD settings) and every external buffer / image URI,
+ * as normalized paths. Load-time only (parses the document). Returns just
+ * the glTF and `.meta` paths when the document cannot be parsed.
+ */
+string[] gltfFileDependencies(string path) @trusted {
+    import std.path : buildNormalizedPath, buildPath;
+    string[] deps = [buildNormalizedPath(path), buildNormalizedPath(path ~ ".meta")];
+    try {
+        auto doc = parseGltfDocument(path);
+        foreach (key; ["buffers", "images"]) {
+            if (key !in doc.root) continue;
+            foreach (ref item; doc.root[key].array) {
+                if ("uri" !in item.object) continue;
+                immutable uri = item["uri"].str;
+                if (isDataUri(uri)) continue;
+                deps ~= buildNormalizedPath(buildPath(doc.baseDir, uri));
+            }
+        }
+    } catch (Exception) {}
+    return deps;
+}
+
 /// Parse an in-memory `.gltf` (JSON text) or `.glb` container.
 /// External buffer URIs resolve against `baseDir`.
 GltfDocument parseGltfDocumentBytes(const(ubyte)[] bytes, string baseDir, string assetPath = "") @trusted {
@@ -1324,6 +1348,17 @@ version (unittest) {
         }`;
         return buildGlb(json, bin);
     }
+}
+
+@("gltf.fileDependencies") @trusted unittest {
+    import std.algorithm.searching : canFind;
+    auto deps = gltfFileDependencies("assets/models/pbr_cube.gltf");
+    assert(deps[0] == "assets/models/pbr_cube.gltf");
+    assert(deps.canFind("assets/models/pbr_cube.gltf.meta"));
+    assert(deps.canFind("assets/models/pbr_cube.bin"));
+    assert(deps.canFind("assets/models/pbr_cube_albedo.bmp"));
+    // Unparseable / missing documents still report themselves.
+    assert(gltfFileDependencies("build/no_such_model.gltf").length == 2);
 }
 
 @("gltf.glbScene") @trusted unittest {

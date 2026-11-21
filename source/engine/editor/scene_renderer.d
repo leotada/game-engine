@@ -83,6 +83,11 @@ struct SceneRenderer {
     private GltfAsset*[] assets;
     /// `StringId.id` → `assets` index + 1, `ASSET_UNKNOWN` or `ASSET_FAILED`.
     private int[] assetSlot;
+    /// Per `assets` index: `*.asset.json` path and, when dependency
+    /// tracking is on, every file the slot was built from (normalized).
+    private string[] slotPath;
+    private string[][] slotDeps;
+    private bool trackDeps;
     private ModelInstance defaultInstance;
     private bool ready;
 
@@ -124,9 +129,74 @@ struct SceneRenderer {
         if (idx < assets.length && assets[idx] !is null) {
             assets[idx].destroy();
             assets[idx] = null;
+            slotDeps[idx] = null;
         }
         assetSlot[stringId] = ASSET_UNKNOWN;
         return true;
+    }
+
+    /**
+     * Record, for every loaded model, the files it was built from
+     * (`*.asset.json`, glTF/GLB, `.meta`, external buffers and images) so
+     * `reloadChangedFiles` can find the models an edit affects. Off by
+     * default because it parses each glTF a second time at load; the editor
+     * and dev players turn it on together with `AssetHotReloader`.
+     */
+    void enableDependencyTracking() @trusted {
+        if (trackDeps) return;
+        trackDeps = true;
+        foreach (idx, a; assets)
+            if (a !is null) slotDeps[idx] = assetDependencies(slotPath[idx]);
+    }
+
+    /// True once `enableDependencyTracking` was called.
+    bool tracksDependencies() const nothrow @nogc { return trackDeps; }
+
+    /// Files the loaded model behind `*.asset.json` `assetPath` depends on.
+    const(string)[] dependenciesOf(scope const(char)[] assetPath) const {
+        foreach (idx, p; slotPath)
+            if (p == assetPath && assets[idx] !is null) return slotDeps[idx];
+        return null;
+    }
+
+    /**
+     * HR-1 hot-reload: re-import every loaded model that depends on one of
+     * `changedPaths` and swap it in place. The swap is transactional: when
+     * the new import fails, the previous GPU asset stays in use and the error
+     * is logged. Models that previously failed to load are retried. Returns
+     * the number of models swapped. Load-time work (allocates); call between
+     * frames, never inside `render`.
+     */
+    uint reloadChangedFiles(ref GpuContext gpu, scope const(string)[] changedPaths) @trusted {
+        import std.path : buildNormalizedPath;
+        if (!ready || changedPaths.length == 0) return 0;
+        bool[string] changed;
+        foreach (p; changedPaths) changed[buildNormalizedPath(p)] = true;
+
+        uint swapped;
+        foreach (idx, a; assets) {
+            if (a is null) continue;
+            bool hit = (buildNormalizedPath(slotPath[idx]) in changed) !is null;
+            foreach (d; slotDeps[idx]) if (!hit && (d in changed)) hit = true;
+            if (!hit) continue;
+
+            GltfAsset fresh;
+            string[] deps;
+            if (!importAsset(gpu, slotPath[idx], fresh, deps)) {
+                warn("SceneRenderer: hot-reload kept the previous version of ", slotPath[idx]);
+                continue;
+            }
+            import core.lifetime : move;
+            assets[idx].destroy();
+            move(fresh, *assets[idx]);
+            slotDeps[idx] = deps;
+            swapped++;
+            info("SceneRenderer: hot-reloaded ", slotPath[idx]);
+        }
+        // Give failed imports another chance: the edit may have fixed them.
+        foreach (id, s; assetSlot)
+            if (s == ASSET_FAILED) assetSlot[id] = ASSET_UNKNOWN;
+        return swapped;
     }
 
     /**
@@ -206,6 +276,8 @@ struct SceneRenderer {
         foreach (a; assets) if (a !is null) a.destroy();
         assets = null;
         assetSlot = null;
+        slotPath = null;
+        slotDeps = null;
         plane.destroy();
         sphere.destroy();
         cube.destroy();
@@ -220,26 +292,67 @@ struct SceneRenderer {
         if (id >= assetSlot.length) assetSlot.length = id + 1;
         assetSlot[id] = ASSET_FAILED;
         immutable path = assetPath.idup;
+        GltfAsset loaded;
+        string[] deps;
+        if (!importAsset(gpu, path, loaded, deps)) return;
+        import core.lifetime : move;
+        auto slot = new GltfAsset;
+        move(loaded, *slot);
+        assets ~= slot;
+        slotPath ~= path;
+        slotDeps ~= deps;
+        assetSlot[id] = cast(int) assets.length;
+        info("SceneRenderer: loaded ", path, " (", assets[$ - 1].subMeshes.length, " sub-meshes, ",
+             assets[$ - 1].nodes.length, " nodes)");
+    }
+
+    /// Import `*.asset.json` `path` into `result`; false (logged) on failure.
+    private bool importAsset(ref GpuContext gpu, string path, out GltfAsset result,
+                             out string[] deps) @trusted {
         try {
             auto file = loadAssetFile(path);
             immutable source = file.renderGltfPath();
             if (file.kind != AssetKind.model || source.length == 0) {
                 warn("SceneRenderer: asset has no glTF render source, drawing a cube: ", path);
-                return;
+                return false;
             }
             GltfLoadOptions opts; // mips on; LODs from the glTF's `.meta` settings.lod
             import core.lifetime : move;
             auto loaded = loadGltfAsset(gpu, source, scene.materialLayout(), sampler, opts);
-            auto slot = new GltfAsset;
-            move(loaded, *slot);
-            assets ~= slot;
-            assetSlot[id] = cast(int) assets.length;
-            info("SceneRenderer: loaded ", path, " (", assets[$ - 1].subMeshes.length, " sub-meshes, ",
-                 assets[$ - 1].nodes.length, " nodes)");
+            move(loaded, result);
+            if (trackDeps) deps = assetDependencies(path);
+            return true;
         } catch (Exception ex) {
             err("SceneRenderer: failed to load ", path, ": ", ex.msg);
+            return false;
         }
     }
+}
+
+/**
+ * Files a `*.asset.json` model depends on: the asset file, its glTF render
+ * source and that glTF's own dependencies (`gltfFileDependencies`), as
+ * normalized paths. Load-time only.
+ */
+string[] assetDependencies(string assetJsonPath) @trusted {
+    import std.path : buildNormalizedPath;
+    import engine.assets.gltf : gltfFileDependencies;
+    string[] deps = [buildNormalizedPath(assetJsonPath)];
+    try {
+        auto file = loadAssetFile(assetJsonPath);
+        immutable source = file.renderGltfPath();
+        if (source.length) deps ~= gltfFileDependencies(source);
+    } catch (Exception) {}
+    return deps;
+}
+
+@("sceneRenderer.assetDependencies") unittest {
+    import std.algorithm.searching : canFind;
+    auto deps = assetDependencies("assets/models/crate.asset.json");
+    assert(deps[0] == "assets/models/crate.asset.json");
+    assert(deps.canFind("assets/models/pbr_cube.gltf"));
+    assert(deps.canFind("assets/models/pbr_cube_albedo.bmp"));
+    assert(assetDependencies("build/missing.asset.json") == ["build/missing.asset.json"]);
 }
 
 @("sceneRenderer.lightFallback") unittest {
