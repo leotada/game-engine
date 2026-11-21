@@ -583,6 +583,20 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
 - **WGSL Shader Hot-Reload (`engine.hotreload.shader_reload`):** `ShaderHotReloader` watches `assets/shaders/` (supporting `#include`, `#define`, `#ifdef`) and transactionally swaps pipelines without dropping frames on syntax errors. Deep dive: [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
 - **Scene rendering (editor + player):** both draw scenes with the shared `SceneRenderer` (OpenPBR, glTF/GLB mesh assets, scene lights with shadows, culling, LOD); `game-engine-player --headless-frames=600 --render --assert-no-gc` checks zero GC with real rendering. See [editor-guide.md §2.3.1](editor-guide.md).
 - **Visual Editor (`dub run --config=editor`):** Unity/Godot-style docked editor with Hierarchy, Scene/Game View, reflected Inspector, Project Browser (128-bit GUIDs + `.meta`), Console, Prefabs (`*.prefab.json`), Scenes (`*.scene.json`), and non-destructive Play/Pause/Step mode. Deep dive: [editor-guide.md](editor-guide.md).
+- **Additive Scenes, Prefabs & World Chunk Streaming (`OW-7`):**
+  - **Generational Handles (`engine.ecs`):** `auto h = world.handle(e);` pairs `EntityId` with a generation counter (`world.aliveHandle(h)`) so recycled IDs never alias stale references.
+  - **Additive Scenes & Prefabs (`engine.editor.scene_load`, `engine.scene.prefab`):** `loadSceneAdditive(world, chunkScene, offset)` merges chunks without clearing existing entities; `instantiatePrefab` is additive, `revertPrefab` destroys the full child hierarchy, `applyPrefabOverrides` exports only the prefab subtree, and `diffPrefabOverrides` / `applyPropertyOverrides` track per-field overrides.
+  - **9 km² World Streaming (`engine.scene.streamer`, `SceneFile` v2):**
+    ```d
+    WorldStreamer streamer;
+    if (sf.hasChunkManifest) {
+        streamer.initFromManifest(sf.chunkManifest);
+        streamer.startWorker(); // background GC-excluded file I/O
+    }
+    // Per frame:
+    streamer.update(world, camera.position, uploadBudgetMs: 2.0f);
+    ```
+    Deep dive: [plan-open-world-readiness.md](plan-open-world-readiness.md).
 
 ---
 

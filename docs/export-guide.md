@@ -143,8 +143,8 @@ dub run --config=export -- --target=<id> [options]
 - **Build Dependencies:** `./tools/build_sdl3_deps.sh windows-x86_64`
 - **Preflight Tools:** Compiler `ldc2`, linker `lld-link` / `x86_64-w64-mingw32-gcc` / `zig`
 - **Required Static Archives (`libs/windows-x86_64/`):**
-  - `SDL3_ttf-static.lib`, `SDL3_image-static.lib`, `freetype.lib`, `SDL3-static.lib`, `wgpu_native.lib`, `box3d.lib` (plus `symgc-cards.lib` with `--symgc`)
-- **System Libraries / Flags:** `user32.lib`, `gdi32.lib`, `winmm.lib`, `imm32.lib`, `ole32.lib`, `oleaut32.lib`, `version.lib`, `uuid.lib`, `advapi32.lib`, `setupapi.lib`, `shell32.lib`, `d3d12.lib`, `dxgi.lib`, `dxguid.lib`, `/SUBSYSTEM:WINDOWS`
+  - `SDL3_ttf-static.lib`, `SDL3_image-static.lib`, `freetype.lib`, `SDL3-static.lib`, `wgpu_native.lib`, `box3d.lib`, `recast_shim.lib`, `stb_vorbis.lib` (plus `symgc-cards.lib` built via `./tools/build_symgc.sh ldc2 windows-x86_64` when `--symgc` is enabled)
+- **System Libraries / Flags:** `user32.lib`, `gdi32.lib`, `winmm.lib`, `imm32.lib`, `ole32.lib`, `oleaut32.lib`, `version.lib`, `uuid.lib`, `advapi32.lib`, `setupapi.lib`, `shell32.lib`, `d3d12.lib`, `dxgi.lib`, `dxguid.lib`, `synchronization.lib`, `/SUBSYSTEM:WINDOWS` (plus `-i`, C import files `box3d_import.c` / `stb_vorbis_import.c` / `recast_import.c`, and `/EXPORT:__sd_gc_card_lo` / `__sd_gc_card_n` / `__sd_gc_card_base` when `--symgc` is enabled)
 - **Output Structure:**
   ```text
   build/windows-x86_64/

@@ -90,7 +90,7 @@ Because these types satisfy `isPod!T` (`!hasIndirections!T`), they are allocated
 ### Platform-Specific Implementations
 
 - **macOS / iOS Darwin Waiter:** Implemented in `vendor/symgc/source/d/sync/darwin/waiter.d` using a 64-bucket cache-line-padded table of `pthread_mutex_t` and `pthread_cond_t` pairs to match `FutexWaiter` semantics. Stop-the-world threads are suspended via Mach kernel calls `thread_suspend()` / `thread_resume()`.
-- **Windows High-Resolution Pacing:** High-precision sweeper pacing (`SYMGC_SWEEP_SLEEP_US=50`) uses `CreateWaitableTimerExW(..., CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, ...)` avoiding busy-spin CPU burn.
+- **Windows High-Resolution Pacing & Tier 2 Dirty Tracking:** High-precision sweeper pacing (`SYMGC_SWEEP_SLEEP_US=50`) caches a thread-local `CreateWaitableTimerExW(..., CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, ...)` handle per thread with TLS destructor cleanup (`d.gc.time`). When built in Tier 2 (without `-version=Symgc_cards`), `d.gc.memmap` reserves pointer regions with `MEM_WRITE_WATCH` and `d.gc.dirty` tracks written pages via `GetWriteWatch` / `ResetWriteWatch`. Cross-compile `libs/windows-x86_64/symgc-cards.lib` on Linux via `./tools/build_symgc.sh ldc2 windows-x86_64`.
 - **Android Memory Trimming:** Handles `SDL_EVENT_LOW_MEMORY` by calling `GC.defrag()` to release physical pages back to the mobile operating system immediately.
 
 ---

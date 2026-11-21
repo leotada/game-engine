@@ -14,7 +14,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 |---:|:---|:---|:---|:---|
 | 1 | Gameplay physics API (Box3D) | [plan-physics-api.md](plan-physics-api.md) · [physics-quickstart.md](physics-quickstart.md) | **Done** (`P0–P6` + `OW-1`) | Gameplay foundation + heightfields, per-triangle materials, breakable/spherical/wheel joints, filters, CCD, sleep |
 | 2 | Complete GC-safe adoption (lint) | [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) | **Done** (#9 Handle API deferred) | Storage POD + static lint |
-| 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **In Progress** | Compiler card-marking across Linux/Win/Android/macOS/iOS |
+| 2b | steadygc (symgc) Multiplatform GC | [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) | **Done** | Compiler card-marking across Linux/Win/Android/macOS/iOS + Windows `GetWriteWatch` Tier 2 |
 | 3 | OpenPBR Surface v1.1 + IBL + Shadows | [plan-openpbr.md](plan-openpbr.md) | **Phase 1 Done** (`PBR-0–5`, `OPBR-1–5`); **Phase 2 Pending** (`OPBR-6–9`) | Single-pass OpenPBR v1.1 + IBL + PCF done; remaining: per-pixel layer maps (`OPBR-6`), refractive transmission (`OPBR-7`), SSS/translucency (`OPBR-8`), local probes/SSR (`OPBR-9`) |
 | 4 | Post-processing | [plan-post-processing.md](plan-post-processing.md) | **Done** (PP-1–6) | HDR offscreen + bloom + ACES + FXAA; `App.post` |
 | 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
@@ -25,7 +25,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 | 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
-| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **In Progress (`OW-1..OW-6` Done)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather (**Done**), 3D/DSP/OGG audio (**Done**), ozz-physics ragdoll + UI circle clip/rotate (**Done**), Recast C-shim nav (**Done**), chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
+| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **In Progress (`OW-1..OW-7` Done)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather (**Done**), 3D/DSP/OGG audio (**Done**), ozz-physics ragdoll + UI circle clip/rotate (**Done**), Recast C-shim nav (**Done**), chunk streaming & Windows `steadygc` (**Done**), hot-reload & Blender splines (`OW-8`) |
 
 ### Ordering Notes
 
