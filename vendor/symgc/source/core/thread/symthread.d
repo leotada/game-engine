@@ -24,6 +24,61 @@ private Thread toThread(return scope ThreadBase t) @trusted nothrow @nogc pure
 	return cast(Thread) cast(void*) t;
 }
 
+public enum hasTlsGCData = __traits(hasMember, ThreadBase, "tlsGCData");
+
+static if (hasTlsGCData) {
+	public void* getTlsGCData(ThreadBase t) nothrow @nogc {
+		return t.tlsGCData();
+	}
+	public void setTlsGCData(ThreadBase t, void* p) nothrow @nogc {
+		t.tlsGCData = p;
+	}
+} else {
+	import core.atomic : atomicLoad, atomicStore, cas, MemoryOrder;
+	private enum MaxFallbackThreads = 256;
+	private struct FallbackTlsEntry {
+		void* threadPtr;
+		void* gcData;
+	}
+	private shared uint gTlsTableLock = 0;
+	private __gshared FallbackTlsEntry[MaxFallbackThreads] gTlsTable;
+	private __gshared size_t gTlsTableCount = 0;
+
+	private void tlsTableLock() nothrow @nogc {
+		while (!cas(&gTlsTableLock, 0u, 1u)) {}
+	}
+
+	private void tlsTableUnlock() nothrow @nogc {
+		atomicStore!(MemoryOrder.rel)(gTlsTableLock, 0u);
+	}
+
+	public void* getTlsGCData(ThreadBase t) nothrow @nogc {
+		void* key = cast(void*) t;
+		tlsTableLock();
+		scope(exit) tlsTableUnlock();
+		foreach (i; 0 .. gTlsTableCount) {
+			if (gTlsTable[i].threadPtr is key)
+				return gTlsTable[i].gcData;
+		}
+		return null;
+	}
+
+	public void setTlsGCData(ThreadBase t, void* p) nothrow @nogc {
+		void* key = cast(void*) t;
+		tlsTableLock();
+		scope(exit) tlsTableUnlock();
+		foreach (i; 0 .. gTlsTableCount) {
+			if (gTlsTable[i].threadPtr is key) {
+				gTlsTable[i].gcData = p;
+				return;
+			}
+		}
+		if (gTlsTableCount < MaxFallbackThreads) {
+			gTlsTable[gTlsTableCount++] = FallbackTlsEntry(key, p);
+		}
+	}
+}
+
 struct ThreadIterator
 {
 	this(Thread start)
@@ -75,7 +130,7 @@ bool suspendDruntimeThreads(bool alwaysSignal, ref uint suspended) {
 
 	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
 	{
-		auto tc = cast(ThreadCache*) t.tlsGCData();
+		auto tc = cast(ThreadCache*) getTlsGCData(t);
 
 		if (tc is null) {
 			// A druntime without thread hooks (see symgc.gcobj): a thread that is on the list
@@ -144,7 +199,7 @@ bool suspendDruntimeThreads(bool alwaysSignal, ref uint suspended) {
 		waitForDelayedThreads();
 		foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
 		{
-			auto tc = cast(ThreadCache*) t.tlsGCData();
+			auto tc = cast(ThreadCache*) getTlsGCData(t);
 			assert (tc !is null); // not possible at this point.
 			if (tc.suspendState != SuspendState.Suspended) {
 				if (!core_thread_osthread_suspend(t)) {
@@ -174,7 +229,7 @@ void scanWorldPausedData(ScanDg scan) {
 	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread)) {
 		import d.gc.tcache : ThreadCache;
 		import d.gc.tstate : SuspendState;
-		auto tc = cast(ThreadCache*) t.tlsGCData();
+		auto tc = cast(ThreadCache*) getTlsGCData(t);
 		if (tc !is null && tc.suspendState == SuspendState.Detached && numDetached < 8) {
 			auto b = t.m_curr.bstack;
 			auto top = t.m_curr.tstack;
@@ -245,7 +300,7 @@ bool resumeDruntimeThreads(ref uint suspended) {
 
 	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
 	{
-		auto tc = cast(ThreadCache*) t.tlsGCData();
+		auto tc = cast(ThreadCache*) getTlsGCData(t);
 
 		if (tc is null) {
 			// if the threadcache is null, this means we didn't suspend it. skip it.
@@ -289,7 +344,7 @@ void clearDruntimeThreadProbation() {
 
 	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
 	{
-		auto tc = cast(ThreadCache*) t.tlsGCData();
+		auto tc = cast(ThreadCache*) getTlsGCData(t);
 
 		if (tc is null) {
 			// if the threadcache is null, this means we didn't suspend it. skip it.
@@ -310,7 +365,7 @@ size_t getTotalCachedAllocations() {
 	size_t totalCached = 0;
 	foreach(t; ThreadIterator(ThreadBase.sm_tbeg.toThread))
 	{
-		auto tc = cast(ThreadCache*) t.tlsGCData();
+		auto tc = cast(ThreadCache*) getTlsGCData(t);
 		if (tc is null) {
 			continue;
 		}

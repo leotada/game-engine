@@ -361,6 +361,7 @@ struct ExportPipeline {
                     "ole32.lib", "oleaut32.lib", "version.lib", "uuid.lib",
                     "advapi32.lib", "setupapi.lib", "shell32.lib",
                     "d3d12.lib", "dxgi.lib", "dxguid.lib",
+                    "synchronization.lib",
                     "/SUBSYSTEM:WINDOWS",
                 ];
                 break;
@@ -434,6 +435,7 @@ struct ExportPipeline {
             case "libc.so.6":
             case "libm.so.6":
             case "libgcc_s.so.1":
+            case "libstdc++.so.6":
             case "ld-linux-x86-64.so.2":
             case "libpthread.so.0":
             case "libdl.so.2":
@@ -636,6 +638,12 @@ struct ExportPipeline {
             } else {
                 args ~= ["-L=--as-needed", "-L-lstdc++", "-L-lm", "-L-ldl", "-L-lpthread", "-L-lrt"];
             }
+        } else if (tgt == ExportTarget.windowsX86_64 && symGc) {
+            args ~= [
+                "-L=/EXPORT:__sd_gc_card_lo",
+                "-L=/EXPORT:__sd_gc_card_n",
+                "-L=/EXPORT:__sd_gc_card_base",
+            ];
         }
 
         return args;
@@ -681,7 +689,10 @@ struct ExportPipeline {
             format("-mtriple=%s", spec.ldcTriple),
             opts.release ? "-O3" : "-O0",
             "-release",
+            "-i",
             "-preview=dip1000",
+            "-P-std=c17",
+            "-P-Ivendor/box3d/include",
             "-I=source",
             "-I=source/bindings/box3d",
             "-I=source/bindings/recast",
@@ -691,9 +702,21 @@ struct ExportPipeline {
         if (symGc) {
             cmd ~= ["-d-version=Symgc_cards", "-d-version=Symgc_druntime_hooks", "-gc-card-marking"];
         }
-        cmd ~= "tools/player/player_main.d";
+        cmd ~= [
+            "tools/player/player_main.d",
+            "source/bindings/box3d/box3d_import.c",
+            "source/bindings/stb_vorbis/stb_vorbis_import.c",
+            "source/bindings/recast/recast_import.c",
+        ];
         foreach (arg; buildStaticLinkArgs(tgt, libsDir, symGc)) {
             cmd ~= format("-L=%s", arg);
+        }
+        if (tgt == ExportTarget.windowsX86_64 && symGc) {
+            cmd ~= [
+                "-L=/EXPORT:__sd_gc_card_lo",
+                "-L=/EXPORT:__sd_gc_card_n",
+                "-L=/EXPORT:__sd_gc_card_base",
+            ];
         }
         cmd ~= format("-of=%s", outBin);
         return cmd.join(" ");
@@ -1233,10 +1256,25 @@ unittest {
     assert(linuxArgs.any!(a => a.canFind("libSDL3.a")));
     assert(linuxArgs.any!(a => a == "-ldl"));
 
-    auto winArgs = ExportPipeline.buildStaticLinkArgs(ExportTarget.windowsX86_64, "libs/windows-x86_64");
+    auto winArgs = ExportPipeline.buildStaticLinkArgs(ExportTarget.windowsX86_64, "libs/windows-x86_64", true);
     assert(winArgs.any!(a => a.canFind("SDL3-static.lib")));
+    assert(winArgs.any!(a => a.canFind("symgc-cards.lib")));
     assert(winArgs.any!(a => a == "d3d12.lib"));
+    assert(winArgs.any!(a => a == "synchronization.lib"));
     assert(winArgs.any!(a => a == "/SUBSYSTEM:WINDOWS"));
+
+    BuildExportOptions winCmdOpts;
+    winCmdOpts.target = ExportTarget.windowsX86_64;
+    winCmdOpts.enableSymGc = true;
+    winCmdOpts.release = true;
+    winCmdOpts.outputDir = "build/test_win";
+    auto winCmd = ExportPipeline.buildCompileCommand(winCmdOpts);
+    assert(winCmd.canFind(" -i "));
+    assert(winCmd.canFind("box3d_import.c"));
+    assert(winCmd.canFind("symgc-cards.lib"));
+    assert(winCmd.canFind("/EXPORT:__sd_gc_card_lo"));
+    assert(winCmd.canFind("/EXPORT:__sd_gc_card_n"));
+    assert(winCmd.canFind("/EXPORT:__sd_gc_card_base"));
 
     auto macArgs = ExportPipeline.buildStaticLinkArgs(ExportTarget.macosArm64, "libs/macos-arm64");
     assert(macArgs.any!(a => a == "Metal"));

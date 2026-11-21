@@ -34,6 +34,25 @@ version(Windows) {
 		DWORD WaitForSingleObject(HANDLE, DWORD);
 		BOOL CloseHandle(HANDLE);
 	}
+
+	private HANDLE tlsWaitableTimer = null;
+	private bool tlsWaitableTimerTried = false;
+
+	static ~this() nothrow @nogc {
+		if (tlsWaitableTimer !is null) {
+			CloseHandle(tlsWaitableTimer);
+			tlsWaitableTimer = null;
+		}
+	}
+
+	private HANDLE getThreadWaitableTimer() nothrow @nogc {
+		if (!tlsWaitableTimerTried) {
+			tlsWaitableTimerTried = true;
+			tlsWaitableTimer = CreateWaitableTimerExW(
+				null, null, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+		}
+		return tlsWaitableTimer;
+	}
 }
 
 /**
@@ -55,14 +74,12 @@ void sleepMicros(uint us) {
 		LARGE_INTEGER dueTime;
 		// Negative value in units of 100ns indicates relative time
 		dueTime.QuadPart = -(cast(long) us * 10L);
-		HANDLE timer = CreateWaitableTimerExW(null, null, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+		HANDLE timer = getThreadWaitableTimer();
 		if (timer !is null) {
 			if (SetWaitableTimer(timer, &dueTime, 0, null, null, false)) {
 				WaitForSingleObject(timer, (us + 999) / 1000 + 1);
-				CloseHandle(timer);
 				return;
 			}
-			CloseHandle(timer);
 		}
 
 		if (us < 1000) {

@@ -17,8 +17,15 @@
         "source/bindings/stb_vorbis/stb_vorbis_import.c",
         "source/bindings/recast/recast_import.c"
     ],
-    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "stdc++", "m", "symgc-cards"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "symgc-cards"],
+    "libs-linux": ["stdc++", "m"],
+    "libs-windows": [
+        "user32", "gdi32", "winmm", "imm32", "ole32", "oleaut32",
+        "version", "uuid", "advapi32", "setupapi", "shell32",
+        "d3d12", "dxgi", "dxguid", "synchronization"
+    ],
     "lflags-linux": ["-L$PACKAGE_DIR/libs"],
+    "lflags-windows": ["/LIBPATH:$PACKAGE_DIR/libs/windows-x86_64", "/LIBPATH:$PACKAGE_DIR/libs"],
 
     "configurations": [
         {
@@ -112,7 +119,7 @@
                 "libs/linux-x86_64/librecast_shim.a",
                 "libs/linux-x86_64/libstb_vorbis.a"
             ],
-            "libs-linux": ["stdc++", "dl", "pthread", "rt"],
+            "libs-linux": ["stdc++", "m", "dl", "pthread", "rt"],
             "lflags-linux": [
                 "--as-needed"
             ]
@@ -207,7 +214,8 @@
             "targetName": "game-engine-test-physics",
             "mainSourceFile": "source/demo/test_physics.d",
             "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/outdoor.d", "source/demo/_legacy/*"],
-            "libs": ["box3d", "m"],
+            "libs": ["box3d"],
+            "libs-linux": ["m"],
             "versions": ["NoSDL", "NoWGPU"]
         },
         {
@@ -226,7 +234,8 @@
                 "source/engine/core/pod.d"
             ],
             "excludedSourceFiles": [],
-            "libs": ["box3d", "m"],
+            "libs": ["box3d"],
+            "libs-linux": ["m"],
             "versions": ["NoSDL", "NoWGPU", "NoAssetFile", "NoSceneFile"]
         },
         {

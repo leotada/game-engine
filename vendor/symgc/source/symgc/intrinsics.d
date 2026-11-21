@@ -1,13 +1,15 @@
 module symgc.intrinsics;
 
 public import core.bitop : bsr, bsf, popcnt, bswap;
-static if(__traits(compiles, () {import core.builtins : likely, unlikely; })) {
+static if(__traits(compiles, () nothrow @nogc @safe { import core.builtins : likely, unlikely; bool b = likely(true); })) {
 	public import core.builtins : likely, unlikely;
 }
 else
 {
-	bool likely(bool v) => v;
-	bool unlikely(bool v) => v;
+	pragma(inline, true)
+	bool likely(bool v) pure nothrow @nogc @safe => v;
+	pragma(inline, true)
+	bool unlikely(bool v) pure nothrow @nogc @safe => v;
 }
 
 // TODO: Change all uses of countLeadingZeros to bsr directly
@@ -51,24 +53,42 @@ T atomicFetchOp(string op, T, V1)(ref shared T val, V1 mod)
 			shared(ulong)* p = &val;
 			ulong m = mod;
 			ulong res = void;
-			asm pure nothrow @nogc @trusted {
-				mov RCX, p;
-				mov R8, m;
-				mov RAX, [RCX];
-			Lretry:
-				mov RDX, RAX;
-			}
 			static if (op == "|") {
-				asm pure nothrow @nogc @trusted { or RDX, R8; }
+				asm pure nothrow @nogc @trusted {
+					mov RCX, p;
+					mov R8, m;
+					mov RAX, [RCX];
+				LretryOr:
+					mov RDX, RAX;
+					or RDX, R8;
+					lock; cmpxchg [RCX], RDX;
+					jne LretryOr;
+					mov res, RAX;
+				}
 			} else static if (op == "&") {
-				asm pure nothrow @nogc @trusted { and RDX, R8; }
+				asm pure nothrow @nogc @trusted {
+					mov RCX, p;
+					mov R8, m;
+					mov RAX, [RCX];
+				LretryAnd:
+					mov RDX, RAX;
+					and RDX, R8;
+					lock; cmpxchg [RCX], RDX;
+					jne LretryAnd;
+					mov res, RAX;
+				}
 			} else {
-				asm pure nothrow @nogc @trusted { xor RDX, R8; }
-			}
-			asm pure nothrow @nogc @trusted {
-				lock; cmpxchg [RCX], RDX;
-				jne Lretry;
-				mov res, RAX;
+				asm pure nothrow @nogc @trusted {
+					mov RCX, p;
+					mov R8, m;
+					mov RAX, [RCX];
+				LretryXor:
+					mov RDX, RAX;
+					xor RDX, R8;
+					lock; cmpxchg [RCX], RDX;
+					jne LretryXor;
+					mov res, RAX;
+				}
 			}
 			return res;
 		} else {

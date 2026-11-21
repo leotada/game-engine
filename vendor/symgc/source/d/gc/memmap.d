@@ -20,6 +20,7 @@ version(Posix) {
 else version(Windows) {
 	import core.sys.windows.winbase;
 	import core.sys.windows.winnt;
+	enum DWORD MEM_WRITE_WATCH = 0x00200000;
 }
 
 // Note, this RESERVES address space, but does not COMMIT memory.
@@ -445,8 +446,13 @@ void* os_pages_map(void* addr, size_t size, size_t alignment) {
 		}
 	}
 	else version(Windows) {
-		auto ret =
-			VirtualAlloc(addr, size, MEM_RESERVE, PAGE_READWRITE);
+		void* ret = null;
+		version(Symgc_cards) {} else {
+			ret = VirtualAlloc(addr, size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
+		}
+		if (ret is null) {
+			ret = VirtualAlloc(addr, size, MEM_RESERVE, PAGE_READWRITE);
+		}
 		if (ret is null) {
 			return null;
 		}

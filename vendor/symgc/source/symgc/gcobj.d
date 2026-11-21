@@ -73,8 +73,9 @@ void initSDCThread(ThreadBase t) nothrow @nogc
 	}
 
 	// set up the thread to point at our thread cache;
+	import core.thread.symthread : setTlsGCData;
 	import d.gc.tcache;
-	t.tlsGCData = &threadCache;
+	setTlsGCData(t, &threadCache);
 }
 
 private pragma(crt_constructor) void gc_sdc_ctor()
@@ -82,7 +83,7 @@ private pragma(crt_constructor) void gc_sdc_ctor()
 	_d_register_sdc_gc();
 }
 
-// A druntime older than 2.112 (GDC 15 ships 2.111) has no thread-init hook in
+// A druntime older than 2.112 (GDC 15 ships 2.111, LDC 1.40 ships 2.110) has no thread-init hook in
 // registerGCFactory: it never tells the collector about the threads it creates, so
 // the first stop-the-world finds a druntime thread without a thread cache.
 // Such a druntime runs every module's thread-local constructor when a thread
@@ -93,7 +94,7 @@ enum druntimeCallsThreadHooks = __traits(compiles, {
 	registerGCFactory("sdc", &initialize, &initSDCThread);
 });
 
-static if (!druntimeCallsThreadHooks) version (Posix)
+static if (!druntimeCallsThreadHooks)
 {
 	// The lock of druntime's thread list is taken and released through these two (their names say
 	// what the collector uses them for).
@@ -107,15 +108,16 @@ static if (!druntimeCallsThreadHooks) version (Posix)
 	static this()
 	{
 		import core.thread : Thread;
+		import core.thread.symthread : getTlsGCData, setTlsGCData;
 		import d.gc.tcache;
 
 		auto t = Thread.getThis();
-		if (t is null || t.tlsGCData !is null)
+		if (t is null || getTlsGCData(t) !is null)
 			return;
 
 		if (processThread)
 		{
-			t.tlsGCData = &threadCache;
+			setTlsGCData(t, &threadCache);
 			return;
 		}
 
@@ -131,10 +133,11 @@ static if (!druntimeCallsThreadHooks) version (Posix)
 	static ~this()
 	{
 		import core.thread : Thread;
+		import core.thread.symthread : getTlsGCData;
 		import d.gc.tcache;
 
 		auto t = Thread.getThis();
-		if (t is null || processThread || t.tlsGCData !is &threadCache)
+		if (t is null || processThread || getTlsGCData(t) !is &threadCache)
 			return;
 
 		import d.gc.thread;
@@ -168,12 +171,8 @@ extern(C) void _d_register_sdc_gc()
 	}
 	else
 	{
-		version(Posix) {
-			registerGCFactory("sdc", &initialize);
-			registerGCFactory("sdcq", &initializeQuiet);
-		}
-		else
-			static assert(false, "No support for threadInit in gcinterface!");
+		registerGCFactory("sdc", &initialize);
+		registerGCFactory("sdcq", &initializeQuiet);
 	}
 }
 
@@ -189,7 +188,7 @@ private GC initializeQuiet()
 		// now it is ok to initialize
 		import d.gc.thread;
 		createProcess();
-		static if (!druntimeCallsThreadHooks) version (Posix)
+		static if (!druntimeCallsThreadHooks)
 			processThread = true;
 	}
 
@@ -644,8 +643,9 @@ final class SnazzyGC : SnazzyBases
 
 	void cleanupThread(ThreadBase t) nothrow @nogc
 	{
+		import core.thread.symthread : getTlsGCData;
 		import d.gc.tcache;
-		if (t.tlsGCData is &threadCache)
+		if (getTlsGCData(t) is &threadCache)
 		{
 			// called from the current thread.
 			import d.gc.thread;

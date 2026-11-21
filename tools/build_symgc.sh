@@ -39,13 +39,18 @@ detect_target() {
     echo "${os}-${arch}"
 }
 
+HOST_TARGET="$(detect_target)"
 if [[ -z "$TARGET" ]]; then
-    TARGET="$(detect_target)"
+    TARGET="$HOST_TARGET"
 fi
 
 OUT_DIR="$LIBS_DIR/$TARGET"
 mkdir -p "$OUT_DIR"
-OUT_LIB="$OUT_DIR/libsymgc-cards.a"
+if [[ "$TARGET" == *"windows"* ]]; then
+    OUT_LIB="$OUT_DIR/symgc-cards.lib"
+else
+    OUT_LIB="$OUT_DIR/libsymgc-cards.a"
+fi
 
 echo "=== Building steadygc (symgc) for $TARGET with $DC_BIN ==="
 echo "Source: $VENDOR_SRC"
@@ -66,25 +71,27 @@ COMPILER_NAME="$(basename "$DC_BIN")"
 case "$COMPILER_NAME" in
     ldc2|ldmd2*)
         EXTRA_FLAGS=(
-            "-O3" "-release"
+            "-O3" "-release" "-oq" "-od=$TMP_OBJDIR"
             "-d-version=Symgc_cards"
             "-d-version=Symgc_druntime_hooks"
             "-I=$VENDOR_SRC"
-            "-fPIC"
         )
         if [[ "$TARGET" == *"windows"* ]]; then
             EXTRA_FLAGS+=("-mtriple=x86_64-pc-windows-msvc")
-        elif [[ "$TARGET" == *"android"* ]]; then
-            EXTRA_FLAGS+=("-mtriple=aarch64-linux-android28")
-        elif [[ "$TARGET" == *"macos"* ]]; then
-            EXTRA_FLAGS+=("-mtriple=arm64-apple-macos")
+        else
+            EXTRA_FLAGS+=("-fPIC")
+            if [[ "$TARGET" == *"android"* ]]; then
+                EXTRA_FLAGS+=("-mtriple=aarch64-linux-android28")
+            elif [[ "$TARGET" == *"macos"* ]]; then
+                EXTRA_FLAGS+=("-mtriple=arm64-apple-macos")
+            fi
         fi
         echo "Building library with $DC_BIN: $OUT_LIB..."
         "$DC_BIN" -lib "-of=$OUT_LIB" "${EXTRA_FLAGS[@]}" "${SOURCES[@]}"
         ;;
     *)
         EXTRA_FLAGS=(
-            "-O" "-release" "-inline" "-boundscheck=off"
+            "-O" "-release" "-inline" "-boundscheck=off" "-oq" "-od=$TMP_OBJDIR"
             "-version=Symgc_cards"
             "-version=Symgc_druntime_hooks"
             "-I=$VENDOR_SRC"
@@ -95,7 +102,9 @@ case "$COMPILER_NAME" in
         ;;
 esac
 
-# Also symlink to libs/libsymgc-cards.a for default host builds
-ln -sf "$OUT_LIB" "$LIBS_DIR/libsymgc-cards.a"
+# Only update the host symlink when building for the current non-Windows host.
+if [[ "$TARGET" == "$HOST_TARGET" && "$TARGET" != *"windows"* ]]; then
+    ln -sf "$OUT_LIB" "$LIBS_DIR/libsymgc-cards.a"
+fi
 
 echo "=== Successfully built $OUT_LIB ($(du -h "$OUT_LIB" | cut -f1)) ==="

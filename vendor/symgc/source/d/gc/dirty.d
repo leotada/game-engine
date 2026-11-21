@@ -29,8 +29,12 @@ import d.sync.mutex;
 
 version(Symgc_cards) {
 	// Card marking active: kernel dirty-page tracking is omitted completely
-} else version(linux) version(X86_64) {
-	version = DirtyTracking;
+} else version(linux) {
+	version(X86_64) {
+		version = DirtyTracking;
+	}
+} else version(Windows) {
+	version = Win32DirtyTracking;
 }
 
 alias DirtyRangeDg = void delegate(const(void)* start, size_t size);
@@ -92,6 +96,8 @@ bool dirtyAvailable() {
 		return gCardRanges.available();
 	} else version(DirtyTracking) {
 		return gDirty.ensureInit();
+	} else version(Win32DirtyTracking) {
+		return gWinDirty.ensureInit();
 	} else {
 		return false;
 	}
@@ -107,6 +113,8 @@ void dirtyRegister(void* start, size_t size) {
 		gCardRanges.register(start, size);
 	} else version(DirtyTracking) {
 		gDirty.register(start, size);
+	} else version(Win32DirtyTracking) {
+		gWinDirty.register(start, size);
 	}
 }
 
@@ -120,6 +128,8 @@ void dirtyArm() {
 		gCardRanges.collect(null);
 	} else version(DirtyTracking) {
 		gDirty.collect(null);
+	} else version(Win32DirtyTracking) {
+		gWinDirty.collect(null);
 	}
 }
 
@@ -133,9 +143,127 @@ size_t dirtyCollect(scope DirtyRangeDg dg, bool rearm = true) {
 		return gCardRanges.collect(dg);
 	} else version(DirtyTracking) {
 		return gDirty.collect(dg, rearm);
+	} else version(Win32DirtyTracking) {
+		return gWinDirty.collect(dg, rearm);
 	} else {
 		return 0;
 	}
+}
+
+version(Win32DirtyTracking) {
+	import core.sys.windows.winnt : DWORD, ULONG, ULONG_PTR, PVOID;
+
+	enum DWORD WRITE_WATCH_FLAG_RESET = 0x01;
+
+	extern(Windows) nothrow @nogc {
+		uint GetWriteWatch(
+			DWORD dwFlags,
+			PVOID lpBaseAddress,
+			size_t dwRegionSize,
+			PVOID* lpAddresses,
+			ULONG_PTR* lpdwCount,
+			ULONG* lpdwGranularity
+		);
+		uint ResetWriteWatch(
+			PVOID lpBaseAddress,
+			size_t dwRegionSize
+		);
+	}
+
+	private enum WinMaxRanges = 1024;
+	private enum WinPageSize = 4096;
+
+	private struct WinRange {
+		size_t start;
+		size_t size;
+	}
+
+	private struct Win32DirtyTracker {
+		Mutex mutex;
+		bool available = true;
+		size_t count;
+		WinRange[WinMaxRanges] ranges;
+
+	shared:
+		bool ensureInit() {
+			mutex.lock();
+			scope(exit) mutex.unlock();
+
+			import core.stdc.stdlib : getenv;
+			auto want = getenv("SYMGC_CONCURRENT_MARK");
+			if (want !is null && want[0] == '0') {
+				return false;
+			}
+			auto env = getenv("SYMGC_DIRTY");
+			if (env !is null && env[0] == '0') {
+				return false;
+			}
+			return (cast(Win32DirtyTracker*) &this).available;
+		}
+
+		void register(void* start, size_t size) {
+			mutex.lock();
+			scope(exit) mutex.unlock();
+
+			auto t = cast(Win32DirtyTracker*) &this;
+			if (!t.available) return;
+			if (t.count >= WinMaxRanges) {
+				t.available = false;
+				return;
+			}
+			// Verify the mapping was reserved with MEM_WRITE_WATCH.
+			PVOID[4] probeAddrs;
+			ULONG_PTR probeCount = 4;
+			ULONG gran = 0;
+			if (GetWriteWatch(0, start, WinPageSize, probeAddrs.ptr, &probeCount, &gran) != 0) {
+				t.available = false;
+				return;
+			}
+			t.ranges[t.count++] = WinRange(cast(size_t) start, size);
+		}
+
+		size_t collect(scope DirtyRangeDg dg, bool rearm = true) {
+			mutex.lock();
+			scope(exit) mutex.unlock();
+
+			auto t = cast(Win32DirtyTracker*) &this;
+			if (!t.available) return 0;
+
+			enum Cap = 2048;
+			PVOID[Cap] addrs;
+			size_t totalPages = 0;
+			immutable DWORD flags = rearm ? WRITE_WATCH_FLAG_RESET : 0;
+
+			foreach (r; t.ranges[0 .. t.count]) {
+				if (dg is null) {
+					if (ResetWriteWatch(cast(PVOID) r.start, r.size) != 0) {
+						t.available = false;
+						return totalPages;
+					}
+					continue;
+				}
+				while (true) {
+					ULONG_PTR cnt = Cap;
+					ULONG gran = WinPageSize;
+					if (GetWriteWatch(flags, cast(PVOID) r.start, r.size,
+							addrs.ptr, &cnt, &gran) != 0) {
+						t.available = false;
+						return totalPages;
+					}
+					if (cnt == 0) break;
+					immutable size_t step = gran > 0 ? gran : WinPageSize;
+					foreach (i; 0 .. cnt) {
+						dg(addrs[i], step);
+						totalPages++;
+					}
+					if (!rearm || cnt < Cap) break;
+				}
+			}
+			return totalPages;
+		}
+	}
+
+	private shared Win32DirtyTracker gWinDirty;
 }
 
 version(DirtyTracking):
