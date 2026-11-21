@@ -37,6 +37,8 @@ import engine.gpu.ibl_dynamic : DynamicIbl;
 import engine.scene.time_of_day : applyEnvironment, applyEnvironmentToScene, evaluateEnvironment,
     skyIblParams, TimeOfDay, Weather;
 import engine.gpu.text;
+import engine.graphics.decals : DecalRenderer, DecalStyle, DecalSystem, proceduralDecalLayers;
+import engine.math.vec : Vec2;
 import engine.graphics.material : Material, MaterialParams;
 import engine.graphics.material_pool : MaterialHandle, MaterialPool;
 import engine.graphics.model : GltfAsset, GltfLoadOptions, ModelInstance, drawModel, loadGltfAsset;
@@ -72,6 +74,7 @@ private struct Options {
     /// Override surface wetness (< 0 = from weather).
     float wetness = -1;
     bool noEnvFog = false;
+    uint decals = 0;
     string screenshot;
 }
 
@@ -89,6 +92,7 @@ private Options parseArgs(string[] args) {
         else if (a == "--rain") o.rain = true;
         else if (a.startsWith("--wetness=")) o.wetness = a["--wetness=".length .. $].to!float;
         else if (a == "--no-env-fog") o.noEnvFog = true;
+        else if (a.startsWith("--decals=")) o.decals = a["--decals=".length .. $].to!uint;
         else if (a.startsWith("--screenshot=")) o.screenshot = a["--screenshot=".length .. $];
     }
     return o;
@@ -301,6 +305,27 @@ void main(string[] args) @trusted {
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
 
+    // Optional projected decals scattered around the camera ring (`--decals=N`).
+    immutable decalCap = opts.decals > 0 ? opts.decals : 1;
+    auto decals = DecalSystem.create(decalCap);
+    DecalRenderer decalRenderer;
+    if (opts.decals > 0) {
+        ubyte[][4] dAlb, dNrm;
+        proceduralDecalLayers(256, dAlb, dNrm);
+        const(ubyte)[][4] da = dAlb, dn = dNrm;
+        decalRenderer = DecalRenderer.create(app.gpu, scene, da[], dn[], 256, decalCap);
+        decalRenderer.attach(scene, app.renderer, decals);
+        foreach (i; 0 .. opts.decals) {
+            immutable ang = rng.range(0, 2 * PI);
+            immutable rr = PATH_RADIUS + rng.range(-60, 60);
+            immutable layer = cast(uint)(rng.next() * 4) & 3;
+            immutable sz = rng.range(2.0f, 5.0f);
+            decals.spawn(Vec3(cos(ang) * rr, 0, sin(ang) * rr), Vec3(0, 1, 0), Vec2(sz, sz), 1.5f,
+                         rng.range(0, 2 * PI), layer);
+        }
+    }
+    scope(exit) if (opts.decals > 0) decalRenderer.destroy();
+
     // Optional day/night + weather + engine sky + runtime HDR IBL.
     immutable bool envMode = opts.tod >= 0;
     TimeOfDay tod;
@@ -423,6 +448,10 @@ void main(string[] args) @trusted {
             immutable world = Mat4.translation(cos(v.angle) * v.radius, 0, sin(v.angle) * v.radius)
                             * Mat4.rotationY(-v.angle);
             drawModel(scene, vehicle, v.inst, world, pool);
+        }
+        if (opts.decals > 0) {
+            decals.update(dt);
+            decalRenderer.update(decals, camera);
         }
         scene.renderShadows(frame, lights);
         scene.end(frame);

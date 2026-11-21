@@ -364,6 +364,8 @@ struct Scene3DTextured {
     private uint shadowHookCount = 0;
     private OpaqueDrawHook[MAX_SHADOW_HOOKS] opaqueHooks;
     private uint opaqueHookCount = 0;
+    private OpaqueDrawHook[MAX_SHADOW_HOOKS] postOpaqueHooks;
+    private uint postOpaqueHookCount = 0;
 
     @disable this(this);
 
@@ -679,7 +681,19 @@ struct Scene3DTextured {
     }
 
     /// Remove every registered opaque draw hook.
-    void clearOpaqueHooks() nothrow @nogc { opaqueHookCount = 0; }
+    void clearOpaqueHooks() nothrow @nogc { opaqueHookCount = 0; postOpaqueHookCount = 0; }
+
+    /// Register a renderer drawn after every opaque hook and before the sky
+    /// and transparent batches — screen-space decals that read the opaque
+    /// depth (they may call `Renderer.snapshotOpaque`, which restarts the
+    /// scene pass; the scene re-binds its groups afterwards).
+    void addPostOpaqueHook(OpaqueDrawHook hook) nothrow @nogc {
+        if (postOpaqueHookCount >= MAX_SHADOW_HOOKS) {
+            warn("Scene3DTextured: post-opaque hook table full");
+            return;
+        }
+        postOpaqueHooks[postOpaqueHookCount++] = hook;
+    }
 
     /// Bind group layout of the per-view light VP (`@group(0)`, one mat4
     /// with a dynamic offset) used by shadow caster hooks. Creates the
@@ -1333,8 +1347,9 @@ struct Scene3DTextured {
             if (pass == 0) {
                 foreach (sib; staticBufs[0 .. staticCount]) drawStatic(frame, *sib);
                 foreach (hook; opaqueHooks[0 .. opaqueHookCount]) hook(frame);
+                foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) hook(frame);
                 if (skyEnabled) sky.draw(frame, frameBindGroup);
-                if (skyEnabled || opaqueHookCount > 0) {
+                if (skyEnabled || opaqueHookCount > 0 || postOpaqueHookCount > 0) {
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }

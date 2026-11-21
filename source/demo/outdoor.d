@@ -12,6 +12,7 @@
  *   --size=N          chunks per side (128 m each at 1 m cells; default 24 = 3 km)
  *   --cell=M          meters between height samples (default 1)
  *   --props=N         instanced rocks (default 12000)
+ *   --decals=N        projected decals (default 500)
  *   --tod=H           start time of day in hours (default 9.5)
  *   --time-scale=S    in-game seconds per real second multiplier (default 1; 0 freezes)
  *   --rain            start in a storm (clouds, rain, wet surfaces)
@@ -31,7 +32,9 @@ import engine.app;
 import engine.core.log;
 import engine.gpu.ibl_dynamic : DynamicIbl;
 import engine.gpu.text;
+import engine.graphics.decals : DecalRenderer, DecalStyle, DecalSystem, proceduralDecalLayers;
 import engine.graphics.material : Material;
+import engine.math.vec : Vec2;
 import engine.graphics.model : GltfAsset, GltfLoadOptions, loadGltfAsset;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, SamplerDesc, TextureFilter, TextureWrap;
@@ -59,6 +62,7 @@ private struct Options {
     uint size = 24;
     float cell = 1.0f;
     uint props = 12_000;
+    uint decals = 500;
     float tod = 9.5f;
     float timeScale = 1.0f;
     bool rain = false;
@@ -77,6 +81,7 @@ private Options parseArgs(string[] args) {
         if (a.startsWith("--size=")) o.size = v("--size=").to!uint;
         else if (a.startsWith("--cell=")) o.cell = v("--cell=").to!float;
         else if (a.startsWith("--props=")) o.props = v("--props=").to!uint;
+        else if (a.startsWith("--decals=")) o.decals = v("--decals=").to!uint;
         else if (a.startsWith("--tod=")) o.tod = v("--tod=").to!float;
         else if (a.startsWith("--time-scale=")) o.timeScale = v("--time-scale=").to!float;
         else if (a == "--rain") o.rain = true;
@@ -204,6 +209,43 @@ void main(string[] args) @trusted {
     scope(exit) rocksBuf.destroy();
     rocksBuf.setMeshCull(2, 700, 2);
 
+    // ---- Decals ------------------------------------------------------------
+    // Skid marks, impact cracks, mud and painted arrows around the camera
+    // presets and along the orbit path, projected along the terrain normal.
+    immutable decalCap = opts.decals > 0 ? opts.decals : 1;
+    auto decals = DecalSystem.create(decalCap);
+    ubyte[][4] decalAlb, decalNrm;
+    proceduralDecalLayers(256, decalAlb, decalNrm);
+    const(ubyte)[][4] da = decalAlb, dn = decalNrm;
+    auto decalRenderer = DecalRenderer.create(app.gpu, scene, da[], dn[], 256, decalCap);
+    decalRenderer.attach(scene, app.renderer, decals);
+    scope(exit) decalRenderer.destroy();
+    {
+        immutable c = terrain.center();
+        immutable pathRadius = worldSize * 0.3f;
+        foreach (i; 0 .. opts.decals) {
+            float x, z;
+            if (i % 3 == 0) { // near the low-ridge preset
+                x = c.x + 40 + rng.range(-60, 60);
+                z = c.z + 220 - rng.range(0, 160);
+            } else { // along the orbit path
+                immutable a = rng.range(0, 2 * PI);
+                immutable rr = pathRadius + rng.range(-40, 40);
+                x = c.x + cos(a) * rr;
+                z = c.z + sin(a) * rr;
+            }
+            immutable layer = cast(uint)(rng.next() * 4) & 3;
+            immutable float[4] sizes = [3.0f, 2.5f, 4.0f, 3.0f];
+            immutable sz = sizes[layer] * rng.range(0.7f, 1.6f);
+            DecalStyle st;
+            st.roughness = layer == 3 ? 0.5f : 0.85f;
+            st.opacity = layer == 2 ? 0.9f : 1.0f;
+            decals.spawn(Vec3(x, terrain.heightAt(x, z), z), terrain.normalAt(x, z),
+                         Vec2(layer == 0 ? sz * 0.6f : sz, sz * (layer == 0 ? 2.5f : 1.0f)), 2.0f,
+                         rng.range(0, 2 * PI), layer, st);
+        }
+    }
+
     // ---- Environment ---------------------------------------------------
     TimeOfDay tod;
     tod.hours = opts.tod;
@@ -302,6 +344,8 @@ void main(string[] args) @trusted {
         auto frame = app.beginFrame(Color4(0.45f, 0.6f, 0.8f, 1));
         if (!frame.valid) continue;
         terrainRenderer.update(terrain, camera);
+        decals.update(dt);
+        decalRenderer.update(decals, camera);
         scene.begin(camera);
         scene.submitStatic(rocksBuf);
         scene.renderShadows(frame, lights);
@@ -316,9 +360,9 @@ void main(string[] args) @trusted {
         text.drawText(frame, sformat(line[], "FPS %.0f  %02d:%02d  draws %u (+%u shadow)  terrain %u chunks / %u draws (+%u shadow)",
             fps.fps, cast(int) tod.hours, cast(int)((tod.hours % 1.0f) * 60), st.drawCalls, st.shadowDrawCalls,
             ts.visibleChunks, ts.drawCalls, ts.shadowDrawCalls), 16, 16, 2);
-        text.drawText(frame, sformat(line[], "rain %.2f  wet %.2f  clouds %.2f  ground layer %u  rocks %u/%u  [R] toggle rain",
+        text.drawText(frame, sformat(line[], "rain %.2f  wet %.2f  clouds %.2f  ground layer %u  rocks %u/%u  decals %u  [R] rain",
             weather.rainIntensity, weather.wetness, weather.cloudCoverage,
-            hit.hit ? cast(uint) hit.surfaceMaterialId : 0, st.staticInstancesVisible, rocksBuf.length()), 16, 44, 2);
+            hit.hit ? cast(uint) hit.surfaceMaterialId : 0, st.staticInstancesVisible, rocksBuf.length(), decalRenderer.drawnCount()), 16, 44, 2);
         if (opts.screenshot.length && frameNo + 1 == totalFrames) app.saveScreenshot(opts.screenshot);
         app.endFrame(frame);
 
