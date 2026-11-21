@@ -583,7 +583,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     var color = direct + ambient + totalEmission;
-    color = max(color, vec3<f32>(0.0));
+    color = max(color, vec3<f32>(0.0)) * cascadeDebugTint(in.worldPos);
     let rawAlpha = clamp(surfaceOpacity, 0.0, 1.0);
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
     let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);

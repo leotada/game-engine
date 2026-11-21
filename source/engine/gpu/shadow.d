@@ -54,34 +54,62 @@ enum float DEFAULT_SHADOW_NEAR = 0.1f;
 /// Square depth-only texture usable as both a render target (for the depth
 /// pass) and a texture binding (for sampling in the main pass).
 struct ShadowMap {
+    /// Maximum array layers (directional cascades) of one shadow map.
+    enum uint MAX_LAYERS = 4;
+
     uint resolution;
+    /// Array layers: 1 for spot / fixed directional maps, N for cascades.
+    uint layers = 1;
     WGPUTexture     depthTexture;
+    /// 2D view of layer 0 — render target for single-layer maps and the
+    /// binding used by spot shadows.
     WGPUTextureView depthView;
+    /// `dim2DArray` view of every layer — the directional shadow binding.
+    WGPUTextureView arrayView;
+    /// Per-layer 2D render views (`layerViews[0]` aliases `depthView`).
+    WGPUTextureView[MAX_LAYERS] layerViews;
     WGPUSampler     comparisonSampler;
 
     @disable this(this);
 
-    static ShadowMap create(ref GpuContext gpu, uint resolution = 2048) @trusted {
-        return createForDevice(gpu.getDevice(), resolution);
+    static ShadowMap create(ref GpuContext gpu, uint resolution = 2048, uint layers = 1) @trusted {
+        return createForDevice(gpu.getDevice(), resolution, layers);
     }
 
-    package(engine) static ShadowMap createForDevice(WGPUDevice device, uint resolution = 2048) @trusted {
+    package(engine) static ShadowMap createForDevice(WGPUDevice device, uint resolution = 2048,
+                                                     uint layers = 1) @trusted {
         ShadowMap s;
         s.resolution = resolution;
+        if (layers < 1) layers = 1;
+        if (layers > MAX_LAYERS) layers = MAX_LAYERS;
+        s.layers = layers;
 
         WGPUTextureDescriptor td;
         td.usage     = WGPUTextureUsage.renderAttachment | WGPUTextureUsage.textureBinding;
         td.dimension = WGPUTextureDimension.dim2D;
-        td.size      = WGPUExtent3D(resolution, resolution, 1);
+        td.size      = WGPUExtent3D(resolution, resolution, layers);
         td.format    = WGPUTextureFormat.depth32Float;
         s.depthTexture = wgpuDeviceCreateTexture(device, &td);
         if (s.depthTexture is null) fatal("Shadow map texture creation failed");
 
-        WGPUTextureViewDescriptor vd;
-        vd.format    = WGPUTextureFormat.depth32Float;
-        vd.dimension = WGPUTextureViewDimension.dim2D;
-        vd.aspect    = WGPUTextureAspect.depthOnly;
-        s.depthView = wgpuTextureCreateView(s.depthTexture, &vd);
+        foreach (l; 0 .. layers) {
+            WGPUTextureViewDescriptor vd;
+            vd.format          = WGPUTextureFormat.depth32Float;
+            vd.dimension       = WGPUTextureViewDimension.dim2D;
+            vd.aspect          = WGPUTextureAspect.depthOnly;
+            vd.baseArrayLayer  = l;
+            vd.arrayLayerCount = 1;
+            s.layerViews[l] = wgpuTextureCreateView(s.depthTexture, &vd);
+        }
+        s.depthView = s.layerViews[0];
+
+        WGPUTextureViewDescriptor avd;
+        avd.format          = WGPUTextureFormat.depth32Float;
+        avd.dimension       = WGPUTextureViewDimension.dim2DArray;
+        avd.aspect          = WGPUTextureAspect.depthOnly;
+        avd.baseArrayLayer  = 0;
+        avd.arrayLayerCount = layers;
+        s.arrayView = wgpuTextureCreateView(s.depthTexture, &avd);
 
         WGPUSamplerDescriptor sd;
         sd.addressModeU = WGPUAddressMode.clampToEdge;
@@ -96,13 +124,17 @@ struct ShadowMap {
         sd.maxAnisotropy = 1;
         s.comparisonSampler = wgpuDeviceCreateSampler(device, &sd);
 
-        info("Shadow map created: ", resolution, "×", resolution, " depth32Float");
+        info("Shadow map created: ", resolution, "×", resolution, "×", layers, " depth32Float");
         return s;
     }
 
     void destroy() @trusted nothrow @nogc {
         if (comparisonSampler !is null) { wgpuSamplerRelease(comparisonSampler); comparisonSampler = null; }
-        if (depthView !is null)         { wgpuTextureViewRelease(depthView); depthView = null; }
+        if (arrayView !is null)         { wgpuTextureViewRelease(arrayView); arrayView = null; }
+        foreach (ref v; layerViews) {
+            if (v !is null) { wgpuTextureViewRelease(v); v = null; }
+        }
+        depthView = null;
         if (depthTexture !is null)      { wgpuTextureRelease(depthTexture); depthTexture = null; }
     }
 }

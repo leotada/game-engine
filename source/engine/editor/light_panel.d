@@ -36,9 +36,23 @@ enum IblPreset : uint {
 struct SceneLightSettings {
     IblPreset iblPreset = IblPreset.defaultSky;
     float iblIntensity = 1.0f;
-    /// Ortho half-extent used when packing directional shadow VPs / gizmos.
+    /// Ortho half-extent used when packing directional shadow VPs / gizmos
+    /// (fixed shadow map, i.e. `shadowCascades == 0`).
     float dirShadowRadius = 14.0f;
     Vec3 dirShadowCenter = Vec3(0, 1, 0);
+    /// Directional shadow cascades (0 = one fixed map around `dirShadowCenter`).
+    uint shadowCascades = 4;
+    /// View distance covered by the cascades.
+    float shadowDistance = 150.0f;
+    /// Tint each cascade in the viewport.
+    bool debugCascades = false;
+}
+
+/// Copy the scene cascade settings into a directional light.
+void applyCascadeSettings(ref GpuDirLight d, ref const SceneLightSettings settings) pure nothrow @nogc {
+    d.cascades.count = settings.shadowCascades;
+    d.cascades.maxDistance = settings.shadowDistance;
+    d.debugCascades = settings.debugCascades;
 }
 
 /// Persistent UI state for Scene + Light inspector widgets.
@@ -244,6 +258,7 @@ LightSet packLightsFromWorld(W)(
                 d.intensity = light.intensity;
                 immutable radius = light.range > 0.1f ? light.range : settings.dirShadowRadius;
                 d.viewProj = directionalLightVP(d.direction, settings.dirShadowCenter, radius);
+                applyCascadeSettings(d, settings);
                 d.castShadows = light.castShadows != 0
                     && dirShadows < MAX_DIR_SHADOW_CASTERS;
                 if (d.castShadows) dirShadows++;
@@ -505,6 +520,17 @@ bool drawScenePanel(W)(
         changed = true;
     if (sliderFloat(ui, "Dir shadow R", state.scene.dirShadowRadius, 1, 80))
         changed = true;
+    {
+        bool csm = state.scene.shadowCascades > 0;
+        if (checkbox(ui, "Cascaded shadows", csm)) {
+            state.scene.shadowCascades = csm ? 4 : 0;
+            changed = true;
+        }
+        if (csm && sliderFloat(ui, "Shadow distance", state.scene.shadowDistance, 10, 1000))
+            changed = true;
+        if (csm && checkbox(ui, "Debug cascades", state.scene.debugCascades))
+            changed = true;
+    }
 
     separator(ui);
     label(ui, "Limits");

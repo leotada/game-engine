@@ -60,6 +60,8 @@ private struct Options {
     uint headlessFrames = 0;
     bool assertNoGc = false;
     bool noCull = false;
+    bool debugCascades = false;
+    string screenshot;
 }
 
 private Options parseArgs(string[] args) {
@@ -70,6 +72,8 @@ private Options parseArgs(string[] args) {
         else if (a.startsWith("--headless-frames=")) o.headlessFrames = a["--headless-frames=".length .. $].to!uint;
         else if (a == "--assert-no-gc") o.assertNoGc = true;
         else if (a == "--no-cull") o.noCull = true;
+        else if (a == "--debug-cascades") o.debugCascades = true;
+        else if (a.startsWith("--screenshot=")) o.screenshot = a["--screenshot=".length .. $];
     }
     return o;
 }
@@ -326,6 +330,7 @@ void main(string[] args) @trusted {
         lights.dir.color = Vec3(1.0f, 0.97f, 0.9f);
         lights.dir.intensity = 2.5f;
         lights.dir.castShadows = true;
+        lights.dir.debugCascades = opts.debugCascades;
         lights.shadowBias = 0.0006f;
         // Local shadow casters around the vehicle stream ahead of the camera.
         lights.points[0] = GpuPointLight(Vec3(ahead.x, 6, ahead.z), Vec3(1.0f, 0.6f, 0.3f), 30.0f, 40.0f, true);
@@ -370,6 +375,7 @@ void main(string[] args) @trusted {
         text.drawText(frame, sformat(line[], "LOD0 %u  LOD1 %u  LOD2 %u  LOD3+ %u   ranges %u",
             st.lodHistogram[0], st.lodHistogram[1], st.lodHistogram[2], st.lodHistogram[3],
             st.staticRangesDrawn), 16, 44, 2);
+        if (opts.screenshot.length && frameNo + 1 == totalFrames) app.saveScreenshot(opts.screenshot);
         app.endFrame(frame);
 
         if (headless && frameNo >= WARMUP) {

@@ -14,6 +14,7 @@ module engine.scene.light;
 import engine.core.pod : isPod;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
+public import engine.scene.cascades : CascadeSettings, MAX_CASCADES;
 
 @safe:
 
@@ -81,8 +82,15 @@ struct GpuDirLight {
     Vec3 direction = Vec3(0.3f, 1.0f, 0.5f);
     Vec3 color = Vec3(1.0f, 0.98f, 0.92f);
     float intensity = 3.5f;
+    /// Fixed shadow view-projection. Used when cascades are off
+    /// (`cascades.count == 0`) or when a caller-owned `ShadowMap` is bound.
     Mat4 viewProj = Mat4.identity();
     bool castShadows = false;
+    /// Cascaded shadow maps fitted to the camera by
+    /// `Scene3DTextured.renderShadows(frame, lights)` (engine-owned maps).
+    CascadeSettings cascades;
+    /// Tint each cascade in the shaded image (debug).
+    bool debugCascades = false;
 }
 
 /// Point light GPU params.

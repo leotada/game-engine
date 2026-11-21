@@ -371,11 +371,12 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 }
 
 /// Frame uniform size for textured PBR pipeline (multi-light UBO).
-/// Layout must match `shadows.wgsl` FrameUniforms (720 bytes):
+/// Layout must match `shadows.wgsl` FrameUniforms (1248 bytes):
 /// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts/time(16)
-/// + iblIntensity/pad(16) + SpotLight[4](512).
+/// + iblIntensity/wetness/rain/clouds(16) + SpotLight[4](512)
+/// + cascades(352) + camera(96) + atmosphere(80).
 /// Point lights live in a separate storage buffer at @binding(9).
-enum FRAME_UNIFORMS_SIZE = 720;
+enum FRAME_UNIFORMS_SIZE = 1248;
 /// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
 enum MATERIAL_PARAMS_SIZE = 144;
 /// Per-instance data of the textured PBR pipeline (buffer 1, stride 96):
@@ -438,7 +439,8 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[2].binding = 2;
     frameEntries[2].visibility = WGPUShaderStage.fragment;
     frameEntries[2].texture.sampleType = WGPUTextureSampleType.depth;
-    frameEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+    // Directional shadow: one layer per cascade (a fixed map is a 1-layer array).
+    frameEntries[2].texture.viewDimension = WGPUTextureViewDimension.dim2DArray;
 
     foreach (i; 0 .. 4) {
         frameEntries[3 + i].binding = cast(uint)(3 + i);

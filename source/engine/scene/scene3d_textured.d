@@ -30,6 +30,7 @@ import engine.scene.static_instances : collectVisibleRuns, StaticInstanceBuffer,
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
+import engine.scene.cascades : buildCascades, CascadeSet, MAX_CASCADES;
 import engine.scene.light :
     DIR_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, LightSet,
     MAX_POINT_LIGHTS, MAX_POINT_SHADOW_CASTERS,
@@ -75,6 +76,15 @@ struct GpuSpotLightUbo {
     float[16] viewProj;
 }
 static assert(GpuSpotLightUbo.sizeof == 128);
+
+/**
+ * Extra geometry drawn into shadow views (terrain, custom renderers). Called
+ * inside each directional shadow pass (fixed map or every cascade) after the
+ * batches. `vpBindGroup` + `dynamicOffset` bind the view's light VP with the
+ * `shadowVpLayout()` layout at `@group(0)`; `view` is the light frustum for culling.
+ */
+alias ShadowCasterHook = void delegate(WGPURenderPassEncoder pass, WGPUBindGroup vpBindGroup,
+                                       uint dynamicOffset, ref const Frustum view) nothrow @nogc;
 
 /// `drawMatrix` LOD argument: pick the level from the camera distance and the
 /// mesh's simplifier errors (LOD0 for meshes without a chain).
@@ -157,7 +167,7 @@ void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere loc
     }
 }
 
-/// CPU mirror of WGSL FrameUniforms (720 bytes).
+/// CPU mirror of WGSL FrameUniforms (`FRAME_UNIFORMS_SIZE` bytes).
 struct FrameUniforms {
     float[16] viewProj;
     float[3] cameraPos = [0, 5, 10];
@@ -168,10 +178,44 @@ struct FrameUniforms {
     uint dirEnabled = 1;
     float time = 0.0f;
     float iblIntensity = 1.0f;
-    float _padFrame0 = 0.0f;
-    float _padFrame1 = 0.0f;
-    float _padFrame2 = 0.0f;
+    /// 0 = dry, 1 = soaked: global OpenPBR wetness on rain-exposed surfaces.
+    float globalWetness = 0.0f;
+    /// 0..1 rain strength (ripples / streak intensity).
+    float rainIntensity = 0.0f;
+    /// 0..1 sky cloud coverage.
+    float cloudCoverage = 0.0f;
     GpuSpotLightUbo[MAX_SPOT_LIGHTS] spots;
+
+    // --- Cascaded shadow maps ---
+    float[16][MAX_CASCADES] cascadeViewProj;
+    /// View depth where each cascade ends.
+    float[4] cascadeSplits = [0, 0, 0, 0];
+    /// x = cascade count (0 = fixed legacy map), y = blend fraction,
+    /// z = fade start, w = fade end (view depth).
+    float[4] cascadeParams = [0, 0.1f, 0, 0];
+    /// Per cascade: x = texel world size, y = 1 / light depth range.
+    float[4][MAX_CASCADES] cascadeTexel;
+
+    // --- Camera ---
+    float[16] invViewProj;
+    float[3] cameraForward = [0, 0, -1];
+    float cameraNear = 0.1f;
+    float[2] viewportSize = [1920, 1080];
+    float cameraFar = 100.0f;
+    /// Bit 0: tint cascades for debugging.
+    uint debugFlags = 0;
+
+    // --- Atmosphere ---
+    /// rgb = fog color (linear HDR), w = density (1/m; 0 disables fog).
+    float[4] fogColorDensity = [0.6f, 0.7f, 0.8f, 0.0f];
+    /// x = height base, y = height falloff (1/m), z = start distance, w = max opacity.
+    float[4] fogHeight = [0, 0.05f, 0, 1];
+    /// rgb = sun in-scattering color, w = sun lobe power.
+    float[4] fogSun = [1.0f, 0.9f, 0.7f, 8.0f];
+    /// xyz = moon direction (surface → moon), w = moon intensity.
+    float[4] moonDir = [0, -1, 0, 0];
+    /// x = star intensity, y = sky exposure, z/w free.
+    float[4] skyParams = [0, 1, 0, 0];
 }
 static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
 
@@ -245,7 +289,9 @@ struct Scene3DTextured {
     private PodBuffer!StaticRun staticRuns;
 
     private enum uint SHADOW_VP_STRIDE = 256;
-    private enum uint MAX_SHADOW_PASS_SLOTS = 1 + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
+    /// Shadow VP slots reserved for the directional light (one per cascade).
+    private enum uint DIR_SLOTS = MAX_CASCADES;
+    private enum uint MAX_SHADOW_PASS_SLOTS = DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + MAX_SPOT_SHADOW_CASTERS;
     private bool shadowPipeReady = false;
     private TexShadowPipeline shadowPipe;
     private WGPUBuffer shadowVpBuf;
@@ -288,6 +334,20 @@ struct Scene3DTextured {
     // Last views bound into `frameBindGroup`; rebuild only when one changes.
     private WGPUSampler boundShadowSampler;
     private WGPUTextureView[7] boundShadowViews;
+    private WGPUTextureView defaultShadowArrayView;
+
+    // Camera captured in `begin` (cascade fitting).
+    private Camera frameCamera;
+    // Cascades fitted by the automatic `renderShadows(frame, lights)` path;
+    // consumed by `setLightsImpl` when `cascadesPending` is set.
+    private CascadeSet cascadeSet;
+    private bool cascadesPending = false;
+    private bool debugCascades = false;
+
+    // Extra shadow casters (terrain, …) drawn into every directional view.
+    private enum MAX_SHADOW_HOOKS = 4;
+    private ShadowCasterHook[MAX_SHADOW_HOOKS] shadowHooks;
+    private uint shadowHookCount = 0;
 
     @disable this(this);
 
@@ -313,10 +373,13 @@ struct Scene3DTextured {
         s.frameData.shadowBias = 0.0004f;
         s.frameData.iblIntensity = 1.0f;
 
+        s.frameData.invViewProj = Mat4.identity().m;
+        foreach (ref m; s.frameData.cascadeViewProj) m = Mat4.identity().m;
+
         s.createDefaultShadows(device);
         s.rebuildFrameBindGroup(
             s.defaultShadowSampler,
-            s.defaultShadow2dView,
+            s.defaultShadowArrayView,
             s.defaultShadowCubeView, s.defaultShadowCubeView,
             s.defaultShadowCubeView, s.defaultShadowCubeView,
             s.defaultShadow2dView, s.defaultShadow2dView);
@@ -421,12 +484,26 @@ struct Scene3DTextured {
     /// `dirShadow` may be null (uses a fully-lit placeholder).
     /// Point/spot lights with `castShadows` consume maps from `pointShadows` /
     /// `spotShadows` in order; overflow warns and leaves those lights unshadowed.
+    /// A caller-owned `dirShadow` is sampled as one fixed map with
+    /// `lights.dir.viewProj` (cascades apply only to engine-owned maps, see
+    /// `renderShadows(frame, lights)`).
     void setLights(ref const LightSet lights,
+                   scope ShadowMap* dirShadow,
+                   scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
+                   scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
+        cascadesPending = false;
+        setLightsImpl(lights, dirShadow, pointShadows, spotShadows);
+    }
+
+    private void setLightsImpl(ref const LightSet lights,
                    scope ShadowMap* dirShadow,
                    scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                    scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
         frameData.shadowBias = lights.shadowBias;
         frameData.dirEnabled = lights.dirEnabled ? 1 : 0;
+        debugCascades = lights.dir.debugCascades;
+        if (debugCascades) frameData.debugFlags |= 1u;
+        else frameData.debugFlags &= ~1u;
 
         if (lights.dirEnabled) {
             immutable d = lights.dir.direction.normalized();
@@ -441,6 +518,7 @@ struct Scene3DTextured {
             if (lights.dir.castShadows && dirShadow is null)
                 warn("Directional castShadows requested but no ShadowMap provided");
         }
+        applyCascadeUniforms(cascadesPending && dirShadow !is null);
 
         immutable pc = lights.pointCount > MAX_POINT_LIGHTS
             ? MAX_POINT_LIGHTS : lights.pointCount;
@@ -514,7 +592,7 @@ struct Scene3DTextured {
             spotShadowUsed++;
         }
 
-        auto dirView = (dirShadow !is null) ? dirShadow.depthView : defaultShadow2dView;
+        auto dirView = (dirShadow !is null) ? dirShadow.arrayView : defaultShadowArrayView;
         auto sampler = defaultShadowSampler;
         if (dirShadow !is null)
             sampler = dirShadow.comparisonSampler;
@@ -527,6 +605,51 @@ struct Scene3DTextured {
             sampler, dirView,
             boundPoints[0], boundPoints[1], boundPoints[2], boundPoints[3],
             boundSpots[0], boundSpots[1]);
+    }
+
+    /// Copy `cascadeSet` into the frame uniforms, or switch to the fixed map.
+    private void applyCascadeUniforms(bool useCascades) nothrow @nogc {
+        if (!useCascades || cascadeSet.count == 0) {
+            frameData.cascadeParams[0] = 0;
+            return;
+        }
+        immutable n = cascadeSet.count;
+        foreach (i; 0 .. MAX_CASCADES) {
+            immutable k = i < n ? i : n - 1;
+            frameData.cascadeViewProj[i] = cascadeSet.viewProj[k].m;
+            frameData.cascadeSplits[i] = cascadeSet.splitFar[k];
+            frameData.cascadeTexel[i] = [cascadeSet.texelWorld[k],
+                cascadeSet.depthRange[k] > 0 ? 1.0f / cascadeSet.depthRange[k] : 0.0f, 0, 0];
+        }
+        frameData.cascadeParams = [cast(float) n, cascadeBlend, cascadeSet.fadeStart, cascadeSet.fadeEnd];
+        // Legacy consumers of `dirLight.viewProj` see the first cascade.
+        frameData.dirLight.viewProj = cascadeSet.viewProj[0].m;
+    }
+
+    private float cascadeBlend = 0.1f;
+
+    /// Cascades fitted for the current frame (valid after `renderShadows`).
+    ref const(CascadeSet) cascades() const return nothrow @nogc { return cascadeSet; }
+
+    /// Register geometry drawn into every directional shadow view (terrain
+    /// renderers). Hooks persist across frames; `clearShadowCasterHooks` removes them.
+    void addShadowCasterHook(ShadowCasterHook hook) nothrow @nogc {
+        if (shadowHookCount >= MAX_SHADOW_HOOKS) {
+            warn("Scene3DTextured: shadow caster hook table full");
+            return;
+        }
+        shadowHooks[shadowHookCount++] = hook;
+    }
+
+    /// Remove every registered shadow caster hook.
+    void clearShadowCasterHooks() nothrow @nogc { shadowHookCount = 0; }
+
+    /// Bind group layout of the per-view light VP (`@group(0)`, one mat4
+    /// with a dynamic offset) used by shadow caster hooks. Creates the
+    /// shadow resources on first use.
+    WGPUBindGroupLayout shadowVpLayout() @trusted {
+        ensureShadowResources();
+        return shadowPipe.bindGroupLayout;
     }
 
     /// Backward-compatible single directional light + shadow map.
@@ -582,11 +705,18 @@ struct Scene3DTextured {
     void begin(ref const Camera camera) @trusted {
         lodCameraPos = camera.position;
         lodFovY = camera.fovY;
+        frameCamera = camera;
         immutable vp = camera.viewProjection();
         cameraFrustum = Frustum.fromViewProj(vp);
         frameStats = RenderStats.init;
         frameData.viewProj = vp.m;
+        frameData.invViewProj = vp.inverse().m;
         frameData.cameraPos = [camera.position.x, camera.position.y, camera.position.z];
+        immutable fwd = (camera.target - camera.position).normalized();
+        frameData.cameraForward = [fwd.x, fwd.y, fwd.z];
+        frameData.cameraNear = camera.near;
+        frameData.cameraFar = camera.far;
+        frameData.viewportSize = [lodScreenHeight * camera.aspect, lodScreenHeight];
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
 
         batchCount = 0;
@@ -621,12 +751,25 @@ struct Scene3DTextured {
         LightSet resolved = resolveLightsForShadows(lights);
 
         ShadowMap* dirPtr = null;
+        bool cascaded = false;
         if (resolved.dirEnabled && resolved.dir.castShadows) {
+            immutable cs = resolved.dir.cascades;
+            cascaded = cs.count > 0;
+            immutable uint layers = cascaded ? (cs.count > MAX_CASCADES ? MAX_CASCADES : cs.count) : 1;
+            immutable uint res = cascaded && cs.resolution ? cs.resolution : DIR_SHADOW_RESOLUTION;
+            if (hasOwnedDirShadow && (ownedDirShadow.layers != layers || ownedDirShadow.resolution != res)) {
+                ownedDirShadow.destroy();
+                hasOwnedDirShadow = false;
+            }
             if (!hasOwnedDirShadow) {
-                ownedDirShadow = ShadowMap.createForDevice(device, DIR_SHADOW_RESOLUTION);
+                ownedDirShadow = ShadowMap.createForDevice(device, res, layers);
                 hasOwnedDirShadow = true;
             }
             dirPtr = &ownedDirShadow;
+            if (cascaded) {
+                cascadeSet = buildCascades(frameCamera, resolved.dir.direction, cs);
+                cascadeBlend = cs.blendFraction;
+            }
         }
 
         PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointPtrs;
@@ -659,20 +802,32 @@ struct Scene3DTextured {
             sUsed++;
         }
 
-        renderShadows(frame, resolved, dirPtr, pointPtrs, spotPtrs);
+        renderShadowsImpl(frame, resolved, dirPtr, pointPtrs, spotPtrs, cascaded);
     }
 
     /// Automatic batch shadow rendering using caller-provided shadow maps.
+    /// The directional map is rendered as one fixed view (`lights.dir.viewProj`).
     void renderShadows(ref FrameContext frame,
                        ref const LightSet lights,
                        scope ShadowMap* dirShadow,
                        scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                        scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
+        renderShadowsImpl(frame, lights, dirShadow, pointShadows, spotShadows, false);
+    }
+
+    private void renderShadowsImpl(ref FrameContext frame,
+                       ref const LightSet lights,
+                       scope ShadowMap* dirShadow,
+                       scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
+                       scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows,
+                       bool cascaded) @trusted {
         if (!frame.valid || frame.postResolved) return;
         LightSet resolved = resolveLightsForShadows(lights);
 
-        setLights(resolved, dirShadow, pointShadows, spotShadows);
+        cascadesPending = cascaded && dirShadow !is null;
+        setLightsImpl(resolved, dirShadow, pointShadows, spotShadows);
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
+        immutable uint cascadeCount = cascadesPending ? cascadeSet.count : 0;
 
         bool anyCast = (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null);
         if (!anyCast) {
@@ -689,9 +844,11 @@ struct Scene3DTextured {
 
         ensureShadowResources();
 
-        // Directional-light frustum for caster culling; point/spot views draw every instance.
+        // Fixed directional map: cull casters through the batch partition.
+        // Cascades cull per view through the caster lists, like point / spot views.
         Frustum dirFrustum;
-        immutable bool cullDir = resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null;
+        immutable bool cullDir = resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null
+            && cascadeCount == 0;
         if (cullDir)
             dirFrustum = Frustum.fromViewProj(resolved.dir.viewProj);
         uint casterBatches = 0;
@@ -709,7 +866,10 @@ struct Scene3DTextured {
         }
 
         uint maxSlotUsed = 0;
-        if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
+        if (cascadeCount > 0) {
+            foreach (c; 0 .. cascadeCount) storeVp(c, cascadeSet.viewProj[c].m);
+            maxSlotUsed = cascadeCount;
+        } else if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
             storeVp(0, resolved.dir.viewProj.m);
             maxSlotUsed = 1;
         }
@@ -721,7 +881,7 @@ struct Scene3DTextured {
                 pointShadows[slot].nearPlane,
                 pointShadows[slot].farPlane);
             foreach (face; 0 .. 6) {
-                immutable uSlot = 1 + cast(uint) slot * 6 + face;
+                immutable uSlot = DIR_SLOTS + cast(uint) slot * 6 + face;
                 storeVp(uSlot, vps[face].m);
                 if (uSlot + 1 > maxSlotUsed) maxSlotUsed = uSlot + 1;
             }
@@ -729,7 +889,7 @@ struct Scene3DTextured {
         foreach (i; 0 .. frameData.spotCount) {
             immutable int slot = frameData.spots[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
-            immutable uSlot = 1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot;
+            immutable uSlot = DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot;
             storeVp(uSlot, resolved.spots[i].viewProj.m);
             if (uSlot + 1 > maxSlotUsed) maxSlotUsed = uSlot + 1;
         }
@@ -743,17 +903,22 @@ struct Scene3DTextured {
         casterStaging.clear();
         if (casterBatches > 0) {
             casterRanges.resize(MAX_SHADOW_PASS_SLOTS * batchCount);
+            if (cascadeCount > 0) {
+                uint[MAX_CASCADES] slots;
+                foreach (c; 0 .. cascadeCount) slots[c] = c;
+                gatherLocalCasters(slots[0 .. cascadeCount], Vec3(0, 0, 0), 0);
+            }
             foreach (i; 0 .. frameData.pointCount) {
                 immutable int slot = pointLightsData[i].shadowSlot;
                 if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
                 uint[6] slots;
-                foreach (face; 0 .. 6) slots[face] = 1 + cast(uint) slot * 6 + face;
+                foreach (face; 0 .. 6) slots[face] = DIR_SLOTS + cast(uint) slot * 6 + face;
                 gatherLocalCasters(slots[], resolved.points[i].position, pointShadows[slot].farPlane);
             }
             foreach (i; 0 .. frameData.spotCount) {
                 immutable int slot = frameData.spots[i].shadowSlot;
                 if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
-                uint[1] slots = [1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot];
+                uint[1] slots = [DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot];
                 gatherLocalCasters(slots[], resolved.spots[i].position, resolved.spots[i].range);
             }
             uploadCasterStaging();
@@ -762,8 +927,13 @@ struct Scene3DTextured {
         frame.suspendScenePass();
         scope(exit) frame.resumeScenePass();
 
-        if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
-            encodeShadowView(frame.encoder, dirShadow.depthView, 0, casterBatches > 0 || staticCount > 0, true);
+        immutable bool anyGeometry = casterBatches > 0 || staticCount > 0;
+        if (cascadeCount > 0) {
+            foreach (c; 0 .. cascadeCount)
+                encodeShadowView(frame.encoder, dirShadow.layerViews[c], c, anyGeometry,
+                                 ShadowViewKind.cascade);
+        } else if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
+            encodeShadowView(frame.encoder, dirShadow.depthView, 0, anyGeometry, ShadowViewKind.fixedDir);
         }
         foreach (i; 0 .. frameData.pointCount) {
             immutable int slot = pointLightsData[i].shadowSlot;
@@ -772,8 +942,8 @@ struct Scene3DTextured {
                 encodeShadowView(
                     frame.encoder,
                     pointShadows[slot].faceViews[face],
-                    1 + cast(uint) slot * 6 + face,
-                    casterBatches > 0 || staticCount > 0, false);
+                    DIR_SLOTS + cast(uint) slot * 6 + face,
+                    anyGeometry, ShadowViewKind.local);
             }
         }
         foreach (i; 0 .. frameData.spotCount) {
@@ -782,9 +952,18 @@ struct Scene3DTextured {
             encodeShadowView(
                 frame.encoder,
                 spotShadows[slot].depthView,
-                1 + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot,
-                casterBatches > 0 || staticCount > 0, false);
+                DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot,
+                anyGeometry, ShadowViewKind.local);
         }
+    }
+
+    private enum ShadowViewKind : ubyte {
+        /// Fixed directional map: batch partition + distance culling + hooks.
+        fixedDir,
+        /// One directional cascade: per-view caster lists + distance culling + hooks.
+        cascade,
+        /// Point face / spot view: per-view caster lists.
+        local,
     }
 
     private static LightSet resolveLightsForShadows(ref const LightSet lights) {
@@ -826,10 +1005,18 @@ struct Scene3DTextured {
     }
 
     private void encodeShadowView(WGPUCommandEncoder encoder, WGPUTextureView targetView,
-                                  uint vpSlot, bool drawBatches, bool dirView) nothrow @nogc @trusted {
+                                  uint vpSlot, bool drawBatches, ShadowViewKind kind) nothrow @nogc @trusted {
         auto pass = beginShadowPassView(encoder, targetView, /*clear=*/true);
+        immutable bool dirView = kind == ShadowViewKind.fixedDir;
+        immutable bool distanceCull = kind != ShadowViewKind.local;
+        immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
+        Mat4 lightVp;
+        {
+            import core.stdc.string : memcpy;
+            memcpy(lightVp.m.ptr, shadowVpStaging.ptr + vpSlot * SHADOW_VP_STRIDE, 64);
+        }
+        immutable lightFrustum = Frustum.fromViewProj(lightVp);
         if (drawBatches) {
-            immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
             foreach (bi, ref b; batches[0 .. batchCount]) {
                 if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
@@ -862,13 +1049,13 @@ struct Scene3DTextured {
                 frameStats.shadowInstancesDrawn += count;
             }
             if (staticCount > 0) {
-                Mat4 lightVp;
-                import core.stdc.string : memcpy;
-                memcpy(lightVp.m.ptr, shadowVpStaging.ptr + vpSlot * SHADOW_VP_STRIDE, 64);
-                immutable lightFrustum = Frustum.fromViewProj(lightVp);
                 foreach (sib; staticBufs[0 .. staticCount])
-                    encodeStaticShadow(pass, *sib, lightFrustum, dirView);
+                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull);
             }
+        }
+        if (kind != ShadowViewKind.local) {
+            foreach (hook; shadowHooks[0 .. shadowHookCount])
+                hook(pass, shadowVpBg, dynOffset, lightFrustum);
         }
         endShadowPass(pass);
     }
@@ -1229,6 +1416,10 @@ struct Scene3DTextured {
             wgpuTextureViewRelease(defaultShadow2dView);
             defaultShadow2dView = null;
         }
+        if (defaultShadowArrayView !is null) {
+            wgpuTextureViewRelease(defaultShadowArrayView);
+            defaultShadowArrayView = null;
+        }
         if (defaultShadow2dTex !is null) {
             wgpuTextureRelease(defaultShadow2dTex);
             defaultShadow2dTex = null;
@@ -1269,6 +1460,14 @@ struct Scene3DTextured {
             vd.dimension = WGPUTextureViewDimension.dim2D;
             vd.aspect = WGPUTextureAspect.depthOnly;
             defaultShadow2dView = wgpuTextureCreateView(defaultShadow2dTex, &vd);
+
+            WGPUTextureViewDescriptor avd;
+            avd.format = WGPUTextureFormat.depth32Float;
+            avd.dimension = WGPUTextureViewDimension.dim2DArray;
+            avd.aspect = WGPUTextureAspect.depthOnly;
+            avd.baseArrayLayer = 0;
+            avd.arrayLayerCount = 1;
+            defaultShadowArrayView = wgpuTextureCreateView(defaultShadow2dTex, &avd);
         }
         // 1×1×6 depth cube (point placeholders)
         {

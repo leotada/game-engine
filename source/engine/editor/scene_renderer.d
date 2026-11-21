@@ -25,7 +25,7 @@ module engine.editor.scene_renderer;
 import engine.assets.asset_file : AssetKind, loadAssetFile;
 import engine.core.log;
 import engine.editor.components : MaterialOverride, Visual, VisualKind, worldMatrix;
-import engine.editor.light_panel : SceneLightSettings, packLightsFromWorld;
+import engine.editor.light_panel : applyCascadeSettings, SceneLightSettings, packLightsFromWorld;
 import engine.gpu.context : GpuContext;
 import engine.gpu.renderer : FrameContext;
 import engine.gpu.shadow : directionalLightVP;
@@ -61,6 +61,7 @@ LightSet defaultSunLight(ref const SceneLightSettings settings) {
     set.dir.intensity = 2.5f;
     set.dir.castShadows = true;
     set.dir.viewProj = directionalLightVP(set.dir.direction, settings.dirShadowCenter, settings.dirShadowRadius);
+    applyCascadeSettings(set.dir, settings);
     set.shadowBias = 0.0004f;
     return set;
 }
