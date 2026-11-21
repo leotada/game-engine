@@ -12,6 +12,7 @@ import engine.physics.world : PhysicsWorld;
 import engine.editor.components : Camera3D;
 import engine.editor.demo_level : findCurrentCamera, sceneCameraToGpu;
 import engine.editor.light_panel : SceneLightSettings;
+import engine.editor.physics_panel : makeAssetResolver;
 import engine.editor.physics_sim : PhysicsSimSession;
 import engine.editor.scene_load : loadSceneIntoWorld;
 import engine.editor.selection : noSelection;
@@ -20,6 +21,7 @@ import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
 import engine.scene.scene_file : SceneFile, loadSceneFile;
+import engine.scene.streamer : WorldStreamer;
 import engine.editor.scene_renderer : SceneRenderer;
 import engine.core.log : info, warn, err;
 
@@ -56,11 +58,18 @@ void main(string[] args) {
     SceneWorld world = SceneWorld.init;
     world.ensureRegistered!Camera3D();
     SceneLightSettings lightSettings;
+    WorldStreamer streamer;
+    bool streamingEnabled = false;
 
     if (exists(scenePath)) {
         try {
             auto sf = loadSceneFile(scenePath);
             loadSceneIntoWorld(world, sf, lightSettings);
+            if (sf.hasChunkManifest && sf.chunkManifest.chunks.length > 0) {
+                streamer.initFromManifest(sf.chunkManifest);
+                streamer.startWorker();
+                streamingEnabled = true;
+            }
             info("Player: loaded scene %s (%d entities)", scenePath, cast(int) world.entityCount());
         } catch (Exception e) {
             err("Player: failed to load scene %s: %s", scenePath, e.msg);
@@ -69,9 +78,13 @@ void main(string[] args) {
 
     auto physics = PhysicsWorld.createDefault();
     PhysicsSimSession sim;
-    sim.beginSimulate(world, physics, null);
+    sim.beginSimulate(world, physics, makeAssetResolver(world));
 
     if (headless && !renderHeadless) {
+        scope (exit) {
+            if (streamingEnabled)
+                streamer.stopWorker();
+        }
         info("Player: running %u headless frames...", headlessFrames);
         size_t gcBefore = 0;
         if (assertNoGc) {
@@ -80,6 +93,8 @@ void main(string[] args) {
         }
 
         foreach (f; 0 .. headlessFrames) {
+            if (streamingEnabled)
+                streamer.update(world, Vec3(0, 0, 0), 2.0f);
             sim.tick(world, physics, 1.0f / 60.0f);
         }
 
@@ -100,6 +115,8 @@ void main(string[] args) {
     renderer.syncAssets(app.gpu, world); // import every model before the first frame
 
     scope (exit) {
+        if (streamingEnabled)
+            streamer.stopWorker();
         renderer.destroy();
         sim.stopSimulate(world);
     }
@@ -112,16 +129,8 @@ void main(string[] args) {
             return;
         }
 
-        sim.tick(world, physics, 1.0f / 60.0f);
-
-        auto frame = app.beginFrame(Color4(0.08f, 0.09f, 0.12f, 1.0f));
-        if (!frame.valid) {
-            return;
-        }
-
         immutable uint winW = app.window.width > 0 ? app.window.width : 1280;
         immutable uint winH = app.window.height > 0 ? app.window.height : 720;
-        frame.setViewport(0.0f, 0.0f, cast(float) winW, cast(float) winH, winW, winH);
 
         immutable EntityId camEntity = findCurrentCamera(world);
         Camera viewCam;
@@ -132,6 +141,18 @@ void main(string[] args) {
             viewCam = Camera.create(0.9f, aspect, 0.1f, 1000.0f);
             viewCam.lookAt(Vec3(0.0f, 4.0f, 9.0f), Vec3(0.0f, 0.5f, 0.0f));
         }
+
+        if (streamingEnabled)
+            streamer.update(world, viewCam.position, 2.0f);
+
+        sim.tick(world, physics, 1.0f / 60.0f);
+
+        auto frame = app.beginFrame(Color4(0.08f, 0.09f, 0.12f, 1.0f));
+        if (!frame.valid) {
+            return;
+        }
+
+        frame.setViewport(0.0f, 0.0f, cast(float) winW, cast(float) winH, winW, winH);
 
         renderer.render(app.gpu, world, frame, viewCam, lightSettings, cast(float) winH);
 

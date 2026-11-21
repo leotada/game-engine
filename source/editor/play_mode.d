@@ -5,6 +5,7 @@ import engine.ecs.scene_world : SceneWorld;
 import engine.physics.world : PhysicsWorld;
 import engine.core.strings : StringTable;
 import engine.editor.light_panel : SceneLightSettings;
+import engine.editor.physics_panel : makeAssetResolver;
 import engine.editor.physics_sim : PhysicsSimSession;
 import engine.editor.scene_load : worldToSceneFile, loadSceneIntoWorld;
 import engine.scene.scene_file : SceneFile;
@@ -60,7 +61,7 @@ struct PlayMode {
         state = PlayState.playing;
 
         // Start physics
-        physicsSim.beginSimulate(world, physics, null);
+        physicsSim.beginSimulate(world, physics, makeAssetResolver(world));
 
         // Dispatch onStart to script components
         scriptCtx.world = &world;
