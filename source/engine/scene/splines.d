@@ -26,6 +26,7 @@ module engine.scene.splines;
 import std.exception : enforce;
 import std.json : JSONType, JSONValue, parseJSON;
 import engine.math.spline : Spline3, SplineHit, SplineKind;
+import engine.core.strings : StringId, StringTable;
 import engine.math.vec : Vec3;
 import engine.scene.scene_file : SceneFile;
 
@@ -36,10 +37,11 @@ enum splineSetVersion = 1;
 /// `SceneAssetLink.kind` naming a spline set.
 enum splineAssetLinkKind = "splines";
 
-/// One named path with its gameplay attributes.
+/// One named path with its gameplay attributes. `name` / `role` are
+/// interned in the owning `SplineSet.strings`.
 struct SplinePath {
-    string name;
-    string role = "road";
+    StringId name;
+    StringId role;
     /// Full road / river width in metres.
     float width = 8.0f;
     uint lanes = 2;
@@ -50,28 +52,37 @@ struct SplinePath {
 
 struct SplineSet {
     SplinePath[] paths;
+    /// Names and roles of `paths`.
+    StringTable strings;
+
+    /// Text of a path's `name` / `role`.
+    const(char)[] text(StringId id) const nothrow @nogc { return strings.get(id); }
 
     /// Path called `name`, or null.
     inout(SplinePath)* find(scope const(char)[] name) inout return @trusted {
-        foreach (ref p; paths) if (p.name == name) return &p;
+        immutable id = strings.lookup(name);
+        if (id.isNull) return null;
+        foreach (ref p; paths) if (p.name == id) return &p;
         return null;
     }
 
     /// Number of paths with `role`.
     size_t countRole(scope const(char)[] role) const {
+        immutable id = strings.lookup(role);
+        if (id.isNull) return 0;
         size_t n;
-        foreach (ref p; paths) if (p.role == role) n++;
+        foreach (ref p; paths) if (p.role == id) n++;
         return n;
     }
 
     /**
-     * Closest point over every path with `role` (any role when empty).
-     * Returns the path index (or -1) and fills `hit`.
+     * Closest point over every path with `role` (any role when null),
+     * `@nogc`. Returns the path index (or -1) and fills `hit`.
      */
-    ptrdiff_t closest(Vec3 pos, out SplineHit hit, scope const(char)[] role = null) const {
+    ptrdiff_t closest(Vec3 pos, out SplineHit hit, StringId role = StringId.init) const nothrow @nogc {
         ptrdiff_t best = -1;
         foreach (i, ref p; paths) {
-            if (role.length && p.role != role) continue;
+            if (!role.isNull && p.role != role) continue;
             immutable h = p.curve.closestPoint(pos);
             if (best < 0 || h.separation < hit.separation) {
                 hit = h;
@@ -79,6 +90,14 @@ struct SplineSet {
             }
         }
         return best;
+    }
+
+    /// ditto, by role name (looks the role up; not `@nogc`).
+    ptrdiff_t closest(Vec3 pos, out SplineHit hit, scope const(char)[] role) const {
+        if (role.length == 0) return closest(pos, hit);
+        immutable id = strings.lookup(role);
+        if (id.isNull) return -1;
+        return closest(pos, hit, id);
     }
 }
 
@@ -108,11 +127,14 @@ SplineSet parseSplineSetJson(string text, uint samplesPerSegment = 32) @trusted 
             "splines[]");
         SplinePath p;
         enforce("name" in item && item["name"].type == JSONType.string, "splines[]: 'name' must be a string");
-        p.name = item["name"].str;
+        immutable pathName = item["name"].str;
+        p.name = set.strings.intern(pathName);
+        string role = "road";
         if ("role" in item) {
             enforce(item["role"].type == JSONType.string, "splines[].role must be a string");
-            p.role = item["role"].str;
+            role = item["role"].str;
         }
+        p.role = set.strings.intern(role);
         if ("kind" in item) {
             enforce(item["kind"].type == JSONType.string, "splines[].kind must be a string");
             immutable k = item["kind"].str;
@@ -139,7 +161,7 @@ SplineSet parseSplineSetJson(string text, uint samplesPerSegment = 32) @trusted 
             p.curve.points ~= Vec3(num(pt[0], "x"), num(pt[1], "y"), num(pt[2], "z"));
         }
         enforce(p.curve.segmentCount > 0,
-            "splines[]: '" ~ p.name ~ "' has too few points for its kind");
+            "splines[]: '" ~ pathName ~ "' has too few points for its kind");
         p.curve.rebuild(samplesPerSegment);
         set.paths ~= p;
     }
@@ -153,8 +175,8 @@ string splineSetToJson(ref const SplineSet set) @trusted {
         JSONValue[] pts;
         foreach (v; p.curve.points) pts ~= JSONValue([v.x, v.y, v.z]);
         JSONValue o;
-        o["name"] = p.name;
-        o["role"] = p.role;
+        o["name"] = set.text(p.name).idup;
+        o["role"] = set.text(p.role).idup;
         o["kind"] = p.curve.kind == SplineKind.bezier ? "bezier" : "catmullRom";
         o["closed"] = p.curve.closed;
         o["alpha"] = p.curve.alpha;
