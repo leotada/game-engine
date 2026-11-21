@@ -569,6 +569,8 @@ dub run --config=outdoor -- --headless-frames=600 --assert-no-gc
 # Open-world bench: 12k static props over 3 km², 200 multi-node vehicles, LOD + culling stats
 dub run --config=openworld-bench
 dub run --config=openworld-bench -- --headless-frames=600 --assert-no-gc
+# Extra flags: --debug-cascades --fog --tod=H (sky + day/night + dynamic IBL) --rain
+#              --wetness=X --no-env-fog --decals=N --screenshot=PATH --props=N --no-cull
 
 # Visual editor (gizmos + debug overlay + shadows + docking)
 dub run --config=editor

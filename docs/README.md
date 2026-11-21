@@ -11,7 +11,8 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [animation-guide.md](animation-guide.md) | Skeletal animation (`ozz-animation` port), IK, ECS integration, and GPU skinning |
 | [audio-guide.md](audio-guide.md) | 8-bus audio mixer, real-time `@nogc` DSP (VHF radio/biquads), 3D Doppler spatialization, and OGG Vorbis streaming |
 | [navigation-guide.md](navigation-guide.md) | 3D Recast/Detour NavMesh baking, `.navmesh` persistence, `TileCache` dynamic obstacles, `NavCrowd`, and ECS integration |
-| [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU) |
+| [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU), open-world and outdoor rendering (CSM, fog, sky, weather, IBL, decals) |
+| [terrain-guide.md](terrain-guide.md) | Chunked heightmap terrain: splat layers, LOD/geomorphing, shadows, Box3D colliders, procedural generation |
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |
 | [export-guide.md](export-guide.md) | Multiplatform release export (`--target=<id>` specs, CLI flags, static deps, and media formats) |
@@ -40,7 +41,8 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-split-screen.md](plan-split-screen.md) | Pending | Split-screen local co-op: multi-viewport rendering + gamepads (#11) |
 | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Delivered | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
 | [plan-navigation-recast.md](plan-navigation-recast.md) | Delivered (C shim `OW-6`; pure-D deferred) | 3D NavMesh, TileCache dynamic obstacles & Crowd navigation (`engine.nav`) |
-| [plan-open-world-readiness.md](plan-open-world-readiness.md) | In Progress (`OW-1`, `OW-2`, `OW-4`, `OW-6` Done) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering (**Done**), spatial/DSP/OGG audio (**Done**), ragdoll/sockets, UI clip/rotate, Recast nav (**Done**), streaming, Windows steadygc, Blender/hot-reload (#13) |
+| [plan-ow3-outdoor-rendering.md](plan-ow3-outdoor-rendering.md) | Done | OW-3 implementation plan: CSM, HDR fog, sky/day-night/runtime IBL/wetness, terrain, decals |
+| [plan-open-world-readiness.md](plan-open-world-readiness.md) | In Progress (`OW-1`, `OW-2`, `OW-3`, `OW-4`, `OW-6` Done) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering (**Done**), CSM/terrain/fog/sky/decals (**Done**), spatial/DSP/OGG audio (**Done**), ragdoll/sockets, UI clip/rotate, Recast nav (**Done**), streaming, Windows steadygc, Blender/hot-reload (#13) |
 
 ## History / Cancelled
 

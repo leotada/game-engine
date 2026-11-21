@@ -191,7 +191,9 @@ Example (expanded for documentation readability; production disk files omit whit
   "strings": ["Sun", "assets/models/crate.asset.json", "Lamp"],
   "settings": {
     "gravity": [0, -9.81, 0],
-    "iblPreset": "procedural_default"
+    "iblPreset": "procedural_default",
+    "fog": { "enabled": true, "color": [0.6, 0.7, 0.85], "density": 0.002, "heightBase": 0,
+             "heightFalloff": 0.02, "startDistance": 0, "maxOpacity": 1 }
   },
   "entities": [
     {
@@ -232,6 +234,8 @@ Example (expanded for documentation readability; production disk files omit whit
   ]
 }
 ```
+
+`settings.fog` is optional (OW-3). It is written only when the scene has fog settings, and unknown keys are rejected. The editor maps it to `SceneLightSettings.fog`. See [graphics.md § Height fog](graphics.md#outdoor-rendering-ow-3).
 
 ---
 
