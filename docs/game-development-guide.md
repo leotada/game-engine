@@ -18,7 +18,8 @@ A single `import engine;` re-exports the core runtime (`core`, `ecs`, `math`, `p
 | **Assets & Mesh Optimization** | `engine.assets.*`, `engine.meshopt.*` | [export-guide.md](export-guide.md) · [plan-meshoptimizer.md](plan-meshoptimizer.md) |
 | **Physics (Box3D)** | `engine.physics` | [physics-quickstart.md](physics-quickstart.md) |
 | **Skeletal Animation (`ozz`)** | `engine.animation` (opt-in), `engine.animation.ecs` | [animation-guide.md](animation-guide.md) |
-| **Audio** | `engine.audio` | — |
+| **Audio (Buses, DSP, 3D, OGG)** | `engine.audio` | [audio-guide.md](audio-guide.md) |
+| **Navigation (Recast/Detour)** | `engine.nav` (opt-in) | [navigation-guide.md](navigation-guide.md) |
 | **DevTools & Hot-Reload** | `engine.devtools.*`, `engine.hotreload.*` (opt-in) | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) |
 | **Visual Editor & Release Export** | `source/editor/*`, `tools/export_main.d` | [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md) |
 
@@ -439,32 +440,68 @@ Deep dive: [animation-guide.md](animation-guide.md).
 
 ## 12. Audio (`engine.audio`)
 
-Load WAV clips with `AudioClip.loadWav` (or resample via `clip.convertTo(48_000, 2)` / synthesize with `AudioClip.fromInterleavedF32`). Use `AudioEngine` for simple one-shot playback or `AudioMixer` for 32 polyphonic voices with buses, pitch, and looping:
+Load WAV clips with `AudioClip.loadWav` (or resample via `clip.convertTo(48_000, 2)` / synthesize with `AudioClip.fromInterleavedF32`), or stream compressed `.ogg` Vorbis files with `AudioStream.openOggFile` / `openOggMemory`. `AudioMixer` mixes up to 32 polyphonic voices across 8 independent buses (`sfx`, `music`, `voice`, `radio`, `ambient`, `ui`, `custom0`, `custom1`) with per-bus/per-voice `@nogc` DSP chains (`lowPass`, `highPass`, `bandPass`, `waveshaper`, `staticHiss`, and `DspChain.vhfRadio()`):
 
 ```d
 auto mixer = AudioMixer.create();
 scope(exit) mixer.destroy();
+
 auto click = AudioClip.loadWav("assets/click.wav");
 scope(exit) click.destroy();
 
 mixer.setBusGain(AudioBus.sfx, 0.8f);
-immutable v = mixer.play(click, AudioBus.sfx, volume: 1.0f, pitch: 1.05f, loop: false);
+mixer.setBusDsp(AudioBus.radio, DspChain.vhfRadio());
+immutable v = mixer.play(click, AudioBus.sfx, volume: 1.0f, pitch: 1.05f);
+
+// OGG Vorbis streaming (call stream.pump() each frame on main thread):
+auto music = AudioStream.openOggFile("assets/theme.ogg", loop: true);
+scope(exit) music.close();
+mixer.playStream(music, AudioBus.music, volume: 0.7f);
 ```
 
-Stereo panning and 3D one-shots: `mixer.setPan(voice, -1..+1)` (or the `pan` argument of `play`) places a voice in the stereo field (mono sources are panned, stereo sources get balance). `play3D` in `engine.audio.spatial` derives pan from the listener's `right` vector and applies logarithmic (inverse-distance, -6 dB per doubling) attenuation plus pitch; sounds beyond `maxDistance` are skipped:
+3D spatialization & Doppler shift (`engine.audio.spatial`): use `Listener3D` + `play3D` for lightweight one-shots, or `AudioListener3D` + `AudioSource3D` + `updateSource3D` for velocity-based Doppler pitch shifts and `spatialBlend`:
 
 ```d
-Listener3D ear = { position: cam.position, right: cam.right };
-play3D(mixer, glassBreak, hitPos, ear, SpatialParams(refDistance: 2, maxDistance: 40),
-       volume: 1.0f, pitch: 0.95f);
-// moving emitter: updateVoice3D(mixer, voice, newPos, ear, params);
+AudioListener3D ear = { position: cam.position, forward: cam.forward, up: Vec3(0, 1, 0), velocity: playerVel };
+AudioSource3D siren = { position: carPos, velocity: carVel, refDistance: 4, maxDistance: 120 };
+VoiceId sv = play3D(mixer, sirenClip, siren, ear, loop: true);
+updateSource3D(mixer, sv, siren, ear); // per frame
 ```
 
-Deep tip: Call `excludeAudioThreadFromGc()` on custom real-time audio callbacks to keep them out of GC stop-the-world handshakes.
+Deep dive: [audio-guide.md](audio-guide.md).
 
 ---
 
-## 13. DevTools, Shader Hot-Reload & Visual Editor
+## 13. 3D Navigation (`engine.nav`)
+
+Bake tiled Recast/Detour navigation meshes (`NavMesh` + `NavTileCache`), query A* / straight paths (`NavQuery`), add or remove runtime cylinder/AABB/OBB obstacles (`NavTileCache`), simulate multi-agent local avoidance (`NavCrowd`), or step ECS agents (`NavAgent`, `NavMoveRequest`, `stepNavAgents`):
+
+```d
+import engine.nav;
+
+NavMesh navMesh;
+NavTileCache tileCache;
+scope(exit) { tileCache.destroy(); navMesh.destroy(); }
+
+bakeNavMesh(navMesh, tileCache, verts, indices, NavBakeConfig.defaults());
+
+auto query = NavQuery.create(navMesh);
+auto crowd = NavCrowd.create(maxAgents: 64, maxAgentRadius: 0.6f, navMesh);
+scope(exit) { crowd.destroy(); query.destroy(); }
+
+// In fixed update / frame loop (@nogc):
+tileCache.flushUpdates(navMesh);
+stepNavAgents!(GameWorld, Position)(world, crowd, query, dt);
+
+// Debug overlay:
+drawNavMesh(gizmos, navMesh);
+```
+
+Deep dive: [navigation-guide.md](navigation-guide.md).
+
+---
+
+## 14. DevTools, Shader Hot-Reload & Visual Editor
 
 - **Gizmos & Debug Overlay (`engine.devtools`):**
   ```d
@@ -490,7 +527,7 @@ Deep tip: Call `excludeAudioThreadFromGc()` on custom real-time audio callbacks 
 
 ---
 
-## 14. Building, External Projects & Multiplatform Export
+## 15. Building, External Projects & Multiplatform Export
 
 ### 14.1 Requirements & Common DUB Commands
 
