@@ -53,7 +53,7 @@ This is a commercial-grade 3D game engine written in **D**, targeting Bevy Engin
 
 ### Workflow: Commits and Memory
 
-- **At every step / phase / milestone, make a local git commit** (never push unless asked). One logical unit of work per commit, with tests green first.
+- **Always make multiple small, focused local git commits — one per feature / sub-step / delivery** (never bundle multiple unrelated features or sub-phases into a single giant commit, and never push unless asked). Each commit must leave tests green.
 - **At every step / phase / milestone, record in ai-memory what was decided and what was done** (decisions, deviations from the plan, open items), so later sessions can resume without re-deriving context.
 
 ### Performance Principles
