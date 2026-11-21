@@ -110,6 +110,25 @@ struct SceneRenderer {
     /// Number of `*.asset.json` models loaded so far.
     size_t loadedAssetCount() const nothrow @nogc { return assets.length; }
 
+    /// Unload a cached `GltfAsset` slot by interned path `StringId.id` so streamed chunks
+    /// can release GPU memory when unloaded. Returns true if an asset was destroyed.
+    bool unloadAsset(uint stringId) @trusted {
+        if (stringId >= assetSlot.length)
+            return false;
+        immutable slot = assetSlot[stringId];
+        if (slot <= 0) {
+            assetSlot[stringId] = ASSET_UNKNOWN;
+            return false;
+        }
+        immutable idx = cast(size_t)(slot - 1);
+        if (idx < assets.length && assets[idx] !is null) {
+            assets[idx].destroy();
+            assets[idx] = null;
+        }
+        assetSlot[stringId] = ASSET_UNKNOWN;
+        return true;
+    }
+
     /**
      * Load every mesh asset referenced by `world` that has not been seen yet.
      * Called by `render`; call it right after loading a scene to keep the
@@ -184,7 +203,7 @@ struct SceneRenderer {
 
     void destroy() @trusted {
         if (!ready) return;
-        foreach (a; assets) a.destroy();
+        foreach (a; assets) if (a !is null) a.destroy();
         assets = null;
         assetSlot = null;
         plane.destroy();
