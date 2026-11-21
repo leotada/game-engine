@@ -213,6 +213,16 @@ struct App {
         return true;
     }
 
+    /// Toggle fullscreen and reconfigure the swapchain and HDR/post targets to the
+    /// new drawable size right away. Returns false if SDL refused the change.
+    /// Games should call this instead of `window.setFullscreen`, then resize
+    /// their own size-dependent state (camera, UI) from `window.width/height`.
+    bool setFullscreen(bool enabled) @trusted {
+        immutable bool ok = window.setFullscreen(enabled);
+        handleResize();
+        return ok;
+    }
+
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
         _frameStartTime = MonoTime.currTime;
         return renderer.beginFrame(clearColor);

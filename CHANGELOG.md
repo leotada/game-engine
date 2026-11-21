@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fullscreen toggle crashed with a wgpu scissor validation error (`2026-11-20`)**:
+  - `Window.setFullscreen` refreshed the window size itself, so the next `App.handleResize()` saw no change and never reconfigured the swapchain. The UI then drew at the new size onto the old-size target (`Scissor Rect ... is not contained in the render target`) and wgpu aborted.
+  - `Window.setFullscreen` no longer touches `width()/height()`; the new `App.setFullscreen(bool)` toggles it and reconfigures the swapchain and post targets immediately. Games should call the `App` method.
+
 ### Added
 
 - **Audio: per-voice panning and 3D one-shot SFX (`2026-11-19`)**:

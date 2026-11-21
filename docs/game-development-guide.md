@@ -83,7 +83,7 @@ void main() {
 ### `App` & `Window` Key Options
 
 - **Present mode & VSync:** `App.create(title, w, h, WGPUPresentMode.fifo)` (`fifo` = VSync, `mailbox` / `immediate` = uncapped). Toggle at runtime via `app.setVsync(bool)` or `app.setPresentMode(mode)`; set frame budget for `steadygc` slack stepping with `app.setTargetFps(fps)` (`0` = uncapped).
-- **Window flags & runtime controls:** `Window.create(title, w, h, WindowOptions(fullscreen, borderless, resizable, highPixelDensity, hidden))`; at runtime call `app.window.setFullscreen(bool)`, `setTitle(text)`, `setResizable(bool)`, `setBordered(bool)`, `setIcon(rgba, w, h)`, `setCursorVisible(bool)`, `setCustomCursor(rgba, w, h, hotX, hotY)`, `resetCursor()`, and `setRelativeMouseMode(bool)`.
+- **Window flags & runtime controls:** `Window.create(title, w, h, WindowOptions(fullscreen, borderless, resizable, highPixelDensity, hidden))`; at runtime call `app.setFullscreen(bool)` (reconfigures the swapchain and post targets; `window.setFullscreen` alone leaves them at the old size and no longer updates `width()/height()`), `app.window.` `setTitle(text)`, `setResizable(bool)`, `setBordered(bool)`, `setIcon(rgba, w, h)`, `setCursorVisible(bool)`, `setCustomCursor(rgba, w, h, hotX, hotY)`, `resetCursor()`, and `setRelativeMouseMode(bool)`.
 - **Screenshots:** Call `app.saveScreenshot("shot.png")` before `app.endFrame(frame)` to capture the presented frame via SDL3 (`SDL_SavePNG`).
 
 ---

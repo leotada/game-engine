@@ -81,12 +81,14 @@ struct Window {
     uint width()  const nothrow @nogc { return w; }
     uint height() const nothrow @nogc { return h; }
 
-    /// Toggle exclusive/desktop fullscreen mode and sync drawable dimensions.
+    /// Toggle exclusive/desktop fullscreen mode. Does NOT update width()/height():
+    /// the size change is consumed by `refreshSize()`, and a caller that consumed it
+    /// here would leave the swapchain at the old size. Prefer `App.setFullscreen`,
+    /// which also reconfigures the swapchain and render targets.
     bool setFullscreen(bool enabled) @trusted {
         if (handle is null) return false;
         immutable bool ok = SDL_SetWindowFullscreen(handle, enabled);
         SDL_SyncWindow(handle);
-        refreshSize();
         return ok;
     }
 
