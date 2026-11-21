@@ -149,6 +149,10 @@ SceneLoadResult loadSceneIntoWorld(W)(
                     result.unresolvedComponents ~= UnresolvedComponent(id, comp.typeName);
                 }
             }
+        } else {
+            // No runtime type registry on this world: every custom component is unresolved.
+            foreach (ref comp; e.customComponents)
+                result.unresolvedComponents ~= UnresolvedComponent(id, comp.typeName);
         }
     }
 
@@ -775,6 +779,7 @@ private string toStringy(uint v) {
         `"entities":[{"id":1,"name":0,"parent":0,` ~
         `"transform":{"pos":[1,2,3],"rot":[0,0,0,1],"scale":[1,1,1]},` ~
         `"components":{"viatura.prop":{"kind":"crate"}}}]}`;
+    import engine.scene.scene_file : parseSceneJson;
     auto scene = parseSceneJson(json);
     EditorWorld world;
     SceneLightSettings lights;
