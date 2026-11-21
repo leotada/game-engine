@@ -8,6 +8,17 @@ import engine.core.pod : isPod, Pod;
 
 alias EntityId = uint;
 
+/// Generational entity handle pairing a dense `EntityId` slot with its generation counter.
+struct EntityHandle {
+    EntityId id = EntityId.max;
+    uint generation = 0;
+
+    bool isNull() const pure nothrow @nogc {
+        return id == EntityId.max || generation == 0;
+    }
+}
+static assert(isPod!EntityHandle);
+
 struct ComponentStore(T) if (is(T == struct)) {
     static assert(isPod!T, "Component " ~ T.stringof ~ " must not contain GC pointers — see docs/gc-safe-architecture-plan.md");
 
@@ -68,6 +79,10 @@ struct ComponentStore(T) if (is(T == struct)) {
     }
 
     size_t length() const nothrow @nogc { return _length; }
+
+    size_t sparseLength() const pure nothrow @nogc { return sparse.length; }
+
+    void clear() nothrow @nogc { _length = 0; }
 
     /// Direct access to dense component array for cache-friendly iteration.
     T[] components() nothrow @nogc @trusted {

@@ -5,7 +5,7 @@ module engine.ecs.scene_world;
 
 import engine.core.pod : isPod;
 import engine.core.strings : StringTable, StringId;
-import engine.ecs.store : EntityId;
+import engine.ecs.store : EntityHandle, EntityId;
 import engine.reflect.attrs;
 import engine.reflect.descriptor;
 
@@ -90,12 +90,19 @@ struct RawComponentStore {
     void clear() nothrow @nogc {
         count = 0;
     }
+
+    size_t sparseLength() const pure nothrow @nogc {
+        return sparse.length;
+    }
 }
 
 /// Dynamic ECS World supporting both statically-typed calls and runtime dynamic reflection.
 struct SceneWorld {
     private EntityId _nextId = 0;
     private bool[] _alive;
+    private uint[] _generation;
+    private EntityId[] _freeIds;
+    private size_t _freeCount = 0;
 
     StringTable strings;
     TypeRegistry types;
@@ -114,25 +121,59 @@ struct SceneWorld {
     }
 
     EntityId spawn() nothrow @trusted {
+        if (_freeCount > 0) {
+            immutable id = _freeIds[--_freeCount];
+            _alive[id] = true;
+            return id;
+        }
         immutable id = _nextId++;
-        if (id >= _alive.length)
+        if (id >= _alive.length) {
             _alive.length = id + 1;
+            _generation.length = id + 1;
+            _freeIds.length = id + 1;
+        }
         _alive[id] = true;
+        if (_generation[id] == 0)
+            _generation[id] = 1;
         return id;
     }
 
     void destroy(EntityId id) nothrow @nogc @trusted {
         if (id >= _alive.length || !_alive[id]) return;
         _alive[id] = false;
+        _generation[id]++;
+        if (_generation[id] == 0)
+            _generation[id] = 1;
         foreach (s; _stores) {
             if (s !is null)
                 s.remove(id);
         }
+        _freeIds[_freeCount++] = id;
     }
 
     bool alive(EntityId id) const nothrow @nogc @trusted {
         return id < _alive.length && _alive[id];
     }
+
+    uint generation(EntityId id) const nothrow @nogc @trusted {
+        return id < _generation.length ? _generation[id] : 0;
+    }
+
+    bool alive(EntityId id, uint expectedGen) const nothrow @nogc @trusted {
+        return id < _alive.length && _alive[id] && expectedGen != 0 && _generation[id] == expectedGen;
+    }
+
+    EntityHandle handle(EntityId id) const nothrow @nogc @trusted {
+        return alive(id) ? EntityHandle(id, _generation[id]) : EntityHandle.init;
+    }
+
+    bool aliveHandle(EntityHandle h) const nothrow @nogc @trusted {
+        return !h.isNull() && alive(h.id, h.generation);
+    }
+
+    size_t capacity() const nothrow @nogc @trusted { return _alive.length; }
+
+    size_t freeCount() const nothrow @nogc @trusted { return _freeCount; }
 
     size_t entityCount() const nothrow @nogc @trusted {
         size_t n = 0;
@@ -142,10 +183,19 @@ struct SceneWorld {
 
     void clearEntities() nothrow @nogc @trusted {
         foreach (i; 0 .. _alive.length) {
-            if (_alive[i])
-                destroy(cast(EntityId) i);
+            if (_alive[i]) {
+                _alive[i] = false;
+                _generation[i]++;
+                if (_generation[i] == 0)
+                    _generation[i] = 1;
+                foreach (s; _stores) {
+                    if (s !is null)
+                        s.remove(cast(EntityId) i);
+                }
+            }
         }
         _nextId = 0;
+        _freeCount = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -368,4 +418,38 @@ struct SceneWorld {
     world.destroy(e1);
     assert(!world.alive(e1));
     assert(!world.has!Position(e1));
+}
+
+@("sceneWorld.recyclingAndGenerations") @safe unittest {
+    static struct Tag { uint v = 1; }
+
+    SceneWorld world;
+    auto e0 = world.spawn();
+    auto h0 = world.handle(e0);
+    assert(h0.generation == 1 && world.aliveHandle(h0));
+    world.set(e0, Tag(7));
+
+    world.destroy(e0);
+    assert(!world.aliveHandle(h0));
+    assert(world.generation(e0) == 2);
+
+    auto e0b = world.spawn();
+    assert(e0b == e0);
+    assert(!world.aliveHandle(h0));
+    assert(world.handle(e0b).generation == 2);
+
+    world.clearEntities();
+    foreach (_; 0 .. 100) {
+        EntityId[24] batch;
+        foreach (i; 0 .. 24) {
+            batch[i] = world.spawn();
+            world.set(batch[i], Tag(cast(uint) i));
+        }
+        foreach (i; 0 .. 24) {
+            world.destroy(batch[i]);
+        }
+    }
+    assert(world.capacity() == 24);
+    immutable tid = world.ensureRegistered!Tag();
+    assert(world.getStore(tid).sparseLength() == 24);
 }
