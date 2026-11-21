@@ -89,6 +89,9 @@ enum skinnedShaderSource = import("skinned.wgsl");
 enum skyShaderSource = preprocessShader(import("sky.wgsl"), "sky.wgsl").code;
 /// Runtime HDR IBL compute passes — `engine.gpu.ibl_dynamic.DynamicIbl`.
 enum iblSkyCsShaderSource = preprocessShader(import("ibl_sky_cs.wgsl"), "ibl_sky_cs.wgsl").code;
+/// Chunked terrain — `engine.terrain.renderer.TerrainRenderer`.
+enum terrainPbrShaderSource = preprocessShader(import("terrain_pbr.wgsl"), "terrain_pbr.wgsl").code;
+enum terrainShadowShaderSource = preprocessShader(import("terrain_shadow.wgsl"), "terrain_shadow.wgsl").code;
 enum skyDomeShaderSource = preprocessShader(import("sky_dome.wgsl"), "sky_dome.wgsl").code;
 enum causticsBedShaderSource = preprocessShader(import("caustics_bed.wgsl"), "caustics_bed.wgsl").code;
 enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;

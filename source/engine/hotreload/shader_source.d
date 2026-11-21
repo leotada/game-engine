@@ -260,6 +260,12 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("sky.wgsl");
         case "ibl_sky_cs.wgsl":
             return import("ibl_sky_cs.wgsl");
+        case "common/terrain_common.wgsl":
+            return import("common/terrain_common.wgsl");
+        case "terrain_pbr.wgsl":
+            return import("terrain_pbr.wgsl");
+        case "terrain_shadow.wgsl":
+            return import("terrain_shadow.wgsl");
         case "cube3d.wgsl":
             return import("cube3d.wgsl");
         case "colored3d.wgsl":
