@@ -737,6 +737,8 @@ struct WorldStreamer {
                         } else if (link.kind == "navmesh") {
                             _cellAssets ~= acquireNavTile(guid, path, cell.coord);
                             assetCount++;
+                        } else if (link.kind == "splines") {
+                            // CPU-side path data (`engine.scene.splines`), not a GPU asset.
                         } else {
                             _cellAssets ~= acquireGltf(guid, path);
                             assetCount++;

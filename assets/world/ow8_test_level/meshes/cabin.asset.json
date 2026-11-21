@@ -1,0 +1,1 @@
+{"format":"game-engine.asset","version":2,"kind":"model","meta":{"name":"cabin"},"render":{"source":"assets/world/ow8_test_level/meshes/cabin.glb","primitive":null},"materials":[],"collision":{"triangleMesh":{"source":"render"},"convexHull":{"maxVertexCount":64,"points":[[-4,-2,3],[-4,2,3],[-4,-2,-3],[-4,2,-3],[4,-2,3],[4,2,3],[4,-2,-3],[4,2,-3]]}}}
