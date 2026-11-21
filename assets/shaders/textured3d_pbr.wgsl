@@ -1,4 +1,5 @@
 #include "common/shadows.wgsl"
+#include "common/atmosphere.wgsl"
 
 struct MaterialParams {
     baseColor: vec3<f32>,
@@ -391,7 +392,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (dissolveKill) {
             discard;
         }
-        return vec4<f32>(baseColor + emissive, clamp(surfaceOpacity, 0.0, 1.0));
+        return vec4<f32>(applyFog(baseColor + emissive, in.worldPos), clamp(surfaceOpacity, 0.0, 1.0));
     }
 
     let NdotV = max(dot(N, V), 0.001);
@@ -584,6 +585,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = direct + ambient + totalEmission;
     color = max(color, vec3<f32>(0.0)) * cascadeDebugTint(in.worldPos);
+    color = applyFog(color, in.worldPos);
     let rawAlpha = clamp(surfaceOpacity, 0.0, 1.0);
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
     let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);

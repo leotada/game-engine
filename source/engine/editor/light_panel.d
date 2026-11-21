@@ -11,6 +11,7 @@ import engine.editor.ui :
 import engine.gpu.shadow : directionalLightVP, spotLightVPFromCone;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
+import engine.scene.atmosphere : FogSettings;
 import engine.scene.graph : Transform;
 import engine.scene.light :
     GpuDirLight, GpuPointLight, GpuSpotLight, Light, LightSet, LightType,
@@ -46,6 +47,8 @@ struct SceneLightSettings {
     float shadowDistance = 150.0f;
     /// Tint each cascade in the viewport.
     bool debugCascades = false;
+    /// Atmospheric height fog (saved in `settings.fog` when enabled).
+    FogSettings fog;
 }
 
 /// Copy the scene cascade settings into a directional light.
@@ -529,6 +532,16 @@ bool drawScenePanel(W)(
         if (csm && sliderFloat(ui, "Shadow distance", state.scene.shadowDistance, 10, 1000))
             changed = true;
         if (csm && checkbox(ui, "Debug cascades", state.scene.debugCascades))
+            changed = true;
+    }
+    if (checkbox(ui, "Fog", state.scene.fog.enabled))
+        changed = true;
+    if (state.scene.fog.enabled) {
+        if (sliderFloat(ui, "Fog density", state.scene.fog.density, 0, 0.05f))
+            changed = true;
+        if (sliderFloat(ui, "Fog falloff", state.scene.fog.heightFalloff, 0, 0.5f))
+            changed = true;
+        if (sliderFloat(ui, "Fog base", state.scene.fog.heightBase, -50, 200))
             changed = true;
     }
 

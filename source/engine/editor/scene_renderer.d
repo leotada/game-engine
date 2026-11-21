@@ -141,6 +141,7 @@ struct SceneRenderer {
         if (lightSetIsEmpty(lights))
             lights = defaultSunLight(lightSettings);
         scene.setIblIntensity(lightSettings.iblIntensity);
+        scene.setFog(lightSettings.fog);
         if (viewportHeight >= 1) scene.setLodScreenHeight(viewportHeight);
 
         scene.begin(camera);

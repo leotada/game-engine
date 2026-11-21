@@ -32,6 +32,7 @@ import engine.app;
 import engine.assets.gltf : buildGlb;
 import engine.core.log;
 import engine.gpu.shadow : directionalLightVP;
+import engine.scene.atmosphere : FogSettings;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialParams;
 import engine.graphics.material_pool : MaterialHandle, MaterialPool;
@@ -61,6 +62,7 @@ private struct Options {
     bool assertNoGc = false;
     bool noCull = false;
     bool debugCascades = false;
+    bool fog = false;
     string screenshot;
 }
 
@@ -73,6 +75,7 @@ private Options parseArgs(string[] args) {
         else if (a == "--assert-no-gc") o.assertNoGc = true;
         else if (a == "--no-cull") o.noCull = true;
         else if (a == "--debug-cascades") o.debugCascades = true;
+        else if (a == "--fog") o.fog = true;
         else if (a.startsWith("--screenshot=")) o.screenshot = a["--screenshot=".length .. $];
     }
     return o;
@@ -350,6 +353,14 @@ void main(string[] args) @trusted {
         auto frame = app.beginFrame(Color4(0.45f, 0.6f, 0.8f, 1));
         if (!frame.valid) continue;
 
+        if (opts.fog) {
+            FogSettings fog;
+            fog.enabled = true;
+            fog.color = Vec3(0.55f, 0.66f, 0.8f);
+            fog.density = 0.004f;
+            fog.heightFalloff = 0.02f;
+            scene.setFog(fog);
+        }
         scene.begin(camera);
         scene.drawMatrix(ground, groundMat, Mat4.scaling(WORLD, 1, WORLD), Color4.white);
         scene.submitStatic(rocksBuf);

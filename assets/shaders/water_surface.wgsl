@@ -8,6 +8,7 @@
 
 #include "common/pbr_brdf.wgsl"
 #include "common/shadows.wgsl"
+#include "common/atmosphere.wgsl"
 #include "common/water_env.wgsl"
 
 @group(1) @binding(0) var<uniform> wu: WaterUniforms;
@@ -702,6 +703,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (riverMode == 0u && fogFactor > 0.001) {
         outAlpha = mix(outAlpha, 1.0, fogFactor);
     }
+    // Engine atmospheric fog (no-op while FogSettings density is 0).
+    color = applyFog(color, in.worldPos);
 
     return vec4<f32>(color, outAlpha);
 }

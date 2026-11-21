@@ -30,6 +30,7 @@ import engine.scene.static_instances : collectVisibleRuns, StaticInstanceBuffer,
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
+import engine.scene.atmosphere : FogSettings, packFog;
 import engine.scene.cascades : buildCascades, CascadeSet, MAX_CASCADES;
 import engine.scene.light :
     DIR_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, LightSet,
@@ -477,6 +478,12 @@ struct Scene3DTextured {
     /// Global multiplier for IBL diffuse/specular/coat/fuzz ambient lighting.
     void setIblIntensity(float intensity) nothrow @nogc {
         frameData.iblIntensity = intensity < 0.0f ? 0.0f : intensity;
+    }
+
+    /// Atmospheric height fog applied in linear HDR by the PBR, water,
+    /// terrain and decal shaders. Call before `begin` (uploaded there).
+    void setFog(ref const FogSettings fog) nothrow @nogc {
+        packFog(fog, frameData.fogColorDensity, frameData.fogHeight, frameData.fogSun);
     }
 
     /// Update multi-light UBO + bind shadow maps for the next draws.

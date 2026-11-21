@@ -45,6 +45,20 @@ struct SceneMeta {
 struct SceneSettingsData {
     float[3] gravity = [0, -9.81f, 0];
     string iblPreset = "procedural_default";
+    /// Optional `settings.fog` object (written only when `hasFog`).
+    bool hasFog = false;
+    SceneFogData fog;
+}
+
+/// Atmospheric fog stored in `settings.fog` (see `engine.scene.atmosphere.FogSettings`).
+struct SceneFogData {
+    bool enabled = true;
+    float[3] color = [0.62f, 0.72f, 0.84f];
+    float density = 0.002f;
+    float heightBase = 0;
+    float heightFalloff = 0.02f;
+    float startDistance = 0;
+    float maxOpacity = 1;
 }
 
 struct SceneTransformData {
@@ -586,13 +600,33 @@ private string[] parseStrings(ref JSONValue v) {
 
 private SceneSettingsData parseSettings(ref JSONValue v) {
     enforce(v.type == JSONType.object, "'settings' must be object");
-    requireOnlyKeys(v, ["gravity", "iblPreset"], "settings");
+    requireOnlyKeys(v, ["gravity", "iblPreset", "fog"], "settings");
     enforce("gravity" in v, "settings missing 'gravity'");
     enforce("iblPreset" in v && v["iblPreset"].type == JSONType.string,
         "settings.iblPreset must be string");
     SceneSettingsData s;
     s.gravity = jsonFloat3(v["gravity"], "settings.gravity");
     s.iblPreset = v["iblPreset"].str;
+    if (auto f = "fog" in v) {
+        enforce(f.type == JSONType.object, "settings.fog must be object");
+        requireOnlyKeys(*f, ["enabled", "color", "density", "heightBase", "heightFalloff",
+            "startDistance", "maxOpacity"], "settings.fog");
+        s.hasFog = true;
+        if (auto e = "enabled" in *f) {
+            enforce(e.type == JSONType.true_ || e.type == JSONType.false_, "settings.fog.enabled must be bool");
+            s.fog.enabled = e.type == JSONType.true_;
+        }
+        if (auto c = "color" in *f) s.fog.color = jsonFloat3(*c, "settings.fog.color");
+        float num(string key, float def) {
+            if (auto n = key in *f) return jsonFloat(*n, "settings.fog." ~ key);
+            return def;
+        }
+        s.fog.density = num("density", s.fog.density);
+        s.fog.heightBase = num("heightBase", s.fog.heightBase);
+        s.fog.heightFalloff = num("heightFalloff", s.fog.heightFalloff);
+        s.fog.startDistance = num("startDistance", s.fog.startDistance);
+        s.fog.maxOpacity = num("maxOpacity", s.fog.maxOpacity);
+    }
     return s;
 }
 
@@ -787,6 +821,19 @@ private void writeScene(ref Appender!string app, const ref SceneFile s) {
     writeFloat(app, s.settings.gravity[2]);
     app.put(`],"iblPreset":`);
     writeJsonString(app, s.settings.iblPreset);
+    if (s.settings.hasFog) {
+        immutable f = s.settings.fog;
+        app.put(f.enabled ? `,"fog":{"enabled":true,"color":[` : `,"fog":{"enabled":false,"color":[`);
+        writeFloat(app, f.color[0]); app.put(',');
+        writeFloat(app, f.color[1]); app.put(',');
+        writeFloat(app, f.color[2]);
+        app.put(`],"density":`); writeFloat(app, f.density);
+        app.put(`,"heightBase":`); writeFloat(app, f.heightBase);
+        app.put(`,"heightFalloff":`); writeFloat(app, f.heightFalloff);
+        app.put(`,"startDistance":`); writeFloat(app, f.startDistance);
+        app.put(`,"maxOpacity":`); writeFloat(app, f.maxOpacity);
+        app.put('}');
+    }
     app.put(`},"entities":[`);
     foreach (i, ref e; s.entities) {
         if (i)
@@ -1077,4 +1124,19 @@ private float[4] jsonFloat4(ref JSONValue v, string ctx) {
     out_[2] = jsonFloat(arr[2], ctx);
     out_[3] = jsonFloat(arr[3], ctx);
     return out_;
+}
+
+@("sceneFile.fogRoundTrip") unittest {
+    enum json = `{"format":"game-engine.scene","version":1,"meta":{"name":"f","units":"meters"},`
+        ~ `"strings":[],"settings":{"gravity":[0,-9.81,0],"iblPreset":"procedural_default",`
+        ~ `"fog":{"enabled":true,"color":[0.5,0.6,0.7],"density":0.004,"heightBase":10,`
+        ~ `"heightFalloff":0.03,"startDistance":20,"maxOpacity":0.9}},"entities":[]}`;
+    auto a = parseSceneJson(json);
+    assert(a.settings.hasFog && a.settings.fog.enabled);
+    assert(a.settings.fog.density == 0.004f && a.settings.fog.heightBase == 10);
+    assert(sceneToMinifiedJson(a) == json);
+    // Scenes without fog keep the old settings object byte-for-byte.
+    auto b = parseSceneJson(`{"format":"game-engine.scene","version":1,"meta":{"name":"f","units":"meters"},`
+        ~ `"strings":[],"settings":{"gravity":[0,-9.81,0],"iblPreset":"procedural_default"},"entities":[]}`);
+    assert(!b.settings.hasFog);
 }

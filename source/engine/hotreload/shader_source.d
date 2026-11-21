@@ -252,6 +252,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("common/pbr_brdf.wgsl");
         case "common/shadows.wgsl":
             return import("common/shadows.wgsl");
+        case "common/atmosphere.wgsl":
+            return import("common/atmosphere.wgsl");
         case "cube3d.wgsl":
             return import("cube3d.wgsl");
         case "colored3d.wgsl":

@@ -91,6 +91,16 @@ SceneLoadResult loadSceneIntoWorld(W)(
 
     lightSettings = SceneLightSettings.init;
     lightSettings.iblPreset = iblPresetFromString(scene.settings.iblPreset);
+    if (scene.settings.hasFog) {
+        immutable f = scene.settings.fog;
+        lightSettings.fog.enabled = f.enabled;
+        lightSettings.fog.color = Vec3(f.color[0], f.color[1], f.color[2]);
+        lightSettings.fog.density = f.density;
+        lightSettings.fog.heightBase = f.heightBase;
+        lightSettings.fog.heightFalloff = f.heightFalloff;
+        lightSettings.fog.startDistance = f.startDistance;
+        lightSettings.fog.maxOpacity = f.maxOpacity;
+    }
 
     // First pass: spawn entities + components (parents deferred).
     foreach (ref e; scene.entities) {
@@ -195,6 +205,17 @@ SceneFile worldToSceneFile(W)(
         scene.meta.units = opts.defaultUnits;
     scene.settings.gravity = gravity;
     scene.settings.iblPreset = iblPresetToString(lightSettings.iblPreset);
+    if (lightSettings.fog.enabled) {
+        immutable f = lightSettings.fog;
+        scene.settings.hasFog = true;
+        scene.settings.fog.enabled = true;
+        scene.settings.fog.color = [f.color.x, f.color.y, f.color.z];
+        scene.settings.fog.density = f.density;
+        scene.settings.fog.heightBase = f.heightBase;
+        scene.settings.fog.heightFalloff = f.heightFalloff;
+        scene.settings.fog.startDistance = f.startDistance;
+        scene.settings.fog.maxOpacity = f.maxOpacity;
+    }
 
     // Collect alive entities sorted by EntityId for stable output.
     EntityId[] ids;
