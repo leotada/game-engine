@@ -40,6 +40,8 @@ struct UnresolvedComponent {
 struct SceneLoadResult {
     /// File entity id → live `EntityId`.
     EntityId[uint] fileIdToEntity;
+    /// All live entities spawned during this load, in file order.
+    EntityId[] spawnedEntities;
     SceneValidationResult validation;
     /// How many `castShadows` flags were cleared to fit the shadow budget.
     uint shadowsClamped;
@@ -63,16 +65,19 @@ struct SceneLoadOptions {
 // Load
 // ---------------------------------------------------------------------------
 
-/// Replace `world` contents with entities from `scene`.
-/// Applies `settings` into `lightSettings` (IBL preset).
-SceneLoadResult loadSceneIntoWorld(W)(
+/// Add entities from `scene` into `world` without clearing existing entities.
+/// Remaps file-local `id` and `parent` indices to newly spawned live `EntityId`s,
+/// and applies `rootOffset` to root entities (`e.parent == sceneNoParent`).
+SceneLoadResult loadSceneAdditive(W)(
     ref W world,
     ref SceneFile scene,
-    ref SceneLightSettings lightSettings,
+    Vec3 rootOffset = Vec3(0, 0, 0),
     SceneLoadOptions opts = SceneLoadOptions.init
 ) {
     SceneLoadResult result;
-    result.validation = validateScene(scene, opts.checkAssetFiles);
+    if (opts.validate || opts.clampShadows) {
+        result.validation = validateScene(scene, opts.checkAssetFiles);
+    }
     if (opts.clampShadows)
         result.shadowsClamped = clampShadowBudget(scene);
 
@@ -83,32 +88,16 @@ SceneLoadResult loadSceneIntoWorld(W)(
         enforce(false, msg);
     }
 
-    static if (__traits(hasMember, W, "clearEntities")) {
-        world.clearEntities();
-    } else {
-        world = W.init;
-    }
-
-    lightSettings = SceneLightSettings.init;
-    lightSettings.iblPreset = iblPresetFromString(scene.settings.iblPreset);
-    if (scene.settings.hasFog) {
-        immutable f = scene.settings.fog;
-        lightSettings.fog.enabled = f.enabled;
-        lightSettings.fog.color = Vec3(f.color[0], f.color[1], f.color[2]);
-        lightSettings.fog.density = f.density;
-        lightSettings.fog.heightBase = f.heightBase;
-        lightSettings.fog.heightFalloff = f.heightFalloff;
-        lightSettings.fog.startDistance = f.startDistance;
-        lightSettings.fog.maxOpacity = f.maxOpacity;
-    }
-
     // First pass: spawn entities + components (parents deferred).
     foreach (ref e; scene.entities) {
         auto id = world.spawn();
         result.fileIdToEntity[e.id] = id;
+        result.spawnedEntities ~= id;
 
         Transform t;
         t.position = Vec3(e.transform.pos[0], e.transform.pos[1], e.transform.pos[2]);
+        if (e.parent == sceneNoParent)
+            t.position = t.position + rootOffset;
         t.rotation = Quat(
             e.transform.rot[0], e.transform.rot[1],
             e.transform.rot[2], e.transform.rot[3]);
@@ -177,6 +166,54 @@ SceneLoadResult loadSceneIntoWorld(W)(
         world.set(id, Parent(parentId));
     }
 
+    return result;
+}
+
+/// Replace `world` contents with entities from `scene`.
+/// Applies `settings` into `lightSettings` (IBL preset).
+SceneLoadResult loadSceneIntoWorld(W)(
+    ref W world,
+    ref SceneFile scene,
+    ref SceneLightSettings lightSettings,
+    SceneLoadOptions opts = SceneLoadOptions.init
+) {
+    auto validation = validateScene(scene, opts.checkAssetFiles);
+    uint clamped = 0;
+    if (opts.clampShadows)
+        clamped = clampShadowBudget(scene);
+
+    if (opts.validate && !validation.ok) {
+        string msg = "scene validation failed:";
+        foreach (ref e; validation.errors)
+            msg ~= " [" ~ e.message ~ "]";
+        enforce(false, msg);
+    }
+
+    static if (__traits(hasMember, W, "clearEntities")) {
+        world.clearEntities();
+    } else {
+        world = W.init;
+    }
+
+    lightSettings = SceneLightSettings.init;
+    lightSettings.iblPreset = iblPresetFromString(scene.settings.iblPreset);
+    if (scene.settings.hasFog) {
+        immutable f = scene.settings.fog;
+        lightSettings.fog.enabled = f.enabled;
+        lightSettings.fog.color = Vec3(f.color[0], f.color[1], f.color[2]);
+        lightSettings.fog.density = f.density;
+        lightSettings.fog.heightBase = f.heightBase;
+        lightSettings.fog.heightFalloff = f.heightFalloff;
+        lightSettings.fog.startDistance = f.startDistance;
+        lightSettings.fog.maxOpacity = f.maxOpacity;
+    }
+
+    SceneLoadOptions innerOpts = opts;
+    innerOpts.validate = false;
+    innerOpts.clampShadows = false;
+    auto result = loadSceneAdditive(world, scene, Vec3(0, 0, 0), innerOpts);
+    result.validation = validation;
+    result.shadowsClamped = clamped;
     return result;
 }
 
@@ -317,6 +354,152 @@ SceneFile worldToSceneFile(W)(
                 string qname = world.strings.get(tdesc.qualifiedName).idup;
                 if (qname == "Transform" || qname == "Name" || qname == "Parent" ||
                     qname == "Visual" || qname == "MaterialOverride" || qname == "PhysicsBody" || qname == "Light")
+                    continue;
+
+                auto bytes = (cast() world).rawGet(tid, id);
+                if (bytes !is null) {
+                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings);
+                    e.customComponents ~= SceneComponentData(qname, cjson);
+                }
+            }
+        }
+
+        scene.entities ~= e;
+    }
+
+    return scene;
+}
+
+/// Collect `root` and all of its transitive descendants (walking `Parent` links).
+/// Returns `[root, ...]` in breadth-first order, or empty if `root` is not alive.
+EntityId[] collectSubtreeEntities(W)(ref W world, EntityId root) {
+    if (!world.alive(root))
+        return null;
+
+    EntityId[] result = [root];
+    bool[EntityId] seen;
+    seen[root] = true;
+
+    size_t cursor = 0;
+    while (cursor < result.length) {
+        immutable parentId = result[cursor++];
+        EntityId[] children;
+        foreach (cid; world.query!(Parent)()) {
+            if (!world.alive(cid) || cid in seen)
+                continue;
+            if (world.get!Parent(cid).entity == parentId) {
+                children ~= cid;
+            }
+        }
+        sortEntityIds(children);
+        foreach (cid; children) {
+            seen[cid] = true;
+            result ~= cid;
+        }
+    }
+    return result;
+}
+
+/// Capture only the subtree rooted at `root` into a `SceneFile` with dense 1-based IDs.
+/// `root` is mapped to ID `1` with `parent = sceneNoParent`, and `rootSpawnOffset` is
+/// subtracted from `root`'s position so the exported prefab stays in prefab-local space.
+SceneFile subtreeToSceneFile(W)(
+    ref W world,
+    EntityId root,
+    Vec3 rootSpawnOffset = Vec3(0, 0, 0),
+    SceneMeta meta = SceneMeta.init,
+    SceneLoadOptions opts = SceneLoadOptions.init
+) {
+    SceneFile scene;
+    scene.meta = meta;
+    if (scene.meta.name.length == 0)
+        scene.meta.name = opts.defaultMetaName;
+    if (scene.meta.units.length == 0)
+        scene.meta.units = opts.defaultUnits;
+
+    auto ids = collectSubtreeEntities(world, root);
+    if (ids.length == 0)
+        return scene;
+
+    uint[EntityId] entityToFileId;
+    foreach (i, id; ids)
+        entityToFileId[id] = cast(uint)(i + 1);
+
+    foreach (i, id; ids) {
+        SceneEntityData e;
+        e.id = entityToFileId[id];
+
+        if (world.has!Name(id)) {
+            auto n = world.get!Name(id);
+            if (!n.id.isNull) {
+                e.hasName = true;
+                e.name = internSceneString(scene, world.strings.get(n.id));
+            }
+        }
+
+        if (i == 0) {
+            e.parent = sceneNoParent;
+        } else if (world.has!Parent(id)) {
+            immutable p = world.get!Parent(id).entity;
+            e.parent = (p != noParent && p in entityToFileId) ? entityToFileId[p] : sceneNoParent;
+        } else {
+            e.parent = sceneNoParent;
+        }
+
+        if (world.has!Transform(id)) {
+            auto t = world.get!Transform(id);
+            if (i == 0)
+                t.position = t.position - rootSpawnOffset;
+            e.transform.pos = [t.position.x, t.position.y, t.position.z];
+            e.transform.rot = [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w];
+            e.transform.scale = [t.scale.x, t.scale.y, t.scale.z];
+        }
+
+        StringId assetSid = StringId.init;
+        if (world.has!Visual(id)) {
+            immutable vis = world.get!Visual(id);
+            e.hasVisual = true;
+            e.visual = visualToData(scene, world.strings, vis);
+            assetSid = vis.assetPath;
+        }
+
+        if (world.has!MaterialOverride(id)) {
+            immutable mat = world.get!MaterialOverride(id);
+            if (mat.active) {
+                e.hasMaterial = true;
+                e.material = materialToData(mat);
+            }
+        }
+
+        if (world.has!PhysicsBody(id)) {
+            immutable pb = world.get!PhysicsBody(id);
+            e.hasPhysics = true;
+            e.physics = physicsToData(pb);
+            if (assetSid.isNull && !pb.assetPath.isNull)
+                assetSid = pb.assetPath;
+            if (!assetSid.isNull && e.hasVisual && !e.visual.hasAsset) {
+                e.visual.hasAsset = true;
+                e.visual.asset = internSceneString(scene, world.strings.get(assetSid));
+            }
+        }
+
+        if (world.has!Light(id)) {
+            e.hasLight = true;
+            e.light = lightToData(world.get!Light(id));
+        }
+
+        static if (__traits(hasMember, W, "types") && __traits(hasMember, W, "getComponentTypes")) {
+            import engine.reflect.serialize : serializeComponent;
+            import engine.reflect.descriptor : ComponentTypeId;
+            import engine.scene.scene_file : SceneComponentData;
+            ComponentTypeId[] ctypes;
+            world.getComponentTypes(id, ctypes);
+            foreach (tid; ctypes) {
+                auto tdesc = world.types.getType(tid);
+                string qname = world.strings.get(tdesc.qualifiedName).idup;
+                if (qname == "Transform" || qname == "Name" || qname == "Parent" ||
+                    qname == "Visual" || qname == "MaterialOverride" || qname == "PhysicsBody" ||
+                    qname == "Light" || qname == "PrefabInstance")
                     continue;
 
                 auto bytes = (cast() world).rawGet(tid, id);
@@ -810,4 +993,60 @@ private string toStringy(uint v) {
     assert(res.unresolvedComponents.length == 1);
     assert(res.unresolvedComponents[0].typeName == "viatura.prop");
     assert(res.unresolvedComponents[0].entity == res.fileIdToEntity[1]);
+}
+
+@("sceneLoad.additiveAndSubtree") @safe unittest {
+    import engine.ecs.scene_world : SceneWorld;
+
+    SceneWorld world;
+
+    SceneFile s1;
+    s1.meta.name = "chunk_a";
+    SceneEntityData e1;
+    e1.id = 1;
+    e1.hasName = true;
+    e1.name = 0;
+    s1.strings = ["RootA"];
+    e1.transform.pos = [1, 0, 0];
+    s1.entities ~= e1;
+
+    auto r1 = loadSceneAdditive(world, s1, Vec3(10, 0, 0));
+    assert(r1.spawnedEntities.length == 1);
+    assert(world.entityCount() == 1);
+    immutable rootA = r1.fileIdToEntity[1];
+    assert(world.get!Transform(rootA).position == Vec3(11, 0, 0));
+
+    SceneFile s2;
+    s2.meta.name = "chunk_b";
+    s2.strings = ["RootB", "ChildB"];
+    SceneEntityData b1;
+    b1.id = 1;
+    b1.hasName = true;
+    b1.name = 0;
+    b1.transform.pos = [0, 2, 0];
+    SceneEntityData b2;
+    b2.id = 2;
+    b2.parent = 1;
+    b2.hasName = true;
+    b2.name = 1;
+    b2.transform.pos = [0, 1, 0];
+    s2.entities ~= b1;
+    s2.entities ~= b2;
+
+    auto r2 = loadSceneAdditive(world, s2, Vec3(100, 0, 0));
+    assert(r2.spawnedEntities.length == 2);
+    assert(world.entityCount() == 3);
+    immutable rootB = r2.fileIdToEntity[1];
+    immutable childB = r2.fileIdToEntity[2];
+    assert(world.get!Transform(rootB).position == Vec3(100, 2, 0));
+    assert(world.get!Transform(childB).position == Vec3(0, 1, 0));
+    assert(world.get!Parent(childB).entity == rootB);
+    assert(world.alive(rootA));
+
+    // Subtree export must contain only RootB + ChildB, excluding RootA.
+    auto sub = subtreeToSceneFile(world, rootB, Vec3(100, 0, 0));
+    assert(sub.entities.length == 2);
+    assert(sub.entities[0].id == 1 && sub.entities[0].parent == sceneNoParent);
+    assert(sub.entities[0].transform.pos == [0.0f, 2.0f, 0.0f]);
+    assert(sub.entities[1].id == 2 && sub.entities[1].parent == 1);
 }
