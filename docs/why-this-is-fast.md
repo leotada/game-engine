@@ -56,6 +56,8 @@ auto component = &dense[idx];
 
 This is fast not only because it is O(1), but because it is CPU-friendly. The memory access pattern is simple, stable, and easy to prefetch.
 
+Destroyed `EntityId` slots are recycled via a pre-sized `@nogc` free-list paired with a per-slot generation counter (`EntityHandle`), keeping `sparse[]` and `_alive[]` bounded by peak concurrent entities rather than growing unboundedly across chunk load/unload cycles.
+
 ---
 
 ## 3. Compile-Time World and System Specialization
@@ -116,7 +118,7 @@ Bevy is a useful comparison because the high-level ideas are the same even thoug
 | Feature | Bevy (Rust) | This engine (D) |
 |:---|:---|:---|
 | ECS storage | Sparse-set / table-based ECS | `ComponentStore(T)` sparse-set |
-| Entity model | Integer-backed entity handle | `EntityId` alias (`uint`) |
+| Entity model | Integer-backed entity handle | `EntityId` (`uint`) + `EntityHandle` (id + generation) |
 | System specialization | Generic monomorphization | Template instantiation |
 | Safety model | Borrow checker | `@safe` by default + DIP1000 |
 | GPU backend | `wgpu` | `wgpu-native` via manual bindings |

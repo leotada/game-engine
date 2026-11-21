@@ -42,7 +42,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | Delivered | SDL3_image & SDL3_ttf replacement + static multiplatform release export (Linux, Windows, macOS, Web) (#12) |
 | [plan-navigation-recast.md](plan-navigation-recast.md) | Delivered (C shim `OW-6`; pure-D deferred) | 3D NavMesh, TileCache dynamic obstacles & Crowd navigation (`engine.nav`) |
 | [plan-ow3-outdoor-rendering.md](plan-ow3-outdoor-rendering.md) | Done | OW-3 implementation plan: CSM, HDR fog, sky/day-night/runtime IBL/wetness, terrain, decals |
-| [plan-open-world-readiness.md](plan-open-world-readiness.md) | In Progress (`OW-1`, `OW-2`, `OW-3`, `OW-4`, `OW-6` Done) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering (**Done**), CSM/terrain/fog/sky/decals (**Done**), spatial/DSP/OGG audio (**Done**), ragdoll/sockets, UI clip/rotate, Recast nav (**Done**), streaming, Windows steadygc, Blender/hot-reload (#13) |
+| [plan-open-world-readiness.md](plan-open-world-readiness.md) | In Progress (`OW-1..OW-7` Done) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering (**Done**), CSM/terrain/fog/sky/decals (**Done**), spatial/DSP/OGG audio (**Done**), ragdoll/sockets + UI clip/rotate (**Done**), Recast nav (**Done**), chunk streaming & Windows steadygc (**Done**), Blender/hot-reload (#13) |
 
 ## History / Cancelled
 

@@ -41,7 +41,7 @@ The Scene View, the Game View and the standalone player all draw the scene with 
 - **Primitives** (Cubo, Esfera, Plano) use a white OpenPBR material; the entity's `MaterialOverride.baseColor` / `geometryOpacity` is applied as the instance tint. The other OpenPBR override fields (metalness, roughness, coat…) are not applied per entity yet.
 - **Mesh entities** (`Visual.kind = mesh`, `*.asset.json`) load the asset's glTF/GLB `render.source` once with `loadGltfAsset` — every node, primitive, material and texture (mipmapped, 8× anisotropic sampler). Assets that fail to load are logged once and drawn as a cube.
 - **Lights** come from the scene's `Light` components (`packLightsFromWorld`) with directional, point and spot shadows. A scene with no lights gets a default sun, so it is never black.
-- **Culling and LOD** are automatic (frustum culling, per-view shadow caster culling, screen-space LOD for meshes with LOD chains).
+- **Culling and LOD** are automatic (frustum culling, per-view shadow caster culling, screen-space LOD for meshes with LOD chains). Call `renderer.unloadAsset(stringId)` to release cached `GltfAsset` slots when streamed chunks unload.
 - **Environment (Scene / IBL panel, no entity selected):**
   - **Cascaded shadows** turns 4 cascades on or off for the scene sun.
   - **Shadow distance** sets the cascade max distance, 10–1000 m.
@@ -82,7 +82,7 @@ See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2)
 The editor features a non-destructive Play Mode:
 - **Play (`Ctrl+P` or Toolbar "Play"):**
   1. Captures a complete in-memory snapshot of the entire scene (`worldToSceneFile`).
-  2. Initializes Box3D physics simulation (`PhysicsSimSession.beginSimulate`).
+  2. Initializes Box3D physics simulation (`PhysicsSimSession.beginSimulate(world, physics, makeAssetResolver(world))`), resolving `triangleMesh` and `convexHull` geometry from `*.asset.json` / `.gltf` assets in both Editor Play Mode and the standalone player.
   3. Dispatches `onStart` lifecycle callbacks to all script components.
   4. Runs fixed physics ticks (`fixedUpdate`) and per-frame logic (`update`, `lateUpdate`).
 - **Pause ("Pause"):** Freezes physics simulation and script updates while keeping the viewport responsive.
@@ -94,13 +94,19 @@ The editor features a non-destructive Play Mode:
 
 ---
 
-## 4. Prefabs
+## 4. Prefabs & World Streaming
 
-- **Prefab Format:** `*.prefab.json` shares the version 2 scene schema.
-- **Instantiation:** Dragging a prefab into the scene or calling `instantiatePrefab(...)` creates the entity hierarchy and attaches a `PrefabInstance` component containing the asset's GUID.
-- **Overrides:** Modifying fields on an instance stores localized overrides.
-- **Apply to Prefab:** Updates the master `*.prefab.json` definition on disk with current instance values.
-- **Revert:** Discards overrides and restores the instance to match the master prefab asset.
+- **Prefab Format:** `*.prefab.json` shares the version 2 scene schema (`game-engine.scene`).
+- **Additive Instantiation:** Dragging a prefab into the scene or calling `instantiatePrefab(world, prefab, strings, guid, offset)` loads the prefab additively via `loadSceneAdditive` (preserving existing world entities) and attaches `PrefabInstance(prefabGuid, sourceRoot, spawnOffset)` to the root.
+- **Overrides (`PrefabPropertyOverride`):** `diffPrefabOverrides` compares a live prefab instance subtree against its source `SceneFile`; `applyPropertyOverridesToSceneFile` and `applyPropertyOverrides` apply captured per-field overrides to disk definitions or live instances.
+- **Apply to Prefab (`applyPrefabOverrides`):** Uses `subtreeToSceneFile` to serialize only the prefab instance's subtree in prefab-local space (subtracting `spawnOffset` and omitting `PrefabInstance`) back to `*.prefab.json` without touching unrelated world entities.
+- **Revert (`revertPrefab`):** Destroys the full child hierarchy (`destroyPrefabHierarchy`) and re-instantiates the prefab cleanly at `spawnOffset` (preserving any external parent link).
+
+### 4.1 Additive Scenes & World Chunk Streaming (`SceneFile` v2)
+
+- **Additive Scene Loading (`engine.editor.scene_load`):** `loadSceneAdditive(world, scene, rootOffset)` spawns entities into an existing `World` / `SceneWorld` and remaps file-local `id` and `parent` indices without wiping existing entities.
+- **`SceneFile` v2 (`engine.scene.scene_file`):** Adds `ChunkManifest` (`cellSize`, `loadRadius`, `unloadRadius`, `chunks[]`), `SceneCellBounds`, `SceneAssetLink` (`AssetGuid` + `strings[]` path + `kind`), `visual.assetGuid`, and per-chunk light-cap validation.
+- **Runtime Streaming (`engine.scene.streamer`):** `WorldStreamer` loads/unloads cells with hysteresis (`unloaded → loading → active → unloading`), runs file I/O on a GC-excluded background worker (`ScopedGcExcludedThread`), bounds GPU/ECS uploads per frame (`processUploadQueue`), and reference-counts `GltfAsset`, `Texture`, `CookedMesh`, and `NavMesh` tiles. The standalone player ([tools/player/player_main.d](../tools/player/player_main.d)) activates `WorldStreamer` automatically when a scene embeds `ChunkManifest`.
 
 ---
 

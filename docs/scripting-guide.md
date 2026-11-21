@@ -106,6 +106,20 @@ struct ScriptContext {
 }
 ```
 
+### Entity Recycling & Generational Handles (`EntityHandle`)
+
+Both `World` and `SceneWorld` recycle destroyed `EntityId` slots via an O(1) free-list (keeping `_alive[]` and `sparse[]` arrays bounded during open-world chunk streaming) and increment a per-slot generation counter on `destroy()`. When storing an entity reference across frames or chunk transitions, pair it with its generation using `EntityHandle`:
+
+```d
+auto h = ctx.world.handle(targetId); // EntityHandle(id, generation)
+if (ctx.world.aliveHandle(h)) {
+    // Safe: rejects stale handles even if targetId was recycled
+}
+// Or check raw generation directly:
+uint gen = ctx.world.generation(targetId);
+bool stillSame = ctx.world.alive(targetId, gen);
+```
+
 ### Checking Input
 
 ```d
