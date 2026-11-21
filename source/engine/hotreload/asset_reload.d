@@ -347,6 +347,13 @@ struct AssetHotReloader {
     }
 }
 
+/// True when `path` (any spelling: `./a/b`, `a//b`) is one of `batch`.
+bool batchContains(const(string)[] batch, const(char)[] path) {
+    immutable want = buildNormalizedPath(path);
+    foreach (p; batch) if (buildNormalizedPath(p) == want) return true;
+    return false;
+}
+
 /// GUID of `path` from `db`, else from its `.meta` sidecar (null when unknown).
 AssetGuid guidForAsset(string path, const(AssetDatabase)* db) @trusted {
     if (db !is null) {
@@ -379,6 +386,8 @@ AssetGuid guidForAsset(string path, const(AssetDatabase)* db) @trusted {
     assert(classifyAssetPath("assets/tex/road.PNG") == AssetChangeKind.texture);
     assert(classifyAssetPath("assets/shaders/x.wgsl") == AssetChangeKind.shader);
     assert(classifyAssetPath("assets/readme.md") == AssetChangeKind.other);
+    assert(batchContains(["assets/scenes/a.scene.json"], "./assets/scenes/a.scene.json"));
+    assert(!batchContains(["assets/scenes/a.scene.json"], "assets/scenes/b.scene.json"));
 }
 
 version (unittest) private string assetReloadTestDir() @trusted {

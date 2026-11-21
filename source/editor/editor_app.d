@@ -2,7 +2,7 @@
 module editor.editor_app;
 
 import core.memory : GC;
-import std.file : exists, mkdirRecurse;
+import std.file : exists, mkdirRecurse, readText;
 import std.math : PI, asin, atan2, tan;
 import std.path : dirName;
 import std.stdio : writefln;
@@ -36,8 +36,10 @@ import engine.editor.scene_renderer : SceneRenderer;
 import engine.editor.selection : Selection, noSelection;
 import engine.graphics.types : Color4;
 import engine.hotreload.build_runner : Diagnostic;
+import engine.hotreload.asset_reload : AssetHotReloader, HotReloadTargets, batchContains;
 import engine.hotreload.reload : HotReloadManager;
 import engine.hotreload.shader_reload : ShaderHotReloader;
+import engine.hotreload.tunables : TunableRegistry;
 import engine.math.mat : Mat4;
 import engine.math.quat : Quat;
 import engine.math.ray : screenToWorldRay;
@@ -48,7 +50,7 @@ import engine.project.asset_db : AssetDatabase;
 import engine.scene.camera : Camera;
 import engine.scene.controllers : FlyCamera;
 import engine.scene.graph : Transform;
-import engine.scene.scene_file : SceneFile, loadSceneFile, saveSceneFile, validateScene;
+import engine.scene.scene_file : SceneFile, loadSceneFile, saveSceneFile, sceneToMinifiedJson, validateScene;
 import engine.ui;
 
 @safe:
@@ -153,6 +155,11 @@ struct EditorApp {
     PhysicsWorld physics;
     HotReloadManager hotReload;
     ShaderHotReloader shaderReloader;
+    /// HR-1/HR-2: models, textures, prefabs, scenes and `*.tune.json` under `assets/`.
+    AssetHotReloader assetReloader;
+    TunableRegistry tunables;
+    /// JSON the editor last wrote to `currentScenePath` (its own saves are not reloads).
+    string lastSavedSceneJson;
     PlayMode playMode;
     AssetDatabase assetDb;
     ProjectPanel projectPanel;
@@ -214,6 +221,9 @@ struct EditorApp {
             gizmos = GizmoRenderer.create(app.gpu);
             gpuSceneReady = true;
             shaderReloader.init("assets/shaders");
+            tunables.addFilesUnder("assets");
+            sceneRenderer.enableDependencyTracking();
+            assetReloader.init(["assets"]);
         }
 
         dock.initDefaultLayout(1280.0f, 768.0f);
@@ -290,6 +300,7 @@ struct EditorApp {
         }
         if (!isHeadless) {
             shaderReloader.pollAndReload(null, &sceneRenderer.scene, &gizmos, &uiRenderer, &app.renderer, dt);
+            pollAssetHotReload(dt);
         }
 
         if (!isHeadless && activeView == ActiveView.viewport && !flyCamActive)
@@ -433,6 +444,7 @@ struct EditorApp {
         if (playMode.isPlaying() || playMode.isPaused())
             playMode.stop(world, physics, world.strings, lightSettings, hotReload);
         shaderReloader.shutdown();
+        assetReloader.shutdown();
         hotReload.shutdown(world);
         if (gpuSceneReady) {
             gizmos.destroy();
@@ -1164,12 +1176,50 @@ struct EditorApp {
         nameDirty = false;
     }
 
+    /// HR-1/HR-2: apply settled asset edits (models, textures, prefabs,
+    /// tunables) and reopen the current scene when it changed on disk.
+    private void pollAssetHotReload(float dt) @trusted {
+        if (!gpuSceneReady || !assetReloader.watcher.active) return;
+        HotReloadTargets t;
+        t.gpu = &app.gpu;
+        t.renderer = &sceneRenderer;
+        t.world = &world;
+        t.assetDb = &assetDb;
+        t.tunables = &tunables;
+        immutable before = assetReloader.batchCount;
+        assetReloader.poll(dt, t);
+        if (assetReloader.batchCount == before) return;
+
+        // Rebuilt prefab instances get new entity IDs.
+        if (!selection.empty() && !world.alive(selection.primary)) {
+            selection.clear();
+            nameBound = noSelection;
+        }
+        if (!batchContains(assetReloader.watcher.changedPaths, currentScenePath)) return;
+        if (!exists(currentScenePath)) return;
+        string onDisk;
+        try {
+            onDisk = readText(currentScenePath);
+        } catch (Exception) {
+            return;
+        }
+        if (onDisk == lastSavedSceneJson) return; // our own save
+        if (!playMode.isEditing() || sceneDirty) {
+            warn("Cena alterada no disco: ", currentScenePath,
+                 " (não recarregada: há alterações não salvas ou o Play está ativo)");
+            return;
+        }
+        info("Cena alterada no disco, recarregando: ", currentScenePath);
+        openSceneFile(currentScenePath);
+    }
+
     private void saveCurrentScene() {
         try {
             auto dir = dirName(currentScenePath);
             if (dir.length > 0 && dir != "." && !exists(dir))
                 mkdirRecurse(dir);
             auto sf = worldToSceneFile(world, lightSettings);
+            lastSavedSceneJson = sceneToMinifiedJson(sf);
             saveSceneFile(currentScenePath, sf);
             sceneDirty = false;
             info("Cena salva com sucesso: %s", currentScenePath);

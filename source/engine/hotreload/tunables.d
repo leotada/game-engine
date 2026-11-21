@@ -102,6 +102,20 @@ struct TunableRegistry {
         return loadFile(path);
     }
 
+    /// Register and load every `*.tune.json` below `root`. Returns files loaded.
+    uint addFilesUnder(string root) @trusted {
+        import std.file : dirEntries, exists, isDir, SpanMode;
+        if (!exists(root) || !isDir(root)) return 0;
+        uint loaded;
+        try {
+            foreach (entry; dirEntries(root, "*" ~ tunableFileSuffix, SpanMode.depth))
+                if (!entry.isDir && addFile(entry.name)) loaded++;
+        } catch (Exception e) {
+            warn("Tunables: scan of ", root, " failed: ", e.msg);
+        }
+        return loaded;
+    }
+
     /// True when `path` is a registered tunables file.
     bool watches(scope const(char)[] path) const nothrow @nogc {
         foreach (f; _files) if (f == path) return true;
@@ -176,7 +190,7 @@ struct TunableRegistry {
         _fileVersions[fi]++;
         _generation++;
         info("Tunables: loaded ", path, " (", staged.length, " values)");
-        foreach (cb; onReloaded) cb(path);
+        foreach (cb; onReloaded) cb(_files[fi]);
         return true;
     }
 
@@ -301,7 +315,10 @@ struct TunableRegistry {
         _values[id.id] = tv;
     }
 
-    private size_t fileIndex(string path, bool create) {
+    private size_t fileIndex(string rawPath, bool create) {
+        import std.path : buildNormalizedPath;
+        // Normalized so watcher paths (`assets/x/../y`, `./assets/y`) match.
+        immutable path = buildNormalizedPath(rawPath);
         foreach (i, f; _files) if (f == path) return i;
         if (!create) return size_t.max;
         _files ~= path;
@@ -447,7 +464,10 @@ private float jsonNumber(ref const JSONValue v) @trusted {
     TunableRegistry reg;
     string seen;
     reg.onReloaded ~= (string p) { seen = p; };
-    assert(reg.addFile(path));
+    assert(reg.addFilesUnder(dir) == 1);
+    assert(reg.files == [path]);
+    assert(reg.addFile("./" ~ path)); // same file, other spelling
+    assert(reg.files.length == 1);
     assert(reg.watches(path) && isTunablePath(path));
     assert(seen == path);
     write(path, `{"enemy": {"hp": 45}}`);
