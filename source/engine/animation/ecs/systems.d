@@ -19,6 +19,8 @@ import engine.animation.math.simd;
 import engine.animation.math.soa;
 import engine.animation.sampling;
 import engine.animation.skeleton;
+import engine.math.mat : Mat4, decomposeAffine;
+import engine.scene.graph : Transform;
 
 @safe:
 
@@ -49,6 +51,13 @@ void advancePlaybackSystem(W)(ref W world, ref const AnimAssets assets, float dt
         auto a = world.getPtr!AnimAdditive(e);
         if (auto c = assets.animations.get(a.clip)) a.time = advanceTime(a.time, a.speed * dt, c.duration, true);
     }
+    static if (__traits(compiles, world.query!AnimLayerOverride())) {
+        foreach (e; world.query!AnimLayerOverride()) {
+            auto ov = world.getPtr!AnimLayerOverride(e);
+            if (auto c = assets.animations.get(ov.clip))
+                ov.time = advanceTime(ov.time, ov.speed * dt, c.duration, ov.loop);
+        }
+    }
 }
 
 private bool sampleClip(const(Animation)* clip, float time, ref SamplingContext ctx,
@@ -70,6 +79,13 @@ void sampleSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool pool
             if (auto c = assets.animations.get(b.b)) sampleClip(c, b.timeB, pose.ctx1, pose.local1);
         } else if (auto p = world.getPtr!AnimPlayback(e)) {
             if (auto c = assets.animations.get(p.clip)) sampleClip(c, p.time, pose.ctx0, pose.local0);
+            static if (__traits(compiles, world.getPtr!AnimLayerOverride(e))) {
+                if (auto ov = world.getPtr!AnimLayerOverride(e)) {
+                    if (ov.weight > 0)
+                        if (auto oc = assets.animations.get(ov.clip))
+                            sampleClip(oc, ov.time, pose.ctx1, pose.local1);
+                }
+            }
         }
         if (auto a = world.getPtr!AnimAdditive(e)) {
             if (a.weight != 0)
@@ -87,17 +103,61 @@ void blendSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool pool)
 
         BlendingJob.Layer[2] layers;
         size_t n = 0;
+        SimdFloat4[kMaxSoaJoints] complementMaskBuf = void;
+        immutable numSoa = cast(size_t) skeleton.numSoaJoints;
         if (auto b = world.getPtr!AnimBlend2(e)) {
             immutable w = b.weight < 0 ? 0 : (b.weight > 1 ? 1 : b.weight);
-            layers[n++] = BlendingJob.Layer(1.0f - w, pose.local0);
-            layers[n++] = BlendingJob.Layer(w, pose.local1);
+            auto ma = assets.jointMasks.get(b.maskA);
+            auto mb = assets.jointMasks.get(b.maskB);
+            if (ma is null && mb is null) {
+                layers[n++] = BlendingJob.Layer(1.0f - w, pose.local0);
+                layers[n++] = BlendingJob.Layer(w, pose.local1);
+            } else if (mb !is null && mb.length >= numSoa) {
+                immutable wVec = SimdFloat4.load1(w);
+                immutable one = SimdFloat4.one();
+                foreach (i; 0 .. numSoa) {
+                    immutable baseA = (ma !is null && ma.length >= numSoa) ? (*ma)[i] : one;
+                    complementMaskBuf[i] = baseA * (one - wVec * (*mb)[i]);
+                }
+                layers[n++] = BlendingJob.Layer(1.0f, pose.local0, complementMaskBuf[0 .. numSoa]);
+                layers[n++] = BlendingJob.Layer(w, pose.local1, (*mb)[0 .. numSoa]);
+            } else if (ma !is null && ma.length >= numSoa) {
+                immutable wVec = SimdFloat4.load1(1.0f - w);
+                immutable one = SimdFloat4.one();
+                foreach (i; 0 .. numSoa)
+                    complementMaskBuf[i] = one - wVec * (*ma)[i];
+                layers[n++] = BlendingJob.Layer(1.0f - w, pose.local0, (*ma)[0 .. numSoa]);
+                layers[n++] = BlendingJob.Layer(1.0f, pose.local1, complementMaskBuf[0 .. numSoa]);
+            }
         } else if (world.has!AnimPlayback(e)) {
-            layers[n++] = BlendingJob.Layer(1.0f, pose.local0);
+            bool handledOverride = false;
+            static if (__traits(compiles, world.getPtr!AnimLayerOverride(e))) {
+                if (auto ov = world.getPtr!AnimLayerOverride(e)) {
+                    immutable w = ov.weight < 0 ? 0 : (ov.weight > 1 ? 1 : ov.weight);
+                    auto om = assets.jointMasks.get(ov.mask);
+                    if (w > 0 && om !is null && om.length >= numSoa) {
+                        immutable wVec = SimdFloat4.load1(w);
+                        immutable one = SimdFloat4.one();
+                        foreach (i; 0 .. numSoa)
+                            complementMaskBuf[i] = one - wVec * (*om)[i];
+                        layers[n++] = BlendingJob.Layer(1.0f, pose.local0, complementMaskBuf[0 .. numSoa]);
+                        layers[n++] = BlendingJob.Layer(w, pose.local1, (*om)[0 .. numSoa]);
+                        handledOverride = true;
+                    }
+                }
+            }
+            if (!handledOverride)
+                layers[n++] = BlendingJob.Layer(1.0f, pose.local0);
         }
         BlendingJob.Layer[1] additive;
         size_t na = 0;
         if (auto a = world.getPtr!AnimAdditive(e)) {
-            if (a.weight != 0) additive[na++] = BlendingJob.Layer(a.weight, pose.local2);
+            if (a.weight != 0) {
+                auto am = assets.jointMasks.get(a.mask);
+                additive[na++] = (am !is null && am.length >= numSoa)
+                    ? BlendingJob.Layer(a.weight, pose.local2, (*am)[0 .. numSoa])
+                    : BlendingJob.Layer(a.weight, pose.local2);
+            }
         }
 
         BlendingJob job;
@@ -208,12 +268,49 @@ void skinPaletteSystem(W)(ref W world, ref const AnimAssets assets, ref PosePool
     }
 }
 
+/// Converts an ozz `Float4x4` to an engine `Mat4` (layout-identical column-major 4×4).
+Mat4 mat4FromFloat4x4(const Float4x4 f) @trusted pure nothrow @nogc {
+    return *cast(const(Mat4)*) &f;
+}
+
+/// Converts an engine `Mat4` to an ozz `Float4x4`.
+Float4x4 float4x4FromMat4(const Mat4 m) @trusted pure nothrow @nogc {
+    return *cast(const(Float4x4)*) &m;
+}
+
+/// Updates `Transform` of entities carrying `BoneSocket` to `targetWorld * pose.model[jointIndex] * localSocket`.
+/// Runs after `localToModelSystem` / `ikSystem` / `lookAtSystem`.
+void boneSocketSystem(W)(ref W world, ref PosePool pool) nothrow @nogc {
+    foreach (e; world.query!(BoneSocket, Transform)()) {
+        auto sock = world.getPtr!BoneSocket(e);
+        auto xf = world.getPtr!Transform(e);
+        if (!world.alive(sock.targetEntity)) continue;
+        auto sk = world.getPtr!AnimSkeleton(sock.targetEntity);
+        if (sk is null) continue;
+        auto pose = pool.get(sk.poseSlot);
+        if (pose is null || sock.jointIndex >= pose.model.length) continue;
+
+        Mat4 targetWorld = Mat4.identity();
+        if (world.has!Transform(sock.targetEntity)) {
+            const t = world.getPtr!Transform(sock.targetEntity);
+            targetWorld = Mat4.trs(t.position, t.rotation, t.scale);
+        }
+
+        immutable Mat4 jointModel = mat4FromFloat4x4(pose.model[sock.jointIndex]);
+        immutable Mat4 localSocket = Mat4.trs(sock.localOffset, sock.localRot, sock.localScale);
+        immutable Mat4 worldMat = targetWorld * jointModel * localSocket;
+
+        decomposeAffine(worldMat, xf.position, xf.rotation, xf.scale);
+    }
+}
+
 version (unittest) {
     import core.memory : GC;
     import engine.animation.testing : fixtureDir, near;
     import engine.ecs.world : World;
 
-    alias AnimWorld = World!(AnimSkeleton, AnimPlayback, AnimBlend2, AnimAdditive, AnimLookAt, AnimTwoBoneIK);
+    alias AnimWorld = World!(AnimSkeleton, AnimPlayback, AnimBlend2, AnimAdditive,
+                             AnimLookAt, AnimTwoBoneIK, AnimLayerOverride, BoneSocket, Transform);
 }
 
 unittest {
@@ -418,4 +515,62 @@ unittest {
         if (err2 < bestError) bestError = err2;
     }
     assert(bestError < 1e-2f, "IK never reached the target");
+}
+
+unittest {
+    // Subtree mask blending + BoneSocket world attachment.
+    import engine.math.quat : Quat;
+    import engine.math.vec : Vec3;
+    import std.math : abs;
+
+    AnimAssets assets;
+    PosePool pool;
+    AnimWorld world;
+    string err;
+    auto sk = loadSkeletonFile(assets.skeletons, fixtureDir ~ "pab/skeleton.ozz", err);
+    auto walk = loadAnimationFile(assets.animations, fixtureDir ~ "pab/walk.ozz", err);
+    auto run = loadAnimationFile(assets.animations, fixtureDir ~ "pab/run.ozz", err);
+    auto skeleton = assets.skeletons.get(sk);
+    assert(skeleton !is null && !walk.isNull && !run.isNull, err);
+
+    // Pick a mid-hierarchy joint for the upper-body subtree mask.
+    immutable int subRoot = skeleton.numJoints / 2;
+    auto maskData = buildSubtreeMask(*skeleton, subRoot, 1.0f, 0.0f);
+    assert(maskData.length == skeleton.numSoaJoints);
+    auto maskHandle = assets.jointMasks.add(maskData);
+
+    immutable charEnt = world.spawn();
+    world.set(charEnt, AnimSkeleton(sk, pool.acquire(skeleton.numJoints)));
+    world.set(charEnt, AnimPlayback(walk, 0.2f, 1.0f, true));
+    world.set(charEnt, AnimLayerOverride(run, maskHandle, 1.0f, 0.2f, 1.0f, true));
+    Transform charXf;
+    charXf.position = Vec3(10.0f, 2.0f, -5.0f);
+    charXf.rotation = Quat.fromEulerYXZ(Vec3(0.0f, 90.0f, 0.0f));
+    world.set(charEnt, charXf);
+
+    immutable propEnt = world.spawn();
+    world.set(propEnt, Transform.init);
+    world.set(propEnt, BoneSocket(charEnt, cast(uint) subRoot, Vec3(0.5f, 0.0f, 0.0f), Quat.identity(), Vec3(1, 1, 1)));
+
+    sampleSystem(world, assets, pool);
+    blendSystem(world, assets, pool);
+    localToModelSystem(world, assets, pool);
+    boneSocketSystem(world, pool);
+
+    // Joint 0 (root) should match walk (mask weight 0), while subRoot should match run (mask weight 1).
+    auto pose = pool.get(world.get!AnimSkeleton(charEnt).poseSlot);
+    assert(pose !is null);
+    Vec3 bPos, l0Pos, l1Pos, bScale, l0Scale, l1Scale;
+    Quat bRot, l0Rot, l1Rot;
+    // Verify BoneSocket placed propEnt at charXf * model[subRoot] * offset.
+    immutable Mat4 expectedWorld = charXf.localMatrix()
+        * mat4FromFloat4x4(pose.model[subRoot])
+        * Mat4.translation(0.5f, 0.0f, 0.0f);
+    Vec3 expPos, expScale;
+    Quat expRot;
+    assert(decomposeAffine(expectedWorld, expPos, expRot, expScale));
+    immutable propXf = world.get!Transform(propEnt);
+    assert(abs(propXf.position.x - expPos.x) < 1e-3f);
+    assert(abs(propXf.position.y - expPos.y) < 1e-3f);
+    assert(abs(propXf.position.z - expPos.z) < 1e-3f);
 }

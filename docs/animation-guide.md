@@ -89,6 +89,15 @@ skinPaletteSystem(world, assets, pool);   // pool.get(slot).palette -> GPU
 | `AnimAdditive` | additive layer on top |
 | `AnimTwoBoneIK` | arm/leg IK toward a model-space target |
 | `AnimLookAt` | aim a joint at a model-space target |
+| `AnimLayerOverride` | partial-body override clip blended over `AnimPlayback` using a `JointMaskHandle` |
+| `BoneSocket` | attaches an entity's `Transform` to a skeleton joint on `targetEntity` in world space |
+| `RagdollComponent` | bidirectional Box3D ragdoll state (`animated` / `ragdoll` / `blendingToAnim`) |
+
+### Partial Bone Masks, Sockets & Ragdoll Bridge (`OW-5`)
+
+- **Partial masks (`blending`, `ecs.assets`):** `buildSubtreeMask(skeleton, "Spine1", 1.0f, 0.0f)` builds a `SimdFloat4[]` mask for `AnimAssets.jointMasks`, usable on `AnimBlend2.maskA`/`maskB`, `AnimAdditive.mask`, or `AnimLayerOverride.mask`.
+- **World-space sockets (`ecs.systems`):** Attach props/weapons to a character joint via `BoneSocket(targetEntity, jointIndex, localOffset, localRot, localScale)` and run `boneSocketSystem(world, pool)` after `localToModelSystem` / `ikSystem` / `lookAtSystem`.
+- **Bidirectional ragdoll (`engine.animation.ragdoll`):** Define a `RagdollAsset` mapping joints to Box3D shapes/spherical joints, spawn kinematic bodies with `spawnRagdollBodies(...)`, switch to dynamic simulation via `activateRagdoll(...)` (inheriting linear/angular velocity), and blend back to a face-up/face-down get-up clip via `beginRagdollGetUp(...)`. Run `ragdollSystem(world, ragdollAssets, animAssets, pool, dt)` after `localToModelSystem` and before `skinPaletteSystem`.
 
 Hot reload: `reloadAnimationFile` replaces an asset under the same handle; the new `uid` makes
 sampling contexts rebuild themselves on the next run.

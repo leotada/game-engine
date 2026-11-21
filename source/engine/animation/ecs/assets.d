@@ -17,11 +17,15 @@ struct SkeletonAssetTag {}
 struct AnimationAssetTag {}
 struct TrackAssetTag {}
 struct SkinAssetTag {}
+struct JointMaskAssetTag {}
+struct RagdollAssetTag {}
 
 alias SkeletonHandle = Handle!SkeletonAssetTag;
 alias AnimationHandle = Handle!AnimationAssetTag;
 alias TrackHandle = Handle!TrackAssetTag;
 alias SkinHandle = Handle!SkinAssetTag;
+alias JointMaskHandle = Handle!JointMaskAssetTag;
+alias RagdollAssetHandle = Handle!RagdollAssetTag;
 
 /// Binds a mesh skin to a skeleton: for mesh joint `j`, `remap[j]` is the skeleton joint index and
 /// `inverseBinds[j]` its inverse bind matrix. The palette entry is `model[remap[j]] * inverseBind[j]`.
@@ -91,6 +95,7 @@ alias SkeletonStore = AssetStore!(Skeleton, SkeletonAssetTag);
 alias AnimationStore = AssetStore!(Animation, AnimationAssetTag);
 alias FloatTrackStore = AssetStore!(FloatTrack, TrackAssetTag);
 alias SkinStore = AssetStore!(SkinBinding, SkinAssetTag);
+alias JointMaskStore = AssetStore!(SimdFloat4[], JointMaskAssetTag);
 
 /// All animation assets of a world.
 struct AnimAssets {
@@ -98,6 +103,7 @@ struct AnimAssets {
     AnimationStore animations;
     FloatTrackStore floatTracks;
     SkinStore skins;
+    JointMaskStore jointMasks;
 }
 
 private const(ubyte)[] readFile(string path) @trusted {

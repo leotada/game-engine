@@ -266,6 +266,38 @@ struct Texture {
         return fromPixels(gpu, rgba, w, h, desc);
     }
 
+    /// Create an empty GPU texture usable as both a render target and a sampled UI/shader texture.
+    static Texture createRenderTarget(ref GpuContext gpu, uint width, uint height,
+                                      WGPUTextureFormat fmt = WGPUTextureFormat.rgba8Unorm) {
+        Texture t;
+        if (width > 0 && height > 0) {
+            WGPUTextureDescriptor desc;
+            desc.usage = WGPUTextureUsage.textureBinding
+                       | WGPUTextureUsage.renderAttachment
+                       | WGPUTextureUsage.copyDst
+                       | WGPUTextureUsage.copySrc;
+            desc.dimension = WGPUTextureDimension.dim2D;
+            desc.size = WGPUExtent3D(width, height, 1);
+            desc.format = fmt;
+            desc.mipLevelCount = 1;
+            desc.sampleCount = 1;
+
+            auto device = gpu.getDevice();
+            auto rawTex = () @trusted { return wgpuDeviceCreateTexture(device, &desc); }();
+            if (rawTex is null) {
+                err("Texture.createRenderTarget: failed to create texture");
+            } else {
+                t.width = width;
+                t.height = height;
+                t.format = fmt;
+                t.mipLevels = 1;
+                t.texture = rawTex;
+                t.view = createView(rawTex, fmt, WGPUTextureViewDimension.dim2D, 1);
+            }
+        }
+        return t;
+    }
+
     /// Opaque UI texture handle compatible with `UiNode.textureHandle`.
     ulong uiHandle() const nothrow @nogc @trusted {
         return view is null ? 0 : cast(ulong) cast(size_t) view;

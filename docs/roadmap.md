@@ -25,7 +25,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 | 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
-| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **In Progress (`OW-1`, `OW-2`, `OW-3`, `OW-4`, `OW-6` Done)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather, 3D/DSP/OGG audio, ozz-physics ragdoll + UI circle clip/rotate, Recast C-shim nav, chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
+| 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **In Progress (`OW-1..OW-6` Done)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather (**Done**), 3D/DSP/OGG audio (**Done**), ozz-physics ragdoll + UI circle clip/rotate (**Done**), Recast C-shim nav (**Done**), chunk streaming, Windows `steadygc`, hot-reload & Blender splines |
 
 ### Ordering Notes
 

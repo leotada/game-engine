@@ -77,6 +77,8 @@ struct UiNode {
 
     // Optional texture / image identifier or handle (0 = solid/none)
     ulong textureHandle = 0;
+    float[4] imageUvRect = [0.0f, 0.0f, 1.0f, 1.0f]; // (u0, v0, u1, v1) or (centerU, centerV, spanU, spanV)
+    Color4 imageTint = Color4(1.0f, 1.0f, 1.0f, 1.0f);
     uint customTag = 0;
     uint nextFree = 0;
 

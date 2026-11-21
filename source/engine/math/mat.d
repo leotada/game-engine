@@ -179,4 +179,67 @@ pure nothrow @nogc:
         r.m[15] = ( a20 * b03 - a21 * b01 + a22 * b00) * invDet;
         return r;
     }
+
+    /// Decompose this affine TRS matrix into `translation`, `rotation`, and `scale`.
+    /// Returns false (with identity rotation) if any basis axis is degenerate.
+    bool decompose(out Vec3 translation, out Quat rotation, out Vec3 scale) const {
+        return decomposeAffine(this, translation, rotation, scale);
+    }
+}
+
+/// Decompose an affine 4×4 matrix (column-major T * R * S) into `translation`, `rotation`, and `scale`.
+/// Returns false (with identity rotation) if any basis axis is degenerate.
+bool decomposeAffine(const Mat4 m, out Vec3 translation, out Quat rotation, out Vec3 scale) {
+    translation = Vec3(m.m[12], m.m[13], m.m[14]);
+
+    immutable c0 = Vec3(m.m[0], m.m[1], m.m[2]);
+    immutable c1 = Vec3(m.m[4], m.m[5], m.m[6]);
+    immutable c2 = Vec3(m.m[8], m.m[9], m.m[10]);
+
+    float sx = c0.length();
+    immutable sy = c1.length();
+    immutable sz = c2.length();
+    if (c0.cross(c1).dot(c2) < 0.0f)
+        sx = -sx;
+
+    scale = Vec3(sx, sy, sz);
+
+    immutable absSx = sx < 0.0f ? -sx : sx;
+    if (absSx <= 1e-12f || sy <= 1e-12f || sz <= 1e-12f) {
+        rotation = Quat.identity();
+        return false;
+    }
+
+    immutable invSx = 1.0f / sx;
+    immutable invSy = 1.0f / sy;
+    immutable invSz = 1.0f / sz;
+
+    Mat4 rotMat;
+    rotMat.m[0] = c0.x * invSx; rotMat.m[1] = c0.y * invSx; rotMat.m[2]  = c0.z * invSx;
+    rotMat.m[4] = c1.x * invSy; rotMat.m[5] = c1.y * invSy; rotMat.m[6]  = c1.z * invSy;
+    rotMat.m[8] = c2.x * invSz; rotMat.m[9] = c2.y * invSz; rotMat.m[10] = c2.z * invSz;
+    rotation = Quat.fromMat4(rotMat);
+    return true;
+}
+
+unittest {
+    import std.math : abs;
+
+    immutable pos = Vec3(3.5f, -2.0f, 7.25f);
+    immutable rot = Quat.fromEulerYXZ(Vec3(25.0f, -60.0f, 15.0f));
+    immutable scl = Vec3(1.5f, 0.75f, 2.0f);
+    immutable m = Mat4.trs(pos, rot, scl);
+
+    Vec3 outPos, outScale;
+    Quat outRot;
+    assert(decomposeAffine(m, outPos, outRot, outScale));
+    assert(abs(outPos.x - pos.x) < 1e-4f && abs(outPos.y - pos.y) < 1e-4f && abs(outPos.z - pos.z) < 1e-4f);
+    assert(abs(outScale.x - scl.x) < 1e-4f && abs(outScale.y - scl.y) < 1e-4f && abs(outScale.z - scl.z) < 1e-4f);
+    immutable d = abs(outRot.dot(rot));
+    assert(abs(d - 1.0f) < 1e-4f);
+
+    // Zero-scale matrix fails cleanly
+    Mat4 singular = Mat4.trs(pos, rot, Vec3(0.0f, 1.0f, 1.0f));
+    assert(!singular.decompose(outPos, outRot, outScale));
+    assert(outRot.w == 1.0f && outRot.x == 0.0f);
 }

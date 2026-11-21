@@ -41,6 +41,23 @@ struct ScissorRect {
 
 static assert(isPod!ScissorRect);
 
+/// Analytical circular clip region in pixels.
+struct CircleClip {
+    float cx = 0;
+    float cy = 0;
+    float radius = 0;
+}
+
+static assert(isPod!CircleClip);
+
+private struct UiUniformData {
+    float screenW = 0, screenH = 0, pad0 = 0, pad1 = 0;
+    float clipCx = 0, clipCy = 0, clipRadius = 0, clipActive = 0;
+}
+
+static assert(UiUniformData.sizeof == 32);
+static assert(isPod!UiUniformData);
+
 /// 2D Batch drawer managing pre-allocated GPU buffers and command generation.
 struct UiBatchRenderer {
     private enum MAX_VERTICES = 32_768; // 8,192 quads
@@ -83,25 +100,34 @@ struct UiBatchRenderer {
     private uint vertexCount = 0;
     private uint indexCount = 0;
 
-    // Scissor clipping and bind-group batch segments
+    // Scissor clipping, analytical circular clipping, and bind-group batch segments
     private enum MAX_CLIP_DEPTH = 16;
     private enum MAX_SEGMENTS = 512;
+    private enum UNIFORM_STRIDE = 256;
     private struct Segment {
         uint indexStart;
         uint indexCount;
         bool clipped;
         ScissorRect rect;
+        bool circleClipped;
+        CircleClip circle;
         WGPUBindGroup bindGroup; // null => active defaultBindGroup (font atlas)
     }
     private struct ClipState { bool clipped; ScissorRect rect; }
+    private struct CircleClipState { bool clipped; CircleClip circle; }
     private ClipState[MAX_CLIP_DEPTH] clipStack;
     private uint clipDepth = 0;
+    private CircleClipState[MAX_CLIP_DEPTH] circleClipStack;
+    private uint circleClipDepth = 0;
     private Segment[MAX_SEGMENTS] segments;
     private uint segmentCount = 0;
     private uint segmentStart = 0;
     private bool curClipped = false;
     private ScissorRect curClip;
+    private bool curCircleClipped = false;
+    private CircleClip curCircleClip;
     private WGPUBindGroup curBindGroup = null;
+    private Pod!ubyte[] uniformStaging;
 
     /// Initialize the UI batch renderer with GPU pipeline and buffers.
     void init(WGPUDevice dev, WGPUQueue q, WGPUTextureFormat surfFormat, ref Font font) @trusted {
@@ -111,6 +137,7 @@ struct UiBatchRenderer {
 
         vertices.length = MAX_VERTICES;
         indices.length = MAX_INDICES;
+        uniformStaging.length = MAX_SEGMENTS * UNIFORM_STRIDE;
 
         // Create shader module
         shaderModule = createShaderModule(device, ui2dShaderSource);
@@ -118,12 +145,13 @@ struct UiBatchRenderer {
             fatal("Failed to create UI shader module");
         }
 
-        // Bind group layout: 0 = uniform(screenSize), 1 = sampler, 2 = texture2d
+        // Bind group layout: 0 = dynamic uniform(screenSize + clipCircle), 1 = sampler, 2 = texture2d
         WGPUBindGroupLayoutEntry[3] bglEntries;
         bglEntries[0].binding = 0;
-        bglEntries[0].visibility = WGPUShaderStage.vertex;
+        bglEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
         bglEntries[0].buffer.type = WGPUBufferBindingType.uniform;
-        bglEntries[0].buffer.minBindingSize = 8; // vec2<f32>
+        bglEntries[0].buffer.hasDynamicOffset = 1;
+        bglEntries[0].buffer.minBindingSize = UiUniformData.sizeof;
 
         bglEntries[1].binding = 1;
         bglEntries[1].visibility = WGPUShaderStage.fragment;
@@ -208,7 +236,7 @@ struct UiBatchRenderer {
         indexBuffer = wgpuDeviceCreateBuffer(device, &ibDesc);
 
         WGPUBufferDescriptor ubDesc;
-        ubDesc.size = 16; // 2 floats + padding
+        ubDesc.size = MAX_SEGMENTS * UNIFORM_STRIDE;
         ubDesc.usage = WGPUBufferUsage.uniform | WGPUBufferUsage.copyDst;
         uniformBuffer = wgpuDeviceCreateBuffer(device, &ubDesc);
 
@@ -264,7 +292,7 @@ struct UiBatchRenderer {
         WGPUBindGroupEntry[3] bgEntries;
         bgEntries[0].binding = 0;
         bgEntries[0].buffer = uniformBuffer;
-        bgEntries[0].size = 16;
+        bgEntries[0].size = UiUniformData.sizeof;
 
         bgEntries[1].binding = 1;
         bgEntries[1].sampler = sampler;
@@ -375,9 +403,12 @@ struct UiBatchRenderer {
         vertexCount = 0;
         indexCount = 0;
         clipDepth = 0;
+        circleClipDepth = 0;
         segmentCount = 0;
         segmentStart = 0;
         curClipped = false;
+        curCircleClipped = false;
+        curCircleClip = CircleClip.init;
         curBindGroup = null;
     }
 
@@ -385,7 +416,8 @@ struct UiBatchRenderer {
     private void closeSegment() nothrow @nogc {
         if (indexCount > segmentStart && segmentCount < MAX_SEGMENTS) {
             segments[segmentCount++] = Segment(
-                segmentStart, indexCount - segmentStart, curClipped, curClip, curBindGroup
+                segmentStart, indexCount - segmentStart, curClipped, curClip,
+                curCircleClipped, curCircleClip, curBindGroup
             );
             segmentStart = indexCount;
         }
@@ -432,6 +464,34 @@ struct UiBatchRenderer {
             curClip = prev.rect;
         } else {
             curClipped = false;
+        }
+    }
+
+    /// Restrict following draws to an analytical circle centered at `(cx, cy)` with `radius` px
+    /// and 1 px smoothstep antialiasing in `ui2d.wgsl` (AD-5).
+    void pushCircleClip(float cx, float cy, float radius) nothrow @nogc {
+        closeSegment();
+        if (circleClipDepth < MAX_CLIP_DEPTH)
+            circleClipStack[circleClipDepth++] = CircleClipState(curCircleClipped, curCircleClip);
+        if (radius > 0.0f) {
+            curCircleClip = CircleClip(cx, cy, radius);
+            curCircleClipped = true;
+        } else {
+            curCircleClip = CircleClip.init;
+            curCircleClipped = false;
+        }
+    }
+
+    /// Leave the innermost circular clip region.
+    void popCircleClip() nothrow @nogc {
+        closeSegment();
+        if (circleClipDepth > 0) {
+            immutable prev = circleClipStack[--circleClipDepth];
+            curCircleClipped = prev.clipped;
+            curCircleClip = prev.circle;
+        } else {
+            curCircleClipped = false;
+            curCircleClip = CircleClip.init;
         }
     }
 
@@ -496,6 +556,7 @@ struct UiBatchRenderer {
         indices[indexCount++] = vStart + 0;
     }
 
+
     /// Draw a solid/rounded rectangle centered at `(cx, cy)` rotated by `angleRad` radians.
     void drawRectRotated(
         float cx, float cy, float w, float h, float angleRad,
@@ -537,6 +598,7 @@ struct UiBatchRenderer {
         indices[indexCount++] = vStart + 3;
         indices[indexCount++] = vStart + 0;
     }
+
 
     /// Draw an antialiased line segment with rounded caps from `(x1, y1)` to `(x2, y2)`.
     void drawLine(
@@ -586,6 +648,7 @@ struct UiBatchRenderer {
         indices[indexCount++] = vStart + 3;
         indices[indexCount++] = vStart + 0;
     }
+
 
     /// Draw a filled triangle (Mode 3 flat solid).
     void drawTriangle(
@@ -768,6 +831,7 @@ struct UiBatchRenderer {
         indices[indexCount++] = vStart + 0;
     }
 
+
     /// Draw a filled antialiased circle (analytical SDF, 1 quad).
     void drawCircle(float cx, float cy, float radius, in Color4 color) nothrow @nogc {
         enum float TWO_PI = 6.28318530718f;
@@ -831,6 +895,136 @@ struct UiBatchRenderer {
             x, y + h, u0, v1, tint.r, tint.g, tint.b, tint.a,
             w, h, cornerRadius, 0, -halfW, halfH, 0, 0, 0, 0, 2.0f
         );
+
+        indices[indexCount++] = vStart + 0;
+        indices[indexCount++] = vStart + 1;
+        indices[indexCount++] = vStart + 2;
+        indices[indexCount++] = vStart + 2;
+        indices[indexCount++] = vStart + 3;
+        indices[indexCount++] = vStart + 0;
+    }
+
+
+    /// Draw an RGBA `Texture` quad centered at `(cx, cy)` rotated by `angleRad` radians (Mode 2).
+    void drawImageRotated(
+        ref const Texture tex,
+        float cx, float cy, float w, float h, float angleRad,
+        in Color4 tint = Color4(1, 1, 1, 1),
+        float u0 = 0.0f, float v0 = 0.0f, float u1 = 1.0f, float v1 = 1.0f,
+        float cornerRadius = 0.0f
+    ) nothrow @nogc {
+        if (!tex.valid) return;
+        auto viewPtr = () @trusted { return cast(WGPUTextureView) tex.view; }();
+        drawImageRotated(viewPtr, cx, cy, w, h, angleRad, tint, u0, v0, u1, v1, cornerRadius);
+    }
+
+    /// Draw a raw `WGPUTextureView` quad centered at `(cx, cy)` rotated by `angleRad` radians (Mode 2).
+    void drawImageRotated(
+        WGPUTextureView view,
+        float cx, float cy, float w, float h, float angleRad,
+        in Color4 tint = Color4(1, 1, 1, 1),
+        float u0 = 0.0f, float v0 = 0.0f, float u1 = 1.0f, float v1 = 1.0f,
+        float cornerRadius = 0.0f
+    ) nothrow @nogc {
+        if (w <= 0 || h <= 0 || vertices.length == 0) return;
+        if (vertexCount + 4 > MAX_VERTICES || indexCount + 6 > MAX_INDICES) return;
+        if (view !is null) {
+            auto bg = getOrCreateBindGroup(view);
+            if (bg is null) return;
+            setBindGroup(bg);
+        }
+
+        immutable float hw = w * 0.5f;
+        immutable float hh = h * 0.5f;
+        immutable float c = cosf(angleRad);
+        immutable float s = sinf(angleRad);
+
+        float[4] lx = [-hw,  hw, hw, -hw];
+        float[4] ly = [-hh, -hh, hh,  hh];
+        float[4] us = [u0, u1, u1, u0];
+        float[4] vs = [v0, v0, v1, v1];
+
+        immutable uint vStart = vertexCount;
+        foreach (k; 0 .. 4) {
+            immutable float px = cx + lx[k] * c - ly[k] * s;
+            immutable float py = cy + lx[k] * s + ly[k] * c;
+            vertices[vertexCount++] = UiVertex(
+                px, py, us[k], vs[k],
+                tint.r, tint.g, tint.b, tint.a,
+                w, h, cornerRadius, 0.0f,
+                lx[k], ly[k],
+                0, 0, 0, 0,
+                2.0f
+            );
+        }
+
+        indices[indexCount++] = vStart + 0;
+        indices[indexCount++] = vStart + 1;
+        indices[indexCount++] = vStart + 2;
+        indices[indexCount++] = vStart + 2;
+        indices[indexCount++] = vStart + 3;
+        indices[indexCount++] = vStart + 0;
+    }
+
+    /// Draw a fixed-orientation `Texture` quad at `(x, y, w, h)` with UVs rotated by `angleRad`
+    /// around `(uvCenterX, uvCenterY)` (e.g., rotating minimap texture inside a circular aperture).
+    void drawImageUvRotated(
+        ref const Texture tex,
+        float x, float y, float w, float h,
+        float uvCenterX, float uvCenterY, float uvWidth, float uvHeight, float angleRad,
+        in Color4 tint = Color4(1, 1, 1, 1),
+        float cornerRadius = -1.0f
+    ) nothrow @nogc {
+        if (!tex.valid) return;
+        auto viewPtr = () @trusted { return cast(WGPUTextureView) tex.view; }();
+        drawImageUvRotated(viewPtr, x, y, w, h, uvCenterX, uvCenterY, uvWidth, uvHeight,
+                           angleRad, tint, cornerRadius);
+    }
+
+    /// Draw a fixed-orientation `WGPUTextureView` quad with rotated UVs (Mode 2).
+    void drawImageUvRotated(
+        WGPUTextureView view,
+        float x, float y, float w, float h,
+        float uvCenterX, float uvCenterY, float uvWidth, float uvHeight, float angleRad,
+        in Color4 tint = Color4(1, 1, 1, 1),
+        float cornerRadius = -1.0f
+    ) nothrow @nogc {
+        if (w <= 0 || h <= 0 || vertices.length == 0) return;
+        if (vertexCount + 4 > MAX_VERTICES || indexCount + 6 > MAX_INDICES) return;
+        if (view !is null) {
+            auto bg = getOrCreateBindGroup(view);
+            if (bg is null) return;
+            setBindGroup(bg);
+        }
+
+        immutable float halfW = w * 0.5f;
+        immutable float halfH = h * 0.5f;
+        immutable float effRadius = cornerRadius >= 0.0f ? cornerRadius : (w < h ? halfW : halfH);
+        immutable float hu = uvWidth * 0.5f;
+        immutable float hv = uvHeight * 0.5f;
+        immutable float c = cosf(angleRad);
+        immutable float s = sinf(angleRad);
+
+        float[4] px = [x, x + w, x + w, x];
+        float[4] py = [y, y,     y + h, y + h];
+        float[4] lx = [-halfW,  halfW, halfW, -halfW];
+        float[4] ly = [-halfH, -halfH, halfH,  halfH];
+        float[4] du = [-hu,  hu, hu, -hu];
+        float[4] dv = [-hv, -hv, hv,  hv];
+
+        immutable uint vStart = vertexCount;
+        foreach (k; 0 .. 4) {
+            immutable float u = uvCenterX + du[k] * c - dv[k] * s;
+            immutable float v = uvCenterY + du[k] * s + dv[k] * c;
+            vertices[vertexCount++] = UiVertex(
+                px[k], py[k], u, v,
+                tint.r, tint.g, tint.b, tint.a,
+                w, h, effRadius, 0.0f,
+                lx[k], ly[k],
+                0, 0, 0, 0,
+                2.0f
+            );
+        }
 
         indices[indexCount++] = vStart + 0;
         indices[indexCount++] = vStart + 1;
@@ -949,11 +1143,31 @@ struct UiBatchRenderer {
         // Render optional RGBA image handle
         if (n.textureHandle != 0) {
             auto texView = () @trusted { return cast(WGPUTextureView) cast(size_t) n.textureHandle; }();
-            drawImage(
-                texView,
-                n.layoutX, n.layoutY, n.layoutWidth, n.layoutHeight,
-                Color4(1, 1, 1, 1), 0, 0, 1, 1, n.style.cornerRadius
-            );
+            if (n.style.rotateImageUv) {
+                drawImageUvRotated(
+                    texView,
+                    n.layoutX, n.layoutY, n.layoutWidth, n.layoutHeight,
+                    n.imageUvRect[0], n.imageUvRect[1], n.imageUvRect[2], n.imageUvRect[3],
+                    n.style.imageRotation, n.imageTint, n.style.cornerRadius
+                );
+            } else if (n.style.imageRotation != 0.0f) {
+                drawImageRotated(
+                    texView,
+                    n.layoutX + n.layoutWidth * 0.5f, n.layoutY + n.layoutHeight * 0.5f,
+                    n.layoutWidth, n.layoutHeight, n.style.imageRotation,
+                    n.imageTint,
+                    n.imageUvRect[0], n.imageUvRect[1], n.imageUvRect[2], n.imageUvRect[3],
+                    n.style.cornerRadius
+                );
+            } else {
+                drawImage(
+                    texView,
+                    n.layoutX, n.layoutY, n.layoutWidth, n.layoutHeight,
+                    n.imageTint,
+                    n.imageUvRect[0], n.imageUvRect[1], n.imageUvRect[2], n.imageUvRect[3],
+                    n.style.cornerRadius
+                );
+            }
         }
 
         // Render inline text
@@ -968,46 +1182,64 @@ struct UiBatchRenderer {
             drawText(font, tx, ty, n.text, fs, n.style.textColor);
         }
 
-        // Render children (optionally clipped to this node's box)
+        // Render children (optionally clipped to this node's box or analytical circle)
         immutable bool clip = n.style.clipChildren;
-        if (clip) pushClip(n.layoutX, n.layoutY, n.layoutWidth, n.layoutHeight);
+        immutable bool circleClip = clip && n.style.clipCircle;
+        if (circleClip) {
+            immutable float r = (n.layoutWidth < n.layoutHeight ? n.layoutWidth : n.layoutHeight) * 0.5f;
+            pushCircleClip(n.layoutX + n.layoutWidth * 0.5f, n.layoutY + n.layoutHeight * 0.5f, r);
+        } else if (clip) {
+            pushClip(n.layoutX, n.layoutY, n.layoutWidth, n.layoutHeight);
+        }
         UiNodeId child = n.firstChild;
         while (child.isValid()) {
             renderTree(tree, child, font);
             child = tree.get(child).nextSibling;
         }
-        if (clip) popClip();
+        if (circleClip) popCircleClip();
+        else if (clip) popClip();
     }
 
     /// Flush the batch into GPU commands inside an active render pass.
     void flush(WGPURenderPassEncoder pass, float screenW, float screenH) nothrow @nogc @trusted {
         if (indexCount == 0 || vertexCount == 0) return;
 
-        // Upload screenSize uniform
-        float[2] u = [screenW, screenH];
-        wgpuQueueWriteBuffer(queue, uniformBuffer, 0, u.ptr, 8);
+        closeSegment();
+        if (segmentCount == 0) return;
+
+        // Upload per-segment dynamic uniforms (screenSize + analytical circle clip)
+        if (uniformStaging.length < segmentCount * UNIFORM_STRIDE) return;
+        foreach (si; 0 .. segmentCount) {
+            const seg = &segments[si];
+            UiUniformData u = UiUniformData(
+                screenW, screenH, 0.0f, 0.0f,
+                seg.circle.cx, seg.circle.cy, seg.circle.radius,
+                seg.circleClipped ? 1.0f : 0.0f
+            );
+            auto ptr = cast(UiUniformData*) (uniformStaging.ptr + si * UNIFORM_STRIDE);
+            *ptr = u;
+        }
+        wgpuQueueWriteBuffer(queue, uniformBuffer, 0, uniformStaging.ptr, segmentCount * UNIFORM_STRIDE);
 
         // Upload vertices & indices
         wgpuQueueWriteBuffer(queue, vertexBuffer, 0, vertices.ptr, vertexCount * UiVertex.sizeof);
         wgpuQueueWriteBuffer(queue, indexBuffer, 0, indices.ptr, indexCount * uint.sizeof);
 
-        // Bind pipeline, buffers, and textures
+        // Bind pipeline and vertex/index buffers
         wgpuRenderPassEncoderSetPipeline(pass, pipeline);
-        WGPUBindGroup activeBg = defaultBindGroup;
-        if (activeBg !is null) {
-            wgpuRenderPassEncoderSetBindGroup(pass, 0, activeBg, 0, null);
-        }
+        WGPUBindGroup activeBg = null;
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vertexBuffer, 0, vertexCount * UiVertex.sizeof);
         wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuffer, WGPUIndexFormat.uint32, 0, indexCount * uint.sizeof);
 
         // One draw per clip + bind-group segment
-        closeSegment();
         immutable uint sw = cast(uint) screenW;
         immutable uint sh = cast(uint) screenH;
-        foreach (ref seg; segments[0 .. segmentCount]) {
+        foreach (si; 0 .. segmentCount) {
+            auto seg = &segments[si];
             WGPUBindGroup wantBg = seg.bindGroup !is null ? seg.bindGroup : defaultBindGroup;
-            if (wantBg !is null && wantBg !is activeBg) {
-                wgpuRenderPassEncoderSetBindGroup(pass, 0, wantBg, 0, null);
+            if (wantBg !is null) {
+                uint dynOffset = cast(uint) (si * UNIFORM_STRIDE);
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, wantBg, 1, &dynOffset);
                 activeBg = wantBg;
             }
             if (seg.clipped) {
@@ -1152,4 +1384,13 @@ unittest {
     ui.drawTriangle(20, 20, 60, 20, 40, 60, red);
     ui.popClip();
     assert(ui.segmentCount == 2);
+
+    // Analytical circular clip stack + rotated image / rotated UV image
+    ui.pushCircleClip(200, 200, 64);
+    ui.drawImageRotated(cast(WGPUTextureView) null, 200, 200, 24, 24, 1.5707963f, red);
+    ui.drawImageUvRotated(cast(WGPUTextureView) null, 136, 136, 128, 128, 0.5f, 0.5f, 0.25f, 0.25f, 0.785398f, red);
+    ui.popCircleClip();
+    assert(ui.segmentCount == 3);
+    assert(ui.segments[2].circleClipped);
+    assert(ui.segments[2].circle.cx == 200 && ui.segments[2].circle.radius == 64);
 }

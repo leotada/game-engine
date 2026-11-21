@@ -1,5 +1,7 @@
 struct UiUniforms {
     screenSize: vec2<f32>,
+    _pad0: vec2<f32>,
+    clipCircle: vec4<f32>, // (cx, cy, radius, enabled > 0.5)
 };
 @group(0) @binding(0) var<uniform> uiU: UiUniforms;
 @group(0) @binding(1) var uiSampler: sampler;
@@ -44,6 +46,15 @@ fn vs_ui(in: UiVertexInput) -> UiVertexOutput {
 
 @fragment
 fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
+    var circleClipAlpha = 1.0;
+    if (uiU.clipCircle.w > 0.5 && uiU.clipCircle.z > 0.0) {
+        let dCircle = length(in.clipPos.xy - uiU.clipCircle.xy) - uiU.clipCircle.z;
+        circleClipAlpha = smoothstep(0.5, -0.5, dCircle);
+        if (circleClipAlpha <= 0.0) {
+            discard;
+        }
+    }
+
     if (in.mode < 0.5) {
         // Mode 0: Solid / Rounded Rectangle (or capsule line) with SDF antialiasing
         let halfSize = in.rectParams.xy * 0.5;
@@ -51,7 +62,7 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
         let borderW = in.rectParams.w;
         let q = abs(in.localPos) - halfSize + vec2<f32>(r, r);
         let dist = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
-        let alpha = clamp(0.5 - dist, 0.0, 1.0);
+        let alpha = clamp(0.5 - dist, 0.0, 1.0) * circleClipAlpha;
         if (alpha <= 0.0) {
             discard;
         }
@@ -74,20 +85,20 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
             let outlineW = in.rectParams.w;
             if (outlineW > 0.0) {
                 let outerAlpha = clamp(sdPx + outlineW + 0.5, 0.0, 1.0) * in.borderColor.a;
-                let finalAlpha = mix(outerAlpha, in.color.a, fillT);
+                let finalAlpha = mix(outerAlpha, in.color.a, fillT) * circleClipAlpha;
                 if (finalAlpha <= 0.005) {
                     discard;
                 }
                 let finalRgb = mix(in.borderColor.rgb, in.color.rgb, fillT);
                 return vec4<f32>(finalRgb, finalAlpha);
             }
-            let finalA = in.color.a * fillT;
+            let finalA = in.color.a * fillT * circleClipAlpha;
             if (finalA <= 0.005) {
                 discard;
             }
             return vec4<f32>(in.color.rgb, finalA);
         } else {
-            let finalA = in.color.a * alphaMask;
+            let finalA = in.color.a * alphaMask * circleClipAlpha;
             if (finalA <= 0.01) {
                 discard;
             }
@@ -108,13 +119,18 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
             }
             outCol.a = outCol.a * alpha;
         }
+        outCol.a = outCol.a * circleClipAlpha;
+        if (outCol.a <= 0.0) {
+            discard;
+        }
         return outCol;
     } else if (in.mode < 3.5) {
         // Mode 3: Flat solid triangle / polygon
-        if (in.color.a <= 0.001) {
+        let finalA = in.color.a * circleClipAlpha;
+        if (finalA <= 0.001) {
             discard;
         }
-        return in.color;
+        return vec4<f32>(in.color.rgb, finalA);
     } else {
         // Mode 4: Analytical SDF circle / ring / arc
         // localPos = pixel offset from center
@@ -137,7 +153,7 @@ fn fs_ui(in: UiVertexOutput) -> @location(0) vec4<f32> {
             dist = max(radialDist, angDist);
         }
 
-        let alpha = clamp(0.5 - dist, 0.0, 1.0);
+        let alpha = clamp(0.5 - dist, 0.0, 1.0) * circleClipAlpha;
         if (alpha <= 0.0) {
             discard;
         }

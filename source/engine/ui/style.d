@@ -84,9 +84,15 @@ struct UiStyle {
     Color4 textColor = Color4(0.9f, 0.9f, 0.9f, 1.0f);
     float fontSize   = 13.0f;
 
-    // Interaction
+    // Interaction & Clipping
     UiCursor cursor = UiCursor.default_;
     bool clipChildren = false;
+    /// When `clipChildren` is true, clips descendants to an analytical circle inscribed in this node.
+    bool clipCircle = false;
+
+    // Image orientation
+    float imageRotation = 0.0f;
+    bool rotateImageUv = false;
 }
 
 static assert(isPod!UiStyle);

@@ -340,9 +340,9 @@ Also includes POD ECS components `Transform2D` and `Sprite`, `SpriteRegion.fromP
 
 Import `engine.ui` for retained flexbox layouts, widgets, docking, vector primitives, and TrueType Unicode fonts via `SDL3_ttf` + FreeType 2:
 
-- **Widgets (`engine.ui.widgets`):** `label`, `button`, `iconButton`, `checkbox`, `slider`, `dragValue`, `textField`, `image`, `scrollView`, `splitter`, `tabBar`, `treeView`, and `menu`, plus `DockSpace` (`engine.ui.dock`).
+- **Widgets (`engine.ui.widgets`):** `label`, `button`, `iconButton`, `checkbox`, `slider`, `dragValue`, `textField`, `image`, `imageRotated`, `minimapImage`, `scrollView`, `splitter`, `tabBar`, `treeView`, and `menu`, plus `DockSpace` (`engine.ui.dock`).
 - **Fonts (`engine.ui.text.font.Font`):** `loadFromFile(path, pxHeight, useSdf = true)` or `loadFromMemory(...)`, `setHinting(TTF_HintingFlags.normal | light | mono | none | lightSubpixel)`, `addFallbackFont(bytes)`, and automatic kerning (`getKerning`).
-- **Immediate 2D primitives (`UiBatchRenderer`):** `drawRect`, `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `pushClip`/`popClip`.
+- **Immediate 2D primitives (`UiBatchRenderer`):** `drawRect`, `drawRectRotated`, `drawLine`, `drawTriangle`, `drawPolygon`, `drawPolyline`, `drawArc`, `drawCircle`, `drawCircleOutline`, `drawImage`, `drawImageRotated`, `drawImageUvRotated`, `pushClip`/`popClip`, `pushCircleClip`/`popCircleClip`.
 
 ```d
 import engine.ui;
@@ -489,7 +489,8 @@ string err;
 auto sk   = loadSkeletonFile(animAssets.skeletons, "skeleton.ozz", err);
 auto walk = loadAnimationFile(animAssets.animations, "walk.ozz", err);
 // Spawn entity with AnimSkeleton(sk, posePool.acquire(numJoints)) + AnimPlayback(walk, 0, 1, true)
-// Per frame: advancePlaybackSystem -> sampleSystem -> blendSystem -> localToModelSystem -> skinPaletteSystem
+// Per frame: advancePlaybackSystem -> sampleSystem -> blendSystem -> localToModelSystem -> ragdollSystem -> boneSocketSystem -> skinPaletteSystem
+// Optional OW-5 helpers: buildSubtreeMask + AnimLayerOverride, BoneSocket, RagdollAsset + RagdollComponent
 ```
 
 Deep dive: [animation-guide.md](animation-guide.md).

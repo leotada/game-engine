@@ -19,6 +19,8 @@ struct Pose {
     Pod!SoaTransform[] local0, local1, local2;
     /// Blended local pose (input of local-to-model).
     Pod!SoaTransform[] blended;
+    /// Local pose reconstructed from physics ragdoll bodies.
+    Pod!SoaTransform[] ragdollPose;
     Pod!Float4x4[] model;
     Pod!Float4x4[] palette;
     SamplingContext ctx0, ctx1, ctx2;
@@ -46,6 +48,7 @@ struct PosePool {
         p.local1 = new SoaTransform[soa];
         p.local2 = new SoaTransform[soa];
         p.blended = new SoaTransform[soa];
+        p.ragdollPose = new SoaTransform[soa];
         p.model = new Float4x4[numJoints];
         p.palette = new Float4x4[numJoints];
         foreach (ref m; p.model) m = Float4x4.identity();

@@ -124,6 +124,59 @@ pure nothrow @nogc:
         return r;
     }
 
+    /// Extract a unit rotation quaternion from the upper-left 3×3 of `m`.
+    /// Normalizes basis columns to strip uniform/non-uniform scale and handles reflections.
+    static Quat fromMat4(const Mat4 m) {
+        auto c0 = Vec3(m.m[0], m.m[1], m.m[2]);
+        auto c1 = Vec3(m.m[4], m.m[5], m.m[6]);
+        auto c2 = Vec3(m.m[8], m.m[9], m.m[10]);
+
+        immutable l0 = c0.length();
+        immutable l1 = c1.length();
+        immutable l2 = c2.length();
+        if (l0 <= 1e-12f || l1 <= 1e-12f || l2 <= 1e-12f)
+            return Quat.identity();
+
+        auto x = c0 / l0;
+        immutable y = c1 / l1;
+        immutable z = c2 / l2;
+        if (x.cross(y).dot(z) < 0.0f)
+            x = x * -1.0f;
+
+        immutable m00 = x.x, m01 = y.x, m02 = z.x;
+        immutable m10 = x.y, m11 = y.y, m12 = z.y;
+        immutable m20 = x.z, m21 = y.z, m22 = z.z;
+
+        immutable trace = m00 + m11 + m22;
+        float qx, qy, qz, qw;
+        if (trace > 0.0f) {
+            immutable s = sqrt(trace + 1.0f) * 2.0f;
+            qx = (m21 - m12) / s;
+            qy = (m02 - m20) / s;
+            qz = (m10 - m01) / s;
+            qw = 0.25f * s;
+        } else if (m00 > m11 && m00 > m22) {
+            immutable s = sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+            qx = 0.25f * s;
+            qy = (m01 + m10) / s;
+            qz = (m02 + m20) / s;
+            qw = (m21 - m12) / s;
+        } else if (m11 > m22) {
+            immutable s = sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+            qx = (m01 + m10) / s;
+            qy = 0.25f * s;
+            qz = (m12 + m21) / s;
+            qw = (m02 - m20) / s;
+        } else {
+            immutable s = sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+            qx = (m02 + m20) / s;
+            qy = (m12 + m21) / s;
+            qz = 0.25f * s;
+            qw = (m10 - m01) / s;
+        }
+        return Quat(qx, qy, qz, qw).normalized();
+    }
+
     /// Integrate an angular velocity (in rad/s) over `dt` into a new orientation.
     /// Uses the standard q' = q + 0.5 * dt * (ω, 0) * q then renormalize.
     Quat integrate(Vec3 omega, float dt) const {

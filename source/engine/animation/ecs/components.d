@@ -5,6 +5,8 @@ module engine.animation.ecs.components;
 
 import engine.animation.ecs.assets;
 import engine.core.pod : isPod;
+import engine.ecs.store : EntityId;
+import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
 import engine.reflect.attrs : component, export_, range;
 
@@ -28,11 +30,14 @@ import engine.reflect.attrs : component, export_, range;
 }
 
 /// Blends two clips (e.g. idle / walk). `weight` 0 = all `a`, 1 = all `b`.
+/// Optional `maskA`/`maskB` restrict each clip to a per-joint weight mask.
 @component struct AnimBlend2 {
     AnimationHandle a, b;
     @export_ @range(0, 1) float weight = 0;
     float timeA = 0, timeB = 0;
     @export_ float speed = 1;
+    JointMaskHandle maskA = JointMaskHandle.init;
+    JointMaskHandle maskB = JointMaskHandle.init;
 }
 
 /// Additive layer on top of the base pose.
@@ -41,6 +46,26 @@ import engine.reflect.attrs : component, export_, range;
     @export_ @range(0, 1) float weight = 0;
     float time = 0;
     @export_ float speed = 1;
+    JointMaskHandle mask = JointMaskHandle.init;
+}
+
+/// Partial-body override layer blended over `AnimPlayback` using `mask` (e.g. upper-body aiming).
+@component struct AnimLayerOverride {
+    AnimationHandle clip;
+    JointMaskHandle mask;
+    @export_ @range(0, 1) float weight = 1;
+    @export_ float time = 0;
+    @export_ float speed = 1;
+    @export_ bool loop = true;
+}
+
+/// Attaches an entity's `Transform` to a skeleton joint on `targetEntity` in world space.
+@component struct BoneSocket {
+    @export_ EntityId targetEntity = EntityId.max;
+    @export_ uint jointIndex = 0;
+    @export_ Vec3 localOffset = Vec3(0, 0, 0);
+    @export_ Quat localRot = Quat.init;
+    @export_ Vec3 localScale = Vec3(1, 1, 1);
 }
 
 /// Makes a joint aim at a model-space target (head look-at).
@@ -54,7 +79,8 @@ import engine.reflect.attrs : component, export_, range;
 }
 
 static assert(isPod!AnimSkeleton && isPod!AnimPlayback && isPod!AnimBlend2
-              && isPod!AnimAdditive && isPod!AnimLookAt);
+              && isPod!AnimAdditive && isPod!AnimLookAt
+              && isPod!AnimLayerOverride && isPod!BoneSocket);
 
 /// Two-bone IK (arm/leg): reaches `target` (model space) with the chain `start -> mid -> end`.
 @component struct AnimTwoBoneIK {

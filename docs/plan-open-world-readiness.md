@@ -1,6 +1,6 @@
 # Plan: Semi-Open-World Engine Readiness (9 km² Scale)
 
-> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`: CSM, Terrain, Fog, Sky/Weather, Decals) **Done** · See [roadmap.md](roadmap.md)
+> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`: CSM, Terrain, Fog, Sky/Weather, Decals) **Done** · Phase 4 (`OW-4`: 3D Spatial Audio, DSP & OGG) **Done** · Phase 5 (`OW-5`: Animation ↔ Physics & Minimap UI) **Done** · Phase 6 (`OW-6`: 3D Navigation & Dynamic Obstacles) **Done** · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -206,23 +206,23 @@ Extend [source/engine/audio/engine.d](../source/engine/audio/engine.d) while kee
 
 ---
 
-### Phase 5 — Animation (`ozz`) ↔ Physics Bridge & Minimap/Compass UI (`OW-5`, High / Medium)
+### Phase 5 — Animation (`ozz`) ↔ Physics Bridge & Minimap/Compass UI (`OW-5`, **Done**)
 
 Connect `engine.animation` to `engine.physics` and complete UI clipping/rotation primitives for circular minimaps and compasses.
 
-- [ ] **P5.1 — Math Helpers & World-Space Bone Sockets (`engine/math/`, `engine/animation/ecs/`):**
-  - Add `Quat.fromMat4` and `decomposeAffine` to [source/engine/math/quat.d](../source/engine/math/quat.d) / `mat.d`.
-  - Add POD `BoneSocket` component (`targetEntity`, `jointIndex`, `localOffset`, `localRot`, `localScale`) and `boneSocketSystem` computing `targetWorld * pose.model[jointIndex] * localSocket` and writing `Transform` (props, weapons, microphone, flying hat/glasses).
-- [ ] **P5.2 — Partial Bone Mask Builders & ECS Wiring (`blending.d`, `ecs/assets.d`, `ecs/systems.d`):**
-  - Build ergonomic mask helpers atop existing `BlendingJob.Layer.jointWeights` (`setJointWeight`, `buildSubtreeMask(Skeleton, rootJointName, weight)` via `iterateJointsDF`), add `JointMaskStore` to `AnimAssets`, and expose mask handles in `AnimBlend2` / upper-body override components processed by `blendSystem`.
-- [ ] **P5.3 — Bidirectional Ragdoll ↔ Skeleton Bridge (`source/engine/animation/ragdoll.d`, `pose_pool.d`):**
-  - Define POD `RagdollAsset` / `RagdollComponent` mapping skeleton joints ↔ `b3BodyId` + bind offsets + `SphericalJoint` constraints + state machine (`animated`, `ragdoll`, `blendingToAnim`, `blendTimer`).
-  - Add persistent `ragdollPose` (`Pod!SoaTransform[]`) slot to `Pose` in [source/engine/animation/ecs/pose_pool.d](../source/engine/animation/ecs/pose_pool.d).
-  - Implement **Skeleton → Physics** sync (kinematic bodies follow animated bones and inherit linear/angular velocity when switching to `ragdoll`) and **Physics → Skeleton** sync (convert world rigid-body transforms back into parent-local `SoaTransform[]`, align entity root position/yaw to ragdoll pelvis while selecting face-up vs. face-down get-up clip, and crossfade via `BlendingJob`).
-- [ ] **P5.4 — UI Circular Clipping & Image Rotation (`source/engine/ui/render/batch.d`, `assets/shaders/ui2d.wgsl`):**
-  - Add `drawImageRotated` (rotated icons, compass needles, player/car arrows) and `drawImageUvRotated` (rotating minimap texture inside a fixed circular aperture using Mode 2 AA `cornerRadius`).
-  - Implement analytical `pushCircleClip(cx, cy, radius)` / `popCircleClip()` (AD-5) via per-segment clip circle data in `ui2d.wgsl` with 1 px smoothstep AA so child icons, blips, text, and zones clip cleanly inside the minimap circle. Keep `UiBatchRenderer.reloadShader` synchronized.
-  - Expose rotation and UV-rect properties on `UiStyle`/`UiNode` (`widgets/image.d`) and add optional `Texture.createRenderTarget` for live RTT minimaps if needed.
+- [x] **P5.1 — Math Helpers & World-Space Bone Sockets (`engine/math/`, `engine/animation/ecs/`):**
+  - Added `Quat.fromMat4` and `decomposeAffine` / `Mat4.decompose` to [source/engine/math/quat.d](../source/engine/math/quat.d) / [mat.d](../source/engine/math/mat.d).
+  - Added POD `BoneSocket` component (`targetEntity`, `jointIndex`, `localOffset`, `localRot`, `localScale`) and `boneSocketSystem` computing `targetWorld * pose.model[jointIndex] * localSocket` and writing `Transform`.
+- [x] **P5.2 — Partial Bone Mask Builders & ECS Wiring (`blending.d`, `ecs/assets.d`, `ecs/systems.d`):**
+  - Added mask helpers atop `BlendingJob.Layer.jointWeights` (`fillJointWeights`, `setJointWeight`, `getJointWeight`, `setSubtreeWeights`, `buildSubtreeMask`), `JointMaskStore` in `AnimAssets`, and `maskA`/`maskB` on `AnimBlend2`, `mask` on `AnimAdditive`, and `AnimLayerOverride` processed by `blendSystem`.
+- [x] **P5.3 — Bidirectional Ragdoll ↔ Skeleton Bridge (`source/engine/animation/ragdoll.d`, `pose_pool.d`):**
+  - Defined POD `RagdollAsset` / `RagdollComponent` mapping skeleton joints ↔ `b3BodyId` + bind offsets + `SphericalJoint` constraints + state machine (`animated`, `ragdoll`, `blendingToAnim`, `blendTimer`).
+  - Added persistent `ragdollPose` (`Pod!SoaTransform[]`) slot to `Pose` in [source/engine/animation/ecs/pose_pool.d](../source/engine/animation/ecs/pose_pool.d).
+  - Implemented **Skeleton → Physics** sync (`syncSkeletonToPhysics`, `activateRagdoll` velocity inheritance) and **Physics → Skeleton** sync (`modelToLocalSoa`, `syncPhysicsToSkeleton`, `beginRagdollGetUp` pelvis alignment + face-up/face-down clip selection + `BlendingJob` crossfade in `ragdollSystem`).
+- [x] **P5.4 — UI Circular Clipping & Image Rotation (`source/engine/ui/render/batch.d`, `assets/shaders/ui2d.wgsl`):**
+  - Added `drawImageRotated` and `drawImageUvRotated` (rotating minimap texture inside a circular aperture).
+  - Implemented analytical `pushCircleClip(cx, cy, radius)` / `popCircleClip()` (AD-5) via per-segment dynamic uniforms in `ui2d.wgsl` with 1 px smoothstep AA.
+  - Exposed `clipCircle`, `imageRotation`, `rotateImageUv` on `UiStyle`, `imageUvRect`/`imageTint` on `UiNode`, `imageRotated`/`minimapImage` in `widgets/image.d`, and `Texture.createRenderTarget`.
 
 **DoD:** Automated tests validate `decomposeAffine`, `BoneSocket`, subtree mask blending, and `Model → Local SoaTransform` ragdoll pose roundtrip; `ui_gallery` demonstrates a rotating circular minimap clipping child icons/markers cleanly.
 

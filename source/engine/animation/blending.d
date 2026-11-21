@@ -6,7 +6,8 @@ module engine.animation.blending;
 
 import engine.animation.math.simd;
 import engine.animation.math.soa;
-import engine.animation.skeleton : kMaxSoaJoints;
+import engine.animation.skeleton : Skeleton, findJoint, kMaxJoints, kMaxSoaJoints;
+import engine.animation.skeleton_utils : iterateJointsDF;
 
 @safe:
 
@@ -52,6 +53,69 @@ struct BlendingJob {
         addLayers(this);
         return true;
     }
+}
+
+// ---- Partial-body joint weight mask helpers ----
+
+/// Sets every lane in `mask` to `weight`.
+void fillJointWeights(SimdFloat4[] mask, float weight) pure nothrow @nogc {
+    immutable w = SimdFloat4.load1(weight);
+    foreach (ref m; mask) m = w;
+}
+
+/// Sets the per-joint weight for `jointIndex` inside a SoA mask buffer.
+void setJointWeight(SimdFloat4[] mask, int jointIndex, float weight) pure nothrow @nogc {
+    if (jointIndex < 0) return;
+    immutable size_t soaIdx = cast(size_t) (jointIndex >> 2);
+    if (soaIdx >= mask.length) return;
+    immutable int lane = jointIndex & 3;
+    float[4] vals = [mask[soaIdx].x, mask[soaIdx].y, mask[soaIdx].z, mask[soaIdx].w];
+    vals[lane] = weight;
+    mask[soaIdx] = SimdFloat4.load(vals[0], vals[1], vals[2], vals[3]);
+}
+
+/// Reads the per-joint weight for `jointIndex` from a SoA mask buffer.
+float getJointWeight(const(SimdFloat4)[] mask, int jointIndex) pure nothrow @nogc {
+    if (jointIndex < 0) return 0.0f;
+    immutable size_t soaIdx = cast(size_t) (jointIndex >> 2);
+    if (soaIdx >= mask.length) return 0.0f;
+    return mask[soaIdx][jointIndex & 3];
+}
+
+/// Sets `weight` for `rootJoint` and all of its descendants in `skel`, leaving other joints untouched.
+/// Returns the number of joints updated (0 if `rootJoint` is invalid or `mask` is too small).
+int setSubtreeWeights(ref const Skeleton skel, SimdFloat4[] mask, int rootJoint, float weight) pure nothrow @nogc {
+    if (rootJoint < 0 || rootJoint >= skel.numJoints || mask.length < skel.numSoaJoints)
+        return 0;
+    bool[kMaxJoints] inSubtree;
+    int updated = 0;
+    iterateJointsDF!((int j, int parent) {
+        if (j == rootJoint || (parent >= 0 && inSubtree[parent])) {
+            inSubtree[j] = true;
+            setJointWeight(mask, j, weight);
+            ++updated;
+        }
+    })(skel);
+    return updated;
+}
+
+/// Allocates and builds a SoA joint mask where `rootJoint` and its descendants have `subtreeWeight`
+/// and all other joints have `baseWeight`. Returns empty slice if `rootJoint` is invalid.
+SimdFloat4[] buildSubtreeMask(ref const Skeleton skel, int rootJoint,
+                              float subtreeWeight = 1.0f, float baseWeight = 0.0f) pure nothrow {
+    if (rootJoint < 0 || rootJoint >= skel.numJoints) return null;
+    auto mask = new SimdFloat4[skel.numSoaJoints];
+    fillJointWeights(mask, baseWeight);
+    setSubtreeWeights(skel, mask, rootJoint, subtreeWeight);
+    return mask;
+}
+
+/// Name-based overload of `buildSubtreeMask`. Returns empty slice if `rootJointName` is not found.
+SimdFloat4[] buildSubtreeMask(ref const Skeleton skel, scope const(char)[] rootJointName,
+                              float subtreeWeight = 1.0f, float baseWeight = 0.0f) pure nothrow {
+    immutable rootJoint = findJoint(skel, rootJointName);
+    if (rootJoint < 0) return null;
+    return buildSubtreeMask(skel, rootJoint, subtreeWeight, baseWeight);
 }
 
 version (unittest) {

@@ -7,8 +7,10 @@ import std.stdio : writeln, writefln;
 
 import bindings.sdl3;
 import bindings.wgpu;
+import core.stdc.math : cosf, sinf;
 import engine.app : App;
 import engine.core.log : info;
+import engine.graphics.texture : Texture;
 import engine.graphics.types : Color4;
 import engine.platform.input : InputState, Key, MouseButton;
 import engine.ui;
@@ -31,6 +33,9 @@ struct UiGalleryDemo {
     float dragVal = 1.25f;
     bool checkboxVal = true;
     uint clickCounter = 0;
+    float minimapAngle = 0.0f;
+    Texture minimapTex;
+    ulong minimapTexHandle = 0;
 
     // Node handles
     UiNodeId btnClick;
@@ -39,6 +44,7 @@ struct UiGalleryDemo {
     UiNodeId chkNode;
     UiNodeId txtNode;
     UiNodeId statusLbl;
+    UiNodeId minimapNode;
 
     void init(bool headless = false) {
         isHeadless = headless;
@@ -58,6 +64,8 @@ struct UiGalleryDemo {
         if (!headless) {
             app = App.create("UI Gallery — Retained UI & TTF Fonts", 1024, 720);
             renderer.init(app.gpu.getDevice(), app.gpu.getQueue(), app.gpu.getFormat(), font);
+            minimapTex = createProceduralMinimapTexture();
+            minimapTexHandle = renderer.registerTexture(minimapTex);
         }
 
         buildUi();
@@ -126,9 +134,37 @@ struct UiGalleryDemo {
 
         label(tree, rightCol, "Estado & Eventos", theme.colors.accent, 14.0f);
         statusLbl = label(tree, rightCol, "Nenhum clique registrado ainda.", theme.colors.textDim);
+
+        label(tree, rightCol, "Minimapa Circular + Bússola (OW-5)", theme.colors.accent, 14.0f);
+        minimapNode = minimapImage(tree, rightCol, minimapTexHandle, 180.0f, 0.5f, 0.5f, 0.45f, 0.45f, 0.0f);
+        tree.get(minimapNode).style.borderWidth = 2.0f;
+        tree.get(minimapNode).style.borderColor = theme.colors.accent;
+    }
+
+    private Texture createProceduralMinimapTexture() {
+        enum uint sz = 128;
+        auto px = new ubyte[sz * sz * 4];
+        foreach (y; 0 .. sz) foreach (x; 0 .. sz) {
+            immutable bool roadH = (y >= 58 && y <= 70) || (y >= 24 && y <= 30);
+            immutable bool roadV = (x >= 58 && x <= 70) || (x >= 96 && x <= 102);
+            immutable bool grid = ((x % 16) == 0) || ((y % 16) == 0);
+            immutable size_t i = (y * sz + x) * 4;
+            if (roadH || roadV) {
+                px[i] = 175; px[i + 1] = 180; px[i + 2] = 190; px[i + 3] = 255;
+            } else if (grid) {
+                px[i] = 48; px[i + 1] = 68; px[i + 2] = 56; px[i + 3] = 255;
+            } else {
+                px[i] = 32; px[i + 1] = 48; px[i + 2] = 38; px[i + 3] = 255;
+            }
+        }
+        return Texture.fromPixels(app.gpu, px[], sz, sz);
     }
 
     void update(ref const InputState input, float dt, float screenW, float screenH) {
+        minimapAngle += dt * 0.45f;
+        if (tree.isValid(minimapNode))
+            tree.get(minimapNode).style.imageRotation = minimapAngle;
+
         queue.clear();
         inputCtx.update(tree, queue, input, dt);
 
@@ -159,6 +195,26 @@ struct UiGalleryDemo {
 
         renderer.begin();
         renderer.renderTree(tree, tree.root, font);
+
+        // Demonstrate analytical circular clip + rotated POI/compass markers over the minimap
+        if (tree.isValid(minimapNode)) {
+            const mn = &tree.get(minimapNode);
+            immutable float cx = mn.layoutX + mn.layoutWidth * 0.5f;
+            immutable float cy = mn.layoutY + mn.layoutHeight * 0.5f;
+            immutable float r = mn.layoutWidth * 0.5f - 2.0f;
+
+            renderer.pushCircleClip(cx, cy, r);
+            // Orbiting POI markers that get cleanly clipped at the circular border
+            immutable float poiX = cx + cosf(-minimapAngle) * (r * 0.82f);
+            immutable float poiY = cy + sinf(-minimapAngle) * (r * 0.82f);
+            renderer.drawCircle(poiX, poiY, 10.0f, Color4(0.95f, 0.35f, 0.25f, 1.0f));
+            renderer.drawText(font, poiX - 6.0f, poiY - 18.0f, "N", 12.0f, Color4(1, 1, 1, 1));
+            renderer.popCircleClip();
+
+            // Center player heading arrow
+            renderer.drawRectRotated(cx, cy, 10.0f, 10.0f, 0.785398f, Color4(0.2f, 0.85f, 1.0f, 1.0f));
+        }
+
         renderer.flush(frame.pass, cast(float)app.window.width, cast(float)app.window.height);
 
         app.endFrame(frame);
@@ -208,6 +264,8 @@ struct UiGalleryDemo {
 
     void cleanup() {
         if (!isHeadless) {
+            renderer.unregisterTexture(minimapTex);
+            minimapTex.destroy();
             renderer.release();
         }
         font.destroy();
