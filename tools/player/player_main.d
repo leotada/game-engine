@@ -23,6 +23,8 @@ import engine.scene.camera : Camera;
 import engine.scene.scene_file : SceneFile, loadSceneFile;
 import engine.scene.streamer : WorldStreamer;
 import engine.editor.scene_renderer : SceneRenderer;
+import engine.hotreload.asset_reload : AssetHotReloader, HotReloadTargets, batchContains;
+import engine.hotreload.tunables : TunableRegistry;
 import engine.core.log : info, warn, err;
 
 version (Symgc_cards) {
@@ -38,6 +40,9 @@ void main(string[] args) {
     uint headlessFrames = 0;
     bool assertNoGc = false;
     bool renderHeadless = false;
+    /// `--hot-reload`: live asset / prefab / scene / `*.tune.json` reload
+    /// (dev builds; ignored by `--headless-frames` runs).
+    bool hotReloadEnabled = false;
 
     foreach (arg; args[1 .. $]) {
         if (arg.length > 8 && arg[0 .. 8] == "--scene=") {
@@ -50,8 +55,11 @@ void main(string[] args) {
             assertNoGc = true;
         } else if (arg == "--render") {
             renderHeadless = true;
+        } else if (arg == "--hot-reload") {
+            hotReloadEnabled = true;
         }
     }
+    if (headless) hotReloadEnabled = false;
 
     info("Player: launching scene %s (headless=%s)", scenePath, headless ? "true" : "false");
 
@@ -114,11 +122,48 @@ void main(string[] args) {
     SceneRenderer renderer = SceneRenderer.create(app.gpu);
     renderer.syncAssets(app.gpu, world); // import every model before the first frame
 
+    AssetHotReloader hotReload;
+    TunableRegistry tunables;
+    if (hotReloadEnabled) {
+        tunables.addFilesUnder("assets");
+        renderer.enableDependencyTracking();
+        if (!hotReload.init(["assets"]))
+            hotReloadEnabled = false;
+    }
+
     scope (exit) {
         if (streamingEnabled)
             streamer.stopWorker();
+        hotReload.shutdown();
         renderer.destroy();
         sim.stopSimulate(world);
+    }
+
+    /// Apply settled asset edits; restart the simulation when the scene file changed.
+    void pollHotReload(float dt) @trusted {
+        HotReloadTargets t;
+        t.gpu = &app.gpu;
+        t.renderer = &renderer;
+        t.world = &world;
+        t.tunables = &tunables;
+        immutable before = hotReload.batchCount;
+        hotReload.poll(dt, t);
+        if (hotReload.batchCount == before) return;
+        if (!batchContains(hotReload.watcher.changedPaths, scenePath)) return;
+        if (streamingEnabled) {
+            warn("Player: root scene changed; reload of streamed worlds needs a restart");
+            return;
+        }
+        try {
+            auto sf = loadSceneFile(scenePath);
+            sim.stopSimulate(world);
+            loadSceneIntoWorld(world, sf, lightSettings);
+            sim.beginSimulate(world, physics, makeAssetResolver(world));
+            renderer.syncAssets(app.gpu, world);
+            info("Player: hot-reloaded scene ", scenePath);
+        } catch (Exception e) {
+            err("Player: scene reload failed (keeping the running scene): ", e.msg);
+        }
     }
 
     void frameFn(float dt) {
@@ -144,6 +189,8 @@ void main(string[] args) {
 
         if (streamingEnabled)
             streamer.update(world, viewCam.position, 2.0f);
+        if (hotReloadEnabled)
+            pollHotReload(dt);
 
         sim.tick(world, physics, 1.0f / 60.0f);
 
