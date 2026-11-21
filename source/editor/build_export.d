@@ -148,6 +148,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "libwgpu_native.a",
                 "libbox3d.a",
                 "librecast_shim.a",
+                "libstb_vorbis.a",
             ];
             if (includeSymGc) {
                 libs ~= "libsymgc-cards.a";
@@ -162,6 +163,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "wgpu_native.lib",
                 "box3d.lib",
                 "recast_shim.lib",
+                "stb_vorbis.lib",
             ];
             if (includeSymGc) {
                 libs ~= "symgc-cards.lib";
@@ -175,6 +177,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "libSDL3.a",
                 "libbox3d.a",
                 "librecast_shim.a",
+                "libstb_vorbis.a",
             ];
     }
 }
@@ -721,6 +724,7 @@ struct ExportPipeline {
             libsDir ~ "/libSDL3.a",
             libsDir ~ "/libbox3d.a",
             libsDir ~ "/librecast_shim.a",
+            libsDir ~ "/libstb_vorbis.a",
             "-sUSE_WEBGPU=1",
             "-sASYNCIFY=1",
             "-sALLOW_MEMORY_GROWTH=1",

@@ -52,7 +52,7 @@ echo "Output dir: $OUT_DIR"
 # Stage pre-existing engine archives into target directory on host linux-x86_64
 stage_host_libs() {
     if [[ "$TARGET" == "linux-x86_64" ]]; then
-        for lib in libwgpu_native.a libbox3d.a librecast_shim.a; do
+        for lib in libwgpu_native.a libbox3d.a librecast_shim.a libstb_vorbis.a; do
             if [[ -f "$LIBS_DIR/$lib" && ! -e "$OUT_DIR/$lib" ]]; then
                 ln -sf "$LIBS_DIR/$lib" "$OUT_DIR/$lib"
             fi
@@ -355,6 +355,30 @@ build_recast_shim() {
 }
 
 build_recast_shim
+
+# Build static libstb_vorbis.a if vendored
+build_stb_vorbis() {
+    local stb_c="$ROOT_DIR/vendor/stb/stb_vorbis.c"
+    if [[ ! -f "$stb_c" ]]; then
+        return 0
+    fi
+    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" ]]; then
+        echo "--- Skipping stb_vorbis auto-build for $TARGET (use target toolchain CMake/MSVC) ---"
+        return 0
+    fi
+    local obj_dir="$BUILD_ROOT/stb_vorbis"
+    mkdir -p "$obj_dir"
+    local cc="${CC:-gcc}"
+    local ar="${AR:-ar}"
+    echo "--- Building static libstb_vorbis.a for $TARGET ---"
+    "$cc" -O2 -fPIC -c "$stb_c" -o "$obj_dir/stb_vorbis.o"
+    "$ar" rcs "$OUT_DIR/libstb_vorbis.a" "$obj_dir/stb_vorbis.o"
+    if [[ "$TARGET" == "linux-x86_64" ]]; then
+        ln -sf "$OUT_DIR/libstb_vorbis.a" "$LIBS_DIR/libstb_vorbis.a"
+    fi
+}
+
+build_stb_vorbis
 
 stage_host_libs
 
