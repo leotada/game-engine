@@ -13,13 +13,14 @@ import std.exception : enforce;
 import std.file : exists, readText, write;
 import std.format : formattedWrite;
 import std.json;
-import std.math : isNaN;
+import std.math : floor, isNaN;
 import std.string : strip;
 
 @safe:
 
 enum string sceneFormatId = "game-engine.scene";
 enum int sceneSchemaVersion = 1;
+enum int sceneSchemaVersionV2 = 2;
 
 /// Parent / name sentinel in the file: `0` means none (entity ids are 1-based).
 enum uint sceneNoParent = 0;
@@ -70,6 +71,8 @@ struct SceneTransformData {
 struct SceneVisualData {
     bool hasAsset;
     int asset = sceneNoString; /// Index into `SceneFile.strings`
+    bool hasAssetGuid;
+    string assetGuid; /// Optional v2 32-char hex AssetGuid
     bool hasKind;
     string kind; /// `"cube"` / `"sphere"` / `"plane"` / `"mesh"`
     bool hasHalfExtents;
@@ -148,12 +151,49 @@ struct SceneEntityData {
     SceneComponentData[] customComponents;
 }
 
-/// Parsed `*.scene.json` (game-engine.scene v1).
+/// Spatial AABB bounds for a v2 scene or streamed chunk cell.
+struct SceneCellBounds {
+    float[3] min = [0, 0, 0];
+    float[3] max = [0, 0, 0];
+}
+
+/// Persistent asset reference in a v2 scene (`AssetGuid` + `strings[]` path index).
+struct SceneAssetLink {
+    string guid;
+    int path = sceneNoString;
+    string kind = "model"; /// `"model"` | `"texture"` | `"navmesh"` | `"prefab"`
+}
+
+/// Descriptor for one streamed world chunk in `ChunkManifest`.
+struct SceneChunkDescriptor {
+    int coordX = 0;
+    int coordZ = 0;
+    SceneCellBounds bounds;
+    string scenePath;
+    string navmeshPath;
+}
+
+/// World streaming manifest embedded in v2 root scenes.
+struct ChunkManifest {
+    float cellSize = 256.0f;
+    float loadRadius = 512.0f;
+    float unloadRadius = 640.0f;
+    SceneChunkDescriptor[] chunks;
+}
+
+/// Parsed `*.scene.json` (game-engine.scene v1 / v2).
 struct SceneFile {
+    int schemaVersion = sceneSchemaVersion;
     SceneMeta meta;
     string[] strings;
     SceneSettingsData settings;
     SceneEntityData[] entities;
+    /// Optional v2 fields:
+    bool hasCellBounds = false;
+    SceneCellBounds cellBounds;
+    SceneAssetLink[] assetLinks;
+    bool hasChunkManifest = false;
+    ChunkManifest chunkManifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,19 +301,60 @@ SceneValidationResult validateScene(const ref SceneFile scene, bool checkAssetFi
                 ~ SCENE_MAX_DIR_LIGHTS.to!string,
             0);
     }
-    if (point > SCENE_MAX_POINT_LIGHTS) {
-        result.errors ~= SceneValidationIssue(
-            SceneValidationCode.tooManyPointLights,
-            "point lights " ~ point.to!string ~ " exceed MAX_POINT_LIGHTS="
-                ~ SCENE_MAX_POINT_LIGHTS.to!string,
-            0);
-    }
-    if (spot > SCENE_MAX_SPOT_LIGHTS) {
-        result.errors ~= SceneValidationIssue(
-            SceneValidationCode.tooManySpotLights,
-            "spot lights " ~ spot.to!string ~ " exceed MAX_SPOT_LIGHTS="
-                ~ SCENE_MAX_SPOT_LIGHTS.to!string,
-            0);
+
+    immutable bool perChunkLights = scene.schemaVersion >= sceneSchemaVersionV2
+        || scene.hasChunkManifest || scene.hasCellBounds;
+    if (perChunkLights) {
+        immutable float cellSize = (scene.hasChunkManifest && scene.chunkManifest.cellSize > 0.0f)
+            ? scene.chunkManifest.cellSize : 256.0f;
+        uint[ulong] pointPerCell;
+        uint[ulong] spotPerCell;
+        foreach (ref e; scene.entities) {
+            if (!e.hasLight) continue;
+            immutable int cx = cast(int) floor(e.transform.pos[0] / cellSize);
+            immutable int cz = cast(int) floor(e.transform.pos[2] / cellSize);
+            immutable ulong cellKey = (cast(ulong) cast(uint) cx << 32) | cast(ulong) cast(uint) cz;
+            if (e.light.type == "point") {
+                pointPerCell[cellKey] = (cellKey in pointPerCell ? pointPerCell[cellKey] : 0) + 1;
+            } else if (e.light.type == "spot") {
+                spotPerCell[cellKey] = (cellKey in spotPerCell ? spotPerCell[cellKey] : 0) + 1;
+            }
+        }
+        foreach (k, cnt; pointPerCell) {
+            if (cnt > SCENE_MAX_POINT_LIGHTS) {
+                result.errors ~= SceneValidationIssue(
+                    SceneValidationCode.tooManyPointLights,
+                    "chunk point lights " ~ cnt.to!string ~ " exceed MAX_POINT_LIGHTS="
+                        ~ SCENE_MAX_POINT_LIGHTS.to!string,
+                    0);
+                break;
+            }
+        }
+        foreach (k, cnt; spotPerCell) {
+            if (cnt > SCENE_MAX_SPOT_LIGHTS) {
+                result.errors ~= SceneValidationIssue(
+                    SceneValidationCode.tooManySpotLights,
+                    "chunk spot lights " ~ cnt.to!string ~ " exceed MAX_SPOT_LIGHTS="
+                        ~ SCENE_MAX_SPOT_LIGHTS.to!string,
+                    0);
+                break;
+            }
+        }
+    } else {
+        if (point > SCENE_MAX_POINT_LIGHTS) {
+            result.errors ~= SceneValidationIssue(
+                SceneValidationCode.tooManyPointLights,
+                "point lights " ~ point.to!string ~ " exceed MAX_POINT_LIGHTS="
+                    ~ SCENE_MAX_POINT_LIGHTS.to!string,
+                0);
+        }
+        if (spot > SCENE_MAX_SPOT_LIGHTS) {
+            result.errors ~= SceneValidationIssue(
+                SceneValidationCode.tooManySpotLights,
+                "spot lights " ~ spot.to!string ~ " exceed MAX_SPOT_LIGHTS="
+                    ~ SCENE_MAX_SPOT_LIGHTS.to!string,
+                0);
+        }
     }
 
     if (dirSh > SCENE_MAX_DIR_SHADOW_CASTERS || pointSh > SCENE_MAX_POINT_SHADOW_CASTERS
@@ -353,7 +434,8 @@ SceneFile parseSceneJson(string text) {
     auto root = parseJSON(text.strip());
     enforce(root.type == JSONType.object, "scene root must be a JSON object");
     requireOnlyKeys(root, [
-        "format", "version", "meta", "strings", "settings", "entities"
+        "format", "version", "meta", "strings", "settings", "entities",
+        "cellBounds", "assetLinks", "chunks"
     ], "scene root");
 
     enforce("format" in root, "scene missing 'format'");
@@ -367,6 +449,7 @@ SceneFile parseSceneJson(string text) {
 
     SceneFile scene;
     scene = parseSceneBody(root);
+    scene.schemaVersion = ver;
     return migrateScene(scene, ver);
 }
 
@@ -382,11 +465,13 @@ string sceneToMinifiedJson(const SceneFile scene) {
     return app.data;
 }
 
-/// Version migration chain stub. Currently only v1 is accepted.
+/// Version migration chain: accepts v1 and v2 scenes.
 SceneFile migrateScene(SceneFile scene, int fromVersion) {
-    enforce(fromVersion == sceneSchemaVersion,
+    enforce(fromVersion >= sceneSchemaVersion && fromVersion <= sceneSchemaVersionV2,
         "unsupported scene version " ~ fromVersion.to!string
-            ~ " (only " ~ sceneSchemaVersion.to!string ~ " implemented; migrate_vN stub)");
+            ~ " (supported " ~ sceneSchemaVersion.to!string ~ ".."
+            ~ sceneSchemaVersionV2.to!string ~ ")");
+    scene.schemaVersion = fromVersion;
     return scene;
 }
 
@@ -577,7 +662,86 @@ private SceneFile parseSceneBody(ref JSONValue root) {
     enforce("entities" in root, "scene missing 'entities'");
     s.entities = parseEntities(root["entities"]);
 
+    if ("cellBounds" in root) {
+        s.hasCellBounds = true;
+        s.cellBounds = parseCellBounds(root["cellBounds"]);
+    }
+    if ("assetLinks" in root) {
+        s.assetLinks = parseAssetLinks(root["assetLinks"]);
+    }
+    if ("chunks" in root) {
+        s.hasChunkManifest = true;
+        s.chunkManifest = parseChunkManifest(root["chunks"]);
+    }
+
     return s;
+}
+
+private SceneCellBounds parseCellBounds(ref JSONValue v) {
+    enforce(v.type == JSONType.object, "cellBounds must be object");
+    requireOnlyKeys(v, ["min", "max"], "cellBounds");
+    enforce("min" in v && "max" in v, "cellBounds missing min/max");
+    SceneCellBounds b;
+    b.min = jsonFloat3(v["min"], "cellBounds.min");
+    b.max = jsonFloat3(v["max"], "cellBounds.max");
+    return b;
+}
+
+private SceneAssetLink[] parseAssetLinks(ref JSONValue v) {
+    enforce(v.type == JSONType.array, "assetLinks must be array");
+    SceneAssetLink[] out_;
+    foreach (ref item; jsonArray(v)) {
+        enforce(item.type == JSONType.object, "assetLinks[] must be object");
+        requireOnlyKeys(item, ["guid", "path", "kind"], "assetLinks[]");
+        enforce("guid" in item && item["guid"].type == JSONType.string, "assetLinks[].guid must be string");
+        SceneAssetLink link;
+        link.guid = item["guid"].str;
+        if ("path" in item)
+            link.path = jsonInt(item["path"], "assetLinks[].path");
+        if ("kind" in item) {
+            enforce(item["kind"].type == JSONType.string, "assetLinks[].kind must be string");
+            link.kind = item["kind"].str;
+        }
+        out_ ~= link;
+    }
+    return out_;
+}
+
+private ChunkManifest parseChunkManifest(ref JSONValue v) {
+    enforce(v.type == JSONType.object, "chunks must be object");
+    requireOnlyKeys(v, ["cellSize", "loadRadius", "unloadRadius", "items"], "chunks");
+    ChunkManifest m;
+    if ("cellSize" in v) m.cellSize = jsonFloat(v["cellSize"], "chunks.cellSize");
+    if ("loadRadius" in v) m.loadRadius = jsonFloat(v["loadRadius"], "chunks.loadRadius");
+    if ("unloadRadius" in v) m.unloadRadius = jsonFloat(v["unloadRadius"], "chunks.unloadRadius");
+    if ("items" in v) {
+        enforce(v["items"].type == JSONType.array, "chunks.items must be array");
+        foreach (ref item; jsonArray(v["items"])) {
+            enforce(item.type == JSONType.object, "chunks.items[] must be object");
+            requireOnlyKeys(item, ["coord", "bounds", "scenePath", "navmeshPath"], "chunks.items[]");
+            SceneChunkDescriptor d;
+            if ("coord" in item) {
+                auto arr = jsonArray(item["coord"]);
+                enforce(item["coord"].type == JSONType.array && arr.length == 2,
+                    "chunks.items[].coord must be [x,z]");
+                d.coordX = jsonInt(arr[0], "chunks.items[].coord[0]");
+                d.coordZ = jsonInt(arr[1], "chunks.items[].coord[1]");
+            }
+            if ("bounds" in item) {
+                d.bounds = parseCellBounds(item["bounds"]);
+            }
+            if ("scenePath" in item) {
+                enforce(item["scenePath"].type == JSONType.string, "chunks.items[].scenePath must be string");
+                d.scenePath = item["scenePath"].str;
+            }
+            if ("navmeshPath" in item) {
+                enforce(item["navmeshPath"].type == JSONType.string, "chunks.items[].navmeshPath must be string");
+                d.navmeshPath = item["navmeshPath"].str;
+            }
+            m.chunks ~= d;
+        }
+    }
+    return m;
 }
 
 private SceneMeta parseMeta(ref JSONValue v) {
@@ -697,11 +861,16 @@ private SceneTransformData parseTransform(ref JSONValue v) {
 
 private SceneVisualData parseVisual(ref JSONValue v) {
     enforce(v.type == JSONType.object, "visual must be object");
-    requireOnlyKeys(v, ["asset", "kind", "halfExtents"], "visual");
+    requireOnlyKeys(v, ["asset", "assetGuid", "kind", "halfExtents"], "visual");
     SceneVisualData vis;
     if ("asset" in v) {
         vis.hasAsset = true;
         vis.asset = jsonInt(v["asset"], "visual.asset");
+    }
+    if ("assetGuid" in v) {
+        enforce(v["assetGuid"].type == JSONType.string, "visual.assetGuid must be string");
+        vis.hasAssetGuid = true;
+        vis.assetGuid = v["assetGuid"].str;
     }
     if ("kind" in v) {
         enforce(v["kind"].type == JSONType.string, "visual.kind must be string");
@@ -712,7 +881,8 @@ private SceneVisualData parseVisual(ref JSONValue v) {
         vis.hasHalfExtents = true;
         vis.halfExtents = jsonFloat3(v["halfExtents"], "visual.halfExtents");
     }
-    enforce(vis.hasAsset || vis.hasKind, "visual requires 'asset' and/or 'kind'");
+    enforce(vis.hasAsset || vis.hasAssetGuid || vis.hasKind,
+        "visual requires 'asset', 'assetGuid', and/or 'kind'");
     return vis;
 }
 
@@ -798,11 +968,24 @@ private SceneLightData parseLight(ref JSONValue v) {
 // Write (minified, stable key order)
 // ---------------------------------------------------------------------------
 
+private bool isV2Scene(const ref SceneFile s) pure nothrow @nogc {
+    if (s.schemaVersion >= sceneSchemaVersionV2 || s.hasCellBounds ||
+        s.assetLinks.length > 0 || s.hasChunkManifest) {
+        return true;
+    }
+    foreach (ref e; s.entities) {
+        if (e.hasVisual && e.visual.hasAssetGuid)
+            return true;
+    }
+    return false;
+}
+
 private void writeScene(ref Appender!string app, const ref SceneFile s) {
+    immutable int outVersion = isV2Scene(s) ? sceneSchemaVersionV2 : sceneSchemaVersion;
     app.put(`{"format":"`);
     app.put(sceneFormatId);
     app.put(`","version":`);
-    app.formattedWrite("%d", sceneSchemaVersion);
+    app.formattedWrite("%d", outVersion);
     app.put(`,"meta":{"name":`);
     writeJsonString(app, s.meta.name);
     app.put(`,"units":`);
@@ -840,7 +1023,55 @@ private void writeScene(ref Appender!string app, const ref SceneFile s) {
             app.put(',');
         writeEntity(app, e);
     }
-    app.put(`]}`);
+    app.put(']');
+    if (s.hasCellBounds) {
+        app.put(`,"cellBounds":{"min":`);
+        writeFloat3(app, s.cellBounds.min);
+        app.put(`,"max":`);
+        writeFloat3(app, s.cellBounds.max);
+        app.put('}');
+    }
+    if (s.assetLinks.length > 0) {
+        app.put(`,"assetLinks":[`);
+        foreach (i, ref link; s.assetLinks) {
+            if (i) app.put(',');
+            app.put(`{"guid":`);
+            writeJsonString(app, link.guid);
+            app.put(`,"path":`);
+            app.formattedWrite("%d", link.path);
+            app.put(`,"kind":`);
+            writeJsonString(app, link.kind);
+            app.put('}');
+        }
+        app.put(']');
+    }
+    if (s.hasChunkManifest) {
+        app.put(`,"chunks":{"cellSize":`);
+        writeFloat(app, s.chunkManifest.cellSize);
+        app.put(`,"loadRadius":`);
+        writeFloat(app, s.chunkManifest.loadRadius);
+        app.put(`,"unloadRadius":`);
+        writeFloat(app, s.chunkManifest.unloadRadius);
+        app.put(`,"items":[`);
+        foreach (i, ref ch; s.chunkManifest.chunks) {
+            if (i) app.put(',');
+            app.put(`{"coord":[`);
+            app.formattedWrite("%d,%d", ch.coordX, ch.coordZ);
+            app.put(`],"bounds":{"min":`);
+            writeFloat3(app, ch.bounds.min);
+            app.put(`,"max":`);
+            writeFloat3(app, ch.bounds.max);
+            app.put(`},"scenePath":`);
+            writeJsonString(app, ch.scenePath);
+            if (ch.navmeshPath.length > 0) {
+                app.put(`,"navmeshPath":`);
+                writeJsonString(app, ch.navmeshPath);
+            }
+            app.put('}');
+        }
+        app.put(`]}`);
+    }
+    app.put('}');
 }
 
 private void writeEntity(ref Appender!string app, const ref SceneEntityData e) {
@@ -971,6 +1202,13 @@ private void writeVisual(ref Appender!string app, const ref SceneVisualData vis)
         first = false;
         app.put(`"asset":`);
         app.formattedWrite("%d", vis.asset);
+    }
+    if (vis.hasAssetGuid) {
+        if (!first)
+            app.put(',');
+        first = false;
+        app.put(`"assetGuid":`);
+        writeJsonString(app, vis.assetGuid);
     }
     if (vis.hasKind) {
         if (!first)
@@ -1139,4 +1377,67 @@ private float[4] jsonFloat4(ref JSONValue v, string ctx) {
     auto b = parseSceneJson(`{"format":"game-engine.scene","version":1,"meta":{"name":"f","units":"meters"},`
         ~ `"strings":[],"settings":{"gravity":[0,-9.81,0],"iblPreset":"procedural_default"},"entities":[]}`);
     assert(!b.settings.hasFog);
+}
+
+@("sceneFile.v2ManifestAndPerChunkLights") unittest {
+    SceneFile v2;
+    v2.schemaVersion = sceneSchemaVersionV2;
+    v2.meta = SceneMeta("open_world", "meters");
+    v2.strings = ["assets/models/rock.asset.json"];
+    v2.hasCellBounds = true;
+    v2.cellBounds = SceneCellBounds([-1536, -64, -1536], [1536, 512, 1536]);
+    v2.assetLinks ~= SceneAssetLink("0123456789abcdef0123456789abcdef", 0, "model");
+    v2.hasChunkManifest = true;
+    v2.chunkManifest.cellSize = 256.0f;
+    v2.chunkManifest.loadRadius = 512.0f;
+    v2.chunkManifest.unloadRadius = 640.0f;
+    v2.chunkManifest.chunks ~= SceneChunkDescriptor(
+        0, 0, SceneCellBounds([0, -10, 0], [256, 200, 256]),
+        "assets/scenes/chunk_0_0.scene.json", "assets/nav/chunk_0_0.navmesh");
+
+    SceneEntityData rock;
+    rock.id = 1;
+    rock.hasVisual = true;
+    rock.visual.hasAsset = true;
+    rock.visual.asset = 0;
+    rock.visual.hasAssetGuid = true;
+    rock.visual.assetGuid = "0123456789abcdef0123456789abcdef";
+    v2.entities ~= rock;
+
+    // 40 point lights split across 2 chunk cells (20 in cell 0, 20 in cell 1) must pass v2 validation.
+    foreach (i; 0 .. 40) {
+        SceneEntityData l;
+        l.id = cast(uint)(i + 2);
+        l.transform.pos = [i < 20 ? 10.0f : 300.0f, 3.0f, 10.0f];
+        l.hasLight = true;
+        l.light.type = "point";
+        v2.entities ~= l;
+    }
+    auto valOk = validateScene(v2, false);
+    assert(valOk.ok, "20 point lights per chunk cell must pass v2 validation");
+
+    // 33 point lights in one cell must fail v2 validation.
+    SceneFile overChunk = v2;
+    foreach (i; 0 .. 14) {
+        SceneEntityData l;
+        l.id = cast(uint)(100 + i);
+        l.transform.pos = [10.0f, 3.0f, 10.0f];
+        l.hasLight = true;
+        l.light.type = "point";
+        overChunk.entities ~= l;
+    }
+    auto valBad = validateScene(overChunk, false);
+    assert(!valBad.ok);
+    assert(valBad.errors.canFind!(x => x.code == SceneValidationCode.tooManyPointLights));
+
+    // Round-trip v2 JSON
+    immutable json = sceneToMinifiedJson(v2);
+    auto parsed = parseSceneJson(json);
+    assert(parsed.schemaVersion == 2);
+    assert(parsed.hasCellBounds);
+    assert(parsed.assetLinks.length == 1 && parsed.assetLinks[0].guid == "0123456789abcdef0123456789abcdef");
+    assert(parsed.hasChunkManifest && parsed.chunkManifest.chunks.length == 1);
+    assert(parsed.chunkManifest.chunks[0].navmeshPath == "assets/nav/chunk_0_0.navmesh");
+    assert(parsed.entities[0].visual.hasAssetGuid);
+    assert(sceneToMinifiedJson(parsed) == json);
 }
