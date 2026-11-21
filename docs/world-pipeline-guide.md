@@ -240,6 +240,98 @@ The output is a regular v2 world. Open the root scene in the editor, or run `gam
 
 ---
 
+## 6. API Reference
+
+Load time = allocates, call outside the frame loop. `@nogc` = safe per frame.
+
+### `engine.hotreload.watcher`
+
+| Symbol | Notes |
+|:---|:---|
+| `enum WatchBackend { automatic, inotify, polling }` | `automatic` = `inotify` on Linux, `polling` elsewhere; `inotify` falls back to `polling` when it cannot start |
+| `FileWatcher.init(roots, debounceSeconds = 0.3, backend = automatic)` | Recursive; skips missing roots; false when none exists |
+| `poll(dt)` → `bool` | True when a batch has settled; read it with `changedPaths()` (valid until the next true) |
+| `changedPaths()`, `backend()`, `active()` | Batch, chosen backend, running state |
+| `pollInterval` | Seconds between polling rescans (default 0.25) |
+| `addDirectory(path)`, `addDirectoryRecursive(root)`, `watchedDirectoryCount()` | Manual `inotify` watches (no-ops for polling) |
+| `shutdown()` | Releases watches; idempotent |
+
+### `engine.hotreload.asset_reload`
+
+| Symbol | Notes |
+|:---|:---|
+| `AssetHotReloader.init(roots, debounceSeconds = 0.2, backend = automatic)` | Also caches every `*.prefab.json` below `roots` |
+| `poll(dt, ref HotReloadTargets)` → `uint` | Resources/instances reloaded this frame (0 most frames) |
+| `applyChanges(paths, ref HotReloadTargets)` → `uint` | Apply a batch without the watcher |
+| `watchTexture(path, Texture*, desc, onSwapped)` / `unwatchTexture(Texture*)` | Registered texture slot |
+| `watchSurfaceShader(path, id)` | Custom surface shader from `Scene3DTextured.createSurfaceShader` |
+| `trackPrefab(path)`, `cachedPrefabCount()` | Snapshot a prefab definition (instances spawned later diff against it) |
+| `onSceneChanged(string path)` | Owner callback for a changed `*.scene.json` |
+| `onFilesChanged(const(string)[] paths)` | Called with every settled batch, after the built-in handlers |
+| `lastStats` (`AssetReloadStats`: `files`, `models`, `textures`, `shaders`, `prefabInstances`, `scenes`, `tunableFiles`, `failures`, `total()`) | Counters of the last batch |
+| `batchCount` | Batches applied since `init`; compare it before and after `poll` to detect a batch |
+| `HotReloadTargets { gpu, renderer, world, assetDb, tunables, surfaceScene }` | Null members are skipped; `surfaceScene` defaults to `&renderer.scene` |
+| `classifyAssetPath(path)` → `AssetChangeKind { other, model, texture, shader, prefab, scene, tunable }` | Classifies by suffix |
+| `batchContains(batch, path)` | Path comparison that ignores spelling (normalized) |
+| `guidForAsset(path, const(AssetDatabase)*)` | GUID from the database, else from the `.meta` sidecar |
+
+### `engine.hotreload.tunables`
+
+| Symbol | Notes |
+|:---|:---|
+| `addFile(path)`, `addFilesUnder(root)`, `loadFile(path)`, `loadText(path, json)` | Register / (re)load; paths are normalized; parse errors keep the old values |
+| `key(name)` → `StringId`, `findKey(name)`, `keyName(id)` | Intern once at load time |
+| `getFloat` / `getInt` / `getBool` / `getVec3` (`StringId` or name, fallback) | The `StringId` overloads are `@nogc nothrow` |
+| `value(id)` → `TunableValue { type, count, file, v[4] }`, `has(id)` | Raw access (`TunableType { missing, number, boolean, vector }`) |
+| `setNumber(name, value)` | Code-side default |
+| `applyTo(ref T, prefix)`, `applyToComponents!C(world, prefix)` | Copy `prefix.field` values |
+| `onReloaded`, `generation()`, `fileVersion(path)`, `files()`, `watches(path)`, `keyCount()` | Change tracking |
+| `describe(id, ref FrameArena)` | `key=value` debug label without GC |
+| `isTunablePath(path)`, `tunableFileSuffix` | `*.tune.json` convention |
+
+### Model and prefab reload
+
+| Symbol | Notes |
+|:---|:---|
+| `SceneRenderer.enableDependencyTracking()`, `tracksDependencies()` | Turn on dependency lists (one extra glTF parse per model) |
+| `SceneRenderer.reloadChangedFiles(gpu, paths)` → `uint` | Transactional swap of affected models; retries failed imports |
+| `SceneRenderer.dependenciesOf(assetJsonPath)` | Files a loaded model depends on |
+| `assetDependencies(assetJsonPath)`, `gltfFileDependencies(gltfPath)` | Normalized dependency lists |
+| `reloadPrefabInstances(world, guid, oldPrefab, newPrefab)` → `uint` | Rebuild instances and keep their overrides (`engine.scene.prefab`) |
+
+### `engine.math.spline`
+
+| Symbol | Notes |
+|:---|:---|
+| `Spline3 { kind, closed, alpha, up, points }` | `rebuild(samplesPerSegment = 32)` bakes the LUT (load time) |
+| `segmentCount()`, `baked()`, `length()`, `samples()` | Introspection |
+| `evaluate(u)`, `derivative(u)`, `tangentAt(u)` | Parameter space `u ∈ [0, segmentCount]` |
+| `paramAtDistance(s)`, `distanceAtParam(u)` | Arc-length conversion |
+| `sampleAtDistance`, `tangentAtDistance`, `frameAtDistance(s, FrameMode)` → `SplineFrame { position, tangent, normal, binormal }` | `@nogc` |
+| `closestPoint(p, FrameMode)` → `SplineHit { param, distance, position, separation, lateral }` | `@nogc` |
+| `extrudeRibbon(spline, RibbonOptions { width, step, widthSegments, lateralOffset, verticalOffset, uvLength, frameMode })` → `RibbonMesh { vertices, indices }` | Load time |
+| `bezierPoint`, `bezierDerivative`, `catmullRomPoint(p0..p3, t, alpha)` | Free curve primitives (pure, `@nogc`) |
+
+### `engine.scene.splines`
+
+| Symbol | Notes |
+|:---|:---|
+| `loadSplineSetFile(path)`, `parseSplineSetJson(text, samplesPerSegment = 32)`, `splineSetToJson(set)` | Load (and bake) / write |
+| `SplineSet { paths, strings }`: `find(name)`, `countRole(role)`, `closest(pos, hit, role)`, `text(id)` | The `closest(pos, hit, StringId role)` overload is `@nogc` |
+| `SplinePath { name, role (StringId), width, lanes, speedLimit, curve }` | One path |
+| `sceneSplineSetPath(scene)`, `splineAssetLinkKind` | Spline set linked from a root scene |
+
+### `tools/blender_export_scene.py` (Python)
+
+| Symbol | Notes |
+|:---|:---|
+| `export_world(desc, project_root, out_dir, cell_size, load_radius, unload_radius, log)` | Pure backend; the `desc` format is in its docstring |
+| `gather_blender_scene(name, project_root, out_dir, collection)` | Blender frontend: writes the GLBs and returns `desc` |
+| `build_test_level()` | Generates the multi-biome test scene |
+| `blender_to_engine_vec` / `_quat` / `_scale`, `cell_of`, `guid_for`, `SURFACES` | Helpers (Z-up → Y-up, cell index, deterministic GUID, surface presets) |
+
+---
+
 ## See also
 
 - [plan-open-world-readiness.md](plan-open-world-readiness.md): `OW-8` status and decisions.
