@@ -80,3 +80,9 @@ Font shaping, hinting, and SDF glyph generation via `SDL3_ttf` are backed by
 FreeType 2 (`VER-2-13-3`), used under the **FreeType License (FTL)**
 (`ref/sdl3-deps/freetype/docs/FTL.TXT`). Every exported game bundle must retain
 this attribution alongside the distributed binary.
+
+## stb_vorbis
+
+OGG Vorbis compressed audio streaming (`vendor/stb/stb_vorbis.c`) is by
+Sean Barrett / [nothings/stb](https://github.com/nothings/stb), dual-licensed
+under **MIT** and **Public Domain (Unlicense)**.

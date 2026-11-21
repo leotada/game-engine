@@ -16,6 +16,9 @@ module engine.audio.engine;
 import std.string : toStringz, fromStringz;
 
 import bindings.sdl3;
+import core.atomic : atomicLoad, MemoryOrder;
+import engine.audio.dsp : DspChain, processDspChain;
+import engine.audio.stream : AudioStream, PcmRingBuffer;
 import engine.core.log;
 import engine.core.gc : gcExcludeCurrentThread, gcIncludeCurrentThread, gcIsThreadExcluded;
 
@@ -173,11 +176,19 @@ struct AudioEngine {
     }
 }
 
-/// Bus groups for independent SFX and music volume mixing.
+/// Bus groups for independent volume mixing and per-bus DSP processing.
 enum AudioBus : ubyte {
-    sfx   = 0,
-    music = 1,
+    sfx     = 0,
+    music   = 1,
+    voice   = 2,
+    radio   = 3,
+    ambient = 4,
+    ui      = 5,
+    custom0 = 6,
+    custom1 = 7,
 }
+
+enum uint MAX_AUDIO_BUSES = 8;
 
 /// Generational handle identifying an active voice in `AudioMixer` (`0` = invalid).
 alias VoiceId = ulong;
@@ -191,14 +202,33 @@ private struct MixerVoice {
     uint channels = 2;
     int  sampleRate = 48_000;
     double framePos = 0.0;
+
+    // Optional streaming source (lock-free SPSC ring buffer).
+    PcmRingBuffer* streamRing = null;
+    shared(bool)* streamEof = null;
+    double streamFrac = 0.0;
+    float[2] streamPrev = [0.0f, 0.0f];
+    float[2] streamCurr = [0.0f, 0.0f];
+    bool streamPrimed = false;
+
+    // Smoothed per-voice parameters (cur* ramps to target* per chunk to avoid zipper noise).
     float volume = 1.0f;
-    float pitch = 1.0f;
+    float curVolume = 1.0f;
+    float basePitch = 1.0f;
+    float dopplerPitch = 1.0f;
+    float curPitch = 1.0f;
+    float pan = 0.0f; ///< -1 = full left, 0 = center, +1 = full right (stereo output only).
+    float curPan = 0.0f;
+    float spatialBlend = 0.0f; ///< 0 = preserve stereo, 1 = mono downmix + 3D pan.
+
     AudioBus bus = AudioBus.sfx;
     bool loop = false;
     bool paused = false;
     bool active = false;
     uint generation = 1;
-    float pan = 0.0f; ///< -1 = full left, 0 = center, +1 = full right (stereo output only).
+
+    bool hasDsp = false;
+    DspChain dsp;
 }
 
 /// Per-channel gains for a stereo balance pan in `[-1, 1]`.
@@ -214,10 +244,15 @@ void panGains(float pan, out float left, out float right) pure nothrow @nogc {
 
 private struct MixerState {
     MixerVoice[MAX_AUDIO_VOICES] voices;
-    float[2] busGains = [1.0f, 1.0f];
+    float[MAX_AUDIO_BUSES] busGains = [1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f];
+    DspChain[MAX_AUDIO_BUSES] busDsp;
+    bool[MAX_AUDIO_BUSES] busDspEnabled;
+    float[1024][MAX_AUDIO_BUSES] busAccum = 0.0f;
+    float[1024] voiceScratch = 0.0f;
     float masterGain = 1.0f;
     int outputRate = 48_000;
     int outputChannels = 2;
+    bool audioThreadExcluded = false;
 }
 
 private float readSampleNorm(const(ubyte)* data, SDL_AudioFormat fmt,
@@ -229,53 +264,198 @@ private float readSampleNorm(const(ubyte)* data, SDL_AudioFormat fmt,
     return (cast(const(float)*) data)[idx];
 }
 
-private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint outFrames) nothrow @nogc {
+private void resetVoice(ref MixerVoice v) nothrow @nogc {
+    v.active = false;
+    v.data = null;
+    v.streamRing = null;
+    v.streamEof = null;
+    v.streamPrimed = false;
+    v.hasDsp = false;
+}
+
+private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint outFrames) nothrow @nogc @trusted {
     immutable uint outCh = state.outputChannels > 0 ? cast(uint) state.outputChannels : 2;
     immutable size_t needed = cast(size_t) outFrames * outCh;
-    if (outInterleaved.length < needed) return;
+    if (outInterleaved.length < needed || needed > 1024 || outFrames == 0)
+        return;
+
     outInterleaved[0 .. needed] = 0.0f;
+
+    bool[MAX_AUDIO_BUSES] busActive = false;
+    foreach (bi; 0 .. MAX_AUDIO_BUSES) {
+        if (state.busDspEnabled[bi])
+            state.busAccum[bi][0 .. needed] = 0.0f;
+    }
+
+    immutable float invFrames = 1.0f / cast(float) outFrames;
 
     foreach (vi; 0 .. MAX_AUDIO_VOICES) {
         auto v = &state.voices[vi];
-        if (!v.active || v.paused || v.data is null || v.frameCount == 0) continue;
+        immutable bool isStream = v.streamRing !is null;
+        if (!v.active || v.paused) continue;
+        if (!isStream && (v.data is null || v.frameCount == 0)) continue;
 
-        immutable float gain = v.volume * state.busGains[v.bus];
-        immutable double safePitch = v.pitch > 0.01f ? v.pitch : 0.01f;
-        immutable double step = (cast(double) v.sampleRate / cast(double) state.outputRate) * safePitch;
+        immutable uint busIdx = v.bus < MAX_AUDIO_BUSES ? v.bus : 0;
+        if (!busActive[busIdx]) {
+            if (!state.busDspEnabled[busIdx])
+                state.busAccum[busIdx][0 .. needed] = 0.0f;
+            busActive[busIdx] = true;
+        }
+
+        float[] targetBuf = v.hasDsp
+            ? state.voiceScratch[0 .. needed]
+            : state.busAccum[busIdx][0 .. needed];
+        if (v.hasDsp)
+            targetBuf[0 .. needed] = 0.0f;
+
+        immutable float busG = state.busGains[busIdx];
+        immutable float volStart = v.curVolume * busG;
+        immutable float volEnd = v.volume * busG;
+        immutable float volStep = (volEnd - volStart) * invFrames;
+
+        immutable float targetPitch = v.basePitch * v.dopplerPitch;
+        immutable float clampedTargetPitch = targetPitch > 0.01f ? targetPitch : 0.01f;
+        immutable float pitchStart = v.curPitch > 0.01f ? v.curPitch : clampedTargetPitch;
+        immutable float pitchStep = (clampedTargetPitch - pitchStart) * invFrames;
+
+        immutable float panStart = v.curPan;
+        immutable float panStep = (v.pan - panStart) * invFrames;
+
         immutable uint srcCh = v.channels > 0 ? v.channels : 1;
-        float panL = 1.0f, panR = 1.0f;
-        if (outCh == 2) panGains(v.pan, panL, panR);
+        immutable double rateRatio = cast(double) v.sampleRate / cast(double) state.outputRate;
+        immutable float sb = v.spatialBlend < 0.0f ? 0.0f : (v.spatialBlend > 1.0f ? 1.0f : v.spatialBlend);
 
-        foreach (f; 0 .. outFrames) {
-            if (v.framePos >= cast(double) v.frameCount) {
-                if (v.loop) {
-                    while (v.framePos >= cast(double) v.frameCount) {
-                        v.framePos -= cast(double) v.frameCount;
-                    }
+        float curVol = volStart;
+        float curP = pitchStart;
+        float curPanVal = panStart;
+
+        if (isStream) {
+            if (!v.streamPrimed) {
+                if (v.streamRing.popFrame(v.streamPrev)) {
+                    if (!v.streamRing.popFrame(v.streamCurr))
+                        v.streamCurr = v.streamPrev;
+                    v.streamFrac = 0.0;
+                    v.streamPrimed = true;
                 } else {
-                    v.active = false;
-                    v.data = null;
-                    break;
+                    if (v.streamEof !is null && atomicLoad!(MemoryOrder.acq)(*v.streamEof)) {
+                        resetVoice(*v);
+                    }
+                    continue;
                 }
             }
 
-            immutable uint f0 = cast(uint) v.framePos;
-            immutable float frac = cast(float)(v.framePos - cast(double) f0);
-            uint f1 = f0 + 1;
-            if (f1 >= v.frameCount) {
-                f1 = v.loop ? 0 : (v.frameCount - 1);
-            }
+            foreach (f; 0 .. outFrames) {
+                immutable double step = rateRatio * cast(double) curP;
+                v.streamFrac += step;
+                while (v.streamFrac >= 1.0) {
+                    float[2] nextFrame = void;
+                    if (v.streamRing.popFrame(nextFrame)) {
+                        v.streamPrev = v.streamCurr;
+                        v.streamCurr = nextFrame;
+                        v.streamFrac -= 1.0;
+                    } else {
+                        if (v.streamEof !is null && atomicLoad!(MemoryOrder.acq)(*v.streamEof)) {
+                            resetVoice(*v);
+                        }
+                        v.streamFrac = 1.0;
+                        break;
+                    }
+                }
+                if (!v.active) break;
 
-            foreach (c; 0 .. outCh) {
-                immutable uint sc = c < srcCh ? c : 0;
-                immutable float s0 = readSampleNorm(v.data, v.format, f0, sc, srcCh);
-                immutable float s1 = readSampleNorm(v.data, v.format, f1, sc, srcCh);
-                immutable float cg = outCh == 2 ? (c == 0 ? panL : panR) : 1.0f;
-                outInterleaved[cast(size_t) f * outCh + c] += (s0 + (s1 - s0) * frac) * gain * cg;
-            }
+                float panL = 1.0f, panR = 1.0f;
+                if (outCh == 2) panGains(curPanVal, panL, panR);
 
-            v.framePos += step;
+                immutable float frac = cast(float) v.streamFrac;
+                immutable float sL = v.streamPrev[0] + (v.streamCurr[0] - v.streamPrev[0]) * frac;
+                immutable float sR = srcCh > 1
+                    ? (v.streamPrev[1] + (v.streamCurr[1] - v.streamPrev[1]) * frac)
+                    : sL;
+                immutable float mono = (sL + sR) * 0.5f;
+
+                foreach (c; 0 .. outCh) {
+                    immutable float raw = c == 0 ? sL : sR;
+                    immutable float sample = raw + (mono - raw) * sb;
+                    immutable float cg = outCh == 2 ? (c == 0 ? panL : panR) : 1.0f;
+                    targetBuf[cast(size_t) f * outCh + c] += sample * curVol * cg;
+                }
+
+                curVol += volStep;
+                curP += pitchStep;
+                curPanVal += panStep;
+            }
+        } else {
+            foreach (f; 0 .. outFrames) {
+                if (v.framePos >= cast(double) v.frameCount) {
+                    if (v.loop) {
+                        while (v.framePos >= cast(double) v.frameCount) {
+                            v.framePos -= cast(double) v.frameCount;
+                        }
+                    } else {
+                        resetVoice(*v);
+                        break;
+                    }
+                }
+
+                immutable uint f0 = cast(uint) v.framePos;
+                immutable float frac = cast(float)(v.framePos - cast(double) f0);
+                uint f1 = f0 + 1;
+                if (f1 >= v.frameCount) {
+                    f1 = v.loop ? 0 : (v.frameCount - 1);
+                }
+
+                float panL = 1.0f, panR = 1.0f;
+                if (outCh == 2) panGains(curPanVal, panL, panR);
+
+                immutable float s0L = readSampleNorm(v.data, v.format, f0, 0, srcCh);
+                immutable float s1L = readSampleNorm(v.data, v.format, f1, 0, srcCh);
+                immutable float vL = s0L + (s1L - s0L) * frac;
+
+                float vR = vL;
+                if (srcCh > 1) {
+                    immutable float s0R = readSampleNorm(v.data, v.format, f0, 1, srcCh);
+                    immutable float s1R = readSampleNorm(v.data, v.format, f1, 1, srcCh);
+                    vR = s0R + (s1R - s0R) * frac;
+                }
+                immutable float mono = (vL + vR) * 0.5f;
+
+                foreach (c; 0 .. outCh) {
+                    immutable float raw = c == 0 ? vL : vR;
+                    immutable float sample = raw + (mono - raw) * sb;
+                    immutable float cg = outCh == 2 ? (c == 0 ? panL : panR) : 1.0f;
+                    targetBuf[cast(size_t) f * outCh + c] += sample * curVol * cg;
+                }
+
+                v.framePos += rateRatio * cast(double) curP;
+                curVol += volStep;
+                curP += pitchStep;
+                curPanVal += panStep;
+            }
         }
+
+        if (v.active) {
+            v.curVolume = v.volume;
+            v.curPitch = clampedTargetPitch;
+            v.curPan = v.pan;
+        }
+
+        if (v.hasDsp) {
+            processDspChain(v.dsp, targetBuf, outFrames, outCh, true);
+            foreach (i; 0 .. needed)
+                state.busAccum[busIdx][i] += targetBuf[i];
+        }
+    }
+
+    // Apply per-bus DSP chains and sum active buses into master output.
+    foreach (bi; 0 .. MAX_AUDIO_BUSES) {
+        immutable bool activeBus = busActive[bi];
+        immutable bool dspOn = state.busDspEnabled[bi];
+        if (!activeBus && !dspOn)
+            continue;
+        if (dspOn)
+            processDspChain(state.busDsp[bi], state.busAccum[bi][0 .. needed], outFrames, outCh, activeBus);
+        foreach (i; 0 .. needed)
+            outInterleaved[i] += state.busAccum[bi][i];
     }
 
     // Clamp master output softly to [-1, 1]
@@ -295,6 +475,10 @@ private extern(C) void mixerStreamCallback(
 ) nothrow @nogc @trusted {
     if (userdata is null || stream is null || additionalAmount <= 0) return;
     auto state = cast(MixerState*) userdata;
+    if (!state.audioThreadExcluded) {
+        excludeAudioThreadFromGc();
+        state.audioThreadExcluded = true;
+    }
     immutable uint ch = state.outputChannels > 0 ? cast(uint) state.outputChannels : 2;
     immutable uint bytesPerFrame = ch * cast(uint) float.sizeof;
     if (bytesPerFrame == 0) return;
@@ -382,7 +566,8 @@ struct AudioMixer {
         float volume = 1.0f,
         float pitch = 1.0f,
         bool loop = false,
-        float pan = 0.0f
+        float pan = 0.0f,
+        float spatialBlend = 0.0f
     ) @trusted nothrow @nogc {
         if (!isReady || !clip.isValid) return 0;
         if (clip.spec.format != SDL_AudioFormat.SDL_AUDIO_F32LE
@@ -404,18 +589,84 @@ struct AudioMixer {
             if (!state.voices[i].active) {
                 auto v = &state.voices[i];
                 immutable uint gen = v.generation == 0 ? 1 : v.generation;
+                immutable float vol = volume < 0 ? 0 : volume;
+                immutable float bp = pitch > 0.01f ? pitch : 0.01f;
+                immutable float clPan = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
+
                 v.data = clip.data;
                 v.format = clip.spec.format;
                 v.frameCount = frames;
                 v.channels = cast(uint) clip.spec.channels;
                 v.sampleRate = clip.spec.freq;
                 v.framePos = 0.0;
-                v.volume = volume < 0 ? 0 : volume;
-                v.pitch = pitch > 0.01f ? pitch : 0.01f;
+                v.streamRing = null;
+                v.streamEof = null;
+                v.streamPrimed = false;
+                v.volume = vol;
+                v.curVolume = vol;
+                v.basePitch = bp;
+                v.dopplerPitch = 1.0f;
+                v.curPitch = bp;
+                v.pan = clPan;
+                v.curPan = clPan;
+                v.spatialBlend = spatialBlend < 0 ? 0 : (spatialBlend > 1 ? 1 : spatialBlend);
                 v.bus = bus;
                 v.loop = loop;
-                v.pan = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
                 v.paused = false;
+                v.hasDsp = false;
+                v.generation = gen;
+                v.active = true;
+                return (cast(VoiceId) gen << 32) | cast(VoiceId)(i + 1);
+            }
+        }
+        return 0;
+    }
+
+    /// Start playing a compressed `AudioStream` on a free voice slot.
+    /// Caller must keep `streamSource` alive and call `streamSource.pump()` periodically.
+    VoiceId playStream(
+        ref AudioStream streamSource,
+        AudioBus bus = AudioBus.music,
+        float volume = 1.0f,
+        float pitch = 1.0f,
+        float pan = 0.0f,
+        float spatialBlend = 0.0f
+    ) @trusted nothrow @nogc {
+        if (!isReady || !streamSource.isValid()) return 0;
+
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+
+        foreach (uint i; 0 .. MAX_AUDIO_VOICES) {
+            if (!state.voices[i].active) {
+                auto v = &state.voices[i];
+                immutable uint gen = v.generation == 0 ? 1 : v.generation;
+                immutable float vol = volume < 0 ? 0 : volume;
+                immutable float bp = pitch > 0.01f ? pitch : 0.01f;
+                immutable float clPan = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
+
+                v.data = null;
+                v.format = SDL_AudioFormat.SDL_AUDIO_F32LE;
+                v.frameCount = 0;
+                v.channels = cast(uint) streamSource.channels();
+                v.sampleRate = streamSource.sampleRate();
+                v.framePos = 0.0;
+                v.streamRing = &streamSource._ring;
+                v.streamEof = &streamSource._eof;
+                v.streamFrac = 0.0;
+                v.streamPrimed = false;
+                v.volume = vol;
+                v.curVolume = vol;
+                v.basePitch = bp;
+                v.dopplerPitch = 1.0f;
+                v.curPitch = bp;
+                v.pan = clPan;
+                v.curPan = clPan;
+                v.spatialBlend = spatialBlend < 0 ? 0 : (spatialBlend > 1 ? 1 : spatialBlend);
+                v.bus = bus;
+                v.loop = false;
+                v.paused = false;
+                v.hasDsp = false;
                 v.generation = gen;
                 v.active = true;
                 return (cast(VoiceId) gen << 32) | cast(VoiceId)(i + 1);
@@ -433,8 +684,7 @@ struct AudioMixer {
         scope(exit) SDL_UnlockAudioStream(stream);
         auto v = &state.voices[idx];
         if (v.active && v.generation == gen) {
-            v.active = false;
-            v.data = null;
+            resetVoice(*v);
             v.generation++;
         }
     }
@@ -466,7 +716,71 @@ struct AudioMixer {
         SDL_LockAudioStream(stream);
         scope(exit) SDL_UnlockAudioStream(stream);
         auto v = &state.voices[idx];
-        if (v.active && v.generation == gen) v.pitch = pitch > 0.01f ? pitch : 0.01f;
+        if (v.active && v.generation == gen) v.basePitch = pitch > 0.01f ? pitch : 0.01f;
+    }
+
+    /// Set the Doppler pitch multiplier (multiplied with `basePitch`) for a voice.
+    void setDopplerPitch(VoiceId id, float dopplerPitch) @trusted nothrow @nogc {
+        if (!isReady) return;
+        uint idx, gen;
+        if (!resolveVoice(id, idx, gen)) return;
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+        auto v = &state.voices[idx];
+        if (v.active && v.generation == gen)
+            v.dopplerPitch = dopplerPitch > 0.01f ? dopplerPitch : 0.01f;
+    }
+
+    void setSpatialBlend(VoiceId id, float spatialBlend) @trusted nothrow @nogc {
+        if (!isReady) return;
+        uint idx, gen;
+        if (!resolveVoice(id, idx, gen)) return;
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+        auto v = &state.voices[idx];
+        if (v.active && v.generation == gen)
+            v.spatialBlend = spatialBlend < 0.0f ? 0.0f : (spatialBlend > 1.0f ? 1.0f : spatialBlend);
+    }
+
+    /// Attach or replace a per-voice real-time DSP chain.
+    void setVoiceDsp(VoiceId id, in DspChain chain) @trusted nothrow @nogc {
+        if (!isReady) return;
+        uint idx, gen;
+        if (!resolveVoice(id, idx, gen)) return;
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+        auto v = &state.voices[idx];
+        if (v.active && v.generation == gen) {
+            v.dsp = chain;
+            v.hasDsp = true;
+        }
+    }
+
+    void clearVoiceDsp(VoiceId id) @trusted nothrow @nogc {
+        if (!isReady) return;
+        uint idx, gen;
+        if (!resolveVoice(id, idx, gen)) return;
+        SDL_LockAudioStream(stream);
+        scope(exit) SDL_UnlockAudioStream(stream);
+        auto v = &state.voices[idx];
+        if (v.active && v.generation == gen)
+            v.hasDsp = false;
+    }
+
+    /// Attach or replace a real-time DSP chain for an entire `AudioBus` (e.g., `DspChain.vhfRadio()`).
+    void setBusDsp(AudioBus bus, in DspChain chain) @trusted nothrow @nogc {
+        if (!isReady) return;
+        SDL_LockAudioStream(stream);
+        state.busDsp[bus] = chain;
+        state.busDspEnabled[bus] = true;
+        SDL_UnlockAudioStream(stream);
+    }
+
+    void clearBusDsp(AudioBus bus) @trusted nothrow @nogc {
+        if (!isReady) return;
+        SDL_LockAudioStream(stream);
+        state.busDspEnabled[bus] = false;
+        SDL_UnlockAudioStream(stream);
     }
 
     /// Set stereo pan for a voice: `-1` full left, `0` center, `+1` full right.
@@ -523,8 +837,7 @@ struct AudioMixer {
         SDL_LockAudioStream(stream);
         foreach (i; 0 .. MAX_AUDIO_VOICES) {
             if (state.voices[i].active && state.voices[i].bus == bus) {
-                state.voices[i].active = false;
-                state.voices[i].data = null;
+                resetVoice(state.voices[i]);
                 state.voices[i].generation++;
             }
         }
@@ -536,8 +849,7 @@ struct AudioMixer {
         SDL_LockAudioStream(stream);
         foreach (i; 0 .. MAX_AUDIO_VOICES) {
             if (state.voices[i].active) {
-                state.voices[i].active = false;
-                state.voices[i].data = null;
+                resetVoice(state.voices[i]);
                 state.voices[i].generation++;
             }
         }
@@ -587,9 +899,25 @@ unittest {
     static immutable float[8] clipA = [0.4f, 0.4f, 0.4f, 0.4f, 0.4f, 0.4f, 0.4f, 0.4f];
     static immutable short[4] clipB = [16384, -16384, 16384, -16384]; // +/- 0.5 in S16LE
 
+    static MixerVoice makeClipVoice(const(ubyte)* data, SDL_AudioFormat fmt, uint frames,
+                                    uint ch, AudioBus bus, bool loop, float pan = 0.0f) nothrow @nogc @trusted {
+        MixerVoice v;
+        v.data = data;
+        v.format = fmt;
+        v.frameCount = frames;
+        v.channels = ch;
+        v.sampleRate = 48_000;
+        v.bus = bus;
+        v.loop = loop;
+        v.pan = pan;
+        v.curPan = pan;
+        v.active = true;
+        return v;
+    }
+
     () @trusted {
-        st.voices[0] = MixerVoice(cast(const(ubyte)*) clipA.ptr, SDL_AudioFormat.SDL_AUDIO_F32LE, 4, 2, 48_000, 0.0, 1.0f, 1.0f, AudioBus.sfx, false, false, true, 1);
-        st.voices[1] = MixerVoice(cast(const(ubyte)*) clipB.ptr, SDL_AudioFormat.SDL_AUDIO_S16LE, 2, 2, 48_000, 0.0, 1.0f, 1.0f, AudioBus.music, true, false, true, 1);
+        st.voices[0] = makeClipVoice(cast(const(ubyte)*) clipA.ptr, SDL_AudioFormat.SDL_AUDIO_F32LE, 4, 2, AudioBus.sfx, false);
+        st.voices[1] = makeClipVoice(cast(const(ubyte)*) clipB.ptr, SDL_AudioFormat.SDL_AUDIO_S16LE, 2, 2, AudioBus.music, true);
     }();
     float[12] outBuf = 0.0f;
     () @trusted {
@@ -608,12 +936,38 @@ unittest {
     sp.outputRate = 48_000;
     sp.outputChannels = 2;
     () @trusted {
-        sp.voices[0] = MixerVoice(cast(const(ubyte)*) mono.ptr, SDL_AudioFormat.SDL_AUDIO_F32LE, 4, 1, 48_000, 0.0, 1.0f, 1.0f, AudioBus.sfx, false, false, true, 1, 1.0f);
+        sp.voices[0] = makeClipVoice(cast(const(ubyte)*) mono.ptr, SDL_AudioFormat.SDL_AUDIO_F32LE, 4, 1, AudioBus.sfx, false, 1.0f);
     }();
     float[4] pb = 0.0f;
     () @trusted { mixVoicesInto(sp, pb[], 2); }();
     assert(pb[0] < 0.001f && pb[1] > 0.999f);
-    sp.voices[0].active = true; sp.voices[0].framePos = 0; sp.voices[0].pan = 0.0f;
+    sp.voices[0].active = true; sp.voices[0].framePos = 0; sp.voices[0].pan = 0.0f; sp.voices[0].curPan = 0.0f;
     () @trusted { mixVoicesInto(sp, pb[], 2); }();
     assert(pb[0] > 0.999f && pb[1] > 0.999f);
+
+    // Radio bus DSP + stream ring buffer mixing (zero GC).
+    MixerState sr;
+    sr.outputRate = 48_000;
+    sr.outputChannels = 2;
+    sr.busDsp[AudioBus.radio] = DspChain.vhfRadio(48_000);
+    sr.busDspEnabled[AudioBus.radio] = true;
+
+    PcmRingBuffer ring;
+    assert(ring.init(1, 64));
+    float[16] tone;
+    foreach (i; 0 .. 16)
+        tone[i] = 0.5f;
+    assert(ring.pushFrames(tone.ptr, 16) == 16);
+    shared bool eofFlag = true;
+    () @trusted {
+        sr.voices[0].streamRing = &ring;
+        sr.voices[0].streamEof = &eofFlag;
+        sr.voices[0].channels = 1;
+        sr.voices[0].sampleRate = 48_000;
+        sr.voices[0].bus = AudioBus.radio;
+        sr.voices[0].active = true;
+        float[16] mixOut = 0.0f;
+        mixVoicesInto(sr, mixOut[], 8);
+        assert(mixOut[0] != 0.0f);
+    }();
 }

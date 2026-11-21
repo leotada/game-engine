@@ -614,6 +614,7 @@ struct ExportPipeline {
         engineFiles.sort();
         args ~= engineFiles;
         args ~= buildPath(engineRoot, "source/bindings/box3d/box3d_import.c");
+        args ~= buildPath(engineRoot, "source/bindings/stb_vorbis/stb_vorbis_import.c");
 
         immutable spec = specFor(tgt);
         immutable libsDir = buildPath(engineRoot, "libs", spec.libsSubdir);

@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **3D Spatial Audio, Doppler, Real-Time VHF DSP & OGG Vorbis Streaming (`OW-4`, `2026-11-20`):**
+  - Completed `P4.1` in `source/engine/audio/spatial.d` and `engine.d`: POD `AudioListener3D` and `AudioSource3D`, relative radial `dopplerPitch`, `play3D` / `playStream3D` / `updateSource3D`, `spatialBlend` mono downmix, per-chunk parameter smoothing (volume, pitch, pan), and `excludeAudioThreadFromGc()` on SDL3 audio callback startup.
+  - Added 8-bus routing (`sfx`, `music`, `voice`, `radio`, `ambient`, `ui`, `custom0`, `custom1`) with independent per-bus accumulation buffers and `@nogc` POD `DspEffectSlot` / `DspChain` (`source/engine/audio/dsp.d`: biquad HPF/LPF/BPF, waveshaper, squelch-gated `staticHiss`, and `DspChain.vhfRadio()` preset) attachable per bus (`setBusDsp`) or per voice (`setVoiceDsp`).
+  - Added compressed OGG Vorbis streaming (`vendor/stb/stb_vorbis.c`, `source/bindings/stb_vorbis/`, `source/engine/audio/stream.d`): lock-free SPSC `PcmRingBuffer`, `AudioStream` (`openOggFile`, `openOggMemory`, `pump`, `seekStart`), and `AudioMixer.playStream`, wired into `dub.json` and `source/editor/build_export.d`.
+
 - **Audio: per-voice panning and 3D one-shot SFX (`2026-11-19`)**:
   - `AudioMixer.setPan(VoiceId, float)` and a `pan` argument on `AudioMixer.play` (`-1` left … `+1` right; mono sources panned, stereo sources balanced, unity at center).
   - `engine.audio.spatial`: `Listener3D`, `SpatialParams`, `distanceGain` (logarithmic inverse-distance model with smooth max-distance taper), `emitterPan`, `play3D` and `updateVoice3D`. Panning is applied in the mixer per voice, so no pre-panned clip pool is required.

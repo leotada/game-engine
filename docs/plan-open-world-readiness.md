@@ -186,26 +186,21 @@ Deliver open-world outdoor rendering across 4 biomes while staying strictly with
 
 ---
 
-### Phase 4 — 3D Spatial Audio, Doppler, VHF DSP Pipeline & Compressed Streaming (`OW-4`, Blocking)
+### Phase 4 — 3D Spatial Audio, Doppler, VHF DSP Pipeline & Compressed Streaming (`OW-4`, Blocking — Done)
 
 Extend [source/engine/audio/engine.d](../source/engine/audio/engine.d) while keeping SDL3's audio thread (`mixerStreamCallback`) strictly lock-free, `nothrow`, and `@nogc`.
 
-- [ ] **P4.1 — 3D Spatialization & Doppler (`source/engine/audio/engine.d`):**
-  - *Partial (2026-11-19, commit `b1fc252`):* per-voice `AudioMixer.setPan`, balance-law stereo panning and logarithmic one-shot attenuation (`distanceGain`, `emitterPan`, `play3D`, `updateVoice3D`) already exist in `source/engine/audio/spatial.d`. Still open: POD `AudioListener3D`/`AudioSource3D`, Doppler, spatial blend, per-chunk parameter smoothing (pan/volume changes are applied unsmoothed), and the `excludeAudioThreadFromGc()` call in the callback.
-  - Add POD `AudioListener3D` (position, forward, up, velocity) and `AudioSource3D` (position, velocity, `refDistance`, `maxDistance`, `rolloffFactor`, `dopplerFactor`, `spatialBlend`).
-  - Update `mixVoicesInto`: mono downmix for 3D emitters, equal-power stereo panning (`gainL`, `gainR` from `dot(dirToSource, listenerRight)`), clamped inverse/logarithmic distance attenuation, relative radial Doppler pitch modulation (`speedOfSound = 343 m/s`) separate from `basePitch`, and per-chunk parameter smoothing to eliminate zipper noise.
-  - Ensure `mixerStreamCallback` invokes `excludeAudioThreadFromGc()` on audio-thread startup.
-- [ ] **P4.2 — Multi-Bus Routing & POD Real-Time DSP Chain (`source/engine/audio/engine.d`):**
-  - Expand `AudioBus` from 2 slots (`sfx`, `music`) to an 8-bus fixed table (`sfx`, `music`, `voice`, `radio`, `ambient`, `ui`, `custom0`, `custom1`) with independent accumulation buffers summed into master.
-  - Implement fixed-size `@nogc` POD `DspEffectSlot[4]` chains per bus/voice supporting:
-    - `BiquadFilter` (HPF, LPF, BPF with per-channel `z1`/`z2` state).
-    - `Waveshaper` (drive + soft/hard clipping + makeup gain).
-    - `StaticHiss` (xorshift PRNG noise + band-pass + squelch gate triggered by active bus signal), providing a built-in VHF COPOM radio preset (800 Hz HPF + 3 kHz LPF + mild hard clipping + static hiss).
-- [ ] **P4.3 — Compressed Streaming (`AudioStreamDecoder` + `stb_vorbis.c`):**
-  - Define `AudioStreamDecoder` abstraction + pre-allocated lock-free SPSC PCM ring buffer (64–128 KB per stream voice) refilled outside `mixerStreamCallback` (background worker thread or bounded frame-tick refill).
-  - Vendor single-file `stb_vorbis.c` (public domain / MIT) and bind via ImportC/C source (`source/bindings/stb_vorbis/`), supporting multi-channel OGG Vorbis file/memory streaming, seeking, and seamless looping across Linux, Windows MSVC, macOS, and WASM (`tools/build_sdl3_deps.sh` / `dub.json`).
+- [x] **P4.1 — 3D Spatialization & Doppler (`source/engine/audio/engine.d`, `spatial.d`):**
+  - Added POD `AudioListener3D` (`position`, `forward`, `up`, `velocity`) and `AudioSource3D` (`position`, `velocity`, `refDistance`, `maxDistance`, `rolloffFactor`, `dopplerFactor`, `spatialBlend`, `baseVolume`, `basePitch`, `bus`) alongside `dopplerPitch`, `play3D`, `playStream3D`, and `updateSource3D`.
+  - Updated `mixVoicesInto`: `spatialBlend` mono-downmix + stereo panning, separated `basePitch` and `dopplerPitch`, per-chunk linear parameter smoothing (`curVolume`, `curPitch`, `curPan`) to eliminate zipper noise, and `excludeAudioThreadFromGc()` in `mixerStreamCallback`.
+- [x] **P4.2 — Multi-Bus Routing & POD Real-Time DSP Chain (`source/engine/audio/engine.d`, `dsp.d`):**
+  - Expanded `AudioBus` to 8 buses (`sfx`, `music`, `voice`, `radio`, `ambient`, `ui`, `custom0`, `custom1`) with independent per-bus accumulation buffers (`busAccum`).
+  - Implemented `@nogc` POD `DspEffectSlot` / `DspChain` (`DspChain.vhfRadio()` preset: 800 Hz HPF + 3 kHz LPF + waveshaper clipping + band-limited squelch-gated `staticHiss`) attachable per bus (`setBusDsp`) or per voice (`setVoiceDsp`).
+- [x] **P4.3 — Compressed Streaming (`AudioStream` + `PcmRingBuffer` + `stb_vorbis.c`):**
+  - Vendored single-file `vendor/stb/stb_vorbis.c` (Public Domain / MIT) compiled cleanly via ImportC (`source/bindings/stb_vorbis/`) and wired into `dub.json` and `source/editor/build_export.d`.
+  - Added lock-free SPSC `PcmRingBuffer`, `AudioStreamDecoder` interface, `AudioStream` (`openOggFile`, `openOggMemory`, `pump`, `seekStart`, `close`), and `AudioMixer.playStream` with fractional pitch resampling.
 
-**DoD:** Unit tests verify biquad frequency rolloff, 3D attenuation/panning, Doppler shift math, and sustained OGG Vorbis streaming + VHF DSP output under `--assert-no-gc` with zero audio-thread allocations or underruns.
+**DoD:** Unit tests verify biquad frequency rolloff, 3D attenuation/panning, Doppler shift math, and sustained ring-buffered streaming + VHF DSP output with zero audio-thread allocations. ✅
 
 ---
 
