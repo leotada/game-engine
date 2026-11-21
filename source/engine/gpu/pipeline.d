@@ -371,12 +371,12 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 }
 
 /// Frame uniform size for textured PBR pipeline (multi-light UBO).
-/// Layout must match `shadows.wgsl` FrameUniforms (1248 bytes):
+/// Layout must match `shadows.wgsl` FrameUniforms (1280 bytes):
 /// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts/time(16)
 /// + iblIntensity/wetness/rain/clouds(16) + SpotLight[4](512)
-/// + cascades(352) + camera(96) + atmosphere(80).
+/// + cascades(352) + camera(96) + atmosphere/sky(112).
 /// Point lights live in a separate storage buffer at @binding(9).
-enum FRAME_UNIFORMS_SIZE = 1248;
+enum FRAME_UNIFORMS_SIZE = 1280;
 /// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
 enum MATERIAL_PARAMS_SIZE = 144;
 /// Per-instance data of the textured PBR pipeline (buffer 1, stride 96):

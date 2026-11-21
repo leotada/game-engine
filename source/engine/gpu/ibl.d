@@ -341,7 +341,7 @@ private ubyte[][] prefilterSpecular(const ubyte[][] env, uint envSize,
     return faces;
 }
 
-private ubyte[] generateBrdfLut(uint size) {
+package(engine) ubyte[] generateBrdfLut(uint size) {
     auto pixels = new ubyte[size * size * 4];
     enum uint samples = 64;
     foreach (y; 0 .. size) foreach (x; 0 .. size) {
@@ -552,7 +552,7 @@ private void uploadCubeFaces(WGPUQueue queue, WGPUTexture tex,
     }
 }
 
-private WGPUTexture createLutTexture(WGPUDevice device, WGPUQueue queue,
+package(engine) WGPUTexture createLutTexture(WGPUDevice device, WGPUQueue queue,
                                      ubyte[] pixels, uint size) @trusted {
     WGPUTextureDescriptor td;
     td.usage = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;

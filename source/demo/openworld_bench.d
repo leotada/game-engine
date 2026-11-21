@@ -33,6 +33,9 @@ import engine.assets.gltf : buildGlb;
 import engine.core.log;
 import engine.gpu.shadow : directionalLightVP;
 import engine.scene.atmosphere : FogSettings;
+import engine.gpu.ibl_dynamic : DynamicIbl;
+import engine.scene.time_of_day : applyEnvironment, applyEnvironmentToScene, evaluateEnvironment,
+    skyIblParams, TimeOfDay, Weather;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialParams;
 import engine.graphics.material_pool : MaterialHandle, MaterialPool;
@@ -63,6 +66,12 @@ private struct Options {
     bool noCull = false;
     bool debugCascades = false;
     bool fog = false;
+    /// Time of day in hours (< 0 = legacy fixed light, no sky).
+    float tod = -1;
+    bool rain = false;
+    /// Override surface wetness (< 0 = from weather).
+    float wetness = -1;
+    bool noEnvFog = false;
     string screenshot;
 }
 
@@ -76,6 +85,10 @@ private Options parseArgs(string[] args) {
         else if (a == "--no-cull") o.noCull = true;
         else if (a == "--debug-cascades") o.debugCascades = true;
         else if (a == "--fog") o.fog = true;
+        else if (a.startsWith("--tod=")) o.tod = a["--tod=".length .. $].to!float;
+        else if (a == "--rain") o.rain = true;
+        else if (a.startsWith("--wetness=")) o.wetness = a["--wetness=".length .. $].to!float;
+        else if (a == "--no-env-fog") o.noEnvFog = true;
         else if (a.startsWith("--screenshot=")) o.screenshot = a["--screenshot=".length .. $];
     }
     return o;
@@ -288,6 +301,28 @@ void main(string[] args) @trusted {
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
 
+    // Optional day/night + weather + engine sky + runtime HDR IBL.
+    immutable bool envMode = opts.tod >= 0;
+    TimeOfDay tod;
+    tod.hours = envMode ? opts.tod : 10;
+    tod.dayLengthSec = 0;
+    Weather weather;
+    if (opts.rain) {
+        weather.setTarget(0.95f, 1.0f);
+        weather.cloudCoverage = 0.95f;
+        weather.rainIntensity = 1.0f;
+        weather.wetness = 1.0f;
+    }
+    DynamicIbl dynIbl;
+    if (envMode) {
+        scene.setSkyEnabled(true);
+        dynIbl = DynamicIbl.create(app.gpu, scene.iblLayout());
+        auto env0 = evaluateEnvironment(tod, weather);
+        auto p0 = skyIblParams(env0, 0);
+        dynIbl.bakeNow(p0);
+    }
+    scope(exit) if (envMode) dynIbl.destroy();
+
     info("Open-world bench: ", opts.props, " static props, ", VEHICLES, " vehicles, ",
          rocksBuf.rangeCount(), " static ranges");
 
@@ -334,6 +369,22 @@ void main(string[] args) @trusted {
         lights.dir.intensity = 2.5f;
         lights.dir.castShadows = true;
         lights.dir.debugCascades = opts.debugCascades;
+        FogSettings envFog;
+        if (envMode) {
+            tod.advance(dt);
+            weather.update(dt);
+            if (opts.wetness >= 0) weather.wetness = opts.wetness;
+            auto env = evaluateEnvironment(tod, weather);
+            applyEnvironment(env, lights, envFog, 0.0015f);
+            envFog.enabled = !opts.noEnvFog;
+            envFog.heightFalloff = 0.01f;
+            applyEnvironmentToScene(env, scene);
+            scene.setFog(envFog);
+            auto p = skyIblParams(env, time);
+            dynIbl.request(p);
+            dynIbl.update();
+            scene.setEnvironmentBindGroup(dynIbl.bindGroup());
+        }
         lights.shadowBias = 0.0006f;
         // Local shadow casters around the vehicle stream ahead of the camera.
         lights.points[0] = GpuPointLight(Vec3(ahead.x, 6, ahead.z), Vec3(1.0f, 0.6f, 0.3f), 30.0f, 40.0f, true);

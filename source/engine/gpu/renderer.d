@@ -674,6 +674,12 @@ struct FrameContext {
         wgpuRenderPassEncoderSetIndexBuffer(pass, buf, fmt, offset, size);
     }
 
+    /// Non-indexed draw (fullscreen triangles, procedural geometry).
+    void draw(uint vertexCount, uint instanceCount = 1, uint firstVertex = 0,
+              uint firstInstance = 0) nothrow @nogc @trusted {
+        wgpuRenderPassEncoderDraw(pass, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+
     /// Indexed draw. `firstIndex` selects a sub-range of the bound index buffer
     /// (LOD levels, glTF primitives); `firstInstance` selects a sub-range of the
     /// per-instance vertex buffer (retained static instancing).

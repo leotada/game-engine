@@ -428,6 +428,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         effectiveRoughness = mix(dryRough, wetRough, max(filmWet, poreWet * 0.65));
     }
 
+    // Global rain wetness (`frame.globalWetness`): a water coat darkens and
+    // glosses rain-exposed surfaces. Upward faces get the full amount, walls a
+    // fraction, overhangs none; `custom.w = 1` marks sheltered instances.
+    let shelter = clamp(in.custom.w, 0.0, 1.0);
+    let rainExposure = mix(0.35, 1.0, smoothstep(0.2, 0.8, N.y)) * smoothstep(-0.3, 0.0, N.y);
+    let globalWet = clamp(frame.globalWetness, 0.0, 1.0) * rainExposure * (1.0 - shelter);
+    if (globalWet > 0.001 && !enableWaterFx) {
+        coatW = max(coatW, 0.92 * globalWet);
+        coatR = mix(coatR, 0.05, globalWet);
+        coatIor = mix(coatIor, 1.333, globalWet);
+        coatDark = max(coatDark, 0.75 * globalWet);
+        let dampRough = clamp(roughness * mix(1.0, 0.55, globalWet), 0.04, 1.0);
+        effectiveRoughness = coatRoughenBase(dampRough, coatR, coatW);
+    }
+
     let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, effectiveRoughness)).rgb;
     let directionalAlbedo = lutBase.r + lutBase.g;
 

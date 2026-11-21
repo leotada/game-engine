@@ -85,6 +85,10 @@ enum blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wg
 
 enum skinnedShaderSource = import("skinned.wgsl");
 
+/// Engine sky (fullscreen, far plane) — `engine.gpu.sky.SkyRenderer`.
+enum skyShaderSource = preprocessShader(import("sky.wgsl"), "sky.wgsl").code;
+/// Runtime HDR IBL compute passes — `engine.gpu.ibl_dynamic.DynamicIbl`.
+enum iblSkyCsShaderSource = preprocessShader(import("ibl_sky_cs.wgsl"), "ibl_sky_cs.wgsl").code;
 enum skyDomeShaderSource = preprocessShader(import("sky_dome.wgsl"), "sky_dome.wgsl").code;
 enum causticsBedShaderSource = preprocessShader(import("caustics_bed.wgsl"), "caustics_bed.wgsl").code;
 enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;

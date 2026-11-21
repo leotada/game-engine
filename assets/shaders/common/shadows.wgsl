@@ -73,6 +73,9 @@ struct FrameUniforms {
     fogSun: vec4<f32>,
     moonDir: vec4<f32>,
     skyParams: vec4<f32>,
+    /// xyz = sun direction for the sky, w = 1 when set (else use dirLight).
+    skySunDir: vec4<f32>,
+    skySunColor: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

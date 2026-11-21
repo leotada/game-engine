@@ -16,6 +16,7 @@ import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
     createSurfacePipelines, createTexturedDrawPipeline, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
 import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.sky : SkyRenderer;
 import engine.gpu.shadow :
     beginShadowPassView, createTexShadowPipeline, endShadowPass,
     pointLightFaceVPs, PointShadowMap, ShadowMap, SpotShadowMap,
@@ -86,6 +87,9 @@ static assert(GpuSpotLightUbo.sizeof == 128);
  */
 alias ShadowCasterHook = void delegate(WGPURenderPassEncoder pass, WGPUBindGroup vpBindGroup,
                                        uint dynamicOffset, ref const Frustum view) nothrow @nogc;
+
+/// Opaque renderer drawn inside `Scene3DTextured.end` (see `addOpaqueHook`).
+alias OpaqueDrawHook = void delegate(ref FrameContext frame) nothrow @nogc;
 
 /// `drawMatrix` LOD argument: pick the level from the camera distance and the
 /// mesh's simplifier errors (LOD0 for meshes without a chain).
@@ -217,6 +221,11 @@ struct FrameUniforms {
     float[4] moonDir = [0, -1, 0, 0];
     /// x = star intensity, y = sky exposure, z/w free.
     float[4] skyParams = [0, 1, 0, 0];
+    /// xyz = true sun direction for the sky (surface → sun), w = 1 when set
+    /// (otherwise the sky uses the directional light — which may be the moon).
+    float[4] skySunDir = [0, 1, 0, 0];
+    /// rgb = sun color for the sky.
+    float[4] skySunColor = [1, 0.97f, 0.92f, 0];
 }
 static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
 
@@ -345,10 +354,16 @@ struct Scene3DTextured {
     private bool cascadesPending = false;
     private bool debugCascades = false;
 
+    // Engine sky (lazily created by `setSkyEnabled`).
+    private SkyRenderer sky;
+    private bool skyEnabled = false;
+
     // Extra shadow casters (terrain, …) drawn into every directional view.
     private enum MAX_SHADOW_HOOKS = 4;
     private ShadowCasterHook[MAX_SHADOW_HOOKS] shadowHooks;
     private uint shadowHookCount = 0;
+    private OpaqueDrawHook[MAX_SHADOW_HOOKS] opaqueHooks;
+    private uint opaqueHookCount = 0;
 
     @disable this(this);
 
@@ -651,6 +666,21 @@ struct Scene3DTextured {
     /// Remove every registered shadow caster hook.
     void clearShadowCasterHooks() nothrow @nogc { shadowHookCount = 0; }
 
+    /// Register a renderer drawn inside `end` right after the opaque batches
+    /// and static buffers (before the sky and transparent batches) — terrain.
+    /// The frame (`@group(0)`) and IBL (`@group(2)`) bind groups are bound;
+    /// the hook must re-bind them if it changes pipeline layouts.
+    void addOpaqueHook(OpaqueDrawHook hook) nothrow @nogc {
+        if (opaqueHookCount >= MAX_SHADOW_HOOKS) {
+            warn("Scene3DTextured: opaque hook table full");
+            return;
+        }
+        opaqueHooks[opaqueHookCount++] = hook;
+    }
+
+    /// Remove every registered opaque draw hook.
+    void clearOpaqueHooks() nothrow @nogc { opaqueHookCount = 0; }
+
     /// Bind group layout of the per-view light VP (`@group(0)`, one mat4
     /// with a dynamic offset) used by shadow caster hooks. Creates the
     /// shadow resources on first use.
@@ -681,6 +711,50 @@ struct Scene3DTextured {
     /// The scene does not take ownership — caller must keep `ibl` alive.
     void setEnvironment(ref IblEnvironment ibl) nothrow @nogc {
         iblBindGroup = ibl.bindGroup;
+    }
+
+    /// Bind an IBL bind group built with `iblLayout()` (e.g. `DynamicIbl.bindGroup()`,
+    /// which changes when a runtime update completes — set it every frame).
+    void setEnvironmentBindGroup(WGPUBindGroup group) nothrow @nogc {
+        if (group !is null) iblBindGroup = group;
+    }
+
+    /// Draw the engine sky (`assets/shaders/sky.wgsl`) after the opaque
+    /// batches in `end`. The sun follows the directional light.
+    void setSkyEnabled(bool enabled) @trusted {
+        skyEnabled = enabled;
+        if (enabled && !sky.valid) sky = SkyRenderer.create(device, pipeline.frameBindGroupLayout);
+    }
+
+    /// Night-sky and exposure inputs of the engine sky (call before `begin`).
+    /// `moonDir` is surface → moon.
+    void setSkyState(Vec3 moonDir, float moonIntensity, float starIntensity,
+                     float exposure = 1.0f) nothrow @nogc {
+        immutable m = moonDir.normalized();
+        frameData.moonDir = [m.x, m.y, m.z, moonIntensity > 0 ? moonIntensity : 0];
+        frameData.skyParams[0] = starIntensity > 0 ? starIntensity : 0;
+        frameData.skyParams[1] = exposure > 0 ? exposure : 0;
+    }
+
+    /// Sun seen by the sky when it differs from the directional light (at
+    /// night the directional light is usually the moon). Call before `begin`.
+    void setSkySun(Vec3 sunDir, Vec3 sunColor) nothrow @nogc {
+        immutable d = sunDir.normalized();
+        frameData.skySunDir = [d.x, d.y, d.z, 1];
+        frameData.skySunColor = [sunColor.x, sunColor.y, sunColor.z, 0];
+    }
+
+    /// Make the sky follow the directional light again.
+    void clearSkySun() nothrow @nogc { frameData.skySunDir[3] = 0; }
+
+    /// Weather inputs (call before `begin`): `wetness` darkens and glosses
+    /// rain-exposed surfaces (instances with `custom.w = 1` are sheltered),
+    /// `rain` scales rain effects, `clouds` drives sky cloud coverage. All 0..1.
+    void setWeather(float wetness, float rain, float clouds) nothrow @nogc {
+        static float sat(float v) pure nothrow @nogc { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+        frameData.globalWetness = sat(wetness);
+        frameData.rainIntensity = sat(rain);
+        frameData.cloudCoverage = sat(clouds);
     }
 
     /// Viewport height in pixels used by automatic LOD selection (default 1080).
@@ -1256,8 +1330,15 @@ struct Scene3DTextured {
             if (pass == 1)
                 sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
             foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
-            if (pass == 0)
+            if (pass == 0) {
                 foreach (sib; staticBufs[0 .. staticCount]) drawStatic(frame, *sib);
+                foreach (hook; opaqueHooks[0 .. opaqueHookCount]) hook(frame);
+                if (skyEnabled) sky.draw(frame, frameBindGroup);
+                if (skyEnabled || opaqueHookCount > 0) {
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                }
+            }
         }
     }
 
@@ -1446,6 +1527,8 @@ struct Scene3DTextured {
         foreach (i; 0 .. MAX_SPOT_SHADOW_CASTERS) {
             if (hasOwnedSpotShadow[i]) { ownedSpotShadows[i].destroy(); hasOwnedSpotShadow[i] = false; }
         }
+        sky.destroy();
+        skyEnabled = false;
         if (shadowVpBg !is null) { wgpuBindGroupRelease(shadowVpBg); shadowVpBg = null; }
         destroyBuffer(shadowVpBuf); shadowVpBuf = null;
         if (shadowPipeReady) { shadowPipe.release(); shadowPipeReady = false; }
