@@ -271,6 +271,11 @@ bool applyPropertyOverrides(
                     cast(float) jsonNum(ov.overrideValue.array[2]));
                 if (target == instanceRoot)
                     t.position = t.position + world.get!PrefabInstance(instanceRoot).spawnOffset;
+            } else if (field == "rot" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 4) {
+                t.rotation.x = cast(float) jsonNum(ov.overrideValue.array[0]);
+                t.rotation.y = cast(float) jsonNum(ov.overrideValue.array[1]);
+                t.rotation.z = cast(float) jsonNum(ov.overrideValue.array[2]);
+                t.rotation.w = cast(float) jsonNum(ov.overrideValue.array[3]);
             } else if (field == "scale" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
                 t.scale = Vec3(
                     cast(float) jsonNum(ov.overrideValue.array[0]),
@@ -293,10 +298,54 @@ bool applyPropertyOverrides(
             auto l = world.get!Light(target);
             if (field == "intensity")
                 l.intensity = cast(float) jsonNum(ov.overrideValue);
+            else if (field == "color" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3)
+                foreach (k; 0 .. 3)
+                    l.color[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
             world.set(target, l);
         }
     }
     return true;
+}
+
+/**
+ * Hot-reload: rebuild every live instance of the prefab `prefabGuid` from
+ * `newPrefab`, keeping each instance's own property overrides.
+ *
+ * Overrides are measured against `oldPrefab` (the definition the instances
+ * were spawned from), then every instance is re-instantiated from
+ * `newPrefab` under the same external parent and the overrides are applied
+ * again. Edited prefab fields therefore reach every instance, while values
+ * changed on a single instance (moved root, recolored child, ...) survive.
+ *
+ * Instance entities get new IDs; code holding raw `EntityId`s into an
+ * instance subtree must re-resolve them. Returns the number of instances
+ * rebuilt. Load-time work (allocates).
+ */
+uint reloadPrefabInstances(
+    ref SceneWorld world,
+    AssetGuid prefabGuid,
+    ref const SceneFile oldPrefab,
+    ref const SceneFile newPrefab
+) @trusted {
+    if (prefabGuid.isNull || newPrefab.entities.length == 0) return 0;
+
+    EntityId[] roots;
+    foreach (e; world.query!PrefabInstance()) {
+        if (!world.alive(e)) continue;
+        if (world.get!PrefabInstance(e).prefabGuid == prefabGuid) roots ~= e;
+    }
+
+    uint rebuilt;
+    foreach (root; roots) {
+        if (!world.alive(root)) continue;
+        auto overrides = diffPrefabOverrides(world, root, oldPrefab, world.strings);
+        immutable fresh = revertPrefab(world, root, newPrefab, world.strings);
+        if (fresh == EntityId.max) continue;
+        applyPropertyOverrides(world, fresh, overrides, world.strings);
+        rebuilt++;
+    }
+    if (rebuilt) info("Prefab hot-reload: rebuilt ", rebuilt, " instance(s)");
+    return rebuilt;
 }
 
 private double jsonNum(ref const JSONValue v) {
@@ -386,4 +435,68 @@ unittest {
     // Re-apply captured override to the reverted instance
     assert(applyPropertyOverrides(world, revertedId, diffs, world.strings));
     assert(world.get!Transform(revertedSub[1]).position == Vec3(2, 0, 0));
+}
+
+@("prefab.hotReloadKeepsInstanceOverrides") unittest {
+    import engine.scene.scene_file : SceneEntityData;
+
+    SceneWorld world;
+    auto guid = AssetGuid.generate();
+    auto otherGuid = AssetGuid.generate();
+
+    SceneFile v1;
+    v1.meta.name = "Lamp";
+    v1.strings = ["Base", "Bulb"];
+    SceneEntityData base;
+    base.id = 1;
+    base.hasName = true;
+    base.name = 0;
+    base.transform.pos = [0, 0, 0];
+    SceneEntityData bulb;
+    bulb.id = 2;
+    bulb.parent = 1;
+    bulb.hasName = true;
+    bulb.name = 1;
+    bulb.transform.pos = [0, 1, 0];
+    bulb.transform.scale = [1, 1, 1];
+    v1.entities = [base, bulb];
+
+    auto parentEntity = world.spawn();
+    world.set(parentEntity, Transform(Vec3(0, 0, 0)));
+    auto a = instantiatePrefab(world, v1, world.strings, guid, Vec3(10, 0, 0));
+    auto b = instantiatePrefab(world, v1, world.strings, guid, Vec3(20, 0, 0));
+    auto unrelated = instantiatePrefab(world, v1, world.strings, otherGuid, Vec3(30, 0, 0));
+    world.set(a, Parent(parentEntity));
+
+    // Instance A overrides its root position; instance B is untouched.
+    world.get!Transform(a).position = Vec3(11, 0, 0);
+
+    // The prefab file changes: the bulb moves up and grows.
+    SceneFile v2 = v1;
+    v2.entities = v1.entities.dup;
+    v2.entities[1].transform.pos = [0, 3, 0];
+    v2.entities[1].transform.scale = [2, 2, 2];
+
+    assert(reloadPrefabInstances(world, guid, v1, v2) == 2);
+
+    EntityId[] roots;
+    foreach (e; world.query!PrefabInstance())
+        if (world.get!PrefabInstance(e).prefabGuid == guid) roots ~= e;
+    assert(roots.length == 2);
+    foreach (r; roots) {
+        auto sub = collectSubtreeEntities(world, r);
+        assert(sub.length == 2);
+        assert(world.get!Transform(sub[1]).position == Vec3(0, 3, 0));
+        assert(world.get!Transform(sub[1]).scale == Vec3(2, 2, 2));
+        immutable rootPos = world.get!Transform(r).position;
+        if (world.get!PrefabInstance(r).spawnOffset == Vec3(10, 0, 0)) {
+            assert(rootPos == Vec3(11, 0, 0)); // per-instance override kept
+            assert(world.has!Parent(r) && world.get!Parent(r).entity == parentEntity);
+        } else {
+            assert(rootPos == Vec3(20, 0, 0));
+        }
+    }
+    // Instances of other prefabs are left alone.
+    assert(world.alive(unrelated));
+    assert(world.get!Transform(collectSubtreeEntities(world, unrelated)[1]).position == Vec3(0, 1, 0));
 }
