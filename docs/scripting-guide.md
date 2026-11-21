@@ -163,6 +163,10 @@ The engine reloads compiled script shared libraries (`libgame.so`) on the fly:
 5. **Load & Validate:** New library instance (`libgame_inst_N.so`) is loaded with `Runtime.loadLibrary` and the ABI version (`ENGINE_SCRIPT_ABI`) is verified.
 6. **Schema Migration & Restore:** Component state is deserialized back into `SceneWorld`, applying defaults for new fields and mapping renamed fields via `@formerlyNamed`.
 
+### Data Hot-Reload: Assets & Tunables
+
+Separate from script reload, `AssetHotReloader` (`engine.hotreload.asset_reload`) reloads models, textures, prefabs and scenes, and `TunableRegistry` (`engine.hotreload.tunables`) reloads `*.tune.json` gameplay values. Read tunables by `StringId` (`@nogc`), or push `prefix.field` values into live components with `applyToComponents!C(world, prefix)` from an `onReloaded` callback. Keep tuning constants in tunable files rather than in script module globals, so they survive both kinds of reload. See [world-pipeline-guide.md §2](world-pipeline-guide.md#2-gameplay-tunables-hr-2).
+
 ### Safe Scripting Rules
 - **State in Components Only:** Persistent state must live in component structs. Module-level global variables in `.so` are discarded upon reload.
 - **No Dangling Delegates:** Never store function pointers or delegates across the engine boundary; use `ScriptContext` and registered components.

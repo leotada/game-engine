@@ -1,0 +1,247 @@
+# World Pipeline: Asset Hot-Reload, Tunables, Splines & Blender Export (`OW-8`)
+
+This guide covers the productivity tools built for large (9 km²) worlds:
+
+1. [Asset hot-reload](#1-asset-hot-reload-hr-1): models, textures, surface shaders, prefabs and scenes change in the running editor/player.
+2. [Gameplay tunables](#2-gameplay-tunables-hr-2): JSON parameter files reload live into structs and components.
+3. [3D splines](#3-3d-splines-enginemathspline): Catmull-Rom/Bézier curves with arc-length sampling, stable frames and road meshes.
+4. [Spline sets](#4-spline-sets-splinesjson): the `*.splines.json` file for roads, traffic paths and rivers.
+5. [Blender exporter](#5-blender-scenechunk-exporter): Blender scenes → chunked `*.scene.json` + GLB models + splines, loaded through `WorldStreamer`.
+
+All of these tools run at load time or dev time. Their frame-path queries are `@nogc`; the reload work is not. Never poll a hot-reloader from a `--assert-no-gc` run. The editor and player skip hot-reload in headless mode.
+
+---
+
+## 1. Asset Hot-Reload (HR-1)
+
+### 1.1 Components
+
+| Piece | Module | Role |
+|:---|:---|:---|
+| `FileWatcher` | `engine.hotreload.watcher` | Debounced change detection. Backends: `inotify` on Linux (watches new subdirectories too), and `polling` (mtime rescan, every platform; used on Windows/macOS/Web and as the Linux fallback). `poll(dt)` returns true once a batch has been quiet for the debounce window, and `changedPaths()` lists that batch. |
+| `AssetHotReloader` | `engine.hotreload.asset_reload` | Owns one watcher over the asset roots and routes each batch to the owner of each file. |
+| `SceneRenderer.reloadChangedFiles` | `engine.editor.scene_renderer` | Re-imports every cached model built from a changed file and swaps it in place. |
+| `reloadPrefabInstances` | `engine.scene.prefab` | Rebuilds the live instances of an edited prefab and keeps each instance's overrides. |
+| `TunableRegistry` | `engine.hotreload.tunables` | Gameplay values; see §2. |
+
+### 1.2 What reloads, and how
+
+| Changed file | Action |
+|:---|:---|
+| `*.asset.json`, `.gltf`, `.glb`, `.bin`, `.meta`, any image a model uses | Every model whose dependency list contains the file is re-imported and swapped (`SceneRenderer`). |
+| Image registered with `watchTexture(path, &tex, desc, onSwapped)` | The image is re-decoded into a new `Texture`. The old one is destroyed, and `onSwapped(tex)` lets the owner rebuild bind groups/materials that captured the old view. |
+| `.wgsl` registered with `watchSurfaceShader(path, id)` | `Scene3DTextured.reloadSurfaceShader(id, source)`. |
+| `*.prefab.json` | Every live `PrefabInstance` with the prefab's GUID is rebuilt (see §1.4). |
+| `*.scene.json` | `onSceneChanged(path)` is called. The owner decides whether to reopen the scene (see §1.5). |
+| `*.tune.json` registered in the `TunableRegistry` | `TunableRegistry.loadFile`. |
+
+Stock engine shaders (`assets/shaders/`) keep their own `ShaderHotReloader` ([multiplatform-and-shaders.md](multiplatform-and-shaders.md)).
+
+**Transactional swaps.** If a file fails to load, parse or compile, the previous resource stays in use, the error is logged, and `lastStats.failures` counts the failure. A model that previously failed to import is retried on the next change batch.
+
+**Ownership and cleanup.** Loaders stay in `engine.assets` / `engine.graphics`. The owner destroys a replaced GPU resource right after the swap, between frames. Call `poll` outside `render`, as the editor and player do.
+
+**Dependency tracking** is off by default because it parses each glTF a second time at load. `AssetHotReloader` turns it on automatically when it is given a `SceneRenderer`. You can also call `renderer.enableDependencyTracking()` yourself. `assetDependencies(path)` / `gltfFileDependencies(path)` expose the lists: the asset file, the glTF/GLB, its `.meta`, and external buffers and images.
+
+### 1.3 Using it in your own loop
+
+```d
+import engine.hotreload.asset_reload : AssetHotReloader, HotReloadTargets;
+import engine.hotreload.tunables : TunableRegistry;
+
+AssetHotReloader hot;
+TunableRegistry tunables;
+tunables.addFilesUnder("assets");          // every *.tune.json
+hot.init(["assets"]);                      // inotify on Linux, polling elsewhere
+hot.watchTexture("assets/ui/minimap.png", &minimapTex, TextureDesc.init,
+                 (ref Texture t) { minimapMaterial = rebuildMaterial(t); });
+
+// Per frame, outside render():
+HotReloadTargets t;
+t.gpu = &app.gpu;
+t.renderer = &sceneRenderer;
+t.world = &world;
+t.tunables = &tunables;
+t.assetDb = &assetDb;                      // optional: prefab GUIDs (falls back to .meta)
+hot.poll(dt, t);
+```
+
+`applyChanges(paths, targets)` applies a batch directly, without the watcher (tools, tests). `batchContains(hot.watcher.changedPaths, path)` checks a path regardless of spelling.
+
+### 1.4 Prefab reload semantics
+
+`AssetHotReloader.init` snapshots every `*.prefab.json` under its roots. When a prefab file changes:
+
+1. Overrides are measured per instance against the **old** definition (`diffPrefabOverrides`): root/child transforms (pos/rot/scale), names, `MaterialOverride` color/opacity, light intensity/color, and physics mass.
+2. Each instance is re-instantiated from the **new** definition under its external parent (`revertPrefab`).
+3. The overrides are applied again (`applyPropertyOverrides`).
+
+As a result, fields edited in the prefab file reach every instance, while values changed on a single instance survive. Instance entities get **new IDs**: re-resolve raw `EntityId`s that point into an instance subtree. The editor clears a selection that died. A prefab that fails to parse leaves every instance untouched.
+
+### 1.5 Editor and player behavior
+
+- **Editor** (`dub run --config=editor`): always on, except in headless mode.
+  - Models, prefabs and tunables reload while editing and during Play.
+  - The open scene is reopened when it changes on disk. This does not happen for the editor's own saves, while there are unsaved edits (a warning is logged instead), or during Play.
+- **Player**: opt in with `game-engine-player --hot-reload`.
+  - Assets, prefabs and tunables reload live.
+  - An edited root scene restarts the simulation on the new file. For streamed (`ChunkManifest`) worlds, a root-scene edit needs a restart.
+  - `--headless-frames` runs ignore the flag, so `--assert-no-gc` stays at 0 bytes.
+
+Edits land within one debounce window: 0.2 s by default, well under the 0.5 s target. The test `assetReload.watcherEndToEndWithin500ms` checks this.
+
+---
+
+## 2. Gameplay Tunables (HR-2)
+
+A tunable file is plain JSON named `*.tune.json`. Nested objects flatten into dotted keys:
+
+```json
+{ "vehicle": { "suspension": { "stiffness": 42000, "damping": 3100 },
+               "breakImpulse": 900.5, "lights": true, "comOffset": [0, -0.4, 0.1] } }
+```
+
+Supported values are numbers, booleans and arrays of 1–4 numbers. Any other value is skipped with a warning. A file that fails to parse keeps **all** previous values.
+
+```d
+TunableRegistry tunables;
+tunables.addFile("assets/data/vehicle.tune.json");   // or addFilesUnder("assets")
+
+// Load time: intern the key once.
+immutable stiffKey = tunables.key("vehicle.suspension.stiffness");
+
+// Frame path: @nogc nothrow reads by StringId.
+float k = tunables.getFloat(stiffKey, 30000);
+Vec3 com = tunables.getVec3("vehicle.comOffset");     // by name (load time / tools)
+
+// Copy prefix.field values into a struct or into every live component:
+struct Suspension { float stiffness = 1, damping = 1; }
+tunables.applyTo(mySuspension, "vehicle.suspension");
+tunables.applyToComponents!Suspension(world, "vehicle.suspension");
+
+// React to reloads:
+tunables.onReloaded ~= (string path) {
+    tunables.applyToComponents!Suspension(world, "vehicle.suspension");
+};
+// Cheap change check: tunables.generation() increments on every successful load.
+// Debug label without GC: tunables.describe(stiffKey, frameArena) -> "vehicle.suspension.stiffness=42000"
+```
+
+`applyTo` supports integral, floating-point, `bool`, `Vec3` and `float[N]` (N ≤ 4) fields. Missing keys leave the field unchanged. Values are stored in a POD array indexed by `StringId.id`, so the engine-side storage passes `Pod!T`.
+
+---
+
+## 3. 3D Splines (`engine.math.spline`)
+
+```d
+import engine.math.spline;
+
+Spline3 road;
+road.kind = SplineKind.catmullRom;   // or SplineKind.bezier: P0, C0, C1, P1, C2, C3, P2, ...
+road.alpha = 0.5f;                   // centripetal (no cusps); 0 uniform, 1 chordal
+road.closed = false;
+road.points = [Vec3(0, 0, 0), Vec3(120, 2, 40), Vec3(260, 4, 40)];
+road.rebuild();                      // load time: arc-length LUT + rotation-minimizing frames
+
+// Frame path (@nogc nothrow):
+Vec3 p = road.sampleAtDistance(57.0f);                 // constant-speed placement
+SplineFrame f = road.frameAtDistance(57.0f);           // position, tangent, normal (up), binormal (right)
+SplineHit h = road.closestPoint(car.position);         // h.distance along, h.lateral (+right / -left)
+```
+
+- **Parameterization**: `u ∈ [0, segmentCount]`, one unit per segment (`evaluate`, `derivative`, `tangentAt`). `paramAtDistance` and `distanceAtParam` convert between `u` and arc length. Closed curves wrap both `u` and the distance.
+- **Frames**: `FrameMode.upVector` (default) keeps the frame level (`right = tangent × world up`), which is what roads and rivers want. It falls back to the rotation-minimizing frame where the tangent is vertical. `FrameMode.rotationMinimizing` is twist-free parallel transport (double reflection) for loops, rails and tubes. On closed curves the residual twist is spread evenly.
+- **Closest point**: a coarse search over the baked samples, refined by golden-section search on the parameter.
+- **Road meshes**: `extrudeRibbon` builds a flat ribbon of `TexVert`s with counter-clockwise winding seen from the normal. `u` runs across (0 = left, 1 = right) and `v = distance / uvLength`.
+
+  ```d
+  RibbonOptions o;
+  o.width = 9; o.step = 2; o.widthSegments = 2; o.verticalOffset = 0.05f; o.uvLength = 8;
+  auto ribbon = extrudeRibbon(road, o);
+  auto mesh = TexMesh.fromData(app.gpu, ribbon.vertices, ribbon.indices);
+  ```
+
+  Use `lateralOffset` for lanes and sidewalks. Closed curves get a duplicated seam row so `v` stays continuous.
+
+---
+
+## 4. Spline Sets (`*.splines.json`)
+
+```json
+{"format":"game-engine.splines","version":1,
+ "splines":[
+   {"name":"main_road","role":"road","kind":"bezier","closed":false,"alpha":0.5,
+    "width":9,"lanes":2,"speedLimit":22.2,"points":[[5,0.1,380], ...]},
+   {"name":"desert_loop","role":"traffic","kind":"bezier","closed":true,"points":[...]},
+   {"name":"forest_river","role":"river","kind":"catmullRom","width":14,"lanes":0,"points":[...]}]}
+```
+
+`role` is free-form (`road`, `traffic`, `river`, `rail`, ...). Unknown keys are rejected. A root scene links the file through `assetLinks` with `"kind":"splines"`. `WorldStreamer` ignores that kind, because it is CPU data and not a GPU asset.
+
+```d
+import engine.scene.splines;
+
+auto root = loadSceneFile("assets/world/level01.scene.json");
+auto set = loadSplineSetFile(sceneSplineSetPath(root));   // every curve already baked
+auto road = set.find("main_road");
+SplineHit hit;
+auto idx = set.closest(carPos, hit, "road");               // or closest(pos, hit, roleStringId) — @nogc
+writeln(set.text(set.paths[idx].name), " lateral=", hit.lateral);
+```
+
+Names and roles are interned as `StringId` in `SplineSet.strings`. `splineSetToJson` writes the format back.
+
+---
+
+## 5. Blender Scene/Chunk Exporter
+
+`tools/blender_export_scene.py` turns a Blender scene into a streamed world.
+
+```bash
+blender -b level01.blend -P tools/blender_export_scene.py -- --name=level01
+# Flatpak (absolute paths; the sandbox does not keep the working directory):
+flatpak run org.blender.Blender -b $PWD/level01.blend -P $PWD/tools/blender_export_scene.py -- \
+    --name=level01 --project-root=$PWD
+```
+
+Options: `--out=assets/world`, `--cell-size=256`, `--load-radius` (default 1.5 × cell), `--unload-radius` (default 2 × cell), `--collection=NAME`, `--dump-json=FILE`, `--from-json=FILE` (pure-Python backend, no Blender), `--build-test-level`.
+
+### 5.1 Output
+
+| Path (under `--out`) | Content |
+|:---|:---|
+| `<name>.scene.json` | Root v2 scene: suns and `ge_global` objects, `chunks` manifest, `splines` asset link |
+| `<name>/chunks/chunk_<x>_<z>.scene.json` | One v2 scene per occupied cell, with `cellBounds` (XZ = the cell, Y = content height ±1 m) and `model` asset links |
+| `<name>/meshes/<mesh>.glb` + `.asset.json` | One Y-up GLB per unique mesh (linked duplicates share it; objects with modifiers get their own), plus an engine model asset with triangle-mesh and convex-hull collision |
+| `<name>/<name>.splines.json` | Every curve object |
+| `<name>/export_report.json` | Chunk / entity / biome counts and warnings |
+| `*.meta` | GUIDs derived from the project-relative path, so re-exports and other machines keep asset identities (existing sidecars are kept) |
+
+Each object goes to the cell that contains its origin: `floor(x / cellSize), floor(z / cellSize)` in engine space. Blender Z-up is converted to engine Y-up as `(x, y, z) → (x, z, -y)`, with quaternions and scales converted to match. Object hierarchies are flattened to world transforms. Sun lights always go to the root scene. Point and spot lights are streamed with their cell.
+
+### 5.2 Custom properties
+
+| Property | Values | Effect |
+|:---|:---|:---|
+| `ge_physics` | `static` (meshes default), `dynamic`, `kinematic`, `none` | Physics body. Dynamic or kinematic `triangleMesh` is coerced to `convexHull`, with a warning |
+| `ge_shape` | `triangleMesh` (static default), `convexHull` (dynamic default), `primitive` | Collider shape |
+| `ge_surface` | `asphalt`, `concrete`, `dirt`, `gravel`, `grass`, `sand`, `snow`, `ice`, `mud`, `wood`, `metal`, `rubber` | Friction/restitution preset |
+| `ge_friction`, `ge_restitution`, `ge_mass` | numbers | Explicit overrides |
+| `ge_global` | bool | Put the object in the always-loaded root scene |
+| `ge_biome` | string | Report tag (defaults to the first `Biome_<name>` collection) |
+| `ge_skip` | bool | Do not export |
+| Curves: `ge_role`, `ge_width`, `ge_lanes`, `ge_speed_limit` | | Spline attributes. Bézier curves export as `bezier` (handles included); poly/NURBS curves export as `catmullRom` through their points |
+
+### 5.3 Loading the result
+
+The output is a regular v2 world. Open the root scene in the editor, or run `game-engine-player --scene=assets/world/level01.scene.json`. The player starts `WorldStreamer` from the manifest.
+
+`--build-test-level` generates `assets/world/ow8_test_level`: forest, desert and snow biomes over 3 × 3 cells of 256 m, with a Bézier main road, a closed traffic loop, a river, dynamic crates and a sun. `engine.scene.world_export_tests` validates every chunk, model and spline, and streams the whole level through `WorldStreamer` (load all, partial unload, full unload with shared models released). The backend has Python tests: `python3 -m unittest tools/test_blender_export_scene.py`.
+
+---
+
+## See also
+
+- [plan-open-world-readiness.md](plan-open-world-readiness.md): `OW-8` status and decisions.
+- [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md): HR-0..HR-3 roadmap.
+- [editor-guide.md](editor-guide.md) · [scripting-guide.md](scripting-guide.md) · [game-development-guide.md](game-development-guide.md).

@@ -8,11 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Script hot-reload skipped components on high entity IDs (`2026-11-21`)**: `HotReloadManager.snapshotScriptData` scanned IDs `0 .. entityCount() + 1000`, so components on recycled or late entities were lost on reload. It now walks the component's dense store.
 - **Fullscreen toggle crashed with a wgpu scissor validation error (`2026-11-20`)**:
   - `Window.setFullscreen` refreshed the window size itself, so the next `App.handleResize()` saw no change and never reconfigured the swapchain. The UI then drew at the new size onto the old-size target (`Scissor Rect ... is not contained in the render target`) and wgpu aborted.
   - `Window.setFullscreen` no longer touches `width()/height()`; the new `App.setFullscreen(bool)` toggles it and reconfigures the swapchain and post targets immediately. Games should call the `App` method.
 
 ### Added
+
+- **Productivity Multipliers: Asset/Tunable Hot-Reload, Splines & Blender Export (`OW-8`, `2026-11-21`):**
+  - **P8.1 watcher & hot-reload** (`engine.hotreload`, `engine.editor.scene_renderer`, `engine.scene.prefab`, editor, player):
+    - `FileWatcher` now reports `changedPaths()` per debounced batch, watches subdirectories created after `init`, and adds a portable mtime polling backend (`WatchBackend`) for Windows/macOS/Web and as the Linux fallback;
+    - **HR-1** `AssetHotReloader` routes edits to their owners: `SceneRenderer.reloadChangedFiles` (models via `assetDependencies` / `gltfFileDependencies`), `watchTexture`, `watchSurfaceShader`, `reloadPrefabInstances` (live instances rebuilt with per-instance overrides kept), a scene callback, and registered tunables. All swaps are transactional;
+    - **HR-2** `TunableRegistry`: `*.tune.json` flattened to dotted `StringId` keys, `@nogc` reads, `applyTo` / `applyToComponents`, `onReloaded`, `generation`, `FrameArena` labels;
+    - wired into the editor (always, except headless) and the player (`--hot-reload`); `applyPropertyOverrides` now restores Transform rotation and Light color.
+  - **P8.2 splines & Blender pipeline** (`engine.math.spline`, `engine.scene.splines`, `tools/blender_export_scene.py`):
+    - `Spline3`: centripetal Catmull-Rom / cubic Bézier, open or closed, arc-length LUT, `upVector` / rotation-minimizing frames, `closestPoint` with lateral offset, `extrudeRibbon` road meshes (all `@nogc` after `rebuild`);
+    - `*.splines.json` spline sets linked from root scenes (`assetLinks` kind `splines`, ignored by `WorldStreamer`);
+    - Blender exporter: GLB + `*.asset.json` per unique mesh, per-cell v2 chunk scenes, root `ChunkManifest`, curve → spline export, `ge_*` custom properties, deterministic GUIDs, and `--build-test-level`;
+    - `assets/world/ow8_test_level` (forest/desert/snow, 3 × 3 cells, road/traffic/river) is validated and streamed through `WorldStreamer` in `engine.scene.world_export_tests`.
+  - Guide: [docs/world-pipeline-guide.md](docs/world-pipeline-guide.md).
 
 - **World Chunk Streaming (9 km²), ECS/Prefab Fixes & `steadygc` Windows (`OW-7`, `2026-11-21`):**
   - **P7.1 `EntityId` recycling, generations & additive scene/prefabs** (`engine.ecs`, `engine.editor.scene_load`, `engine.scene.prefab`): added `EntityHandle`, free-list `EntityId` recycling, generation counters (`generation`, `handle`, `aliveHandle`, `capacity`, `freeCount`, `clearEntities`), `loadSceneAdditive`, `collectSubtreeEntities`, `subtreeToSceneFile`, additive `instantiatePrefab`, full-hierarchy `revertPrefab`, subtree-scoped `applyPrefabOverrides`, and `diffPrefabOverrides`/`applyPropertyOverrides`.

@@ -106,7 +106,19 @@ The editor features a non-destructive Play Mode:
 
 - **Additive Scene Loading (`engine.editor.scene_load`):** `loadSceneAdditive(world, scene, rootOffset)` spawns entities into an existing `World` / `SceneWorld` and remaps file-local `id` and `parent` indices without wiping existing entities.
 - **`SceneFile` v2 (`engine.scene.scene_file`):** Adds `ChunkManifest` (`cellSize`, `loadRadius`, `unloadRadius`, `chunks[]`), `SceneCellBounds`, `SceneAssetLink` (`AssetGuid` + `strings[]` path + `kind`), `visual.assetGuid`, and per-chunk light-cap validation.
+- **Blender Worlds:** `tools/blender_export_scene.py` writes a root scene + per-cell chunk scenes + GLB models + `*.splines.json` that open directly in the editor and stream in the player. See [world-pipeline-guide.md §5](world-pipeline-guide.md#5-blender-scenechunk-exporter).
 - **Runtime Streaming (`engine.scene.streamer`):** `WorldStreamer` loads/unloads cells with hysteresis (`unloaded → loading → active → unloading`), runs file I/O on a GC-excluded background worker (`ScopedGcExcludedThread`), bounds GPU/ECS uploads per frame (`processUploadQueue`), and reference-counts `GltfAsset`, `Texture`, `CookedMesh`, and `NavMesh` tiles. The standalone player ([tools/player/player_main.d](../tools/player/player_main.d)) activates `WorldStreamer` automatically when a scene embeds `ChunkManifest`.
+
+### 4.2 Asset, Prefab, Scene & Tunable Hot-Reload
+
+The editor polls an `AssetHotReloader` over `assets/` every frame. It is disabled in `--headless-frames` runs, so `--assert-no-gc` stays at 0 bytes.
+
+- **Models:** edits to `*.asset.json`, glTF/GLB, `.bin`, `.meta` or any image a model uses re-import that model and swap it in place. A broken file keeps the previous model and logs the error.
+- **Prefabs:** saving a `*.prefab.json`, from a text editor or with *Apply to Prefab*, rebuilds every live instance and keeps each instance's own overrides. Rebuilt instances get new entity IDs, so a selection pointing into one is cleared.
+- **Open scene:** an external edit to the open `*.scene.json` reopens it. This is skipped for the editor's own saves, while there are unsaved edits (a warning is logged instead), and during Play.
+- **Tunables:** every `assets/**/*.tune.json` is loaded at startup and reloads live, during Play too.
+
+Details: [world-pipeline-guide.md §1](world-pipeline-guide.md#1-asset-hot-reload-hr-1).
 
 ---
 

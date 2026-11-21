@@ -1,6 +1,6 @@
 # Plan: Semi-Open-World Engine Readiness (9 km² Scale)
 
-> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`: CSM, Terrain, Fog, Sky/Weather, Decals) **Done** · Phase 4 (`OW-4`: 3D Spatial Audio, DSP & OGG) **Done** · Phase 5 (`OW-5`: Animation ↔ Physics & Minimap UI) **Done** · Phase 6 (`OW-6`: 3D Navigation & Dynamic Obstacles) **Done** · Phase 7 (`OW-7`: World Chunk Streaming, Prefabs & Windows `steadygc`) **Done** · See [roadmap.md](roadmap.md)
+> **Status:** Done — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`: CSM, Terrain, Fog, Sky/Weather, Decals) **Done** · Phase 4 (`OW-4`: 3D Spatial Audio, DSP & OGG) **Done** · Phase 5 (`OW-5`: Animation ↔ Physics & Minimap UI) **Done** · Phase 6 (`OW-6`: 3D Navigation & Dynamic Obstacles) **Done** · Phase 7 (`OW-7`: World Chunk Streaming, Prefabs & Windows `steadygc`) **Done** · Phase 8 (`OW-8`: Asset/Tunable Hot-Reload, Splines & Blender Exporter) **Done** · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -269,19 +269,33 @@ Fix foundational ECS/prefab/player bugs blocking open-world streaming and bring 
 
 ---
 
-### Phase 8 — Productivity Multipliers: Asset/JSON Hot-Reload & Splines/Blender Pipeline (`OW-8`, Optional / Parallelizable)
+### Phase 8 — Productivity Multipliers: Asset/JSON Hot-Reload & Splines/Blender Pipeline (`OW-8`, **Done**)
 
-Accelerate vehicle/destruction tuning and large-scale 9 km² level assembly.
+Accelerate vehicle/destruction tuning and large-scale 9 km² level assembly. Usage guide: [world-pipeline-guide.md](world-pipeline-guide.md).
 
-- [ ] **P8.1 — Cross-Platform Watcher, Asset & Tunable Hot-Reload (`source/engine/hotreload/`):**
-  - Upgrade [watcher.d](../source/engine/hotreload/watcher.d) to populate `_changedPaths`, watch newly created subdirectories, and support Windows (`ReadDirectoryChangesW` or cross-platform mtime polling fallback).
-  - Implement **HR-1** (`AssetHotReloader` swapping `Texture`, `GltfAsset`, custom surface shaders, `.prefab.json`, and `.scene.json` in place) and **HR-2** (`TunableRegistry` reloading JSON parameter files for vehicle suspension, break thresholds, and gameplay constants live) per [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md).
-  - Fix `HotReloadManager.snapshotScriptData` ([reload.d](../source/engine/hotreload/reload.d)) to iterate live entities rather than `0 .. entityCount + 1000`.
-- [ ] **P8.2 — 3D Road Splines & Blender Scene/Chunk Exporter (`engine/math/spline.d`, `tools/blender_export_scene.py`):**
-  - Implement `engine/math/spline.d`: 3D Catmull-Rom & Cubic Bézier curves with arc-length LUT (`sampleAtDistance`, stable frame/tangent, closest-point query, and procedural ribbon mesh extrusion helper).
-  - Build `tools/blender_export_scene.py` exporting Blender scenes/collections directly to `.glb`/`.gltf` + chunked `.scene.json` (with automatic spatial cell splitting, physics collider/surface-material custom properties, and road/traffic spline JSON).
+- [x] **P8.1 — Cross-Platform Watcher, Asset & Tunable Hot-Reload (`source/engine/hotreload/`):**
+  - [watcher.d](../source/engine/hotreload/watcher.d): `FileWatcher.changedPaths()` reports each debounced batch; `inotify` watches subdirectories created after `init` (and reports files already inside them); a portable mtime `polling` backend covers Windows/macOS/Web and is the Linux fallback (`WatchBackend`).
+  - **HR-1** `AssetHotReloader` ([asset_reload.d](../source/engine/hotreload/asset_reload.d)): models are re-imported and swapped through `SceneRenderer.reloadChangedFiles`, which tracks every file a `*.asset.json` model depends on (`assetDependencies` / `gltfFileDependencies`). Also covered: registered `Texture` slots (`watchTexture` + `onSwapped`), custom surface shaders (`watchSurfaceShader`), `*.prefab.json` (`reloadPrefabInstances` keeps per-instance overrides), `*.scene.json` (owner callback) and registered `*.tune.json`. All swaps are transactional.
+  - **HR-2** `TunableRegistry` ([tunables.d](../source/engine/hotreload/tunables.d)): nested JSON flattened to dotted `StringId` keys, `@nogc` reads, `applyTo` / `applyToComponents`, reload callbacks, `FrameArena` labels.
+  - Fixed `HotReloadManager.snapshotScriptData` to walk the component's dense store (it missed components on IDs above `entityCount + 1000`).
+  - Wired into the editor (always, except headless) and the player (`--hot-reload`).
+- [x] **P8.2 — 3D Road Splines & Blender Scene/Chunk Exporter (`engine/math/spline.d`, `tools/blender_export_scene.py`):**
+  - [spline.d](../source/engine/math/spline.d) `Spline3`: centripetal Catmull-Rom and piecewise cubic Bézier, open or closed. Provides an arc-length LUT (`sampleAtDistance`, `paramAtDistance`), stable frames (`FrameMode.upVector` / rotation-minimizing with closed-loop twist correction), `closestPoint` with a signed lateral offset, and `extrudeRibbon`. Every query after `rebuild()` is `@nogc`.
+  - `*.splines.json` spline sets ([splines.d](../source/engine/scene/splines.d)), linked from root scenes by an `assetLinks` entry of kind `splines`.
+  - [blender_export_scene.py](../tools/blender_export_scene.py): one Y-up GLB + `*.asset.json` (triangle mesh + convex hull) per unique mesh, per-cell v2 chunk scenes with bounds, a root scene with the `ChunkManifest`, curve objects → splines, `ge_*` custom properties for physics/surface/placement, and deterministic GUID `.meta` sidecars. `--build-test-level` generates the multi-biome test level.
 
-**DoD:** Editing a `.prefab.json` or tunable `.json` updates live entities in the running editor/player within 0.5 s without restarting; a multi-biome Blender test level exports cleanly into chunked `.scene.json` + road splines and loads via `WorldStreamer`.
+**DoD:** Editing a `.prefab.json` or tunable `.json` updates live entities in the running editor/player within 0.5 s without restarting; a multi-biome Blender test level exports cleanly into chunked `.scene.json` + road splines and loads via `WorldStreamer`. ✅
+- `assetReload.watcherEndToEndWithin500ms`: a tunable edit applies within 0.5 s of simulated frames. The debounce is 0.2 s.
+- `assetReload.prefabTunableSceneDispatch` / `prefab.hotReloadKeepsInstanceOverrides`: live prefab instances are rebuilt with their overrides kept.
+- `assets/world/ow8_test_level`: exported by Blender 5.3 (forest/desert/snow, 3 × 3 cells, road + traffic loop + river; re-export is byte-identical). `engine.scene.world_export_tests` validates it and streams it through `WorldStreamer`.
+
+**Status: Done** (`feat/ow-8`). Deviations and open items:
+- Windows uses the mtime polling backend rather than `ReadDirectoryChangesW`. Polling is portable and fast enough for asset folders; a native backend can slot in behind `WatchBackend` later.
+- Rebuilt prefab instances get new entity IDs. Gameplay code holding raw `EntityId`s into an instance subtree must re-resolve them (the editor drops a dead selection).
+- `.scene.json` reload: the editor reopens the open scene (skipped when it has unsaved edits or during Play); the player restarts non-streamed scenes. Editing a streamed chunk file on disk does not reload that chunk live.
+- Surface materials export as friction/restitution presets: the scene format has no surface-material component yet.
+- The exporter flattens Blender parenting to world transforms and does not export Blender materials into `*.asset.json` slots: the GLB carries the materials.
+- The editor/player do not load `*.splines.json` automatically. Gameplay loads them with `loadSplineSetFile(sceneSplineSetPath(root))`.
 
 ---
 

@@ -597,6 +597,25 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
     streamer.update(world, camera.position, uploadBudgetMs: 2.0f);
     ```
     Deep dive: [plan-open-world-readiness.md](plan-open-world-readiness.md).
+- **Asset & Tunable Hot-Reload (`OW-8`, `engine.hotreload`):** in the editor (always) and in the player (`--hot-reload`), edits to models/images/`.meta`, `*.prefab.json` (live instances rebuilt, per-instance overrides kept), the open `*.scene.json`, and `*.tune.json` apply within ~0.2 s. Failed loads keep the previous version. In your own loop:
+  ```d
+  TunableRegistry tunables;
+  tunables.addFilesUnder("assets");                    // {"car": {"stiffness": 42000}}
+  immutable k = tunables.key("car.stiffness");         // load time
+  float s = tunables.getFloat(k, 30000);               // @nogc per frame
+  tunables.applyToComponents!Suspension(world, "car"); // prefix.field -> live components
+
+  AssetHotReloader hot;
+  hot.init(["assets"]);                                // inotify, or mtime polling off Linux
+  HotReloadTargets t = { gpu: &app.gpu, renderer: &sceneRenderer, world: &world, tunables: &tunables };
+  hot.poll(dt, t);                                     // outside render(); never in --assert-no-gc runs
+  ```
+- **Road Splines & Blender World Export (`OW-8`):** `Spline3` (`engine.math.spline`) gives centripetal Catmull-Rom / Bézier curves with `rebuild()` (arc-length LUT), then `@nogc` `sampleAtDistance`, `frameAtDistance`, `closestPoint` (distance + lateral offset) and `extrudeRibbon` (road mesh → `TexMesh.fromData`). `*.splines.json` sets load via `loadSplineSetFile(sceneSplineSetPath(root))`. `tools/blender_export_scene.py` exports a Blender scene to GLB models + chunked v2 scenes + splines for `WorldStreamer`:
+  ```bash
+  blender -b level01.blend -P tools/blender_export_scene.py -- --name=level01 --cell-size=256
+  game-engine-player --scene=assets/world/level01.scene.json
+  ```
+  Deep dive (custom properties `ge_physics` / `ge_surface` / `ge_role`, file layout, prefab reload rules): [world-pipeline-guide.md](world-pipeline-guide.md).
 
 ---
 

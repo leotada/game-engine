@@ -36,20 +36,20 @@ Iterate on content without restarting the process: reload textures/meshes/WAVs, 
 
 ### HR-1 — Asset Hot-Reload (Textures, Meshes, Audio)
 
-- [ ] Filesystem watcher for textures / glTF / WAV
-- [ ] Re-import + swap of GPU resources and handles
-- [ ] Explicit ownership: loaders in `engine.assets`; upload in `engine.gpu` / `engine.graphics` — document cleanup of replaced resources
-- [ ] Clear diagnostic logs on parse failure (retaining the previous asset)
+- [x] Filesystem watcher for textures / glTF (`FileWatcher` with `changedPaths()`, `inotify` + portable mtime polling) — WAV/OGG audio clips are **not** reloaded yet
+- [x] Re-import + swap of GPU resources and handles (`AssetHotReloader`, `SceneRenderer.reloadChangedFiles`, `watchTexture`, `watchSurfaceShader`, prefab instances via `reloadPrefabInstances`)
+- [x] Explicit ownership: loaders in `engine.assets`; upload in `engine.gpu` / `engine.graphics` — the owner destroys the replaced resource right after the swap, between frames ([world-pipeline-guide.md §1](world-pipeline-guide.md#1-asset-hot-reload-hr-1))
+- [x] Clear diagnostic logs on parse failure (retaining the previous asset)
 
-**DoD:** Editing a BMP/TGA on disk refreshes the texture in-engine without restarting.
+**DoD:** Editing a BMP/TGA on disk refreshes the texture in-engine without restarting. ✅ (`OW-8`)
 
 ### HR-2 — Game Data Tunables
 
-- [ ] Simple data format (JSON or TOML) for tunables: speeds, HP, spawn intervals
-- [ ] Hot-reload applies to alive components via `StringId` keys
-- [ ] Transient debug strings allocated via `FrameArena`
+- [x] Simple data format (JSON) for tunables: speeds, HP, spawn intervals (`*.tune.json`, `TunableRegistry`)
+- [x] Hot-reload applies to alive components via `StringId` keys (`applyToComponents`)
+- [x] Transient debug strings allocated via `FrameArena` (`TunableRegistry.describe`)
 
-**DoD:** Changing a float in a data file alters gameplay behavior on the next reload tick.
+**DoD:** Changing a float in a data file alters gameplay behavior on the next reload tick. ✅ (`OW-8`)
 
 ### HR-3 — Developer Experience (DX)
 
