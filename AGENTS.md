@@ -217,6 +217,7 @@ source/
 │   ├── reflect/        # Compile-time reflection, UDAs (@component, @export_), TypeRegistry, serialize
 │   ├── scene/          # Camera, controllers, scene graph, scene_file v2, prefab.d
 │   ├── script/         # ScriptContext, module_entry.d, scripting API
+│   ├── terrain/        # Chunked heightmap terrain: data, generation, splat layers, renderer, Box3D colliders
 │   └── ui/             # Retained-mode UI: tree, flexbox, SDF font atlas, widgets, docking system
 ├── editor/             # Visual editor application (Unity/Godot style)
 │   ├── main.d          # Editor entrypoint
@@ -236,6 +237,7 @@ tools/
     ├── benchmark.d     # 3D benchmark (1000 cubes, instanced, FPS overlay)
     ├── game.d          # Crystal Collector gameplay demo
     ├── showcase.d      # Solar system (scene graph + textured materials)
+    ├── outdoor.d       # OW-3 outdoor demo (terrain, CSM, fog, sky, weather, decals)
     └── ui_gallery.d    # Retained UI widgets and docking gallery
 ```
 
@@ -250,6 +252,7 @@ dub build --config=player-static --compiler=ldc2 --build=release # Build statica
 dub run --config=player -- --headless-frames=600 --assert-no-gc # Assert zero GC allocations in player loop
 dub run --config=export -- --target=linux-x86_64 --release --archive # Export release bundle
 dub test --config=export             # Run exporter unit tests (incl. ldd static verification)
+dub run --config=outdoor -- --headless-frames=600 --assert-no-gc # OW-3 outdoor scene (terrain, sky, decals)
 dub run --config=ui-gallery          # UI widget & docking testbed
 dub run --config=lint                # Run GC-safe storage lint
 dub test --config=library            # Run all unit tests

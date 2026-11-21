@@ -14,6 +14,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Outdoor rendering: CSM, fog, sky, day/night, runtime IBL, wetness, terrain and decals (`OW-3`, `2026-11-21`):**
+  - **P3.1 cascaded shadows** (`engine.scene.cascades`, `shadows.wgsl`):
+    - 4 PSSM cascades, sphere-fitted and texel-snapped, in one `depth32Float` array (frame binding 2 is now `texture_depth_2d_array`);
+    - per-cascade caster culling, cascade blending, max-distance fade, `GpuDirLight.cascades` / `debugCascades`;
+    - `Scene3DTextured.addShadowCasterHook`.
+  - **P3.3 linear HDR height fog** (`engine.scene.atmosphere`, `common/atmosphere.wgsl`):
+    - `FogSettings`, `scene.setFog`, sun in-scattering;
+    - applied in PBR, water, terrain, decals and sky;
+    - `settings.fog` in scene files and editor controls.
+  - **P3.4 engine sky** (`engine.gpu.sky`, `sky.wgsl`, `common/sky_eval.wgsl`, `scene.setSkyEnabled`) and **day/night + weather** (`engine.scene.time_of_day`: `TimeOfDay`, `Weather`, `evaluateEnvironment`, `applyEnvironment`, `applyEnvironmentToScene`).
+  - **P3.4 runtime HDR IBL** (`engine.gpu.ibl_dynamic.DynamicIbl`, `ibl_sky_cs.wgsl`):
+    - compute sky → `rgba16Float` cube → irradiance + GGX mips;
+    - one step per frame, double-buffered.
+  - **P3.4 global rain wetness:** `scene.setWeather`, coat darkening and gloss in `textured3d_pbr.wgsl`, `custom.w = 1` shelters an instance.
+  - **P3.2 chunked terrain** (`engine.terrain`, `terrain_pbr.wgsl`, `terrain_shadow.wgsl`):
+    - Box3D-identical 16-bit heights and cell diagonal;
+    - vertex-buffer-less grid template with per-LOD index ranges, skirts and geomorphing, so at most 5 instanced draws;
+    - top-4 height-blended layers out of 8, triplanar cliffs, distance de-tiling, wetness;
+    - casts into every cascade;
+    - `buildTerrainColliders` heightfield tiles with dominant-layer surface materials;
+    - procedural heights, 4-biome splat and layer textures. See `docs/terrain-guide.md`.
+  - **P3.5 projected decals** (`engine.graphics.decals`, `decal_pbr.wgsl`):
+    - `DecalSystem` ring buffer with lifetime fades;
+    - `DecalRenderer` reconstructs from the opaque depth snapshot, lit with CSM, IBL, fog and wetness;
+    - `Scene3DTextured.addPostOpaqueHook`.
+  - **Renderer and API additions:**
+    - `FrameUniforms` grew to 1280 bytes (camera, cascade, fog, sky and weather fields);
+    - `Scene3DTextured.addOpaqueHook`, `setEnvironmentBindGroup`, `setSkyState`, `setSkySun`, `setWeather`;
+    - `FrameContext.draw`;
+    - `common/simple_pbr.wgsl`.
+  - **Demos:**
+    - new `outdoor` config (3 km terrain, 12k rocks, day/night, rain, dynamic IBL, 500 decals; `--headless-frames --assert-no-gc --time-scale --tod --rain --debug-cascades --decals --view`);
+    - `openworld-bench` gains `--debug-cascades --fog --tod --rain --wetness --decals --screenshot`.
+  - **Deviations from the plan:**
+    - the terrain heightmap texture is `r32Float` (exact physics surface, no 16-bit-norm feature needed);
+    - the CPU-prefiltered `IblEnvironment` stays `rgba8Unorm`, while `DynamicIbl` is HDR.
+
 - **3D Navigation & Dynamic Obstacles (`OW-6`, `2026-11-20`):**
   - Vendored `recastnavigation` `v1.6.0` (`Recast`, `Detour`, `DetourTileCache`, `DetourCrowd`, `fastlz`) in `vendor/recastnavigation/` compiled with `-DDT_POLYREF64` into `libs/librecast_shim.a`, wrapped via `source/bindings/recast/` (`recast_shim.h`/`.cpp`, `recast_import.c`, `package.d`) and wired into `dub.json`, `tools/build_sdl3_deps.sh`, and `source/editor/build_export.d`.
   - Implemented `@safe nothrow @nogc` `Pod!T` `engine.nav` (`types.d`, `mesh.d`, `bake.d`, `ecs.d`, `debugdraw.d`): RAII `NavMesh`, `NavTileCache` (cylinder, AABB, OBB dynamic obstacles), `NavQuery` (`findNearestPoly`, `findPath`, `findStraightPath`, `raycast`), `NavCrowd` (50-agent `@nogc` update verified), binary `.navmesh` serialization + `AssetDatabase` `.navmesh` importer, and POD ECS components (`NavMeshSurface`, `NavAgent`, `NavMoveRequest`, `NavObstacle`, `NavOffMeshLink`, `NavModifierVolume`, `stepNavAgents`).

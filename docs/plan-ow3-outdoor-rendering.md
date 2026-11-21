@@ -2,6 +2,17 @@
 
 Implementation plan for Phase 3 of [plan-open-world-readiness.md](plan-open-world-readiness.md) (`P3.1`–`P3.5`).
 
+> **Status: Done (2026-11-21).** Commits: CSM `957b73e`, fog `f0d8b1f`, sky/IBL/wetness `6702038`, terrain `24dda95`, decals `2655814`, plus the docs commit.
+>
+> Deviations:
+> - The terrain heightmap texture is `r32Float` (decoded quantized heights, read with `textureLoad`), not `r16Unorm`. It needs no device feature and is bit-identical to the physics surface.
+> - The CPU-prefiltered `IblEnvironment` paths stay `rgba8Unorm`; the HDR path is the new `DynamicIbl`.
+> - The sky has an explicit `skySunDir`/`skySunColor` in `FrameUniforms` (1280 bytes), because at night the directional light is the moon.
+> - Decals run in a `Scene3DTextured.addPostOpaqueHook`, so the transparent pass needs no change in `renderer.d`.
+> - `outdoor` uses procedural rocks and terrain textures, with no new assets.
+>
+> User docs: [terrain-guide.md](terrain-guide.md) and [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3).
+
 ## Context
 
 OW-1 (Box3D physics), OW-2 (zero-GC submission, culling, LOD, static instancing), OW-4 (audio) and OW-6 (navigation) are done. A 3 km × 3 km outdoor scene still has no terrain renderer, one 2048² directional shadow map fitted to a fixed sphere (`directionalLightVP` in `engine/gpu/shadow.d`), no fog, a sky that exists only inside the water demo (`sky_dome.wgsl` bound to `WaterUniforms`), an `rgba8Unorm` IBL baked once on the CPU, and no decals. OW-3 closes these gaps. OW-5 (ragdoll, minimap), OW-7 (world streaming) and OW-8 depend on it.

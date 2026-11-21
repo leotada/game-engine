@@ -12,6 +12,7 @@ A single `import engine;` re-exports the core runtime (`core`, `ecs`, `math`, `p
 |:---|:---|:---|
 | **App, Window & Loop** | `engine.app`, `engine.platform.*` | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) |
 | **3D, OpenPBR, IBL, Shadows & Post** | `engine.scene.*`, `engine.graphics.*`, `engine.gpu.*` | [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-post-processing.md](plan-post-processing.md) |
+| **Outdoor: Terrain, Sky, Weather, Decals** | `engine.terrain`, `engine.scene.time_of_day`, `engine.scene.atmosphere`, `engine.gpu.ibl_dynamic`, `engine.graphics.decals` | [terrain-guide.md](terrain-guide.md) · [graphics.md](graphics.md#outdoor-rendering-ow-3) |
 | **2D Sprites & Cameras** | `engine.graphics.sprite` | [graphics.md](graphics.md) |
 | **2D UI & Fonts (`SDL3_ttf`)** | `engine.ui` (opt-in), `engine.gpu.text` | [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md) |
 | **ECS, Scripts & GC-Safe Memory** | `engine.ecs.*`, `engine.core.*`, `engine.script` (opt-in) | [scripting-guide.md](scripting-guide.md) · [why-this-is-fast.md](why-this-is-fast.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) |
@@ -220,6 +221,61 @@ particles.draw(scene, quadMesh, glowMat, camera); // pair with Texture.softDisc 
 Deep dive: [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-water-realism.md](plan-water-realism.md).
 
 ---
+
+### 3.7 Outdoor Scenes: Terrain, Sky, Weather and Decals
+
+```d
+import engine.terrain, engine.graphics.decals, engine.gpu.ibl_dynamic;
+import engine.scene.time_of_day, engine.scene.atmosphere;
+
+// Load time
+auto h = generateHeights(td);                       // TerrainDesc: samples = chunks * 128 + 1
+auto terrain = Terrain.create(h, generateBiomeSplat(h, 1024, 1024));
+auto tr = TerrainRenderer.create(app.gpu, scene, terrain, terrainMat);
+tr.attach(scene, terrain);                          // keep tr / scene / terrain in place afterwards
+buildTerrainColliders(physics, terrain, layers[]);  // heightAt == physics surface (< 1 cm)
+scene.setSkyEnabled(true);
+auto ibl = DynamicIbl.create(app.gpu, scene.iblLayout());
+auto decals = DecalSystem.create(1024);
+auto dr = DecalRenderer.create(app.gpu, scene, decalAlbedo[], decalNormal[], 256, 1024);
+dr.attach(scene, app.renderer, decals);
+
+// Frame loop (zero GC)
+tod.advance(dt); weather.update(dt);                // TimeOfDay / Weather (weather.setTarget(0.9, 1) = storm)
+auto env = evaluateEnvironment(tod, weather);
+LightSet lights; FogSettings fog;
+applyEnvironment(env, lights, fog, 0.0003f);        // sun or moon light + fog color/density
+lights.dir.castShadows = true;                      // 4 cascades by default (lights.dir.cascades)
+fog.enabled = true;
+applyEnvironmentToScene(env, scene);                // sky, stars, moon, wetness, clouds
+scene.setFog(fog);
+auto ip = skyIblParams(env, time);
+ibl.request(ip); ibl.update();                      // one compute step per frame
+scene.setEnvironmentBindGroup(ibl.bindGroup());
+tr.update(terrain, camera);
+decals.update(dt); dr.update(decals, camera);
+scene.begin(camera);
+// ... draws ...
+scene.renderShadows(frame, lights);
+scene.end(frame);
+
+// Gameplay
+float y = terrain.heightAt(x, z);
+decals.spawn(hit.point, hit.normal, Vec2(2, 2), 1.0f, angle, layer);  // skid mark / impact
+```
+
+- **Shadows:**
+  - `CascadeSettings` sets count, split lambda, `maxDistance` and resolution.
+  - `lights.dir.debugCascades = true` tints the cascades.
+- **Fog:** `FogSettings` sets density, height base and falloff, start distance and sun lobe. Scene files store it under `settings.fog`.
+- **Wetness:** `scene.setWeather(wetness, rain, clouds)` drives it. Instances with `custom.w = 1` are sheltered.
+- **Terrain:**
+  - Up to 8 layers, using `TerrainLayer` (`uvScale`, `heightBlend`, `triplanarSharpness`, `physicsMaterial`).
+  - At most 5 draws per frame.
+  - `TerrainRenderer.stats()` reports per-frame counts.
+- **Decals:** `DecalStyle` sets tint, opacity, angle fade, roughness, metallic, wetness response, lifetime and fade-out.
+
+Deep dives: [terrain-guide.md](terrain-guide.md) · [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3) · demo: `dub run --config=outdoor` (`--tod=18.5 --rain --debug-cascades --decals=500 --view=1`).
 
 ## 4. Post-Processing (`app.post()` & Custom Passes)
 

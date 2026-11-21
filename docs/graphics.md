@@ -363,6 +363,130 @@ renderer.render(app.gpu, world, frame, camera, lightSettings, viewportHeight);
 - `drawModel(scene, asset, inst, world, pool)` computes node worlds on the stack and submits each visible sub-mesh through `drawMatrix` (culling + auto LOD apply).
 - `detachSubMesh(asset, inst, "door_fl", world)` hides the node in the instance and returns a `DetachedPart` (world matrix, sub-mesh range, local bounds) to spawn an independent rigid body; draw it with `drawSubMesh`.
 
+## Outdoor Rendering (OW-3)
+
+OW-3 adds:
+- cascaded shadows;
+- linear HDR height fog;
+- an engine sky driven by a day/night and weather model;
+- runtime HDR IBL;
+- global rain wetness;
+- chunked terrain;
+- projected decals.
+
+Everything stays zero-GC in the frame loop. The reference scene is `dub run --config=outdoor`.
+
+### `FrameUniforms` (1280 bytes)
+
+`Scene3DTextured.FrameUniforms` (`shadows.wgsl` `FrameUniforms`) carries everything the outdoor features read:
+
+- cascade matrices, splits and texel sizes;
+- `invViewProj`, camera forward/near/far and viewport;
+- fog, moon, sky and sky-sun parameters;
+- `globalWetness`, `rainIntensity` and `cloudCoverage`.
+
+`FRAME_UNIFORMS_SIZE` in `engine/gpu/pipeline.d` must match.
+
+### Cascaded shadow maps (`engine.scene.cascades`)
+
+- Turn on the directional light with `lights.dir.castShadows = true`. The automatic `scene.renderShadows(frame, lights)` path then renders `GpuDirLight.cascades` into a `depth32Float` array.
+- `CascadeSettings` fields:
+
+  | Field | Default |
+  |:---|:---|
+  | `count` | 4 |
+  | `lambda` | 0.75 (log/linear PSSM blend) |
+  | `maxDistance` | 400 m |
+  | `blendFraction` | 0.1 |
+  | `casterMargin` | 250 m |
+  | `resolution` | 2048 |
+
+- Cascades are fitted to a sphere and texel-snapped, so they do not shimmer. Each cascade culls its own casters.
+- The shader blends between cascades and fades out at `maxDistance`.
+- `lights.dir.debugCascades = true` tints the cascades red, green, blue and yellow.
+- A caller-owned `ShadowMap` passed to `setLights` keeps the legacy single fixed map.
+- Extra casters (terrain) register with `scene.addShadowCasterHook`, using `shadowVpLayout()` as `@group(0)`.
+
+### Height fog (`engine.scene.atmosphere`)
+
+- `FogSettings` fields: `enabled`, `color`, `density`, `heightBase`, `heightFalloff`, `startDistance`, `maxOpacity`, `sunColor`, `sunPower`.
+- Fog is analytic exponential height fog with a sun in-scattering lobe, evaluated in linear HDR before bloom and tonemapping. It applies in `textured3d_pbr.wgsl`, `water_surface.wgsl`, the terrain, decals and the sky (`common/atmosphere.wgsl`, `applyFog`).
+- Set it with `scene.setFog(fog)` before `begin`. Scene files store it under `settings.fog`; the editor light panel has Fog, density, falloff and base.
+
+### Engine sky (`engine.gpu.sky`, `sky.wgsl`)
+
+- `scene.setSkyEnabled(true)` draws a fullscreen far-plane sky after the opaque pass. It is driven only by frame uniforms:
+  - the sun is the directional light, or `setSkySun` when the directional light is the moon;
+  - `setSkyState(moonDir, moonIntensity, starIntensity, exposure)`;
+  - cloud coverage from `setWeather`.
+- `common/sky_eval.wgsl` (`evalSky`) blends night, dusk and day gradients. It adds Mie scattering, overcast grey, stars, the moon, fBm clouds, and the sun halo and disc.
+
+### Day/night and weather (`engine.scene.time_of_day`)
+
+- `TimeOfDay`:
+  - fields `hours`, `latitudeDeg`, `declinationDeg`, `dayLengthSec`, `northOffsetDeg`, `sunIntensity`, `moonLightIntensity`;
+  - `advance(dt)` moves the clock;
+  - `sunDirection` computes the solar path.
+- `Weather`:
+  - fields `cloudCoverage`, `rainIntensity`, `wetness`, `fogScale`;
+  - `setTarget(clouds, rain)`, then `update(dt)` blends toward the target;
+  - rain only starts once the sky is overcast, surfaces wet while it rains and dry afterwards.
+- `evaluateEnvironment(tod, weather)` returns an `EnvironmentState` with sun, moon, stars, the light to use (sun by day, moon by night), fog color and weather values.
+- Apply it with:
+  - `applyEnvironment(env, lights, fog, baseDensity)` for the directional light and fog;
+  - `applyEnvironmentToScene(env, scene)` for the sky and weather uniforms;
+  - `skyIblParams(env, time)` for runtime IBL.
+
+### Runtime HDR IBL (`engine.gpu.ibl_dynamic`)
+
+- `DynamicIbl.create(gpu, scene.iblLayout())` renders the sky into a 64² `rgba16Float` environment cube with a compute shader (`ibl_sky_cs.wgsl`). It then convolves irradiance (16²) and 5 GGX specular mips.
+- Work is amortized: `request(params)` starts a cycle when the sky changed visibly (`SkyIblParams.differsFrom`), and `update()` runs at most one step per frame. The cubes are double-buffered and the bind group swaps only when a cycle completes.
+- `bakeNow` is for start-up. The BRDF LUT is built once.
+- Call `scene.setEnvironmentBindGroup(ibl.bindGroup())` every frame.
+- The CPU-prefiltered `IblEnvironment` paths remain `rgba8Unorm`.
+
+### Rain wetness
+
+- `scene.setWeather(wetness, rain, clouds)` feeds `frame.globalWetness`.
+- `textured3d_pbr.wgsl` applies a water coat: darker albedo, low coat roughness, IOR 1.333. It is weighted by an upward-facing mask and skipped for instances with `custom.w = 1` (sheltered or indoor).
+- Terrain and decals darken and gloss rain-facing surfaces the same way.
+
+### Terrain (`engine.terrain`)
+
+The terrain is a chunked heightmap with PBR splatting:
+- one instanced draw per LOD with geomorphing and skirts;
+- an `r32Float` heightmap read in the vertex shader;
+- top-4 height-blended layers out of 8, triplanar cliffs and de-tiling;
+- shadows in every cascade;
+- Box3D colliders that match `heightAt` within 1 cm.
+
+Full guide: [terrain-guide.md](terrain-guide.md).
+
+### Projected decals (`engine.graphics.decals`)
+
+- `DecalSystem.create(capacity)` is a POD ring buffer:
+  - `spawn(pos, normal, size, depth, rotation, layer, DecalStyle)` overwrites the oldest decal when full;
+  - `update(dt)` handles `lifetime` and `fadeOut`.
+- `DecalRenderer.create(gpu, scene, albedoLayers, normalLayers, size, capacity)`, then `attach(scene, app.renderer, system)`.
+- Per frame, before `scene.end`: `decals.update(dt); dr.update(decals, camera)`.
+- Decals draw in a `Scene3DTextured.addPostOpaqueHook`, after terrain and opaque geometry and before the sky and transparent objects:
+  - the hook snapshots the opaque depth (`Renderer.snapshotOpaque`);
+  - it draws instanced unit boxes with front-face culling and no depth test;
+  - the fragment shader reconstructs the surface with `invViewProj`;
+  - it discards outside the box and fades by edge and by angle (`DecalStyle.angleFade`), which prevents stretching on steep faces.
+- Decals are lit with the scene lights, CSM, IBL, fog and wetness, and use premultiplied blending.
+- `proceduralDecalLayers(size, albedo, normal)` gives four demo layers: skid, crack, mud and arrow.
+- `openworld-bench --decals=500` and `outdoor --decals=N` exercise the system.
+
+### Scene draw order
+
+The scene renders in this order:
+1. shadows (cascades, local lights and hooks);
+2. opaque batches, static buffers and opaque hooks (terrain);
+3. post-opaque hooks (decals);
+4. sky;
+5. alpha-blended batches, then additive batches.
+
 ## SceneGraph
 
 Transform hierarchy for composite objects (solar systems, body + limbs, cockpit camera, etc.).
@@ -438,6 +562,9 @@ dub run --config=pbr
 
 # OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)
 dub run --config=water
+
+# Outdoor (OW-3): 3 km terrain, CSM, fog, sky, day/night + rain, dynamic IBL, 500 decals
+dub run --config=outdoor -- --headless-frames=600 --assert-no-gc
 
 # Open-world bench: 12k static props over 3 km², 200 multi-node vehicles, LOD + culling stats
 dub run --config=openworld-bench

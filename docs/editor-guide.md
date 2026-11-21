@@ -42,6 +42,12 @@ The Scene View, the Game View and the standalone player all draw the scene with 
 - **Mesh entities** (`Visual.kind = mesh`, `*.asset.json`) load the asset's glTF/GLB `render.source` once with `loadGltfAsset` — every node, primitive, material and texture (mipmapped, 8× anisotropic sampler). Assets that fail to load are logged once and drawn as a cube.
 - **Lights** come from the scene's `Light` components (`packLightsFromWorld`) with directional, point and spot shadows. A scene with no lights gets a default sun, so it is never black.
 - **Culling and LOD** are automatic (frustum culling, per-view shadow caster culling, screen-space LOD for meshes with LOD chains).
+- **Environment (Scene / IBL panel, no entity selected):**
+  - **Cascaded shadows** turns 4 cascades on or off for the scene sun.
+  - **Shadow distance** sets the cascade max distance, 10–1000 m.
+  - **Debug cascades** tints cascades 0–3 red, green, blue and yellow, to tune the distance.
+  - **Fog** turns on linear HDR height fog, with **Fog density**, **Fog falloff** and **Fog base**. Fog is saved in the scene file under `settings.fog`.
+  - See [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3).
 - **LOD chains:** add `"lod": {"enabled": true, "maxLods": 4, "ratio": 0.5, "maxError": 0.05}` under `settings` in the glTF's `.meta` sidecar (e.g. `assets/models/rock_cliff.gltf.meta`). Every loader (`loadGltfAsset`, `loadGltfMesh`, `loadGltfPbr`) then builds the chain at import time. Missing keys keep the `LodSettings` defaults.
 
 See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2).

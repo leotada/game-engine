@@ -1,6 +1,6 @@
 # Plan: Semi-Open-World Engine Readiness (9 km² Scale)
 
-> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`) next · See [roadmap.md](roadmap.md)
+> **Status:** In Progress — Phase 1 (`OW-1`: Complete Box3D Physics API) **Done** · Phase 2 (`OW-2`: Open-World Rendering & Multi-Node glTF) **Done** · Phase 3 (`OW-3`: CSM, Terrain, Fog, Sky/Weather, Decals) **Done** · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -160,29 +160,31 @@ Remove GC allocations from 3D rendering, introduce multi-sub-mesh glTF models fo
 
 ---
 
-### Phase 3 — CSM, Terrain Splatting, HDR Fog, Decals & Day/Night Weather (`OW-3`, Blocking + Visual Polish)
+### Phase 3 — CSM, Terrain Splatting, HDR Fog, Decals & Day/Night Weather (`OW-3`, Blocking + Visual Polish — Done)
 
 Deliver open-world outdoor rendering across 4 biomes while staying strictly within the 16-texture/stage budget (AD-4).
 
-- [ ] **P3.1 — Cascaded Shadow Maps (`engine/gpu/shadow.d`, `assets/shaders/common/shadows.wgsl`, `scene/light.d`):**
+- [x] **P3.1 — Cascaded Shadow Maps (`engine/gpu/shadow.d`, `assets/shaders/common/shadows.wgsl`, `scene/light.d`):**
   - Replace `@group(0) @binding(2)` `texture_depth_2d` with a single `texture_depth_2d_array` (3–4 cascades, keeping total sampled textures at **15/16**).
   - Implement PSSM logarithmic/linear split calculation, tight camera-frustum ortho fitting with texel-snapping stabilization, per-cascade frustum culling, cascade blending, and max-distance fade.
   - Update all consumers of `common/shadows.wgsl` (`textured3d_pbr.wgsl`, `water_surface.wgsl`, `caustics_bed.wgsl`, `sky_dome.wgsl`).
-- [ ] **P3.2 — Chunked Terrain + PBR Splatting (`engine/terrain/`):**
+- [x] **P3.2 — Chunked Terrain + PBR Splatting (`engine/terrain/`):**
   - Implement chunked terrain mesh patches (e.g., 128 m × 128 m patches over 3 km × 3 km) with distance LODs and crack-hiding skirts.
   - Author terrain PBR WGSL pipeline reusing `@group(0)` (CSM) + `@group(2)` (IBL) and binding `texture_2d_array` in `@group(1)` (`splatmap`, `heightmap`, `albedoArray`, `normalArray`, `ormArray` = 5 slots → **15/16 total**), supporting 4–8 surface layers, height-blend transitions, and triplanar steep-slope projection.
   - Sync terrain heightmaps and dominant cell splat weights directly into Phase 1 Box3D `CookedHeightField` + `materialIndices`.
-- [ ] **P3.3 — Linear HDR Atmospheric Fog (`FrameUniforms`, `textured3d_pbr.wgsl`, terrain shader):**
+- [x] **P3.3 — Linear HDR Atmospheric Fog (`FrameUniforms`, `textured3d_pbr.wgsl`, terrain shader):**
   - Add fog uniforms (color, exponential density, height base/falloff, sun in-scattering color/power) to `FrameUniforms` and evaluate distance + height fog in linear HDR before bloom/tonemapping across opaque, transparent, and terrain shaders.
-- [ ] **P3.4 — Engine Sky, Cheap Runtime HDR IBL & Global OpenPBR Wetness (`engine/gpu/sky.d`, `ibl.d`, `textured3d_pbr.wgsl`):**
+- [x] **P3.4 — Engine Sky, Cheap Runtime HDR IBL & Global OpenPBR Wetness (`engine/gpu/sky.d`, `ibl.d`, `textured3d_pbr.wgsl`):**
   - Promote [assets/shaders/sky_dome.wgsl](../assets/shaders/sky_dome.wgsl) into `engine/gpu/sky.d` (decoupled from `WaterUniforms`), driven continuously by sun elevation, moon/stars, and weather cloud coverage.
   - Upgrade `IblEnvironment` ([source/engine/gpu/ibl.d](../source/engine/gpu/ibl.d)) to `rgba16Float` cubemaps and add cheap runtime IBL updates (interpolating pre-baked time-of-day/weather probes or GPU compute prefilter amortized across frames, never rebuilding `brdfLut` or allocating on CPU).
   - Expose `globalWetness` / `rainIntensity` in `FrameUniforms` (reusing `_padFrame0..2`) and apply the OpenPBR coat darkening/roughness modulation already present in `textured3d_pbr.wgsl` globally, masked by surface-up normal and `TexInstanceData.custom.w` (0 = exposed to rain, 1 = sheltered/indoor).
-- [ ] **P3.5 — Projected Decals (`engine/graphics/decals.d`, `assets/shaders/decal_pbr.wgsl`):**
+- [x] **P3.5 — Projected Decals (`engine/graphics/decals.d`, `assets/shaders/decal_pbr.wgsl`):**
   - Implement `@nogc` POD ring-buffered OBB `DecalSystem` (skid marks, oil spills, graffiti, worn crosswalks, cracked glass).
   - Add `invViewProj` and `viewportSize` to `FrameUniforms`; render instanced OBB boxes (`cullMode = front`, `depthWrite = false`) reading `Renderer.opaqueDepthView()` after `snapshotOpaque()`, reconstructing world position and screen-space normal (`dpdx`/`dpdy`), with angle/edge attenuation.
 
 **DoD:** A 3 km × 3 km test scene renders chunked splatted terrain aligned with Box3D heightfields, 4-cascade CSM, HDR fog, dynamic day/night + rain wetness, and 500+ projected decals at target frame rate with zero WebGPU validation errors.
+
+**Result:** Done. See [plan-ow3-outdoor-rendering.md](plan-ow3-outdoor-rendering.md), [terrain-guide.md](terrain-guide.md) and [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3). `dub run --config=outdoor -- --headless-frames=600 --assert-no-gc` runs a 3 km terrain with 4-cascade CSM, fog, sky, day/night + rain, dynamic IBL and 500 decals at ≤ 5 terrain draws and 0 GC bytes.
 
 ---
 
