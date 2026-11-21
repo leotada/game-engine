@@ -1,8 +1,9 @@
-/// Deterministic pure-D procedural noise functions (value, simplex, FBM, ridged).
+/// Deterministic pure-D procedural noise and pattern functions (value, simplex,
+/// FBM, ridged, plus tileable 2D noise, Voronoi, and brick/grid samplers).
 /// Suitable for CPU mesh synthesis, terrain, asteroids, and procedural textures.
 module engine.math.noise;
 
-import std.math : floor;
+import std.math : floor, sqrt;
 
 pure nothrow @nogc @safe:
 
@@ -218,6 +219,200 @@ float simplex3D(float x, float y, float z, uint seed = 0) {
     return v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
 }
 
+private int wrapPeriod(int v, int p) {
+    if (p <= 1) return 0;
+    immutable int r = v % p;
+    return r < 0 ? r + p : r;
+}
+
+private float smoothStep01(float a, float b, float x) {
+    if (b <= a) return x < a ? 0.0f : 1.0f;
+    float t = (x - a) / (b - a);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+/// Tileable 2D value noise in `[0, 1]` over normalized UVs with period `1.0`
+/// across `periodX × periodY` lattice cells.
+float valueNoiseTiled2D(float u, float v, int periodX, int periodY, uint seed = 0) {
+    immutable int px = periodX < 1 ? 1 : periodX;
+    immutable int py = periodY < 1 ? 1 : periodY;
+    immutable float x = u * px;
+    immutable float y = v * py;
+    immutable int ix = fastFloor(x);
+    immutable int iy = fastFloor(y);
+    immutable float fx = smoothstep5(x - ix);
+    immutable float fy = smoothstep5(y - iy);
+
+    immutable int x0 = wrapPeriod(ix, px), x1 = wrapPeriod(ix + 1, px);
+    immutable int y0 = wrapPeriod(iy, py), y1 = wrapPeriod(iy + 1, py);
+
+    immutable float v00 = hashTo01(hash2(x0, y0, seed));
+    immutable float v10 = hashTo01(hash2(x1, y0, seed));
+    immutable float v01 = hashTo01(hash2(x0, y1, seed));
+    immutable float v11 = hashTo01(hash2(x1, y1, seed));
+
+    return lerpf(lerpf(v00, v10, fx), lerpf(v01, v11, fx), fy);
+}
+
+/// Square-period overload of `valueNoiseTiled2D`.
+float valueNoiseTiled2D(float u, float v, int period, uint seed = 0) {
+    return valueNoiseTiled2D(u, v, period, period, seed);
+}
+
+/// Tileable 2D Fractal Brownian Motion in `[0, 1]` over normalized UVs `(u, v)`.
+/// Each octave doubles the integer cell periods `(periodX, periodY)` to preserve exact tiling.
+float fbmTiled2D(float u, float v, int periodX, int periodY, uint octaves = 4, float gain = 0.5f, uint seed = 0) {
+    if (octaves == 0) return 0.5f;
+    int px = periodX < 1 ? 1 : periodX;
+    int py = periodY < 1 ? 1 : periodY;
+    float sum = 0.0f;
+    float amp = 0.5f;
+    float norm = 0.0f;
+    foreach (i; 0 .. octaves) {
+        sum += valueNoiseTiled2D(u, v, px, py, seed + i * 101u) * amp;
+        norm += amp;
+        px *= 2;
+        py *= 2;
+        amp *= gain;
+    }
+    return norm > 0.0f ? sum / norm : 0.5f;
+}
+
+/// Square-period overload of `fbmTiled2D`.
+float fbmTiled2D(float u, float v, int period, uint octaves = 4, float gain = 0.5f, uint seed = 0) {
+    return fbmTiled2D(u, v, period, period, octaves, gain, seed);
+}
+
+/// Tileable 2D ridged multifractal noise in `[0, 1]` over normalized UVs `(u, v)`.
+float ridgedTiled2D(float u, float v, int periodX, int periodY, uint octaves = 4, float gain = 0.5f, uint seed = 0) {
+    if (octaves == 0) return 0.0f;
+    int px = periodX < 1 ? 1 : periodX;
+    int py = periodY < 1 ? 1 : periodY;
+    float sum = 0.0f;
+    float amp = 0.5f;
+    float norm = 0.0f;
+    foreach (i; 0 .. octaves) {
+        float n = valueNoiseTiled2D(u, v, px, py, seed + i * 197u) * 2.0f - 1.0f;
+        if (n < 0.0f) n = -n;
+        immutable float ridge = 1.0f - n;
+        sum += ridge * ridge * amp;
+        norm += amp;
+        px *= 2;
+        py *= 2;
+        amp *= gain;
+    }
+    return norm > 0.0f ? sum / norm : 0.0f;
+}
+
+/// Square-period overload of `ridgedTiled2D`.
+float ridgedTiled2D(float u, float v, int period, uint octaves = 4, float gain = 0.5f, uint seed = 0) {
+    return ridgedTiled2D(u, v, period, period, octaves, gain, seed);
+}
+
+/// Result of a tileable 2D Voronoi / Worley cellular sample.
+struct VoronoiSample {
+    float f1 = 0.0f;        /// Distance to nearest feature point (in cell units)
+    float f2 = 0.0f;        /// Distance to second-nearest feature point (in cell units)
+    float edge = 0.0f;      /// Distance to nearest cell border (`f2 - f1`)
+    uint cellId = 0;        /// Deterministic hash of the winning cell
+    float cellValue = 0.0f; /// Uniform random value in `[0, 1]` for the winning cell
+}
+
+/// Tileable 2D Voronoi / Worley cellular sampler over `cellsX × cellsY` cells.
+VoronoiSample voronoiTiled2D(float u, float v, int cellsX, int cellsY, float jitter = 1.0f, uint seed = 0) {
+    immutable int cx = cellsX < 1 ? 1 : cellsX;
+    immutable int cy = cellsY < 1 ? 1 : cellsY;
+    immutable float j = jitter < 0.0f ? 0.0f : (jitter > 1.0f ? 1.0f : jitter);
+    immutable float px = u * cx;
+    immutable float py = v * cy;
+    immutable int ix = fastFloor(px);
+    immutable int iy = fastFloor(py);
+
+    float d1Sq = 1e9f;
+    float d2Sq = 1e9f;
+    uint bestId = 0;
+
+    foreach (dy; -1 .. 2) {
+        foreach (dx; -1 .. 2) {
+            immutable int nx = ix + dx;
+            immutable int ny = iy + dy;
+            immutable int wx = wrapPeriod(nx, cx);
+            immutable int wy = wrapPeriod(ny, cy);
+            immutable uint cid = hash2(wx, wy, seed);
+            immutable float ox = 0.5f + (hashTo01(cid) - 0.5f) * j;
+            immutable float oy = 0.5f + (hashTo01(hashU32(cid ^ 0x9E37_79B9u)) - 0.5f) * j;
+            immutable float fx = (nx + ox) - px;
+            immutable float fy = (ny + oy) - py;
+            immutable float dSq = fx * fx + fy * fy;
+            if (dSq < d1Sq) {
+                d2Sq = d1Sq;
+                d1Sq = dSq;
+                bestId = cid;
+            } else if (dSq < d2Sq) {
+                d2Sq = dSq;
+            }
+        }
+    }
+
+    VoronoiSample res;
+    res.f1 = sqrt(d1Sq);
+    res.f2 = sqrt(d2Sq);
+    res.edge = res.f2 - res.f1;
+    res.cellId = bestId;
+    res.cellValue = hashTo01(hashU32(bestId ^ 0x85EB_CA6Bu));
+    return res;
+}
+
+/// Square-grid overload of `voronoiTiled2D`.
+VoronoiSample voronoiTiled2D(float u, float v, int cells, float jitter = 1.0f, uint seed = 0) {
+    return voronoiTiled2D(u, v, cells, cells, jitter, seed);
+}
+
+/// Result of a tileable 2D brick / paver / slab grid sample.
+struct BrickSample {
+    float mask = 1.0f;      /// 0 in mortar/grout joint, 1 on block interior
+    float height = 1.0f;    /// Beveled height profile in `[0, 1]`
+    uint cellId = 0;        /// Deterministic hash of the block cell
+    float cellValue = 0.0f; /// Uniform random value in `[0, 1]` for the block
+    float localU = 0.0f;    /// Block-local U coordinate in `[0, 1]`
+    float localV = 0.0f;    /// Block-local V coordinate in `[0, 1]`
+}
+
+/// Tileable 2D brick / cobblestone / sidewalk slab pattern over `cols × rows` blocks.
+/// `rowOffset = 0.5` gives a running-bond paver pattern; `rowOffset = 0.0` gives a regular grid.
+BrickSample brickPatternTiled2D(float u, float v, int cols, int rows,
+                                  float rowOffset = 0.5f, float mortarWidth = 0.08f,
+                                  float bevelWidth = 0.06f, uint seed = 0) {
+    immutable int c = cols < 1 ? 1 : cols;
+    immutable int r = rows < 1 ? 1 : rows;
+    immutable float y = v * r;
+    immutable int ry = fastFloor(y);
+    immutable int wy = wrapPeriod(ry, r);
+    immutable float x = u * c + wy * rowOffset;
+    immutable int rx = fastFloor(x);
+    immutable int wx = wrapPeriod(rx, c);
+
+    immutable float lu = x - rx;
+    immutable float lv = y - ry;
+    immutable float dx = lu < (1.0f - lu) ? lu : (1.0f - lu);
+    immutable float dy = lv < (1.0f - lv) ? lv : (1.0f - lv);
+    immutable float edgeDist = (dx < dy ? dx : dy) * 2.0f;
+
+    immutable float mw = mortarWidth < 0.0f ? 0.0f : (mortarWidth > 0.9f ? 0.9f : mortarWidth);
+    immutable float bw = bevelWidth < 0.0f ? 0.0f : bevelWidth;
+    immutable uint cid = hash2(wx, wy, seed);
+
+    BrickSample res;
+    res.mask = smoothStep01(mw * 0.5f, mw, edgeDist);
+    res.height = smoothStep01(mw, mw + bw, edgeDist);
+    res.cellId = cid;
+    res.cellValue = hashTo01(cid);
+    res.localU = lu;
+    res.localV = lv;
+    return res;
+}
+
 /// 2D Fractal Brownian Motion over `simplex2D`, normalized to approximately [-1, 1].
 float fbm2D(float x, float y, uint octaves = 4, float lacunarity = 2.0f, float gain = 0.5f, uint seed = 0) {
     if (octaves == 0) return 0.0f;
@@ -322,4 +517,27 @@ unittest {
     immutable a = simplex2D(3.14f, 1.59f);
     immutable b = simplex2D(3.141f, 1.591f);
     assert((a - b) * (a - b) < 0.01f);
+
+    // Tileable 2D noise and pattern periodicity + bounds checks.
+    foreach (k; 0 .. 8) {
+        immutable float t = k * 0.125f;
+        assert(valueNoiseTiled2D(0.0f, t, 6, 4, 11) == valueNoiseTiled2D(1.0f, t, 6, 4, 11));
+        assert(valueNoiseTiled2D(t, 0.0f, 6, 4, 11) == valueNoiseTiled2D(t, 1.0f, 6, 4, 11));
+
+        immutable float fb0 = fbmTiled2D(0.0f, t, 4, 4, 4, 0.5f, 12);
+        immutable float fb1 = fbmTiled2D(1.0f, t, 4, 4, 4, 0.5f, 12);
+        assert(fb0 == fb1 && fb0 >= 0.0f && fb0 <= 1.0f);
+
+        immutable float rg0 = ridgedTiled2D(t, 0.0f, 4, 6, 4, 0.5f, 13);
+        immutable float rg1 = ridgedTiled2D(t, 1.0f, 4, 6, 4, 0.5f, 13);
+        assert(rg0 == rg1 && rg0 >= 0.0f && rg0 <= 1.0f);
+
+        immutable auto vo0 = voronoiTiled2D(0.0f, t, 5, 5, 0.85f, 14);
+        immutable auto vo1 = voronoiTiled2D(1.0f, t, 5, 5, 0.85f, 14);
+        assert(vo0.cellId == vo1.cellId && vo0.edge >= 0.0f);
+
+        immutable auto br0 = brickPatternTiled2D(0.0f, t, 4, 8, 0.5f, 0.08f, 0.06f, 15);
+        immutable auto br1 = brickPatternTiled2D(1.0f, t, 4, 8, 0.5f, 0.08f, 0.06f, 15);
+        assert(br0.cellId == br1.cellId && br0.height >= 0.0f && br0.height <= 1.0f);
+    }
 }

@@ -1,11 +1,14 @@
 /// Procedural terrain content so demos and tests need no assets: fBm +
-/// ridged heights with a light erosion pass, a 4-biome splat map (grass,
-/// rock, sand, snow by height and slope) and tileable layer textures
-/// (linear albedo with height in alpha, tangent-space normal, ORM). Load time only.
+/// ridged heights with a light erosion pass, a 4-biome splat map, generic
+/// `ProcLayerDesc` PBR texture synthesis, and low-level heightfield-to-PBR
+/// bakers. Load time only.
 module engine.terrain.generate;
 
 import std.math : abs, floor, sqrt, cos, sin, PI;
 
+import engine.core.pod : isPod;
+public import engine.math.noise : BrickSample, brickPatternTiled2D, fbmTiled2D,
+    ridgedTiled2D, valueNoiseTiled2D, VoronoiSample, voronoiTiled2D;
 import engine.math.vec : Vec3;
 import engine.terrain.heightmap : Heightmap, TerrainDesc;
 import engine.terrain.splat : SplatMap;
@@ -174,61 +177,267 @@ SplatMap generateBiomeSplat(ref const Heightmap h, uint width, uint height,
     return s;
 }
 
+/// Primary pattern basis for `ProcLayerDesc`.
+enum ProcNoiseBasis : ubyte {
+    /// Multi-octave tileable fBm (soils, grass, sand, asphalt, snow).
+    fbm = 0,
+    /// Multi-octave tileable ridged noise (cracked rock, mud, rough concrete).
+    ridged = 1,
+    /// Tileable Voronoi / Worley cells (gravel, aggregate, irregular stone).
+    voronoi = 2,
+    /// Tileable brick / paver / slab grid (cobblestone, sidewalk slabs, tiles).
+    brick = 3,
+}
+
+/// Generic, game-agnostic POD descriptor for procedural tileable PBR layer
+/// textures (linear albedo with height in alpha, tangent-space normal, ORM).
+struct ProcLayerDesc {
+    /// Base linear RGB color (valleys, pores, or mortar joints).
+    float[3] color0 = [0.25f, 0.25f, 0.25f];
+    /// Secondary linear RGB color (peaks or block faces).
+    float[3] color1 = [0.45f, 0.45f, 0.45f];
+    /// Per-cell random brightness/tint variation in `[0, 1]` (used by `voronoi` and `brick`).
+    float cellColorVariation = 0.0f;
+
+    /// Primary pattern basis.
+    ProcNoiseBasis basis = ProcNoiseBasis.fbm;
+    /// Horizontal tiling period across `[0, 1)` (clamped to `>= 1`).
+    int periodX = 8;
+    /// Vertical tiling period across `[0, 1)` (`0` reuses `periodX`).
+    int periodY = 0;
+    /// Octave count for `fbm`/`ridged` and fine grain detail.
+    uint octaves = 4;
+    /// Octave amplitude decay.
+    float gain = 0.5f;
+    /// Color interpolation contrast around `0.5` height.
+    float contrast = 0.6f;
+    /// Tileable domain-warp amplitude in UV units (`0` disables warp).
+    float warp = 0.0f;
+
+    /// Fine surface grain mixed over the primary pattern (`0` disables detail).
+    float detailAmp = 0.0f;
+    /// Frequency multiplier for the fine surface grain relative to `periodX`/`periodY`.
+    int detailFreqMul = 4;
+
+    /// Row horizontal offset for `ProcNoiseBasis.brick` (`0.5` = running bond, `0.0` = regular grid).
+    float rowOffset = 0.5f;
+    /// Mortar/grout joint width in `[0, 0.9]` for `brick` or bevel-edge threshold for `voronoi`.
+    float mortarWidth = 0.08f;
+    /// Edge bevel width for `brick` or `voronoi`.
+    float bevelWidth = 0.08f;
+    /// Feature point jitter in `[0, 1]` for `ProcNoiseBasis.voronoi`.
+    float jitter = 0.85f;
+
+    /// Central-difference normal map strength.
+    float normalStrength = 3.0f;
+    /// Base roughness in `[0, 1]`.
+    float roughness = 0.8f;
+    /// Height-driven roughness modulation (`(0.5 - h) * roughnessVariation`).
+    float roughnessVariation = 0.1f;
+    /// Cavity ambient occlusion strength in `[0, 1]` (`AO = 1 - aoStrength * (1 - h)`).
+    float aoStrength = 0.4f;
+    /// Base metallic value in `[0, 1]`.
+    float metallic = 0.0f;
+    /// Deterministic seed.
+    uint seed = 5;
+}
+
+static assert(isPod!ProcLayerDesc);
+
+/// Return a `ProcLayerDesc` preset for one of the 4 built-in demo biomes.
+ProcLayerDesc biomeLayerDesc(BiomeLayer kind, uint seed = 5) pure nothrow @nogc {
+    ProcLayerDesc d;
+    d.seed = seed + cast(uint) kind * 1000u;
+    d.octaves = 4;
+    d.gain = 0.5f;
+    d.aoStrength = 0.4f;
+    d.roughnessVariation = 0.1f;
+    final switch (kind) {
+        case BiomeLayer.grass:
+            d.color0 = [0.16f, 0.30f, 0.07f];
+            d.color1 = [0.30f, 0.42f, 0.12f];
+            d.roughness = 0.85f;
+            d.periodX = 16;
+            d.contrast = 0.6f;
+            d.normalStrength = 3.0f;
+            break;
+        case BiomeLayer.rock:
+            d.basis = ProcNoiseBasis.ridged;
+            d.color0 = [0.30f, 0.28f, 0.26f];
+            d.color1 = [0.52f, 0.50f, 0.47f];
+            d.roughness = 0.75f;
+            d.periodX = 6;
+            d.contrast = 1.0f;
+            d.normalStrength = 6.0f;
+            break;
+        case BiomeLayer.sand:
+            d.color0 = [0.62f, 0.52f, 0.36f];
+            d.color1 = [0.78f, 0.68f, 0.50f];
+            d.roughness = 0.9f;
+            d.periodX = 24;
+            d.contrast = 0.4f;
+            d.normalStrength = 3.0f;
+            break;
+        case BiomeLayer.snow:
+            d.color0 = [0.80f, 0.84f, 0.90f];
+            d.color1 = [0.95f, 0.97f, 1.00f];
+            d.roughness = 0.55f;
+            d.periodX = 8;
+            d.contrast = 0.5f;
+            d.normalStrength = 3.0f;
+            break;
+    }
+    return d;
+}
+
+/// Bake a tileable tangent-space RGBA8 normal map from a `size × size` heightfield
+/// (`heights` in `[0, 1]`) using toroidal central differences.
+void bakeNormalsFromHeightField(scope const(float)[] heights, uint size, float strength,
+                                scope ubyte[] outNormal) pure nothrow @nogc {
+    immutable count = cast(size_t) size * size;
+    assert(size > 0 && heights.length >= count && outNormal.length >= count * 4);
+    foreach (y; 0 .. size) {
+        immutable ym = (y + size - 1) % size;
+        immutable yp = (y + 1) % size;
+        foreach (x; 0 .. size) {
+            immutable xm = (x + size - 1) % size;
+            immutable xp = (x + 1) % size;
+            immutable hl = heights[y * size + xm];
+            immutable hr = heights[y * size + xp];
+            immutable hd = heights[ym * size + x];
+            immutable hu = heights[yp * size + x];
+            immutable nv = Vec3((hl - hr) * strength, (hd - hu) * strength, 1.0f).normalized();
+            immutable i = (y * size + x) * 4;
+            outNormal[i + 0] = toByte(nv.x * 0.5f + 0.5f);
+            outNormal[i + 1] = toByte(nv.y * 0.5f + 0.5f);
+            outNormal[i + 2] = toByte(nv.z * 0.5f + 0.5f);
+            outNormal[i + 3] = 255;
+        }
+    }
+}
+
+/// Bake tileable RGBA8 PBR maps (`outAlbedo` with height in alpha, `outNormal`, `outOrm`)
+/// from a `size × size` heightfield in `[0, 1]` and optional per-texel `cellVariation` in `[-1, 1]`.
+void bakePbrMapsFromHeightFieldInto(scope const(float)[] heights, uint size, const ProcLayerDesc desc,
+                                    scope ubyte[] outAlbedo, scope ubyte[] outNormal, scope ubyte[] outOrm,
+                                    scope const(float)[] cellVariation = null) pure nothrow @nogc {
+    immutable count = cast(size_t) size * size;
+    assert(size > 0 && heights.length >= count);
+    assert(outAlbedo.length >= count * 4 && outNormal.length >= count * 4 && outOrm.length >= count * 4);
+    immutable bool hasCell = cellVariation.length >= count && desc.cellColorVariation != 0.0f;
+    foreach (i; 0 .. count) {
+        immutable n = heights[i];
+        immutable t = 0.5f + (n - 0.5f) * desc.contrast * 2.0f;
+        immutable tt = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        immutable float cellTint = hasCell ? (1.0f + cellVariation[i] * desc.cellColorVariation * 0.35f) : 1.0f;
+        foreach (k; 0 .. 3) {
+            immutable float c = (desc.color0[k] + (desc.color1[k] - desc.color0[k]) * tt) * cellTint;
+            outAlbedo[i * 4 + k] = toByte(c);
+        }
+        outAlbedo[i * 4 + 3] = toByte(n);
+        outOrm[i * 4 + 0] = toByte(1.0f - desc.aoStrength * (1.0f - n));
+        outOrm[i * 4 + 1] = toByte(desc.roughness + (0.5f - n) * desc.roughnessVariation);
+        outOrm[i * 4 + 2] = toByte(desc.metallic);
+        outOrm[i * 4 + 3] = 255;
+    }
+    bakeNormalsFromHeightField(heights, size, desc.normalStrength, outNormal);
+}
+
+/// Allocating helper that bakes tileable RGBA8 PBR maps from a `size × size` heightfield.
+void bakePbrMapsFromHeightField(scope const(float)[] heights, uint size, const ProcLayerDesc desc,
+                                out ubyte[] albedo, out ubyte[] normal, out ubyte[] orm,
+                                scope const(float)[] cellVariation = null) {
+    immutable bytes = cast(size_t) size * size * 4;
+    albedo = new ubyte[bytes];
+    normal = new ubyte[bytes];
+    orm = new ubyte[bytes];
+    bakePbrMapsFromHeightFieldInto(heights, size, desc, albedo, normal, orm, cellVariation);
+}
+
+/// Evaluate a `ProcLayerDesc` into a `size × size` heightfield (`outHeights` in `[0, 1]`)
+/// and optional per-texel `outCellVariation` in `[-1, 1]`.
+void evaluateProcLayer(const ProcLayerDesc desc, uint size, scope float[] outHeights,
+                       scope float[] outCellVariation = null) pure nothrow @nogc {
+    immutable count = cast(size_t) size * size;
+    assert(size > 0 && outHeights.length >= count);
+    immutable bool writeCell = outCellVariation.length >= count;
+    immutable int px = desc.periodX < 1 ? 1 : desc.periodX;
+    immutable int py = desc.periodY < 1 ? px : desc.periodY;
+    immutable int mul = desc.detailFreqMul < 1 ? 1 : desc.detailFreqMul;
+    immutable float invSize = 1.0f / size;
+
+    foreach (y; 0 .. size) {
+        immutable float v = y * invSize;
+        foreach (x; 0 .. size) {
+            immutable float u = x * invSize;
+            float wu = u, wv = v;
+            if (desc.warp != 0.0f) {
+                wu += (fbmTiled2D(u, v, px, py, 2, 0.5f, desc.seed + 3001u) - 0.5f) * desc.warp;
+                wv += (fbmTiled2D(u, v, px, py, 2, 0.5f, desc.seed + 4001u) - 0.5f) * desc.warp;
+            }
+            float h = 0.5f;
+            float cv = 0.0f;
+            final switch (desc.basis) {
+                case ProcNoiseBasis.fbm:
+                    h = fbmTiled2D(wu, wv, px, py, desc.octaves, desc.gain, desc.seed);
+                    break;
+                case ProcNoiseBasis.ridged:
+                    h = ridgedTiled2D(wu, wv, px, py, desc.octaves, desc.gain, desc.seed);
+                    break;
+                case ProcNoiseBasis.voronoi:
+                    immutable VoronoiSample vs = voronoiTiled2D(wu, wv, px, py, desc.jitter, desc.seed);
+                    if (desc.mortarWidth > 0.0f || desc.bevelWidth > 0.0f)
+                        h = smooth01(desc.mortarWidth, desc.mortarWidth + desc.bevelWidth, vs.edge);
+                    else
+                        h = 1.0f - (vs.f1 > 1.0f ? 1.0f : vs.f1);
+                    cv = vs.cellValue * 2.0f - 1.0f;
+                    break;
+                case ProcNoiseBasis.brick:
+                    immutable BrickSample bs = brickPatternTiled2D(
+                        wu, wv, px, py, desc.rowOffset, desc.mortarWidth, desc.bevelWidth, desc.seed);
+                    h = bs.height;
+                    cv = (bs.cellValue * 2.0f - 1.0f) * bs.mask;
+                    break;
+            }
+            if (desc.detailAmp != 0.0f) {
+                immutable float det = fbmTiled2D(wu, wv, px * mul, py * mul, desc.octaves, desc.gain, desc.seed + 7919u);
+                h += (det - 0.5f) * desc.detailAmp;
+            }
+            h = h < 0.0f ? 0.0f : (h > 1.0f ? 1.0f : h);
+            immutable i = cast(size_t) y * size + x;
+            outHeights[i] = h;
+            if (writeCell) outCellVariation[i] = cv;
+        }
+    }
+}
+
+/// Zero-GC procedural texture synthesis into caller-provided buffers (`size × size` texels).
+void generateLayerTexturesInto(const ProcLayerDesc desc, uint size,
+                               scope float[] scratchHeights, scope float[] scratchCellVar,
+                               scope ubyte[] outAlbedo, scope ubyte[] outNormal,
+                               scope ubyte[] outOrm) pure nothrow @nogc {
+    evaluateProcLayer(desc, size, scratchHeights, scratchCellVar);
+    bakePbrMapsFromHeightFieldInto(scratchHeights, size, desc, outAlbedo, outNormal, outOrm, scratchCellVar);
+}
+
+/// Tileable procedural layer textures (`size²` RGBA8 each) from a generic `ProcLayerDesc`.
+void generateLayerTextures(const ProcLayerDesc desc, uint size, out ubyte[] albedo,
+                           out ubyte[] normal, out ubyte[] orm) {
+    immutable count = cast(size_t) size * size;
+    auto hgt = new float[count];
+    auto cell = new float[count];
+    albedo = new ubyte[count * 4];
+    normal = new ubyte[count * 4];
+    orm = new ubyte[count * 4];
+    generateLayerTexturesInto(desc, size, hgt, cell, albedo, normal, orm);
+}
+
 /// Tileable procedural layer textures (`size²` RGBA8 each): albedo with
 /// height in alpha, tangent-space normal (RGB), ORM (occlusion, roughness,
 /// metalness).
 void generateLayerTextures(BiomeLayer kind, uint size, out ubyte[] albedo, out ubyte[] normal,
                            out ubyte[] orm, uint seed = 5) {
-    albedo = new ubyte[size * size * 4];
-    normal = new ubyte[size * size * 4];
-    orm = new ubyte[size * size * 4];
-    auto hgt = new float[size * size];
-    float[3] c0, c1;
-    float rough, freq, contrast;
-    final switch (kind) {
-        case BiomeLayer.grass: c0 = [0.16f, 0.30f, 0.07f]; c1 = [0.30f, 0.42f, 0.12f]; rough = 0.85f; freq = 16; contrast = 0.6f; break;
-        case BiomeLayer.rock:  c0 = [0.30f, 0.28f, 0.26f]; c1 = [0.52f, 0.50f, 0.47f]; rough = 0.75f; freq = 6;  contrast = 1.0f; break;
-        case BiomeLayer.sand:  c0 = [0.62f, 0.52f, 0.36f]; c1 = [0.78f, 0.68f, 0.50f]; rough = 0.9f;  freq = 24; contrast = 0.4f; break;
-        case BiomeLayer.snow:  c0 = [0.80f, 0.84f, 0.90f]; c1 = [0.95f, 0.97f, 1.00f]; rough = 0.55f; freq = 8;  contrast = 0.5f; break;
-    }
-    immutable uint sd = seed + cast(uint) kind * 1000;
-    immutable int period = cast(int) freq;
-    foreach (y; 0 .. size)
-        foreach (x; 0 .. size) {
-            immutable u = cast(float) x / size * period, v = cast(float) y / size * period;
-            float n = 0, amp = 0.5f, norm = 0;
-            int p = period;
-            float fu = u, fv = v;
-            foreach (o; 0 .. 4) {
-                n += valueNoiseTiled(fu, fv, p, sd + o) * amp;
-                norm += amp;
-                fu *= 2; fv *= 2; p *= 2; amp *= 0.5f;
-            }
-            n /= norm;
-            if (kind == BiomeLayer.rock) n = 1 - abs(n * 2 - 1); // cracks
-            hgt[y * size + x] = n;
-        }
-    foreach (y; 0 .. size)
-        foreach (x; 0 .. size) {
-            immutable i = y * size + x;
-            immutable n = hgt[i];
-            immutable t = 0.5f + (n - 0.5f) * contrast * 2;
-            immutable tt = t < 0 ? 0 : (t > 1 ? 1 : t);
-            foreach (k; 0 .. 3) albedo[i * 4 + k] = toByte(c0[k] + (c1[k] - c0[k]) * tt);
-            albedo[i * 4 + 3] = toByte(n);
-            immutable hl = hgt[y * size + (x + size - 1) % size], hr = hgt[y * size + (x + 1) % size];
-            immutable hd = hgt[((y + size - 1) % size) * size + x], hu = hgt[((y + 1) % size) * size + x];
-            immutable strength = kind == BiomeLayer.rock ? 6.0f : 3.0f;
-            immutable nv = Vec3((hl - hr) * strength, (hd - hu) * strength, 1.0f).normalized();
-            normal[i * 4 + 0] = toByte(nv.x * 0.5f + 0.5f);
-            normal[i * 4 + 1] = toByte(nv.y * 0.5f + 0.5f);
-            normal[i * 4 + 2] = toByte(nv.z * 0.5f + 0.5f);
-            normal[i * 4 + 3] = 255;
-            orm[i * 4 + 0] = toByte(0.6f + 0.4f * n);
-            orm[i * 4 + 1] = toByte(rough + (0.5f - n) * 0.1f);
-            orm[i * 4 + 2] = 0;
-            orm[i * 4 + 3] = 255;
-        }
+    generateLayerTextures(biomeLayerDesc(kind, seed), size, albedo, normal, orm);
 }
 
 private ubyte toByte(float v) pure nothrow @nogc {
@@ -255,4 +464,37 @@ unittest {
     ubyte[] a, n, o;
     generateLayerTextures(BiomeLayer.rock, 16, a, n, o);
     assert(a.length == 16 * 16 * 4 && n[2] > 128);
+
+    // Generic ProcLayerDesc across all 4 bases.
+    foreach (basis; [ProcNoiseBasis.fbm, ProcNoiseBasis.ridged, ProcNoiseBasis.voronoi, ProcNoiseBasis.brick]) {
+        ProcLayerDesc pd;
+        pd.basis = basis;
+        pd.periodX = 4;
+        pd.periodY = 6;
+        pd.cellColorVariation = 0.2f;
+        pd.detailAmp = 0.1f;
+        pd.warp = 0.03f;
+        pd.roughness = 0.65f;
+        pd.metallic = 0.1f;
+        generateLayerTextures(pd, 16, a, n, o);
+        assert(a.length == 16 * 16 * 4 && n.length == 16 * 16 * 4 && o.length == 16 * 16 * 4);
+        assert(n[2] > 128);
+        assert(o[2] > 20 && o[2] < 35); // metallic ~0.1 -> ~26
+    }
+
+    // Zero-GC Into path and custom heightfield baking.
+    () @nogc {
+        float[16 * 16] hBuf;
+        float[16 * 16] cBuf;
+        ubyte[16 * 16 * 4] aBuf, nBuf, oBuf;
+        ProcLayerDesc pd;
+        pd.basis = ProcNoiseBasis.brick;
+        pd.periodX = 4;
+        generateLayerTexturesInto(pd, 16, hBuf[], cBuf[], aBuf[], nBuf[], oBuf[]);
+        assert(nBuf[2] > 128);
+
+        foreach (idx, ref hv; hBuf) hv = (idx % 16) / 15.0f;
+        bakePbrMapsFromHeightFieldInto(hBuf[], 16, pd, aBuf[], nBuf[], oBuf[]);
+        assert(aBuf[3] == 0 && aBuf[15 * 4 + 3] == 255);
+    }();
 }

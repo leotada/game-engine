@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Configurable terrain colliders & generic procedural PBR texture toolkit (`2026-11-21`):**
+  - `engine.terrain.physics`: added `TerrainColliderDesc` (`tileCells`, `filter`, `entityId`, `enableHitEvents`), `terrainColliderTileCount`, and `buildTerrainColliders` overloads accepting `TerrainColliderDesc` and an optional `b3BodyId[] outBodies` buffer (backwards-compatible with the original signature).
+  - `engine.math.noise`: added tileable 2D `@nogc` primitives (`valueNoiseTiled2D`, `fbmTiled2D`, `ridgedTiled2D`, `VoronoiSample`/`voronoiTiled2D`, `BrickSample`/`brickPatternTiled2D`).
+  - `engine.terrain.generate`: added `ProcNoiseBasis` (`fbm`, `ridged`, `voronoi`, `brick`), POD `ProcLayerDesc`, `biomeLayerDesc`, `evaluateProcLayer`, `generateLayerTextures` / `@nogc` `generateLayerTexturesInto`, and low-level heightfield bakers (`bakeNormalsFromHeightField`, `bakePbrMapsFromHeightField`, `bakePbrMapsFromHeightFieldInto`).
+
 - **Outdoor rendering: CSM, fog, sky, day/night, runtime IBL, wetness, terrain and decals (`OW-3`, `2026-11-21`):**
   - **P3.1 cascaded shadows** (`engine.scene.cascades`, `shadows.wgsl`):
     - 4 PSSM cascades, sphere-fitted and texel-snapped, in one `depth32Float` array (frame binding 2 is now `texture_depth_2d_array`);

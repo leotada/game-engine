@@ -271,6 +271,8 @@ decals.spawn(hit.point, hit.normal, Vec2(2, 2), 1.0f, angle, layer);  // skid ma
 - **Wetness:** `scene.setWeather(wetness, rain, clouds)` drives it. Instances with `custom.w = 1` are sheltered.
 - **Terrain:**
   - Up to 8 layers, using `TerrainLayer` (`uvScale`, `heightBlend`, `triplanarSharpness`, `physicsMaterial`).
+  - Configure collider filtering, ECS `EntityId`, hit events, and tile body capture with `TerrainColliderDesc` (`buildTerrainColliders(physics, terrain, layers[], desc, outBodies)`).
+  - Synthesize custom tileable PBR layers with `ProcLayerDesc` (`ProcNoiseBasis.fbm`, `ridged`, `voronoi`, `brick`) + `generateLayerTextures`, or bake custom heightfields via `bakePbrMapsFromHeightField` and `engine.math.noise` tiled primitives.
   - At most 5 draws per frame.
   - `TerrainRenderer.stats()` reports per-frame counts.
 - **Decals:** `DecalStyle` sets tint, opacity, angle fade, roughness, metallic, wetness response, lifetime and fade-out.
