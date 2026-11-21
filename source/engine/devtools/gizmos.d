@@ -31,19 +31,24 @@ import engine.math.vec    : Vec3;
 @safe:
 
 private enum size_t MAX_VERTS = 65536;   // 32 768 lines
+private enum size_t MAX_TRI_VERTS = 16384; // ~5 461 filled triangles
 private enum size_t VERTEX_STRIDE = 7 * float.sizeof; // pos(3) + color(4) = 28 bytes
 
 struct GizmoRenderer {
     private Pipeline3D pipe;
+    private WGPURenderPipeline triPipeline;
     private WGPUBuffer vertexBuf;
+    private WGPUBuffer triVertexBuf;
     private WGPUBuffer uniformBuf;
     private WGPUBindGroup bindGroup;
     private WGPUDevice device;
     private WGPUQueue  queue;
 
-    // CPU-side buffer filled between begin() and render().
+    // CPU-side buffers filled between begin() and render().
     private float[MAX_VERTS * 7] verts = 0;
     private size_t vertCount = 0;
+    private float[MAX_TRI_VERTS * 7] triVerts = 0;
+    private size_t triVertCount = 0;
     private bool overflowed = false;
 
     @disable this(this);
@@ -53,16 +58,18 @@ struct GizmoRenderer {
         g.device = gpu.getDevice();
         g.queue  = gpu.getQueue();
         g.buildPipeline(Renderer.sceneFormat());
-        g.vertexBuf  = createDynamicVertexBuffer(g.device, MAX_VERTS * VERTEX_STRIDE);
-        g.uniformBuf = createUniformBuffer(g.device, 64);
+        g.vertexBuf    = createDynamicVertexBuffer(g.device, MAX_VERTS * VERTEX_STRIDE);
+        g.triVertexBuf = createDynamicVertexBuffer(g.device, MAX_TRI_VERTS * VERTEX_STRIDE);
+        g.uniformBuf   = createUniformBuffer(g.device, 64);
         g.buildBindGroup();
-        info("GizmoRenderer ready (", MAX_VERTS, " vertex capacity)");
+        info("GizmoRenderer ready (", MAX_VERTS, " line verts, ", MAX_TRI_VERTS, " tri verts)");
         return g;
     }
 
-    /// Start a new frame — clears accumulated lines and uploads viewProj.
+    /// Start a new frame — clears accumulated lines/triangles and uploads viewProj.
     void begin(Mat4 viewProj) @trusted nothrow @nogc {
         vertCount = 0;
+        triVertCount = 0;
         overflowed = false;
         wgpuQueueWriteBuffer(queue, uniformBuf, 0, viewProj.m.ptr, 64);
     }
@@ -72,6 +79,14 @@ struct GizmoRenderer {
         if (vertCount + 2 > MAX_VERTS) { overflowed = true; return; }
         pushVert(a, c);
         pushVert(b, c);
+    }
+
+    // --- primitive: filled alpha-blended triangle ------------------------
+    void triangle(Vec3 a, Vec3 b, Vec3 c, Color4 col) nothrow @nogc {
+        if (triVertCount + 3 > MAX_TRI_VERTS) { overflowed = true; return; }
+        pushTriVert(a, col);
+        pushTriVert(b, col);
+        pushTriVert(c, col);
     }
 
     // --- primitive: 3-axis gizmo (X=red, Y=green, Z=blue) ----------------
@@ -129,25 +144,38 @@ struct GizmoRenderer {
         }
     }
 
-    /// Encode and submit accumulated lines into the given frame pass.
-    /// Safe to call with zero lines (no-op).
+    /// Encode and submit accumulated triangles + lines into the given frame pass.
+    /// Safe to call with zero primitives (no-op).
     void render(ref FrameContext frame) @trusted nothrow @nogc {
-        if (!frame.valid || vertCount == 0) return;
-        if (overflowed) warn("GizmoRenderer: vertex buffer overflow — some lines dropped");
+        if (!frame.valid || (vertCount == 0 && triVertCount == 0)) return;
+        if (overflowed) warn("GizmoRenderer: vertex buffer overflow — some primitives dropped");
 
-        immutable byteCount = vertCount * VERTEX_STRIDE;
-        wgpuQueueWriteBuffer(queue, vertexBuf, 0, verts.ptr, cast(size_t) byteCount);
+        if (triVertCount > 0 && triPipeline !is null) {
+            immutable triBytes = triVertCount * VERTEX_STRIDE;
+            wgpuQueueWriteBuffer(queue, triVertexBuf, 0, triVerts.ptr, cast(size_t) triBytes);
+            wgpuRenderPassEncoderSetPipeline(frame.pass, triPipeline);
+            wgpuRenderPassEncoderSetBindGroup(frame.pass, 0, bindGroup, 0, null);
+            wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, triVertexBuf, 0, triBytes);
+            wgpuRenderPassEncoderDraw(frame.pass, cast(uint) triVertCount, 1, 0, 0);
+        }
 
-        wgpuRenderPassEncoderSetPipeline(frame.pass, pipe.pipeline);
-        wgpuRenderPassEncoderSetBindGroup(frame.pass, 0, bindGroup, 0, null);
-        wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, vertexBuf, 0, byteCount);
-        wgpuRenderPassEncoderDraw(frame.pass, cast(uint) vertCount, 1, 0, 0);
+        if (vertCount > 0) {
+            immutable byteCount = vertCount * VERTEX_STRIDE;
+            wgpuQueueWriteBuffer(queue, vertexBuf, 0, verts.ptr, cast(size_t) byteCount);
+
+            wgpuRenderPassEncoderSetPipeline(frame.pass, pipe.pipeline);
+            wgpuRenderPassEncoderSetBindGroup(frame.pass, 0, bindGroup, 0, null);
+            wgpuRenderPassEncoderSetVertexBuffer(frame.pass, 0, vertexBuf, 0, byteCount);
+            wgpuRenderPassEncoderDraw(frame.pass, cast(uint) vertCount, 1, 0, 0);
+        }
     }
 
     void destroy() @trusted nothrow @nogc {
-        if (bindGroup  !is null) { wgpuBindGroupRelease(bindGroup);  bindGroup  = null; }
-        destroyBuffer(uniformBuf); uniformBuf = null;
-        destroyBuffer(vertexBuf);  vertexBuf  = null;
+        if (bindGroup    !is null) { wgpuBindGroupRelease(bindGroup);       bindGroup    = null; }
+        if (triPipeline  !is null) { wgpuRenderPipelineRelease(triPipeline); triPipeline = null; }
+        destroyBuffer(uniformBuf);   uniformBuf   = null;
+        destroyBuffer(vertexBuf);    vertexBuf    = null;
+        destroyBuffer(triVertexBuf); triVertexBuf = null;
         pipe.release();
     }
 
@@ -165,6 +193,18 @@ struct GizmoRenderer {
         verts[base + 5] = c.b;
         verts[base + 6] = c.a;
         vertCount++;
+    }
+
+    private void pushTriVert(Vec3 p, Color4 c) nothrow @nogc {
+        immutable base = triVertCount * 7;
+        triVerts[base + 0] = p.x;
+        triVerts[base + 1] = p.y;
+        triVerts[base + 2] = p.z;
+        triVerts[base + 3] = c.r;
+        triVerts[base + 4] = c.g;
+        triVerts[base + 5] = c.b;
+        triVerts[base + 6] = c.a;
+        triVertCount++;
     }
 
     private void buildPipeline(WGPUTextureFormat surfaceFormat) @trusted {
@@ -225,6 +265,28 @@ struct GizmoRenderer {
         pd.fragment     = &fs;
 
         pipe.pipeline = wgpuDeviceCreateRenderPipeline(device, &pd);
+
+        // Filled triangle pipeline (alpha-blended, overlays scene)
+        WGPUBlendState alphaBlend;
+        alphaBlend.color.operation = WGPUBlendOperation.add;
+        alphaBlend.color.srcFactor = WGPUBlendFactor.srcAlpha;
+        alphaBlend.color.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+        alphaBlend.alpha.operation = WGPUBlendOperation.add;
+        alphaBlend.alpha.srcFactor = WGPUBlendFactor.one;
+        alphaBlend.alpha.dstFactor = WGPUBlendFactor.oneMinusSrcAlpha;
+
+        WGPUColorTargetState triCt;
+        triCt.format    = surfaceFormat;
+        triCt.blend     = &alphaBlend;
+        triCt.writeMask = WGPUColorWriteMask.all;
+
+        WGPUFragmentState triFs = fs;
+        triFs.targets = &triCt;
+
+        WGPURenderPipelineDescriptor triPd = pd;
+        triPd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+        triPd.fragment = &triFs;
+        triPipeline = wgpuDeviceCreateRenderPipeline(device, &triPd);
     }
 
     private void buildBindGroup() @trusted {

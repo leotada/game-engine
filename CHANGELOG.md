@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **3D Navigation & Dynamic Obstacles (`OW-6`, `2026-11-20`):**
+  - Vendored `recastnavigation` `v1.6.0` (`Recast`, `Detour`, `DetourTileCache`, `DetourCrowd`, `fastlz`) in `vendor/recastnavigation/` compiled with `-DDT_POLYREF64` into `libs/librecast_shim.a`, wrapped via `source/bindings/recast/` (`recast_shim.h`/`.cpp`, `recast_import.c`, `package.d`) and wired into `dub.json`, `tools/build_sdl3_deps.sh`, and `source/editor/build_export.d`.
+  - Implemented `@safe nothrow @nogc` `Pod!T` `engine.nav` (`types.d`, `mesh.d`, `bake.d`, `ecs.d`, `debugdraw.d`): RAII `NavMesh`, `NavTileCache` (cylinder, AABB, OBB dynamic obstacles), `NavQuery` (`findNearestPoly`, `findPath`, `findStraightPath`, `raycast`), `NavCrowd` (50-agent `@nogc` update verified), binary `.navmesh` serialization + `AssetDatabase` `.navmesh` importer, and POD ECS components (`NavMeshSurface`, `NavAgent`, `NavMoveRequest`, `NavObstacle`, `NavOffMeshLink`, `NavModifierVolume`, `stepNavAgents`).
+  - Added alpha-blended filled `trianglelist` pipeline (`GizmoRenderer.triangle`) to `source/engine/devtools/gizmos.d` and `drawNavMesh` helper.
+
 - **3D Spatial Audio, Doppler, Real-Time VHF DSP & OGG Vorbis Streaming (`OW-4`, `2026-11-20`):**
   - Completed `P4.1` in `source/engine/audio/spatial.d` and `engine.d`: POD `AudioListener3D` and `AudioSource3D`, relative radial `dopplerPitch`, `play3D` / `playStream3D` / `updateSource3D`, `spatialBlend` mono downmix, per-chunk parameter smoothing (volume, pitch, pan), and `excludeAudioThreadFromGc()` on SDL3 audio callback startup.
   - Added 8-bus routing (`sfx`, `music`, `voice`, `radio`, `ambient`, `ui`, `custom0`, `custom1`) with independent per-bus accumulation buffers and `@nogc` POD `DspEffectSlot` / `DspChain` (`source/engine/audio/dsp.d`: biquad HPF/LPF/BPF, waveshaper, squelch-gated `staticHiss`, and `DspChain.vhfRadio()` preset) attachable per bus (`setBusDsp`) or per voice (`setVoiceDsp`).

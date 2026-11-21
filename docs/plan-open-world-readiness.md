@@ -226,21 +226,21 @@ Connect `engine.animation` to `engine.physics` and complete UI clipping/rotation
 
 ---
 
-### Phase 6 — 3D Navigation & Dynamic Obstacles (`OW-6`, Blocking)
+### Phase 6 — 3D Navigation & Dynamic Obstacles (`OW-6`, **Done**)
 
-Implement `engine.nav` using **Option A (AD-2)**: vendored C++ `recastnavigation` wrapped behind a thin `extern "C"` shim and the `@safe nothrow @nogc Pod!T` D API defined in [plan-navigation-recast.md](plan-navigation-recast.md).
+Implemented `engine.nav` using **Option A (AD-2)**: vendored C++ `recastnavigation` (`v1.6.0`, `DT_POLYREF64`) wrapped behind a thin `extern "C"` shim and the `@safe nothrow @nogc Pod!T` D API defined in [plan-navigation-recast.md](plan-navigation-recast.md).
 
-- [ ] **P6.1 — Vendor `recastnavigation` & Build Integration (`vendor/recastnavigation/`, `source/bindings/recast/`):**
-  - Vendor upstream `recastnavigation` (`Recast`, `Detour`, `DetourTileCache`, `DetourCrowd`, zlib license) and add static archive compilation across targets in [tools/build_sdl3_deps.sh](../tools/build_sdl3_deps.sh) and `dub.json`.
-  - Write a minimal flat `extern "C"` wrapper (`recast_shim.cpp` / `recast_shim.h`) and manual `@nogc nothrow` D bindings in `source/bindings/recast/`.
-- [ ] **P6.2 — `engine.nav` Core, Tiled NavMesh & `TileCache` Dynamic Obstacles (`source/engine/nav/`):**
-  - Implement `@safe nothrow @nogc` RAII `NavMesh`, `NavTileCache` (cylinder + OBB obstacles for fallen awnings, wrecked cars, knocked fences), `NavQuery` (`findNearestPoly`, `findPath`, `raycast`), and `NavCrowd` (local velocity-obstacle avoidance) using `Pod!T` handles/arrays (`64-bit PolyRef` enabled).
-  - Support tiled baking (32–64 m tiles matching world chunks) from terrain heightfields and `TexMesh`/static physics geometry, plus binary `.navmesh` serialization and `AssetDatabase` importer ([source/engine/project/asset_db.d](../source/engine/project/asset_db.d)).
-- [ ] **P6.3 — ECS Components & Filled Gizmo Debug Draw (`source/engine/nav/ecs.d`, `devtools/gizmos.d`):**
-  - Add POD `NavMeshSurface`, `NavAgent`, `NavObstacle`, `NavOffMeshLink`, and `NavWorld` ECS helpers.
-  - Add filled `trianglelist` alpha-blended pipeline to [source/engine/devtools/gizmos.d](../source/engine/devtools/gizmos.d) for runtime NavMesh polygon and obstacle visualization.
+- [x] **P6.1 — Vendor `recastnavigation` & Build Integration (`vendor/recastnavigation/`, `source/bindings/recast/`):**
+  - Vendored upstream `recastnavigation` (`v1.6.0`: `Recast`, `Detour`, `DetourTileCache`, `DetourCrowd`, `fastlz`, zlib/MIT licenses) and added static `librecast_shim.a` compilation across targets in [tools/build_sdl3_deps.sh](../tools/build_sdl3_deps.sh), `dub.json`, and [source/editor/build_export.d](../source/editor/build_export.d).
+  - Wrote flat `extern "C"` wrapper (`recast_shim.h` / `recast_shim.cpp` / `recast_import.c`) and `@nogc nothrow` D bindings in `source/bindings/recast/package.d`.
+- [x] **P6.2 — `engine.nav` Core, Tiled NavMesh & `TileCache` Dynamic Obstacles (`source/engine/nav/`):**
+  - Implemented `@safe nothrow @nogc` RAII `NavMesh`, `NavTileCache` (cylinder, AABB, and OBB obstacles), `NavQuery` (`findNearestPoly`, `findPath`, `findStraightPath`, `raycast`), and `NavCrowd` (local velocity-obstacle avoidance) using `Pod!T` types (`64-bit PolyRef` enabled).
+  - Added tiled baking (`bakeNavMesh`), binary `.navmesh` serialization (`saveNavMeshToBytes`/`loadNavMeshFromBytes`/`saveNavMeshFile`/`loadNavMeshFile`), and `.navmesh` importer in [source/engine/project/asset_db.d](../source/engine/project/asset_db.d).
+- [x] **P6.3 — ECS Components & Filled Gizmo Debug Draw (`source/engine/nav/ecs.d`, `devtools/gizmos.d`):**
+  - Added POD `NavMeshSurface`, `NavAgent`, `NavMoveRequest`, `NavObstacle`, `NavOffMeshLink`, `NavModifierVolume`, and `stepNavAgents` ECS helper.
+  - Added filled `trianglelist` alpha-blended pipeline (`GizmoRenderer.triangle`) to [source/engine/devtools/gizmos.d](../source/engine/devtools/gizmos.d) and `drawNavMesh` in [source/engine/nav/debugdraw.d](../source/engine/nav/debugdraw.d).
 
-**DoD:** Headless multi-tile navigation test proves agents pathfind across tiled geometry, reroute around dynamically added/removed OBB/cylinder obstacles at runtime, and 50 `NavCrowd` agents update with zero GC allocations.
+**DoD:** Headless multi-tile navigation test (`source/engine/nav/tests.d`) proves agents pathfind across tiled geometry, reroute around dynamically added/removed OBB/cylinder obstacles at runtime, round-trip `.navmesh` binaries, and update 50 `NavCrowd` agents with zero GC allocations (`@nogc`).
 
 ---
 

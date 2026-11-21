@@ -52,7 +52,7 @@ echo "Output dir: $OUT_DIR"
 # Stage pre-existing engine archives into target directory on host linux-x86_64
 stage_host_libs() {
     if [[ "$TARGET" == "linux-x86_64" ]]; then
-        for lib in libwgpu_native.a libbox3d.a; do
+        for lib in libwgpu_native.a libbox3d.a librecast_shim.a; do
             if [[ -f "$LIBS_DIR/$lib" && ! -e "$OUT_DIR/$lib" ]]; then
                 ln -sf "$LIBS_DIR/$lib" "$OUT_DIR/$lib"
             fi
@@ -312,6 +312,49 @@ if [[ "$TARGET" != "linux-x86_64" && -d "$ROOT_DIR/vendor/box3d" ]]; then
     cmake --build "$BUILD_ROOT/box3d" -j"$NPROC"
     find "$BUILD_ROOT/box3d" -maxdepth 3 \( -name "libbox3d.a" -o -name "box3d.lib" \) -exec cp -f {} "$OUT_DIR/" \;
 fi
+
+# Build static recast_shim (recastnavigation + fastlz + C shim) if vendored
+build_recast_shim() {
+    local recast_dir="$ROOT_DIR/vendor/recastnavigation"
+    local shim_dir="$ROOT_DIR/source/bindings/recast"
+    if [[ ! -d "$recast_dir" || ! -f "$shim_dir/recast_shim.cpp" ]]; then
+        return 0
+    fi
+    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" ]]; then
+        echo "--- Skipping recast_shim auto-build for $TARGET (use target toolchain CMake/MSVC) ---"
+        return 0
+    fi
+    local obj_dir="$BUILD_ROOT/recast_shim"
+    mkdir -p "$obj_dir"
+    local cxx="${CXX:-g++}"
+    local cc="${CC:-gcc}"
+    local ar="${AR:-ar}"
+    echo "--- Building static librecast_shim.a for $TARGET ---"
+    for f in \
+        "$recast_dir/Recast/Source/"*.cpp \
+        "$recast_dir/Detour/Source/"*.cpp \
+        "$recast_dir/DetourTileCache/Source/"*.cpp \
+        "$recast_dir/DetourCrowd/Source/"*.cpp \
+        "$shim_dir/recast_shim.cpp"
+    do
+        local obj="$obj_dir/$(basename "${f%.cpp}").o"
+        "$cxx" -std=c++11 -O2 -fPIC -DDT_POLYREF64 \
+            -I"$recast_dir/Recast/Include" \
+            -I"$recast_dir/Detour/Include" \
+            -I"$recast_dir/DetourTileCache/Include" \
+            -I"$recast_dir/DetourCrowd/Include" \
+            -I"$recast_dir/RecastDemo/Contrib/fastlz" \
+            -I"$shim_dir" \
+            -c "$f" -o "$obj"
+    done
+    "$cc" -O2 -fPIC -c "$recast_dir/RecastDemo/Contrib/fastlz/fastlz.c" -o "$obj_dir/fastlz.o"
+    "$ar" rcs "$OUT_DIR/librecast_shim.a" "$obj_dir/"*.o
+    if [[ "$TARGET" == "linux-x86_64" ]]; then
+        ln -sf "$OUT_DIR/librecast_shim.a" "$LIBS_DIR/librecast_shim.a"
+    fi
+}
+
+build_recast_shim
 
 stage_host_libs
 

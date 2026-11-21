@@ -147,6 +147,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "libSDL3.a",
                 "libwgpu_native.a",
                 "libbox3d.a",
+                "librecast_shim.a",
             ];
             if (includeSymGc) {
                 libs ~= "libsymgc-cards.a";
@@ -160,6 +161,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "SDL3-static.lib",
                 "wgpu_native.lib",
                 "box3d.lib",
+                "recast_shim.lib",
             ];
             if (includeSymGc) {
                 libs ~= "symgc-cards.lib";
@@ -172,6 +174,7 @@ string[] requiredStaticLibs(ExportTarget target, bool includeSymGc = false) pure
                 "libfreetype.a",
                 "libSDL3.a",
                 "libbox3d.a",
+                "librecast_shim.a",
             ];
     }
 }
@@ -564,6 +567,7 @@ struct ExportPipeline {
             "-I" ~ buildPath(projRoot, opts.sourceDir),
             "-I" ~ buildPath(engineRoot, "source"),
             "-I" ~ buildPath(engineRoot, "source/bindings/box3d"),
+            "-I" ~ buildPath(engineRoot, "source/bindings/recast"),
             "-J" ~ buildPath(engineRoot, "assets/shaders"),
         ];
 
@@ -615,6 +619,7 @@ struct ExportPipeline {
         args ~= engineFiles;
         args ~= buildPath(engineRoot, "source/bindings/box3d/box3d_import.c");
         args ~= buildPath(engineRoot, "source/bindings/stb_vorbis/stb_vorbis_import.c");
+        args ~= buildPath(engineRoot, "source/bindings/recast/recast_import.c");
 
         immutable spec = specFor(tgt);
         immutable libsDir = buildPath(engineRoot, "libs", spec.libsSubdir);
@@ -624,9 +629,9 @@ struct ExportPipeline {
 
         if (tgt == ExportTarget.linuxX86_64 || tgt == ExportTarget.linuxArm64) {
             if (isLdc) {
-                args ~= ["-L=--as-needed", "-L=-lm", "-L=-ldl", "-L=-lpthread", "-L=-lrt"];
+                args ~= ["-L=--as-needed", "-L=-lstdc++", "-L=-lm", "-L=-ldl", "-L=-lpthread", "-L=-lrt"];
             } else {
-                args ~= ["-L=--as-needed", "-L-lm", "-L-ldl", "-L-lpthread", "-L-lrt"];
+                args ~= ["-L=--as-needed", "-L-lstdc++", "-L-lm", "-L-ldl", "-L-lpthread", "-L-lrt"];
             }
         }
 
@@ -676,6 +681,7 @@ struct ExportPipeline {
             "-preview=dip1000",
             "-I=source",
             "-I=source/bindings/box3d",
+            "-I=source/bindings/recast",
             "-J=assets/shaders",
             "-d-version=StaticSDLDeps",
         ];
@@ -700,7 +706,7 @@ struct ExportPipeline {
 
         string ldcCmd = format(
             "ldc2 -c -mtriple=wasm32-unknown-emscripten %s -preview=dip1000 "
-            ~ "-I=source -I=source/bindings/box3d -J=assets/shaders "
+            ~ "-I=source -I=source/bindings/box3d -I=source/bindings/recast -J=assets/shaders "
             ~ "-d-version=WebAssembly -d-version=StaticSDLDeps -od=%s "
             ~ "tools/player/player_main.d",
             opts.release ? "-O3 -release" : "-O1",
@@ -714,6 +720,7 @@ struct ExportPipeline {
             libsDir ~ "/libfreetype.a",
             libsDir ~ "/libSDL3.a",
             libsDir ~ "/libbox3d.a",
+            libsDir ~ "/librecast_shim.a",
             "-sUSE_WEBGPU=1",
             "-sASYNCIFY=1",
             "-sALLOW_MEMORY_GROWTH=1",

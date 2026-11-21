@@ -86,3 +86,13 @@ this attribution alongside the distributed binary.
 OGG Vorbis compressed audio streaming (`vendor/stb/stb_vorbis.c`) is by
 Sean Barrett / [nothings/stb](https://github.com/nothings/stb), dual-licensed
 under **MIT** and **Public Domain (Unlicense)**.
+
+## Recast Navigation & FastLZ
+
+3D navigation mesh generation, pathfinding, dynamic `TileCache` obstacles, and
+crowd local avoidance (`vendor/recastnavigation/`, `v1.6.0`) are provided by
+[recastnavigation/recastnavigation](https://github.com/recastnavigation/recastnavigation)
+under the **zlib license**.
+
+The `TileCache` LZ77 compression helper (`vendor/recastnavigation/RecastDemo/Contrib/fastlz/`)
+is **FastLZ** by Ariya Hidayat, licensed under the **MIT License**.

@@ -176,6 +176,8 @@ struct AssetDatabase {
                 // Skeleton, animation or track archive (ozz-animation runtime format); the
                 // archive tag inside the file says which, see engine.animation.
                 return "ozz";
+            case ".navmesh":
+                return "navmesh";
             case ".d":
                 return "script";
             default:

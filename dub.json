@@ -6,7 +6,7 @@
     "license": "MIT",
 
     "sourcePaths": ["source/engine", "source/bindings"],
-    "importPaths": ["source", "source/bindings/box3d"],
+    "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast"],
     "stringImportPaths": ["assets/shaders"],
 
     "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-I$PACKAGE_DIR/vendor/box3d/include"],
@@ -14,9 +14,10 @@
 
     "sourceFiles": [
         "source/bindings/box3d/box3d_import.c",
-        "source/bindings/stb_vorbis/stb_vorbis_import.c"
+        "source/bindings/stb_vorbis/stb_vorbis_import.c",
+        "source/bindings/recast/recast_import.c"
     ],
-    "libs": ["SDL3", "wgpu_native", "box3d", "m", "symgc-cards"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stdc++", "m", "symgc-cards"],
     "lflags-linux": ["-L$PACKAGE_DIR/libs"],
 
     "configurations": [
@@ -82,7 +83,7 @@
             "targetName": "game-engine-player",
             "mainSourceFile": "tools/player/player_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
-            "importPaths": ["source", "source/bindings/box3d", "tools/player"]
+            "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast", "tools/player"]
         },
         {
             "name": "player-static",
@@ -90,7 +91,7 @@
             "targetName": "game-engine-player-static",
             "mainSourceFile": "tools/player/player_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
-            "importPaths": ["source", "source/bindings/box3d", "tools/player"],
+            "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast", "tools/player"],
             "excludedSourceFiles": [
                 "source/engine/hotreload/loader.d",
                 "source/engine/hotreload/reload.d"
@@ -100,14 +101,17 @@
             "dflags-ldc": ["-link-defaultlib-shared=false"],
             "sourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/stb_vorbis/stb_vorbis_import.c",
+                "source/bindings/recast/recast_import.c",
                 "libs/linux-x86_64/libSDL3_ttf.a",
                 "libs/linux-x86_64/libSDL3_image.a",
                 "libs/linux-x86_64/libfreetype.a",
                 "libs/linux-x86_64/libSDL3.a",
                 "libs/linux-x86_64/libwgpu_native.a",
-                "libs/linux-x86_64/libbox3d.a"
+                "libs/linux-x86_64/libbox3d.a",
+                "libs/linux-x86_64/librecast_shim.a"
             ],
-            "libs-linux": ["dl", "pthread", "rt"],
+            "libs-linux": ["stdc++", "dl", "pthread", "rt"],
             "lflags-linux": [
                 "--as-needed"
             ]
@@ -118,7 +122,7 @@
             "targetName": "game-engine-player-symgc",
             "mainSourceFile": "tools/player/player_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "tools/player"],
-            "importPaths": ["source", "source/bindings/box3d", "tools/player"],
+            "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast", "tools/player"],
             "versions": ["Symgc_cards", "Symgc_druntime_hooks"],
             "dflags-dmd": ["-preview=gcbarrier"],
             "dflags-ldc": ["-gc-card-marking"]
@@ -129,7 +133,7 @@
             "targetName": "game-engine-export",
             "mainSourceFile": "tools/export_main.d",
             "sourcePaths": ["source/engine", "source/bindings", "source/editor", "tools"],
-            "importPaths": ["source", "source/bindings/box3d", "source/editor", "tools"],
+            "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast", "source/editor", "tools"],
             "excludedSourceFiles": [
                 "source/editor/main.d",
                 "source/editor/editor_app.d",
@@ -163,7 +167,8 @@
                 "tools/player/*",
                 "tools/benchmarks/*",
                 "source/demo/*",
-                "source/bindings/box3d/box3d_import.c"
+                "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c"
             ],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU", "NoAssetFile"]
@@ -269,7 +274,8 @@
                 "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
                 "source/engine/*",
                 "source/bindings/*",
-                "source/bindings/box3d/box3d_import.c"
+                "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c"
             ],
             "sourceFiles": [],
             "libs": [],
@@ -283,7 +289,7 @@
             "sourcePaths": ["source/engine/animation", "source/demo"],
             "importPaths": ["source"],
             "sourceFiles": ["source/engine/math/vec.d", "source/engine/math/mat.d", "source/engine/math/quat.d", "source/engine/ecs/store.d", "source/engine/ecs/world.d", "source/engine/core/pod.d", "source/engine/reflect/attrs.d", "source/engine/core/handle.d", "source/engine/core/strings.d", "source/engine/graphics/types.d"],
-            "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c"],
+            "excludedSourceFiles": ["source/demo/[!t]*.d", "source/demo/test_[!a]*.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*", "source/bindings/box3d/box3d_import.c", "source/bindings/recast/recast_import.c"],
             "buildOptions": ["unittests"],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
@@ -313,7 +319,8 @@
                 "source/demo/pbr.d",
                 "source/demo/test_asset.d",
                 "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
-                "source/bindings/box3d/box3d_import.c"
+                "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c"
             ],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
@@ -343,7 +350,8 @@
                 "source/demo/pbr.d",
                 "source/demo/test_scene.d",
                 "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
-                "source/bindings/box3d/box3d_import.c"
+                "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c"
             ],
             "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
@@ -412,6 +420,7 @@
             "importPaths": ["source", "tools/meshopt-oracle"],
             "excludedSourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c",
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_ref", "stdc++"],
@@ -431,6 +440,7 @@
             "importPaths": ["source", "tools/meshopt-oracle"],
             "excludedSourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c",
                 "source/demo/*"
             ],
             "libs": [],
@@ -448,6 +458,7 @@
             "importPaths": ["source"],
             "excludedSourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c",
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_codec_scalar", "stdc++"],
@@ -466,6 +477,7 @@
             "importPaths": ["source"],
             "excludedSourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c",
                 "source/demo/*"
             ],
             "libs": ["meshoptimizer_ref", "stdc++"],
@@ -493,6 +505,7 @@
             "importPaths": ["source"],
             "excludedSourceFiles": [
                 "source/bindings/box3d/box3d_import.c",
+                "source/bindings/recast/recast_import.c",
                 "source/demo/*",
                 "source/engine/*"
             ],
