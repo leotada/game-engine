@@ -113,10 +113,13 @@ struct HotReloadManager {
         if (!currentModule.isLoaded() && currentModule.registrar.components.length == 0) return snapshots;
 
         foreach (ref comp; currentModule.registrar.components) {
-            foreach (id; 0 .. world.entityCount() + 1000) {
-                auto entityId = cast(EntityId) id;
+            // Walk the component's dense store: exactly the live entities that
+            // own it, regardless of how sparse recycled entity IDs have become.
+            auto store = world.getStore(comp.typeId);
+            if (store is null) continue;
+            foreach (i; 0 .. store.count) {
+                immutable entityId = store.denseToEntity[i];
                 if (!world.alive(entityId)) continue;
-                if (!world.rawHas(comp.typeId, entityId)) continue;
 
                 auto bytes = world.rawGet(comp.typeId, entityId);
                 if (bytes.length == 0) continue;
@@ -253,4 +256,18 @@ unittest {
     world.get!TestRotator(e).speed = 0.0f;
     mgr.restoreScriptData(world, world.types, world.strings, snaps);
     assert(world.get!TestRotator(e).speed == 180.0f);
+
+    // Regression: a script component on an entity whose ID is far above
+    // `entityCount() + 1000` (many spawned then destroyed) must be captured.
+    EntityId[] filler;
+    foreach (_; 0 .. 1500) filler ~= world.spawn();
+    auto late = world.spawn();
+    world.set(late, TestRotator(7.0f, 0));
+    foreach (f; filler) world.destroy(f);
+    assert(late > world.entityCount() + 1000);
+    auto snaps2 = mgr.snapshotScriptData(world, world.types, world.strings);
+    assert(snaps2.length == 2);
+    bool foundLate;
+    foreach (ref s; snaps2) if (s.entity == late) foundLate = true;
+    assert(foundLate);
 }
