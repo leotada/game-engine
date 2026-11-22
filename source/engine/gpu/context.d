@@ -126,17 +126,22 @@ struct GpuContext {
         }
         info("WGPU adapter obtained");
 
-        // 4. Device (request raised maxSampledTexturesPerShaderStage for OpenPBR layer maps)
+        // 4. Device (request raised limits for OpenPBR layer maps & Clustered Forward compute)
         WGPULimits adapterLimits;
         adapterLimits.nextInChain = null;
         WGPULimits reqLimits;
         reqLimits.nextInChain = null;
         WGPUDeviceDescriptor devDesc;
         if (wgpuAdapterGetLimits(ctx.adapter, &adapterLimits) == WGPUStatus.success) {
-            reqLimits.maxSampledTexturesPerShaderStage =
-                (adapterLimits.maxSampledTexturesPerShaderStage >= 32 ||
-                 adapterLimits.maxSampledTexturesPerShaderStage == 0)
-                    ? 32 : adapterLimits.maxSampledTexturesPerShaderStage;
+            static uint clampLimit(uint adapterVal, uint desired) pure nothrow @nogc {
+                if (adapterVal == 0 || adapterVal == WGPU_LIMIT_U32_UNDEFINED) return desired;
+                return adapterVal >= desired ? desired : adapterVal;
+            }
+            reqLimits.maxSampledTexturesPerShaderStage = clampLimit(adapterLimits.maxSampledTexturesPerShaderStage, 32);
+            reqLimits.maxStorageBuffersPerShaderStage  = clampLimit(adapterLimits.maxStorageBuffersPerShaderStage, 8);
+            reqLimits.maxComputeWorkgroupStorageSize   = clampLimit(adapterLimits.maxComputeWorkgroupStorageSize, 16384);
+            reqLimits.maxComputeInvocationsPerWorkgroup = clampLimit(adapterLimits.maxComputeInvocationsPerWorkgroup, 64);
+            reqLimits.maxComputeWorkgroupsPerDimension = clampLimit(adapterLimits.maxComputeWorkgroupsPerDimension, 64);
             devDesc.requiredLimits = &reqLimits;
         }
         WGPURequestDeviceCallbackInfo devCb;

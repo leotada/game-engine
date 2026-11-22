@@ -102,3 +102,5 @@ enum decalPbrShaderSource = preprocessShader(import("decal_pbr.wgsl"), "decal_pb
 enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;
 enum depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;
 enum waterSimCsShaderSource = preprocessShader(import("water_sim_cs.wgsl"), "water_sim_cs.wgsl").code;
+/// Clustered Forward compute light culling — `engine.gpu.clustered.ClusteredLightCuller`.
+enum clusterCullCsShaderSource = preprocessShader(import("clustered_cull_cs.wgsl"), "clustered_cull_cs.wgsl").code;

@@ -250,6 +250,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("common/fullscreen_vs.wgsl");
         case "common/pbr_brdf.wgsl":
             return import("common/pbr_brdf.wgsl");
+        case "common/light_types.wgsl":
+            return import("common/light_types.wgsl");
         case "common/shadows.wgsl":
             return import("common/shadows.wgsl");
         case "common/atmosphere.wgsl":
@@ -312,6 +314,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("depth_copy.wgsl");
         case "water_sim_cs.wgsl":
             return import("water_sim_cs.wgsl");
+        case "clustered_cull_cs.wgsl":
+            return import("clustered_cull_cs.wgsl");
         default:
             return "";
     }

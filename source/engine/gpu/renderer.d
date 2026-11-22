@@ -726,6 +726,13 @@ struct FrameContext {
     private uint[2]        viewportTarget;
     WGPUSurfaceGetCurrentTextureStatus acquireStatus;
 
+    /// Active viewport rectangle `(x, y, w, h)` in pixels, or the full HDR scene target.
+    package(engine) float[4] activeViewportRect() const nothrow @nogc {
+        if (hasViewport) return viewportRect;
+        if (owner !is null) return [0.0f, 0.0f, cast(float) owner.rtW, cast(float) owner.rtH];
+        return [0.0f, 0.0f, 1920.0f, 1080.0f];
+    }
+
     /// End the active HDR scene pass temporarily so auxiliary depth/compute
     /// passes can be recorded on `encoder`. Pair with `resumeScenePass`.
     void suspendScenePass() nothrow @nogc @trusted {

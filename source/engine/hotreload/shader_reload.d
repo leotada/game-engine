@@ -91,6 +91,7 @@ struct ShaderHotReloader {
                     immutable bName = entry.name.baseName;
                     if (bName == "pbr_brdf.wgsl" ||
                         bName == "shadows.wgsl" ||
+                        bName == "light_types.wgsl" ||
                         bName == "fullscreen_vs.wgsl") {
                         commonChanged = true;
                     }
@@ -186,7 +187,9 @@ struct ShaderHotReloader {
 
             if (ok) {
                 info("ShaderHotReloader: successfully reloaded '%s'", name);
-            } else if (name != "fullscreen_vs.wgsl" && name != "pbr_brdf.wgsl" && name != "shadows.wgsl") {
+            } else if (name != "fullscreen_vs.wgsl" && name != "pbr_brdf.wgsl"
+                       && name != "shadows.wgsl" && name != "light_types.wgsl"
+                       && name != "clustered_cull_cs.wgsl") {
                 warn("ShaderHotReloader: failed or skipped reloading '%s'", name);
             }
             return ok;
