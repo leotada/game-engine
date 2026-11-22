@@ -59,7 +59,9 @@ Two runs per scenario differed by < 1%.
 | No-Water (ocean scene) | `--bench=600 --no-water` | 2.04 | 1.98 | 2.33 | 3.27 | 0 |
 | No-Water (river scene) | `--bench=600 --river --no-water` | 1.86 | 1.83 | 2.18 | 2.73 | 0 |
 
-Reference images (`--capture=… --no-hud`, time ≈ 1.8 s):
+Reference images (`--capture=… --no-hud`, fixed 1/60 s step, 3 frames after
+t = 1.8 s; captured from the pre-port code with only the fixed-step patch, so
+later phases can compare pixel-for-pixel):
 [ocean](images/water-wp0-ocean.jpg) · [river](images/water-wp0-river.jpg).
 Both scenes render correctly after the recent shader/material layout changes.
 
@@ -72,7 +74,14 @@ Findings:
 - `--no-hud` still draws the "[F1] Show Controls HUD" hint.
 - The ocean lighthouse renders as an untextured white box.
 
-### WP-1 — Wave model (`engine/water/waves.d`)
+### WP-1 — Wave model (`engine/water/waves.d`) ✅ (2026-11-22)
+
+Done as planned. `WaveChannel` is a general center line (origin + direction)
+rather than a Z-only bank mask. `rockChop` (PBR constant 1.2 / 1.38 and the
+obstacle boost in the vertex shader) and the distance/Nyquist attenuation are
+rendering concerns and stay out of `WaveSet` (WP-2 / WP-4). Demo captures are
+pixel-identical to the WP-0 reference (0 differing pixels, ocean and river).
+
 - `WaveComponent`, `WaveSet` (up to 8 components, POD), presets `WaveSet.ocean()` / `WaveSet.river()`.
 - Parameterized modifiers now hard-coded in the demo and shaders: wave-set modulation, phase warp, river bank mask (as a bank half-width + falloff), wave scale.
 - `sampleWaves(ref const WaveSet, float x, float z, float time) -> WaveSample` (`pure nothrow @nogc`).

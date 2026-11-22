@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Water wave model (`engine.water.waves`, WP-1 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
+  - `WaveSet` (POD, up to 8 Gerstner `WaveComponent`s) with `WaveModulation` (wave-group envelope + phase warp), `WaveChannel` (river bank taper) and `amplitudeScale`; presets `WaveSet.ocean()` / `WaveSet.river()`.
+  - `sampleWaves` (displaced point, normal, tangent, crest factor with Jacobian folding) and `waveHeightAt` (world-XZ height via fixed-point pullback; 1 iteration matches the PBR wetline).
+  - The water demo now uses them instead of its own wave tables and `sampleGerstner`; captures are pixel-identical. `--capture` uses a fixed 1/60 s step so captures are reproducible.
+  - Guide: [docs/water-guide.md](docs/water-guide.md).
+
 - **Productivity Multipliers: Asset/Tunable Hot-Reload, Splines & Blender Export (`OW-8`, `2026-11-21`):**
   - **P8.1 watcher & hot-reload** (`engine.hotreload`, `engine.editor.scene_renderer`, `engine.scene.prefab`, editor, player):
     - `FileWatcher` now reports `changedPaths()` per debounced batch, watches subdirectories created after `init`, and adds a portable mtime polling backend (`WatchBackend`) for Windows/macOS/Web and as the Linux fallback;

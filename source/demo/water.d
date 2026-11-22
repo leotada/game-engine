@@ -36,6 +36,7 @@ import engine.scene.light :
     GpuSpotLight, LightSet, MAX_POINT_SHADOW_CASTERS, MAX_SPOT_SHADOW_CASTERS,
     SPOT_SHADOW_RESOLUTION;
 import engine.scene.scene3d_textured : Scene3DTextured;
+import engine.water.waves : sampleWaves, WaveSet;
 
 @safe:
 
@@ -43,40 +44,6 @@ private enum int W = 1280;
 private enum int H = 720;
 private enum uint WATER_GRID = 192;
 private enum float WATER_HALF = 14.0f;
-
-private struct WaveComponent {
-    float dirX;
-    float dirZ;
-    float wavelength;
-    float amplitude;
-    float steepness;
-    float speedScale;
-}
-
-private immutable WaveComponent[6] OCEAN_WAVES = [
-    WaveComponent( 0.86f,  0.51f, 9.5f, 0.24f, 0.52f, 1.00f),
-    WaveComponent( 0.42f, -0.91f, 6.2f, 0.14f, 0.48f, 1.15f),
-    WaveComponent(-0.68f,  0.73f, 4.1f, 0.08f, 0.44f, 1.25f),
-    WaveComponent( 0.96f, -0.28f, 2.7f, 0.045f, 0.40f, 1.35f),
-    WaveComponent(-0.22f, -0.97f, 1.8f, 0.025f, 0.35f, 1.50f),
-    WaveComponent( 0.61f,  0.79f, 1.15f, 0.015f, 0.30f, 1.65f),
-];
-
-private immutable WaveComponent[6] RIVER_WAVES = [
-    WaveComponent( 0.96f,  0.28f, 4.4f, 0.075f, 0.40f, 1.65f),
-    WaveComponent( 0.92f, -0.39f, 3.1f, 0.055f, 0.42f, 1.80f),
-    WaveComponent( 0.78f,  0.62f, 2.1f, 0.038f, 0.44f, 1.95f),
-    WaveComponent( 0.85f, -0.52f, 1.45f, 0.024f, 0.38f, 2.15f),
-    WaveComponent( 0.99f,  0.14f, 0.95f, 0.014f, 0.34f, 2.30f),
-    WaveComponent( 0.72f, -0.69f, 0.68f, 0.009f, 0.28f, 2.45f),
-];
-
-private struct WaveSample {
-    Vec3 position;
-    Vec3 normal;
-    Vec3 tangent;
-    float foam;
-}
 
 /// Deterministic fractional noise in [0, 1] from integer coordinates.
 private float hash2D(int ix, int iy) pure nothrow @nogc {
@@ -139,69 +106,6 @@ private ubyte clampByte(float v) pure nothrow @nogc {
     if (v <= 0.0f) return 0;
     if (v >= 255.0f) return 255;
     return cast(ubyte) v;
-}
-
-/// Evaluate 6-octave Gerstner swell + analytical tangent/bitangent/normal.
-private WaveSample sampleGerstner(float x, float z, float time, bool riverMode, float waveScale) pure nothrow @nogc {
-    immutable waves = riverMode ? RIVER_WAVES : OCEAN_WAVES;
-    Vec3 p = Vec3(x, 0.0f, z);
-    Vec3 dPdx = Vec3(1.0f, 0.0f, 0.0f);
-    Vec3 dPdz = Vec3(0.0f, 0.0f, 1.0f);
-
-    float bankMask = 1.0f;
-    if (riverMode) {
-        // Taper wave height slightly near the canyon riverbanks |z| > 5.5
-        immutable absZ = fabs(z);
-        if (absZ > 4.5f) {
-            immutable t = (absZ - 4.5f) / 3.5f;
-            bankMask = t >= 1.0f ? 0.15f : 1.0f - t * 0.85f;
-        }
-    }
-
-    immutable float waveSet = 0.68f
-        + 0.26f * sin(time * 0.62f - x * 0.13f + z * 0.16f)
-        + 0.18f * cos(time * 0.41f + x * 0.19f + z * 0.11f);
-    immutable float phaseWarp = 0.85f * sin(x * 0.21f - z * 0.17f + time * 0.29f)
-        + 0.55f * cos(x * 0.14f + z * 0.25f - time * 0.22f);
-    float heightAccum = 0.0f;
-    foreach (ref w; waves) {
-        immutable k = (2.0f * cast(float) PI) / w.wavelength;
-        immutable c = sqrt(9.81f / k) * w.speedScale;
-        immutable a = w.amplitude * waveScale * bankMask * waveSet;
-        immutable q = w.steepness;
-        immutable warpScale = k * 0.45f < 1.0f ? k * 0.45f : 1.0f;
-        immutable phase = k * (w.dirX * x + w.dirZ * z) - k * c * time + phaseWarp * warpScale;
-        immutable sn = sin(phase);
-        immutable cs = cos(phase);
-
-        immutable qa = q * a;
-        p.x += qa * w.dirX * cs;
-        p.y += a * sn;
-        p.z += qa * w.dirZ * cs;
-        heightAccum += sn * 0.5f + 0.5f;
-
-        immutable wa = k * a;
-        immutable qwa = q * wa;
-        dPdx.x -= qwa * w.dirX * w.dirX * sn;
-        dPdx.y += wa * w.dirX * cs;
-        dPdx.z -= qwa * w.dirX * w.dirZ * sn;
-
-        dPdz.x -= qwa * w.dirX * w.dirZ * sn;
-        dPdz.y += wa * w.dirZ * cs;
-        dPdz.z -= qwa * w.dirZ * w.dirZ * sn;
-    }
-
-    // Normal = normalize(cross(dPdz, dPdx)) points +Y when dPdx=(1,0,0), dPdz=(0,0,1).
-    Vec3 n = dPdz.cross(dPdx).normalized();
-    Vec3 t = dPdx.normalized();
-    t = (t - n * n.dot(t)).normalized();
-
-    WaveSample s;
-    s.position = p;
-    s.normal = n;
-    s.tangent = t;
-    s.foam = heightAccum / cast(float) waves.length;
-    return s;
 }
 
 /// GPU uniform payload matching `WaterUniforms` in `assets/shaders/common/water_env.wgsl`.
@@ -796,8 +700,8 @@ private void generateEnvTextures(ref GpuContext gpu,
 
 /// Fills GPU `WaterUniforms` on the stack with camera ray basis, waves, and active obstacles.
 private WaterUniforms packWaterUniforms(ref const Camera camera,
+                                        ref const WaveSet waveSet,
                                         float time,
-                                        float waveScale,
                                         bool riverMode,
                                         bool useOpenPbr,
                                         bool transparent,
@@ -814,7 +718,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
     wu.camForward = [fwd.x, fwd.y, fwd.z, tanHalfFov];
     wu.camRight   = [right.x, right.y, right.z, camera.aspect];
     wu.camUp      = [up.x, up.y, up.z, WATER_HALF];
-    wu.params0    = [time, waveScale, camera.near, camera.far];
+    wu.params0    = [time, waveSet.amplitudeScale, camera.near, camera.far];
     wu.flags0     = [
         riverMode ? 1u : 0u,
         useOpenPbr ? 1u : 0u,
@@ -822,8 +726,10 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         lowSun ? 1u : 0u,
     ];
 
-    immutable waves = riverMode ? RIVER_WAVES : OCEAN_WAVES;
-    foreach (i, ref w; waves) {
+    // The legacy water UBO holds 6 components; WP-2 replaces it with the
+    // shared engine wave buffer.
+    immutable uint waveCount = waveSet.count < 6 ? waveSet.count : 6;
+    foreach (i, ref w; waveSet.active[0 .. waveCount]) {
         wu.wavesA[i] = [w.dirX, w.dirZ, w.wavelength, w.amplitude];
         wu.wavesB[i] = [w.steepness, w.speedScale, 0.0f, 0.0f];
     }
@@ -840,7 +746,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         immutable r = 0.34f * (rk.scale.x + rk.scale.z) * 0.5f;
         wu.obstacles[obsCount++] = [rk.pos.x, rk.pos.z, r, 1.0f];
     }
-    wu.counts = [obsCount, 6u, enableRefraction ? 1u : 0u, enableSsr ? 1u : 0u];
+    wu.counts = [obsCount, waveCount, enableRefraction ? 1u : 0u, enableSsr ? 1u : 0u];
     return wu;
 }
 
@@ -1480,6 +1386,8 @@ void main(string[] args) {
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
+        WaveSet waveSet = riverMode ? WaveSet.river() : WaveSet.ocean();
+        waveSet.amplitudeScale = waveScale;
         if (waveScale >= wetMemoryScale) {
             wetMemoryScale = waveScale;
         } else {
@@ -1558,7 +1466,7 @@ void main(string[] args) {
         Mat4[3] buoyModels;
         if (!riverMode) {
             foreach (i, xz; buoyXZ) {
-                immutable w = sampleGerstner(xz[0], xz[1], time, riverMode, waveScale);
+                immutable w = sampleWaves(waveSet, xz[0], xz[1], time);
                 immutable pitchX = -w.normal.z * 0.55f;
                 immutable rollZ  =  w.normal.x * 0.55f;
                 buoyModels[i] = Mat4.translation(w.position.x, w.position.y + 0.10f, w.position.z)
@@ -1701,7 +1609,7 @@ void main(string[] args) {
         immutable bool enableRefraction = !noWater && renderStage >= 2;
         immutable bool enableSsr        = !noWater && renderStage >= 3 && ssrEnabled;
         auto wu = packWaterUniforms(
-            camera, time, waveScale, riverMode, useOpenPbr, transparent, lowSun,
+            camera, waveSet, time, riverMode, useOpenPbr, transparent, lowSun,
             enableRefraction, enableSsr, rocks[]);
         () @trusted {
             updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);

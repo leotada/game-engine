@@ -13,6 +13,7 @@ A single `import engine;` re-exports the core runtime (`core`, `ecs`, `math`, `p
 | **App, Window & Loop** | `engine.app`, `engine.platform.*` | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) |
 | **3D, OpenPBR, IBL, Shadows & Post** | `engine.scene.*`, `engine.graphics.*`, `engine.gpu.*` | [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-post-processing.md](plan-post-processing.md) |
 | **Outdoor: Terrain, Sky, Weather, Decals** | `engine.terrain`, `engine.scene.time_of_day`, `engine.scene.atmosphere`, `engine.gpu.ibl_dynamic`, `engine.graphics.decals` | [terrain-guide.md](terrain-guide.md) · [graphics.md](graphics.md#outdoor-rendering-ow-3) |
+| **Water (waves, surface, buoyancy)** | `engine.water` (opt-in) | [water-guide.md](water-guide.md) |
 | **2D Sprites & Cameras** | `engine.graphics.sprite` | [graphics.md](graphics.md) |
 | **2D UI & Fonts (`SDL3_ttf`)** | `engine.ui` (opt-in), `engine.gpu.text` | [editor-guide.md](editor-guide.md) · [export-guide.md](export-guide.md) |
 | **ECS, Scripts & GC-Safe Memory** | `engine.ecs.*`, `engine.core.*`, `engine.script` (opt-in) | [scripting-guide.md](scripting-guide.md) · [why-this-is-fast.md](why-this-is-fast.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md) |
@@ -278,6 +279,22 @@ decals.spawn(hit.point, hit.normal, Vec2(2, 2), 1.0f, angle, layer);  // skid ma
 - **Decals:** `DecalStyle` sets tint, opacity, angle fade, roughness, metallic, wetness response, lifetime and fade-out.
 
 Deep dives: [terrain-guide.md](terrain-guide.md) · [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3) · demo: `dub run --config=outdoor` (`--tod=18.5 --rain --debug-cascades --decals=500 --view=1`).
+
+### 3.8 Water Waves (`engine.water`)
+
+```d
+import engine.water;
+
+WaveSet waves = WaveSet.ocean();          // or WaveSet.river() / custom WaveComponents
+waves.amplitudeScale = 1.0f;
+float y = waveHeightAt(waves, x, z, time, 3);   // water height above world XZ (gameplay)
+WaveSample s = sampleWaves(waves, gx, gz, time); // displaced surface point + normal + crest
+```
+
+- Up to 8 Gerstner components, plus optional wave-group modulation and a river channel taper.
+- Water rendering, simulation and buoyancy are being ported from the water demo; see the guide for what is available.
+
+Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water --compiler=ldc2` (`--river`).
 
 ## 4. Post-Processing (`app.post()` & Custom Passes)
 
