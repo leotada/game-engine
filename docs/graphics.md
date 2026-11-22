@@ -182,6 +182,32 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Usage** — `Scene3DTextured.setLighting` / `setEnvironment` / `setSsr` / `setReflectionProbes`; `Material.create(gpu, scene.materialLayout, sampler, albedo, params, mr, norm, ao, emissive, layers)` (`GpuContext` requests `maxSampledTexturesPerShaderStage = 32` via `WGPULimits`)
 - **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain); tone mapping in `resolvePost`
 
+### Custom Surface Shaders: `surface`, `displace`, `displaceEx`
+
+`Scene3DTextured.createSurfaceShader(wgsl)` splices game WGSL into the OpenPBR shader; assign the id to `Material.surfaceShader`. The snippet defines `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut` and may define **one** vertex hook. Read `frame.time`, `surfaceParams.p0 .. p3` (`Material.updateSurfaceParams`) and the vertex-visible material bindings from it.
+
+| Hook | Signature | Receives |
+|:---|:---|:---|
+| `displace` (original) | `fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>` | object-space position and normal only |
+| `displaceEx` (extended) | `fn displaceEx(d: DisplaceIn) -> vec3<f32>` | `d.localPos`, `d.localNormal`, `d.uv`, `d.custom` (per-instance vec4), `d.instancePos` (model translation), `d.objectScale` (model column lengths) |
+
+- **Compatibility:** `displace` keeps compiling and behaving as before. When both are defined, `displaceEx` wins. Detection is textual (`fn displaceEx(` / `fn displace(`) in `composeSurfaceShader`, which emits an `engineDisplace(...)` wrapper that both the main vertex stage and the shadow stage call. Existing shaders need no change; a new hook is purely additive (no new binding, no pipeline-layout change), which is why it was chosen over a changed `displace` signature or an extra bind group.
+- **Per-instance vec4:** `d.custom` is the instance `custom` vec4 that already rides in the 96-byte `TexInstanceData` (`StaticInstanceDesc.custom`, `drawMatrix(..., custom)`). Stock meaning is `x` emission multiplier, `y` white flash, `z` dissolve, `w` shelter; a surface shader may reinterpret the channels it does not use (zero emission makes `x` free; keep `z` out of reach of dissolve). Use it for a per-instance phase, e.g. `sin(frame.time * speed + d.custom.x)`. `d.instancePos` also differs per instance for a free phase seed.
+- **Painted bend weight:** the mesh UV is exposed (`d.uv`), so a modeler can paint the weight into a UV channel (e.g. `uv.y`). Vertex color is **not** exposed: the engine vertex formats (`TexVert`, `TexTanVert`) carry no color attribute and adding one would change vertex strides and every vertex-buffer layout.
+- **Shadow passes:** materials with either hook get a depth-only `vs_shadow` pipeline (cascades, point cube faces, spot maps; dynamic batches and `StaticInstanceBuffer`) built lazily from the same composed module, with the same `surfaceParams`, `frame.time` and instance data, so shadows follow the animation. Materials without a hook keep the stock shadow pipeline. Skinned meshes do not use surface shaders. Shadow group 0 holds the frame uniforms (binding 0) and the light matrix (binding 20, dynamic offset); group 1 is the material bind group.
+- **Cost:** the per-instance vec4 needs no extra memory (it is part of the existing stride). A displaced caster re-reads the 16-byte `custom` attribute once per instance per shadow view (e.g. 4 cascades + local faces) and binds a second pipeline/bind group when switching between displaced and stock casters; there is no extra buffer or upload. Displacement ALU runs once per vertex per shadow view in addition to the main pass.
+
+```wgsl
+fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }
+fn displaceEx(d: DisplaceIn) -> vec3<f32> {
+    let bend = d.uv.y;                                   // painted weight
+    let sway = sin(frame.time * 1.7 + d.custom.x) * surfaceParams.p0.x * bend;
+    return d.localPos + vec3<f32>(sway / d.objectScale.x, 0.0, 0.0);
+}
+```
+
+Verification: `dub run --config=surface-shadow-check` renders a top-down scene at two times and asserts, from a frame capture, that shadows of dynamic, static and legacy `displace` casters move by the analytic amount, that `displaceEx` separates instances (phase from `custom.x`) and that a stock control stays still. Unit tests in `engine.gpu.shaders` cover the composition.
+
 ### ShadowMap (Depth-Only Pipeline)
 
 Depth map for directional shadows:

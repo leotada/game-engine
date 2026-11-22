@@ -170,3 +170,7 @@ Separate from script reload, `AssetHotReloader` (`engine.hotreload.asset_reload`
 ### Safe Scripting Rules
 - **State in Components Only:** Persistent state must live in component structs. Module-level global variables in `.so` are discarded upon reload.
 - **No Dangling Delegates:** Never store function pointers or delegates across the engine boundary; use `ScriptContext` and registered components.
+
+## 8. Custom Surface Shaders (WGSL)
+
+Gameplay code can animate geometry on the GPU with `Scene3DTextured.createSurfaceShader(wgsl)`: define `surface(...)` and optionally `displace(...)` or `displaceEx(d: DisplaceIn)`, drive them with `Material.updateSurfaceParams` (shared per material) and the per-instance `custom` vec4 (`drawMatrix(..., custom)` / `StaticInstanceDesc.custom`). Shadows follow the displacement. See [graphics.md](graphics.md#custom-surface-shaders-surface-displace-displaceex).
