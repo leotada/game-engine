@@ -9,6 +9,7 @@
 #include "common/shadows.wgsl"
 #include "common/atmosphere.wgsl"
 #include "common/sky_eval.wgsl"
+#include "common/sky_frame.wgsl"
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -23,24 +24,6 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     out.pos = vec4<f32>(x, y, 0.999999, 1.0);
     out.ndc = vec2<f32>(x, y);
     return out;
-}
-
-fn frameSkyInputs() -> SkyInputs {
-    var s: SkyInputs;
-    if (frame.skySunDir.w > 0.5) {
-        s.sunDir = normalize(frame.skySunDir.xyz);
-        s.sunColor = frame.skySunColor.rgb;
-    } else {
-        s.sunDir = normalize(frame.dirLight.direction);
-        s.sunColor = select(vec3<f32>(0.0), frame.dirLight.color, frame.dirEnabled != 0u);
-    }
-    s.moonDir = frame.moonDir.xyz;
-    s.moonIntensity = frame.moonDir.w;
-    s.starIntensity = frame.skyParams.x;
-    s.cloudCoverage = frame.cloudCoverage;
-    s.time = frame.time;
-    s.exposure = frame.skyParams.y;
-    return s;
 }
 
 @fragment

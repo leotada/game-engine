@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Water reflects the engine sky (WP-6, `2026-11-22`)**: new `assets/shaders/common/sky_frame.wgsl` (`frameSkyInputs`, `frameSky`) shared by `sky.wgsl` and `water_surface.wgsl`. **Removed:** `assets/shaders/sky_dome.wgsl`, `skyDomeShaderSource` and `evalWaterSky` (`common/water_env.wgsl`); `WaterUniforms.flags0.w` (low sun) is unused. The water demo now uses `scene.setSkyEnabled(true)`.
+
 - **Shared GPU water data (WP-2 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
   - Frame bind group gains `@binding(10)`: `GpuWaterData` (`engine.water.gpu_data`), up to 4 water bodies with XZ bounds, level and their own `WaveSet`; `Scene3DTextured.setWaterData`; WGSL side in `assets/shaders/common/waves.wgsl` (`waterBodyAt`, `waterWaveY`, `waterSurfaceY`, …). `FRAME_BINDING_COUNT` = 11.
   - The PBR wetline and the water surface read waves, time (`frame.time`), contact chop and recent peak scale from it, so the wave tables are no longer duplicated in `textured3d_pbr.wgsl` and the water UBO.

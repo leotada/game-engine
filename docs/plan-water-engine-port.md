@@ -118,7 +118,17 @@ by WP-3). Demo captures match the WP-0 reference (< 0.1 differing pixel).
 - Caustics evaluated in `textured3d_pbr.wgsl` and `terrain_pbr.wgsl` for fragments below the wave surface (reads binding 10), modulated by the sun shadow.
 - Delete `caustics_bed.wgsl` and the bed quad; the demo seabed becomes a normal mesh or terrain.
 
-### WP-6 — Sky unification
+### WP-6 — Sky unification ✅ (2026-11-22)
+
+Done before WP-3 (the engine `WaterRenderer` should only ever use the engine
+sky). The engine sky already had corona/halo, drifting clouds, stars and moon,
+so nothing was ported into `sky.wgsl`; `frameSkyInputs` moved to
+`common/sky_frame.wgsl` and the water surface reflects/fogs with `frameSky`.
+`sky_dome.wgsl` and `evalWaterSky` are deleted. Deviation: the demo keeps its
+fixed sun directions (no `TimeOfDay`); the golden-hour sun was lowered to ~7°
+so the engine sky picks its dusk palette, and the demo sets cloud coverage
+0.27 via `setWeather`. Not pixel-comparable with WP-0 (different sky model).
+
 - Port sun corona and drifting clouds from `sky_dome.wgsl` into `sky.wgsl` (driven by frame uniforms / `Weather`).
 - Demo uses `setSkyEnabled(true)` + `TimeOfDay`; the low-sun toggle maps to a time of day.
 - Delete `sky_dome.wgsl` and its `shaders.d` / hot-reload registrations.

@@ -21,7 +21,7 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
-import engine.gpu.shaders : skyDomeShaderSource, causticsBedShaderSource, waterSurfaceShaderSource, waterSimCsShaderSource;
+import engine.gpu.shaders : causticsBedShaderSource, waterSurfaceShaderSource, waterSimCsShaderSource;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
@@ -115,7 +115,7 @@ private struct WaterUniforms {
     float[4] camRight;         // xyz = right,   w = aspect
     float[4] camUp;            // xyz = up,      w = waterHalf
     float[4] params0;          // x = time, y = waveScale, z = gridSpan, w = seaFloorY
-    uint[4]  flags0;           // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
+    uint[4]  flags0;           // x = riverMode, y = useOpenPbr, z = transparent, w = 0
     uint[4]  counts;           // x = obstacleCount, y = water body index, z = refraction, w = SSR
     float[4][16] obstacles;    // x, z, radius, strength
 }
@@ -163,15 +163,12 @@ private struct WaterShaderPipelines {
     WGPUBindGroupLayout waterBgLayout;
     WGPUBindGroupLayout waterSurfaceBgLayout;
     WGPUBindGroupLayout simBgLayout;
-    WGPUPipelineLayout  skyPipeLayout;
     WGPUPipelineLayout  pbrPipeLayout;
     WGPUPipelineLayout  waterPipeLayout;
     WGPUPipelineLayout  simPipeLayout;
-    WGPUShaderModule    skyMod;
     WGPUShaderModule    bedMod;
     WGPUShaderModule    waterMod;
     WGPUShaderModule    simCsMod;
-    WGPURenderPipeline  skyPipe;
     WGPURenderPipeline  bedPipe;
     WGPURenderPipeline  waterPipe;
     WGPUComputePipeline simPipe;
@@ -298,12 +295,6 @@ private struct WaterShaderPipelines {
             p.simView[i] = wgpuTextureCreateView(p.simTex[i], &svd);
         }
 
-        WGPUBindGroupLayout[2] skyLayouts = [frameLayout, p.waterBgLayout];
-        WGPUPipelineLayoutDescriptor skyPlDesc;
-        skyPlDesc.bindGroupLayoutCount = 2;
-        skyPlDesc.bindGroupLayouts = skyLayouts.ptr;
-        p.skyPipeLayout = wgpuDeviceCreatePipelineLayout(dev, &skyPlDesc);
-
         WGPUBindGroupLayout[3] pbrLayouts = [frameLayout, p.waterBgLayout, iblLayout];
         WGPUPipelineLayoutDescriptor pbrPlDesc;
         pbrPlDesc.bindGroupLayoutCount = 3;
@@ -349,40 +340,10 @@ private struct WaterShaderPipelines {
             if (p.simPipe is null) fatal("Failed to create WTR-6 water simulation compute pipeline");
         }
 
-        p.skyMod   = createShaderModule(dev, skyDomeShaderSource);
         p.bedMod   = createShaderModule(dev, causticsBedShaderSource);
         p.waterMod = createShaderModule(dev, waterSurfaceShaderSource);
-        if (p.skyMod is null || p.bedMod is null || p.waterMod is null) {
-            fatal("Failed to compile water/sky/caustics WGSL shader modules");
-        }
-
-        // 1. Sky dome pipeline (fullscreen triangle, depth <= 1.0, no depth write)
-        {
-            WGPUColorTargetState colorTarget;
-            colorTarget.format = colorFmt;
-            colorTarget.writeMask = WGPUColorWriteMask.all;
-
-            WGPUFragmentState fragState;
-            fragState.module_ = p.skyMod;
-            fragState.entryPoint = wgpuStringView("fs_main");
-            fragState.targetCount = 1;
-            fragState.targets = &colorTarget;
-
-            WGPUDepthStencilState depthState;
-            depthState.format = WGPUTextureFormat.depth24Plus;
-            depthState.depthWriteEnabled = WGPUOptionalBool.false_;
-            depthState.depthCompare = WGPUCompareFunction.lessEqual;
-
-            WGPURenderPipelineDescriptor desc;
-            desc.layout = p.skyPipeLayout;
-            desc.vertex.module_ = p.skyMod;
-            desc.vertex.entryPoint = wgpuStringView("vs_main");
-            desc.primitive.topology = WGPUPrimitiveTopology.triangleList;
-            desc.primitive.frontFace = WGPUFrontFace.ccw;
-            desc.primitive.cullMode = WGPUCullMode.none;
-            desc.depthStencil = &depthState;
-            desc.fragment = &fragState;
-            p.skyPipe = wgpuDeviceCreateRenderPipeline(dev, &desc);
+        if (p.bedMod is null || p.waterMod is null) {
+            fatal("Failed to compile water/caustics WGSL shader modules");
         }
 
         WGPUVertexAttribute[3] vertAttrs = [
@@ -467,8 +428,8 @@ private struct WaterShaderPipelines {
             p.waterPipe = wgpuDeviceCreateRenderPipeline(dev, &desc);
         }
 
-        if (p.skyPipe is null || p.bedPipe is null || p.waterPipe is null) {
-            fatal("Failed to create water/sky/caustics render pipelines");
+        if (p.bedPipe is null || p.waterPipe is null) {
+            fatal("Failed to create water/caustics render pipelines");
         }
         return p;
     }
@@ -519,10 +480,8 @@ private struct WaterShaderPipelines {
         if (simCsMod !is null)             { wgpuShaderModuleRelease(simCsMod); simCsMod = null; }
         if (waterPipe !is null)            { wgpuRenderPipelineRelease(waterPipe); waterPipe = null; }
         if (bedPipe !is null)              { wgpuRenderPipelineRelease(bedPipe); bedPipe = null; }
-        if (skyPipe !is null)              { wgpuRenderPipelineRelease(skyPipe); skyPipe = null; }
         if (waterMod !is null)             { wgpuShaderModuleRelease(waterMod); waterMod = null; }
         if (bedMod !is null)               { wgpuShaderModuleRelease(bedMod); bedMod = null; }
-        if (skyMod !is null)               { wgpuShaderModuleRelease(skyMod); skyMod = null; }
         foreach (i; 0 .. 2) {
             releaseBindGroup(waterSurfaceBg[i]);
             releaseBindGroup(simBg[i]);
@@ -537,7 +496,6 @@ private struct WaterShaderPipelines {
         if (simPipeLayout !is null)        { wgpuPipelineLayoutRelease(simPipeLayout); simPipeLayout = null; }
         if (waterPipeLayout !is null)      { wgpuPipelineLayoutRelease(waterPipeLayout); waterPipeLayout = null; }
         if (pbrPipeLayout !is null)        { wgpuPipelineLayoutRelease(pbrPipeLayout); pbrPipeLayout = null; }
-        if (skyPipeLayout !is null)        { wgpuPipelineLayoutRelease(skyPipeLayout); skyPipeLayout = null; }
         if (simBgLayout !is null)          { wgpuBindGroupLayoutRelease(simBgLayout); simBgLayout = null; }
         if (waterSurfaceBgLayout !is null) { wgpuBindGroupLayoutRelease(waterSurfaceBgLayout); waterSurfaceBgLayout = null; }
         if (waterBgLayout !is null)        { wgpuBindGroupLayoutRelease(waterBgLayout); waterBgLayout = null; }
@@ -704,7 +662,6 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
                                         bool riverMode,
                                         bool useOpenPbr,
                                         bool transparent,
-                                        bool lowSun,
                                         bool enableRefraction,
                                         bool enableSsr,
                                         scope const(RockPlacement)[] rocks) nothrow @nogc {
@@ -722,7 +679,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         riverMode ? 1u : 0u,
         useOpenPbr ? 1u : 0u,
         transparent ? 1u : 0u,
-        lowSun ? 1u : 0u,
+        0u,
     ];
 
     // Waves come from the shared engine buffer (body 0, `scene.setWaterData`).
@@ -1146,6 +1103,8 @@ void main(string[] args) {
 
     auto scene = Scene3DTextured.create(app.gpu);
     scope(exit) scene.destroy();
+    // Engine sky (sun from the directional light); the water reflects the same sky.
+    scene.setSkyEnabled(true);
 
     auto sphere = TexMesh.sphere(app.gpu, 32, 16);
     scope(exit) sphere.destroy();
@@ -1391,6 +1350,7 @@ void main(string[] args) {
         // Shared water data (frame binding 10): waves, level and wet-mark
         // memory for the water surface and the PBR wetline.
         scene.setTime(time);
+        scene.setWeather(0.0f, 0.0f, 0.27f);  // dry, no rain, light drifting clouds
         {
             WaterSurfaceGpuParams surf;
             // Bounds cover every prop the water can touch (river banks span ±16 m).
@@ -1443,8 +1403,9 @@ void main(string[] args) {
 
         orbit.update(app.input, dt, camera);
 
+        // Golden hour: ~7° elevation so the engine sky picks its dusk palette.
         immutable Vec3 sunDir = lowSun
-            ? Vec3(-0.78f, 0.24f, -0.58f).normalized()
+            ? Vec3(-0.78f, 0.12f, -0.58f).normalized()
             : Vec3(0.38f, 0.88f, 0.29f).normalized();
         immutable Vec3 sunCol = lowSun
             ? Vec3(1.0f, 0.72f, 0.44f)
@@ -1609,7 +1570,7 @@ void main(string[] args) {
         immutable bool enableRefraction = !noWater && renderStage >= 2;
         immutable bool enableSsr        = !noWater && renderStage >= 3 && ssrEnabled;
         auto wu = packWaterUniforms(
-            camera, waveSet, time, riverMode, useOpenPbr, transparent, lowSun,
+            camera, waveSet, time, riverMode, useOpenPbr, transparent,
             enableRefraction, enableSsr, rocks[]);
         () @trusted {
             updateBuffer(app.gpu.getQueue(), waterPipes.ubo, &wu, WaterUniforms.sizeof);
@@ -1667,15 +1628,11 @@ void main(string[] args) {
 
         scene.end(frame);
 
-        // 2. Water environment draws in the HDR frame pass:
-        //    (a) sky dome behind geometry, (b) riverbed with caustics,
-        //    (c) optional Renderer.snapshotOpaque + optical water surface
+        // 2. Water environment draws in the HDR frame pass (the engine sky
+        //    was drawn by scene.end): (a) riverbed with caustics,
+        //    (b) optional Renderer.snapshotOpaque + optical water surface
         frame.setBindGroup(0, scene.frameGroup());
         frame.setBindGroup(1, waterPipes.waterBg);
-
-        frame.setPipeline(waterPipes.skyPipe);
-        drawNonIndexed(frame, 3);
-
         frame.setBindGroup(2, scene.iblGroup());
         frame.setPipeline(waterPipes.bedPipe);
         frame.setVertexBuffer(0, bedQuad.vbuf, bedQuad.vSize);

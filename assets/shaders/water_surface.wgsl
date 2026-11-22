@@ -10,6 +10,8 @@
 #include "common/shadows.wgsl"
 #include "common/atmosphere.wgsl"
 #include "common/waves.wgsl"
+#include "common/sky_eval.wgsl"
+#include "common/sky_frame.wgsl"
 #include "common/water_env.wgsl"
 
 @group(1) @binding(0) var<uniform> wu: WaterUniforms;
@@ -341,7 +343,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let riverMode  = wu.flags0.x;
     let useOpenPbr = wu.flags0.y != 0u;
     let transparent = wu.flags0.z != 0u;
-    let lowSun     = wu.flags0.w;
     let enableRefraction = wu.counts.z != 0u;
     let enableSsr        = wu.counts.w != 0u;
 
@@ -555,7 +556,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let R = reflect(-V, iblNormal);
     let mip = roughness * SPECULAR_MIPS;
     let iblSpec = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
-    var procSky = evalWaterSky(R, sunL, frame.dirLight.color, lowSun, time);
+    var procSky = frameSky(R);
 
     // WTR-4: Screen-Space Reflections raymarch against opaque snapshot color & depth.
     var ssrColor = vec3<f32>(0.0);
@@ -635,7 +636,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         coatFresnelMax = Fc_ibl.r;
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
         let coatRefl = reflect(-V, N);
-        let coatSky = mix(evalWaterSky(coatRefl, sunL, frame.dirLight.color, lowSun, time), ssrColor, ssrWeight * 0.92);
+        let coatSky = mix(frameSky(coatRefl), ssrColor, ssrWeight * 0.92);
         let coatIblSpec = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
         let coatEnv = mix(coatSky, coatIblSpec, 0.12);
         let f90Coat = max(1.0 - coatR, f0Coat.x);
@@ -691,7 +692,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         smoothstep(24.0, 65.0, camDist) * 0.32,
         riverMode != 0u
     );
-    let fogCol = evalWaterSky(normalize(-toCam), sunL, frame.dirLight.color, lowSun, time);
+    let fogCol = frameSky(normalize(-toCam));
     color = mix(color, fogCol, fogFactor);
     if (riverMode == 0u && fogFactor > 0.001) {
         outAlpha = mix(outAlpha, 1.0, fogFactor);

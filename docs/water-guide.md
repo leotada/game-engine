@@ -120,6 +120,14 @@ Surfaces the water reached in the last ~5 s stay wet and dry out over time.
 Surfaces above the highest possible wave stay dry and matte. Outside every
 body the flag has no effect.
 
+## Sky reflection
+
+The water surface reflects the engine sky and fades into it at the horizon
+(`frameSky` from `common/sky_frame.wgsl`). Turn the sky on with
+`scene.setSkyEnabled(true)`; sun, clouds (`setWeather`) and time of day drive
+both the visible sky and the reflection. See the sky section of
+[graphics.md](graphics.md).
+
 ## Demo
 
 `dub run --config=water` (ocean) or `-- --river`. The demo currently builds

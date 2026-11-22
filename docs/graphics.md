@@ -420,6 +420,7 @@ Everything stays zero-GC in the frame loop. The reference scene is `dub run --co
   - `setSkyState(moonDir, moonIntensity, starIntensity, exposure)`;
   - cloud coverage from `setWeather`.
 - `common/sky_eval.wgsl` (`evalSky`) blends night, dusk and day gradients. It adds Mie scattering, overcast grey, stars, the moon, fBm clouds, and the sun halo and disc.
+- `common/sky_frame.wgsl` builds `SkyInputs` from the frame uniforms (`frameSkyInputs()`, `frameSky(dir)`). Include it (after `shadows.wgsl` and `sky_eval.wgsl`) in any shader that reflects the sky, such as water, so reflections and fog match the visible sky exactly.
 
 ### Day/night and weather (`engine.scene.time_of_day`)
 
@@ -508,6 +509,9 @@ current API are in [water-guide.md](water-guide.md).
   wave-contact wet marks only inside a body whose wetline is enabled. Waves,
   time, contact chop and the recent peak scale come from the shared data.
   Outside every body the material is shaded normally.
+- **Sky reflection:** the water surface reflects and fogs toward the engine sky
+  (`frameSky`, `common/sky_frame.wgsl`); enable it with
+  `scene.setSkyEnabled(true)`. The old demo sky dome is gone.
 - **Still demo-only:** the surface pipeline, the compute wave/foam simulation
   and the caustics bed (`source/demo/water.d`).
 

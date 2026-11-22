@@ -1,12 +1,12 @@
-/// Shared procedural sky, riverbed depth, Voronoi caustics, and noise helpers
-/// for the realistic water showcase (sky_dome, caustics_bed, water_surface).
+/// Water surface uniforms plus riverbed depth, Voronoi caustics and noise helpers
+/// shared by the water surface, caustics and simulation shaders.
 
 struct WaterUniforms {
     camForward: vec4<f32>,    // xyz = forward, w = tanHalfFov
     camRight: vec4<f32>,      // xyz = right,   w = aspect
     camUp: vec4<f32>,         // xyz = up,      w = waterHalf
     params0: vec4<f32>,       // x = time, y = waveScale, z = nearPlane, w = farPlane
-    flags0: vec4<u32>,        // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
+    flags0: vec4<u32>,        // x = riverMode, y = useOpenPbr, z = transparent, w = 0
     counts: vec4<u32>,        // x = obstacleCount, y = water body index (common/waves.wgsl), z = enableRefraction, w = enableSsr
     obstacles: array<vec4<f32>, 16>, // x, z, radius, strength
 };
@@ -51,66 +51,6 @@ fn fbm2(pInit: vec2<f32>) -> f32 {
         amp *= 0.5;
     }
     return sum;
-}
-
-/// Evaluates the procedural atmosphere, clouds, solar corona, and sun disc
-/// shared by both the visible sky dome and water mirror reflections.
-fn evalWaterSky(dirIn: vec3<f32>, sunDirIn: vec3<f32>, sunCol: vec3<f32>,
-                lowSun: u32, time: f32) -> vec3<f32> {
-    let d = normalize(dirIn);
-    let sunDir = normalize(sunDirIn);
-    let upFactor = clamp(d.y, 0.0, 1.0);
-    let horizBand = exp(-abs(d.y) * 5.2);
-
-    var zenithCol = vec3<f32>(0.10, 0.29, 0.74);
-    var midCol    = vec3<f32>(0.34, 0.58, 0.90);
-    var horizCol  = vec3<f32>(0.74, 0.86, 0.97);
-    var groundCol = vec3<f32>(0.02, 0.08, 0.15);
-
-    if (lowSun != 0u) {
-        zenithCol = vec3<f32>(0.11, 0.21, 0.44);
-        midCol    = vec3<f32>(0.44, 0.49, 0.64);
-        horizCol  = vec3<f32>(0.98, 0.62, 0.37);
-        groundCol = vec3<f32>(0.03, 0.06, 0.10);
-    }
-
-    var sky: vec3<f32>;
-    if (d.y >= 0.0) {
-        let tMid = smoothstep(0.0, 0.36, upFactor);
-        let tTop = smoothstep(0.24, 0.92, upFactor);
-        sky = mix(horizCol, midCol, tMid);
-        sky = mix(sky, zenithCol, tTop);
-    } else {
-        sky = mix(horizCol, groundCol, smoothstep(0.0, 0.30, -d.y));
-    }
-
-    // Warm horizon Mie scatter toward the solar azimuth.
-    let sunCos = max(dot(d, sunDir), 0.0);
-    let sunAzScatter = pow(sunCos, 6.0) * (0.28 + 0.72 * horizBand);
-    sky += sunCol * sunAzScatter * select(0.22, 0.65, lowSun != 0u);
-
-    // Drifting cirrus / cumulus clouds above the horizon.
-    if (d.y > 0.005) {
-        let cloudProj = d.xz / (d.y + 0.14);
-        let cloudUv = cloudProj * 0.48 + vec2<f32>(time * 0.014, time * 0.006);
-        let c1 = fbm2(cloudUv);
-        let c2 = fbm2(cloudUv * 2.3 - vec2<f32>(time * 0.011, 4.2));
-        let cloudDensity = smoothstep(0.50, 0.82, c1 * 0.72 + c2 * 0.28);
-        let cloudFade = smoothstep(0.01, 0.20, d.y);
-
-        let cloudBase = select(vec3<f32>(0.80, 0.87, 0.95), vec3<f32>(0.62, 0.56, 0.64), lowSun != 0u);
-        let cloudLit  = mix(cloudBase, sunCol * 1.45 + vec3<f32>(0.35),
-                            0.35 + 0.65 * pow(sunCos, 3.0) + 0.25 * (1.0 - c2));
-        sky = mix(sky, cloudLit, cloudDensity * cloudFade * 0.72);
-    }
-
-    // Solar corona + crisp HDR sun disc.
-    let halo = pow(sunCos, 64.0) * 1.35 + pow(sunCos, 12.0) * 0.16;
-    let disc = smoothstep(0.99935, 0.99978, sunCos) * 20.0;
-    let horizonVis = smoothstep(-0.04, 0.04, d.y);
-    sky += sunCol * (halo + disc) * horizonVis;
-
-    return max(sky, vec3<f32>(0.0));
 }
 
 /// Analytical terrain / riverbed height matching `buildTiledBedMesh` (y = -1.15)
