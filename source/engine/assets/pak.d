@@ -308,13 +308,8 @@ bool pakContains(scope const(ubyte)[] pakBytes, ulong key, scope const(char)[] p
 }
 
 /// Recursively collect all regular files in `inputDir` (sorted deterministically)
-/// and pack them into an encrypted `GEPK` v1 container.
-ubyte[] packDirectoryToPak(
-    string inputDir,
-    ulong key,
-    string pathPrefix = "",
-    uint tocSeed = 0x4745_504BU
-) @trusted {
+/// as pak inputs keyed `pathPrefix/relative/path`.
+PakInput[] collectDirectoryPakInputs(string inputDir, string pathPrefix = "") @trusted {
     enforce(exists(inputDir) && isDir(inputDir), "packDirectoryToPak: directory not found: " ~ inputDir);
 
     immutable string absInputDir = absolutePath(inputDir);
@@ -332,8 +327,18 @@ ubyte[] packDirectoryToPak(
         immutable string diskPath = buildPath(absInputDir, rel);
         inputs[i] = PakInput(keyPath, cast(const(ubyte)[]) read(diskPath));
     }
+    return inputs;
+}
 
-    return buildAssetPak(inputs, key, tocSeed);
+/// Recursively collect all regular files in `inputDir` (sorted deterministically)
+/// and pack them into an encrypted `GEPK` v1 container.
+ubyte[] packDirectoryToPak(
+    string inputDir,
+    ulong key,
+    string pathPrefix = "",
+    uint tocSeed = 0x4745_504BU
+) @trusted {
+    return buildAssetPak(collectDirectoryPakInputs(inputDir, pathPrefix), key, tocSeed);
 }
 
 /// Mount an in-memory `GEPK` asset pack (for example via `import("assets.pak")`).
@@ -432,6 +437,43 @@ bool readAssetBytes(scope const(char)[] path, out ubyte[] outBytes) @safe {
         outBytes = cast(ubyte[]) read(path);
         return true;
     }();
+}
+
+/// Outcome of `readMountedAssetNoGc`.
+enum PakReadResult : ubyte {
+    /// No pak is mounted, or the asset is absent and disk fallback is allowed: the caller should read from disk.
+    useDisk,
+    /// The asset was found; `outPtr`/`outLen` hold a malloc'd, decrypted copy owned by the caller (`free`).
+    found,
+    /// A pak is mounted without disk fallback and does not contain the asset.
+    missing,
+}
+
+/// `@nogc` variant of `readAssetBytes` for worker threads excluded from the GC (the chunk streamer).
+/// Reads the already-parsed mounted TOC (read-only) and returns a `malloc`'d decrypted copy.
+/// Do not unmount the pak while workers may be reading.
+PakReadResult readMountedAssetNoGc(scope const(char)[] path, out ubyte* outPtr, out size_t outLen) nothrow @nogc @trusted {
+    import core.stdc.stdlib : malloc;
+    outPtr = null;
+    outLen = 0;
+    if (!g_mountedPak.mounted) return PakReadResult.useDisk;
+    if (path.length > 0) {
+        immutable ulong h = pakPathHash(path);
+        foreach (ref e; g_mountedPak.entries) {
+            if (e.pathHash != h) continue;
+            immutable size_t off = cast(size_t) e.offset;
+            immutable size_t sz = cast(size_t) e.size;
+            if (sz == 0 || off + sz > g_mountedPak.rawBytes.length) return PakReadResult.missing;
+            auto buf = cast(ubyte*) malloc(sz);
+            if (buf is null) return PakReadResult.missing;
+            buf[0 .. sz] = g_mountedPak.rawBytes[off .. off + sz];
+            pakCrypt(buf[0 .. sz], g_mountedPak.key, e.pathHash, e.offset * 0x9E37_79B9_7F4A_7C15UL);
+            outPtr = buf;
+            outLen = sz;
+            return PakReadResult.found;
+        }
+    }
+    return g_mountedPak.allowDiskFallback ? PakReadResult.useDisk : PakReadResult.missing;
 }
 
 @("pak: path normalization, encryption obfuscation, wrong-key rejection, and VFS isolation")

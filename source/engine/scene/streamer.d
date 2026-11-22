@@ -872,7 +872,18 @@ private float cellDistanceSqXZ(const ref ChunkCell cell, Vec3 focusPos) pure not
     return dx * dx + dz * dz;
 }
 
+/// Chunk byte source: the mounted GEPK pak when it holds the path, otherwise the disk.
 private bool readFileNoGc(scope const(char)[] path, out ubyte* outPtr, out size_t outLen) nothrow @nogc @trusted {
+    import engine.assets.pak : PakReadResult, readMountedAssetNoGc;
+    final switch (readMountedAssetNoGc(path, outPtr, outLen)) {
+        case PakReadResult.found: return true;
+        case PakReadResult.missing: return false;
+        case PakReadResult.useDisk: break;
+    }
+    return readDiskFileNoGc(path, outPtr, outLen);
+}
+
+private bool readDiskFileNoGc(scope const(char)[] path, out ubyte* outPtr, out size_t outLen) nothrow @nogc @trusted {
     outPtr = null;
     outLen = 0;
     if (path.length == 0 || path.length >= 1020)
@@ -1175,4 +1186,95 @@ version (unittest) {
         streamer.update(world, Vec3(-5000.0f, 0.0f, -5000.0f), 50.0f);
     assert(streamer.stats().activeCount == 0 && world.entityCount() == 0);
     assert(probe.unloads >= probe.loads);
+}
+
+@("streamer.chunksFromMountedPak") @safe unittest {
+    import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+    import std.format : format;
+    import engine.assets.pak : buildAssetPak, mountAssetPak, PakInput, unmountAssetPak;
+    import engine.editor.components : Visual;
+    import engine.scene.chunk_binary : encodeChunk;
+    import engine.scene.graph : Transform;
+    import engine.scene.scene_file : ChunkManifest, SceneCellBounds, SceneChunkDescriptor, SceneEntityData, saveSceneFile;
+    import std.file : read;
+
+    immutable tmpDir = "build/test_streamer_pak";
+    mkdirRecurse(tmpDir);
+    scope (exit) {
+        unmountAssetPak();
+        if (exists(tmpDir)) rmdirRecurse(tmpDir);
+    }
+
+    // Same 2 x 2 world, once with disk-only chunks and once with chunks living only in a pak
+    // (virtual paths that do not exist on disk). Mix of GESC and JSON.
+    ChunkManifest diskManifest, pakManifest;
+    PakInput[] inputs;
+    foreach (m; [&diskManifest, &pakManifest]) {
+        m.cellSize = 256.0f;
+        m.loadRadius = 300.0f;
+        m.unloadRadius = 420.0f;
+    }
+    foreach (cz; 0 .. 2)
+        foreach (cx; 0 .. 2) {
+            SceneFile cf;
+            cf.schemaVersion = 2;
+            cf.meta.name = format("chunk_%d_%d", cx, cz);
+            foreach (k; 0 .. 3) {
+                SceneEntityData e;
+                e.id = cast(uint)(k + 1);
+                e.transform.pos = [cx * 256.0f + k, 0.0f, cz * 256.0f];
+                e.hasVisual = true;
+                e.visual.hasKind = true;
+                e.visual.kind = "cube";
+                cf.entities ~= e;
+            }
+            immutable gesc = (cx + cz) % 2 == 0;
+            immutable ext = gesc ? "gesc" : "scene.json";
+            immutable diskPath = format("%s/chunk_%d_%d.%s", tmpDir, cx, cz, ext);
+            if (gesc)
+                write(diskPath, encodeChunk(cf));
+            else
+                saveSceneFile(diskPath, cf);
+            immutable virt = format("virtual_pak/chunk_%d_%d.%s", cx, cz, ext);
+            inputs ~= PakInput(virt, cast(const(ubyte)[]) read(diskPath));
+
+            SceneChunkDescriptor desc;
+            desc.coordX = cx;
+            desc.coordZ = cz;
+            desc.bounds = SceneCellBounds([cx * 256.0f, -10.0f, cz * 256.0f], [(cx + 1) * 256.0f, 200.0f, (cz + 1) * 256.0f]);
+            desc.scenePath = diskPath;
+            diskManifest.chunks ~= desc;
+            desc.scenePath = virt;
+            pakManifest.chunks ~= desc;
+        }
+
+    static size_t runStream(ref ChunkManifest m, ref SceneWorld world) @safe {
+        WorldStreamer streamer;
+        streamer.initFromManifest(m);
+        foreach (_; 0 .. 20)
+            streamer.update(world, Vec3(128.0f, 0.0f, 128.0f), 50.0f);
+        immutable active = streamer.stats().activeCount;
+        immutable ents = world.entityCount();
+        assert(ents == active * 3);
+        foreach (_; 0 .. 5)
+            streamer.update(world, Vec3(-5000.0f, 0.0f, -5000.0f), 50.0f);
+        assert(streamer.stats().activeCount == 0 && world.entityCount() == 0, "unloads cleanly");
+        return active * 1000 + ents;
+    }
+
+    SceneWorld diskWorld, pakWorld;
+    diskWorld.ensureRegistered!Transform();
+    diskWorld.ensureRegistered!Visual();
+    pakWorld.ensureRegistered!Transform();
+    pakWorld.ensureRegistered!Visual();
+
+    immutable diskResult = runStream(diskManifest, diskWorld);
+    assert(diskResult > 0);
+
+    assert(mountAssetPak(buildAssetPak(inputs, 0xC0FFEE), 0xC0FFEE, false));
+    assert(runStream(pakManifest, pakWorld) == diskResult, "pak streaming matches disk streaming");
+
+    // Disk paths still resolve with fallback enabled while the pak lacks them.
+    assert(mountAssetPak(buildAssetPak(inputs, 0xC0FFEE), 0xC0FFEE, true));
+    assert(runStream(diskManifest, diskWorld) == diskResult, "disk fallback works");
 }
