@@ -2,8 +2,8 @@
 
 > **Status:** being ported from `source/demo/water.d` into `engine.water` — see
 > [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation,
-> obstacles and caustics are in the engine; gameplay queries, wet material
-> presets and the editor component follow.
+> obstacles, caustics, gameplay queries and buoyancy are in the engine; wet
+> material presets and the editor component follow.
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
 
@@ -180,6 +180,54 @@ the body's waves at the fragment (`waterWaveY`, scaled by `contactChop`).
 Surfaces the water reached in the last ~5 s stay wet and dry out over time.
 Surfaces above the highest possible wave stay dry and matte. Outside every
 body the flag has no effect.
+
+## Gameplay queries (`engine.water.query`)
+
+The CPU evaluates the same waves the GPU draws, so gameplay agrees with
+what the player sees:
+
+```d
+WaterSurfacePoint p;
+if (water.surfaceAt(x, z, time, p)) {       // WaterRenderer: first body containing xz
+    // p.height  world Y of the surface (level + waves)
+    // p.normal  surface normal
+    // p.current river current in m/s (zero for oceans)
+}
+float y = waterSurfaceHeight(body, x, z, time);   // one WaterBody
+```
+
+- `waterSurfaceAt(body, x, z, time, iterations = 3)` and
+  `waterBodyContains(body, x, z)` work on a plain `WaterBody`, without a
+  renderer. `WaterQuery { const(WaterBody)[] bodies; }` does the same lookup
+  as the renderer over your own array (servers, tools, tests).
+- `iterations` refines the horizontal Gerstner pullback: 1 matches the GPU
+  wetline, 3 is accurate for gameplay.
+- River current: `WaterBody.flow`, faster in the channel center and down to
+  35% at `flowProfileWidth`. An ocean's `flow` only drifts foam and caustics.
+
+## Buoyancy (`engine.water.buoyancy`)
+
+Floating Box3D bodies are sampled by spherical probes in their local frame.
+Each submerged probe gets Archimedes' force (density × gravity × submerged
+volume, exact spherical cap) at its world point plus drag against the water's
+relative velocity, so bodies bob, tilt with the slope and follow river
+currents.
+
+```d
+auto probes = sphereProbes(0.425f);   // center + 4 ring probes, same volume
+// every frame, before physics.step(dt):
+applyBuoyancy(physics, bodyId, probes[],
+    (float x, float z, ref WaterSurfacePoint p) => water.surfaceAt(x, z, time, p));
+physics.step(dt);
+```
+
+- The body's density sets how deep it floats: 380 kg/m³ against fresh water
+  (`BuoyancySettings.waterDensity = 1000`) floats about 40% submerged.
+- `BuoyancySettings`: `waterDensity`, `linearDrag` and `verticalDrag` (1/s,
+  scaled by the body mass).
+- Use your own `BuoyancyProbe[]` for boats and crates (e.g. one probe per
+  hull corner). `applyBuoyancy` returns the mean submerged fraction.
+- The surface callback is `scope`, so the lambda does not allocate.
 
 ## Caustics
 

@@ -176,7 +176,20 @@ so the engine sky picks its dusk palette, and the demo sets cloud coverage
 - Demo uses `setSkyEnabled(true)` + `TimeOfDay`; the low-sun toggle maps to a time of day.
 - Delete `sky_dome.wgsl` and its `shaders.d` / hot-reload registrations.
 
-### WP-7 — Gameplay queries + buoyancy
+### WP-7 — Gameplay queries + buoyancy ✅ (2026-11-22)
+
+Done: `engine.water.query` (`waterSurfaceAt`, `waterSurfaceHeight`,
+`waterBodyContains`, `WaterQuery`, `WaterRenderer.surfaceAt`) and
+`engine.water.buoyancy` (`applyBuoyancy`, `BuoyancyProbe`, `sphereProbes`,
+`BuoyancySettings`, `sphereSubmergedVolume`). New physics helpers
+`applyForce`, `getMass`, `getRotation` (+ `b3Body_ApplyForce` and
+`b3Body_GetMass` bindings). The demo buoys are dynamic spheres (density
+380 kg/m³). Deviations: forces go through `applyForce` at each probe (torque
+from the ring probes) instead of `applyForceToCenter`; there is no separate
+angular drag, since drag at the off-center probes already damps rotation;
+the surface lookup is a callback, so the helper works with any water source.
+Benchmark unchanged (Ocean 5.32 ms, River 3.49 ms, GC 0).
+
 - `waterHeightAt(x, z)` / `waterSurfaceAt(x, z)` over the registered bodies (CPU, same `WaveSet` as the GPU).
 - `applyBuoyancy(bodyId, ref const BuoyancyProbe[], ...)`: per-probe submerged depth → `applyForceToCenter` / force at point, plus linear and angular drag.
 - Demo buoys become dynamic physics bodies.

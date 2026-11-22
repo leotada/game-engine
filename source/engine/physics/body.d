@@ -5,7 +5,7 @@ import engine.core.pod : isPod;
 import engine.ecs.store : EntityId;
 import engine.math.quat : Quat;
 import engine.math.vec : Vec3;
-import engine.physics.convert : toB3Pos, toB3Quat, toB3Vec3, toEngineVec3;
+import engine.physics.convert : toB3Pos, toB3Quat, toB3Vec3, toEngineQuat, toEngineVec3;
 import engine.physics.world : PhysicsWorld;
 
 @safe:
@@ -634,6 +634,22 @@ Vec3 getAngularVelocity(const b3BodyId bodyId) nothrow @nogc @trusted {
 
 void applyForceToCenter(const b3BodyId bodyId, Vec3 force, bool wake = true) nothrow @nogc @trusted {
     b3Body_ApplyForceToCenterD(bodyId, toB3Vec3(force), wake);
+}
+
+/// Force (N) at a world point: also produces torque around the center of mass.
+void applyForce(const b3BodyId bodyId, Vec3 force, Vec3 worldPoint, bool wake = true) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId))
+        b3Body_ApplyForceD(bodyId, toB3Vec3(force), toB3Pos(worldPoint), wake);
+}
+
+/// Body mass (kg), from its shapes' densities.
+float getMass(const b3BodyId bodyId) nothrow @nogc @trusted {
+    return b3Body_IsValidD(bodyId) ? b3Body_GetMassD(bodyId) : 0.0f;
+}
+
+/// Body orientation.
+Quat getRotation(const b3BodyId bodyId) nothrow @nogc @trusted {
+    return toEngineQuat(b3Body_GetRotationD(bodyId));
 }
 
 void applyLinearImpulse(const b3BodyId bodyId, Vec3 impulse, Vec3 worldPoint, bool wake = true) nothrow @nogc @trusted {

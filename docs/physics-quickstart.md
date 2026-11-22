@@ -58,8 +58,8 @@ Pass an optional `EntityId` to map bodies to ECS entities (stored in Box3D
 userData). Recover with `getBodyEntity` / `getShapeEntity`.
 
 Runtime body and shape helpers: `set/getLinearVelocity`, `set/getAngularVelocity`,
-`applyForceToCenter`, `applyLinearImpulse`, `applyLinearImpulseToCenter`, `applyAngularImpulse`,
-`setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
+`applyForceToCenter`, `applyForce` (at a world point), `applyLinearImpulse`, `applyLinearImpulseToCenter`, `applyAngularImpulse`,
+`getMass`, `getRotation`, `setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
 `setBodyType` / `getBodyType`, `isBodyAwake` / `setBodyAwake`, `enableBodySleep` /
 `setBodySleepThreshold`, `setBodyBullet` / `isBodyBullet`, `setBodyFilter` / `setShapeFilter`,
 `setBodySurfaceMaterial` / `setShapeSurfaceMaterial`, `destroyBody`, and

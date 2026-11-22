@@ -48,6 +48,8 @@ pragma(mangle, "b3Body_GetAngularVelocity") b3Vec3 b3Body_GetAngularVelocityD(b3
 pragma(mangle, "b3Body_SetLinearVelocity") void b3Body_SetLinearVelocityD(b3BodyId bodyId, b3Vec3 linearVelocity);
 pragma(mangle, "b3Body_SetAngularVelocity") void b3Body_SetAngularVelocityD(b3BodyId bodyId, b3Vec3 angularVelocity);
 pragma(mangle, "b3Body_ApplyForceToCenter") void b3Body_ApplyForceToCenterD(b3BodyId bodyId, b3Vec3 force, bool wake);
+pragma(mangle, "b3Body_ApplyForce") void b3Body_ApplyForceD(b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake);
+pragma(mangle, "b3Body_GetMass") float b3Body_GetMassD(b3BodyId bodyId);
 pragma(mangle, "b3Body_ApplyLinearImpulse") void b3Body_ApplyLinearImpulseD(b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bool wake);
 pragma(mangle, "b3Body_ApplyLinearImpulseToCenter") void b3Body_ApplyLinearImpulseToCenterD(b3BodyId bodyId, b3Vec3 impulse, bool wake);
 pragma(mangle, "b3Body_ApplyAngularImpulse") void b3Body_ApplyAngularImpulseD(b3BodyId bodyId, b3Vec3 impulse, bool wake);

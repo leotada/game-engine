@@ -35,7 +35,10 @@ import engine.scene.light :
     GpuSpotLight, LightSet, MAX_POINT_SHADOW_CASTERS, MAX_SPOT_SHADOW_CASTERS,
     SPOT_SHADOW_RESOLUTION;
 import engine.scene.scene3d_textured : Scene3DTextured;
-import engine.water : MAX_WATER_OBSTACLES, sampleWaves, WaterBody, WaterFeature,
+import bindings.box3d : b3BodyId;
+import engine.physics : BodyDesc, createSphereBody, getPosition, getRotation, PhysicsWorld;
+import engine.water : applyBuoyancy, MAX_WATER_OBSTACLES, sphereProbes, waterSurfaceHeight,
+    WaterSurfacePoint, WaterBody, WaterFeature,
     WaterObstacle, WaterRenderer, WaveSet;
 
 @safe:
@@ -715,6 +718,23 @@ void main(string[] args) {
         waterBody = water.addBody(initialBody);
     }
 
+    // Ocean buoys: dynamic spheres kept afloat by engine buoyancy.
+    enum float BUOY_RADIUS = 0.425f;   // unit sphere mesh (r = 0.5) scaled by 0.85
+    immutable float[2][3] buoyXZ = [[-2.2f, -1.5f], [3.4f, 1.8f], [0.5f, 4.2f]];
+    auto physics = PhysicsWorld.createDefault();
+    b3BodyId[3] buoyBodies;
+    {
+        immutable spawnWater = WaterBody.ocean();
+        foreach (i, xz; buoyXZ) {
+            BodyDesc bd;
+            bd.position = Vec3(xz[0], waterSurfaceHeight(spawnWater, xz[0], xz[1], 0.0f) + 0.1f, xz[1]);
+            bd.density = 380.0f;   // floats about 40% submerged
+            bd.enableSleep = false;
+            buoyBodies[i] = createSphereBody(physics, bd, BUOY_RADIUS);
+        }
+    }
+    immutable buoyProbes = sphereProbes(BUOY_RADIUS);
+
 
     auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
     scope(exit) sampler.destroy();
@@ -1023,23 +1043,18 @@ void main(string[] args) {
         immutable lightVP = directionalLightVP(sunDir, Vec3(0, 0, 0), 20.0f);
         immutable spotVP = spotLightVPFromCone(spotPos, spotDir, 45.0f, 0.2f, 28.0f);
 
-        // Compute floating buoy transforms from wave height + surface normal (ocean mode)
-        immutable float[2][3] buoyXZ = [
-            [-2.2f, -1.5f],
-            [ 3.4f,  1.8f],
-            [ 0.5f,  4.2f],
-        ];
+        // Buoys: buoyancy from the engine water, then one physics step.
         Mat4[3] buoyModels;
         if (!riverMode) {
-            foreach (i, xz; buoyXZ) {
-                immutable w = sampleWaves(waveSet, xz[0], xz[1], time);
-                immutable pitchX = -w.normal.z * 0.55f;
-                immutable rollZ  =  w.normal.x * 0.55f;
-                buoyModels[i] = Mat4.translation(w.position.x, w.position.y + 0.10f, w.position.z)
-                              * Mat4.rotationZ(rollZ)
-                              * Mat4.rotationX(pitchX)
-                              * Mat4.scaling(0.85f, 0.85f, 0.85f);
+            if (waterBody >= 0) {
+                foreach (ref bb; buoyBodies) {
+                    applyBuoyancy(physics, bb, buoyProbes[],
+                        (float x, float z, ref WaterSurfacePoint p) => water.surfaceAt(x, z, time, p));
+                }
+                physics.step(dt);
             }
+            foreach (i, ref bb; buoyBodies)
+                buoyModels[i] = Mat4.trs(getPosition(bb), getRotation(bb), Vec3(0.85f, 0.85f, 0.85f));
         }
 
         // Gather shadow casters (rocks by mesh kind + buoys + bridge/lighthouse)

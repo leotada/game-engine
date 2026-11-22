@@ -23,6 +23,7 @@ import engine.gpu.shaders : waterSimCsShaderSource, waterSurfaceShaderSource;
 import engine.graphics.types : TexVert;
 import engine.scene.camera : Camera;
 import engine.scene.scene3d_textured : Scene3DTextured;
+import engine.water.query : WaterSurfacePoint, waterBodyContains, waterSurfaceAt;
 import engine.water.water_body;
 import engine.water.gpu_data : GpuWaterData, MAX_WATER_BODIES, packWaterBody;
 
@@ -221,6 +222,19 @@ struct WaterRenderer {
             slots[id].obstacles[n++] = ob;
         }
         slots[id].obstacleCount = n;
+    }
+
+    /// Water surface above world `xz` at `time`, from the first body (in GPU
+    /// order) containing the point; false outside every body. CPU-side, the
+    /// same waves the GPU draws (see `engine.water.query`).
+    bool surfaceAt(float x, float z, float time, out WaterSurfacePoint result,
+                   uint iterations = 3) const nothrow @nogc {
+        foreach (ref s; slots) {
+            if (!s.used || !waterBodyContains(s.desc, x, z)) continue;
+            result = waterSurfaceAt(s.desc, x, z, time, iterations);
+            return true;
+        }
+        return false;
     }
 
     /// Number of active bodies.

@@ -301,7 +301,8 @@ WaveSample s = sampleWaves(waves, gx, gz, time); // displaced surface point + no
 - `WaterBody` (POD): position, level, `WaterStyle` ocean/river, `WaveSet`, `WaterOptics`, `WaterFeature` bits (refraction, SSR, transparency, simulation, OpenPBR, wet marks); `setObstacles` for rocks and piers.
 - Enable the engine sky (`scene.setSkyEnabled(true)`); the water reflects it.
 - Submerged meshes, terrain and decals get sun caustics automatically (`WaterBody.causticsStrength`).
-- Buoyancy and the editor component are still being ported; see the guide.
+- Gameplay: `water.surfaceAt(x, z, time, p)` gives height, normal and river current; `applyBuoyancy(physics, body, sphereProbes(r)[], surfaceFn)` keeps Box3D bodies afloat.
+- The editor component is still being ported; see the guide.
 
 Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water` (`--river`).
 
