@@ -166,17 +166,18 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), tangent-extended (`MESH_TANGENT`, stride=48, `vec4f tangent`), or GPU-skinned (`MESH_TANGENT` + `SKINNED`, stride=80, `SkinnedVertex`: `pos + normal + uv + tangent + vec4u joints + vec4f weights`)
 - **Vertex buffer 1** — instances: `TexInstanceData` (4×`float32x4` model + `vec4f` tint + `vec4f` custom, stride=96); vertex shaders transform normals with the $3 \times 3$ adjugate (cofactor transpose, `Mat4.transformNormal`) so non-uniform scaling preserves correct lighting
 - **Bind groups:**
-  - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 11 entries, one layout shared by every scene-space pipeline) — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater))
-  - `@group(1) Material` — 144-byte `MaterialParams` UBO (`9 × vec4f`: Base, Specular/IOR/Anisotropy, Coat, Fuzz, Thin-Film, Emission, Geometry Opacity), filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
+  - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 12 entries, one layout shared by every scene-space pipeline) — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater)), and the 5-mip opaque HDR scene pyramid (`opaqueSceneColorMap`) at 11 (1×1 `rgba16Float` placeholder outside Pass 1, updated via `Renderer.snapshotOpaque` before back-to-front `Material.transmissive` draws)
+  - `@group(1) Material` (`MATERIAL_BINDING_COUNT` = 13 entries) — 176-byte `MaterialParams` UBO (`11 × vec4f`: Base, Specular/IOR/Anisotropy, `anisotropyRotation`, Coat, Fuzz, Thin-Film min/max thickness, Emission, Geometry Opacity, Transmission color/weight/depth/dispersion/thickness), filtering sampler, albedo + MR/normal/occlusion/emissive maps (`2..6`), surface params UBO (`7`), and optional `MaterialLayerMaps` (`8..12`: `coat`, `coatNormal`, `fuzz`, `anisoFilm`, `transmission`, bound with 1×1 defaults when omitted)
   - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
   - `@group(3) Skin` *(skinned variant only)* — read-only storage buffer of concatenated `mat4x4<f32>` joint palettes (`Scene3DTextured.drawSkinned`)
-- **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Layered single-pass slabs:
-  - **Base & Specular:** Qualitative Fujii Oren-Nayar diffuse (`baseDiffuseRoughness`), IOR-derived dielectric $F_0$ modulated by `coatIor` (`dielectricF0UnderCoat`), multi-scattering energy-compensated anisotropic GGX, and $F_{82}$-tint conductor Fresnel (`specularColor`)
-  - **Thin-Film Iridescence:** Physical Airy thin-film reflectance modulating dielectric/conductor Fresnel (`thinFilmWeight`, `thinFilmThickness`, `thinFilmIor`)
-  - **Coat Slab:** Dielectric clearcoat GGX with optical absorption tint (`coatColor`), coat-induced base roughening (`coatRoughenBase`), and internal reflection darkening (`coatDarkening`)
-  - **Fuzz / Sheen Slab:** Charlie microcylinder NDF + Ashikhmin visibility (`fuzzWeight`, `fuzzColor`, `fuzzRoughness`) energy-conserved over coat and base
-  - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `doubleSided`, material `name`, and `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`
-- **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo, params)`
+- **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Layered OpenPBR slabs (`OPBR-1`–`7`):
+  - **Base & Specular:** Qualitative Fujii Oren-Nayar diffuse (`baseDiffuseRoughness`, attenuated by `1 - transmissionWeight`), IOR-derived dielectric $F_0$ modulated by `coatIor` (`dielectricF0UnderCoat`), multi-scattering energy-compensated anisotropic GGX (with per-pixel `anisoFilm` tangent rotation and strength), and $F_{82}$-tint conductor Fresnel (`specularColor`)
+  - **Thin-Film Iridescence:** Physical Airy thin-film reflectance modulating dielectric/conductor Fresnel (`thinFilmWeight`, `thinFilmThicknessMin`..`thinFilmThickness` driven by `anisoFilm.a`, `thinFilmIor`)
+  - **Coat Slab:** Dielectric clearcoat GGX with per-pixel weight/roughness (`coatMap`), tangent-space `coatNormalMap`, optical absorption tint (`coatColor`), coat-induced base roughening (`coatRoughenBase`), and internal reflection darkening (`coatDarkening`)
+  - **Fuzz / Sheen Slab:** Charlie microcylinder NDF + Ashikhmin visibility (`fuzzWeight`, `fuzzColor`, `fuzzRoughness`, modulated by `fuzzMap`) energy-conserved over coat and base
+  - **Refractive Transmission (`OPBR-7`):** Back-to-front Pass 1 (`Material.transmissive`, routed automatically after `Renderer.snapshotOpaque` captures the 5-mip HDR `opaqueSceneColorMap` pyramid), sampling screen-space refracted UVs with roughness-based mip selection, optional RGB chromatic dispersion (`transmissionDispersion`), Beer-Lambert volume absorption (`transmissionColor`, `transmissionDepth`, `transmissionThickness`, modulated by `transmissionMap`), and coat/fuzz top-slab attenuation
+  - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `doubleSided`, material `name`, and `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, `KHR_materials_anisotropy`, `KHR_materials_transmission`, `KHR_materials_volume`, and `KHR_materials_dispersion` (`buildGltfLayerMaps` packs per-pixel layer maps at load time in `loadGltfAsset` and `loadGltfSkinnedCharacter`)
+- **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo, params, mr, norm, ao, emissive, layers)` (`GpuContext` requests `maxSampledTexturesPerShaderStage = 32` via `WGPULimits`)
 - **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain); tone mapping in `resolvePost`
 
 ### ShadowMap (Depth-Only Pipeline)
@@ -270,7 +271,7 @@ struct SpriteUniforms { viewProj: mat4x4<f32> };
 
 `engine/graphics/texture.d` encapsulates GPU RGBA8 texture creation, configurable samplers, and uncompressed TGA loading. It also provides procedural helpers (`checker`, `solid`) for testing.
 
-`engine/graphics/material.d` creates a `@group(1)` bind group with the 144-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, `flags`) + sampler + albedo and optional maps. Missing maps use default 1×1 textures.
+`engine/graphics/material.d` creates a `@group(1)` bind group with the 176-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, Transmission/Volume/Dispersion, `flags`) + sampler + albedo, optional standard maps (`2..6`), surface params (`7`), and optional `MaterialLayerMaps` (`8..12`). Missing maps use default 1×1 textures (`MaterialDefaults`).
 
 ### Supported Image Formats
 
@@ -278,7 +279,7 @@ struct SpriteUniforms { viewProj: mat4x4<f32> };
 |:---|:---|:---|
 | TGA (uncompressed) | `engine.graphics.texture` | 24/32-bpp, minimal loader |
 | BMP (24/32-bpp, uncompressed) | `engine.assets.bmp` | Flips row order vertically |
-| glTF 2.0 / GLB (mesh + OpenPBR) | `engine.assets.gltf`, `engine.graphics.model` | `loadGltfMesh` / `loadGltfPbr` (first primitive) and `loadGltfAsset` (all meshes, primitives, materials, node tree; `.glb`, `data:` buffers, embedded images) with `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` |
+| glTF 2.0 / GLB (mesh + OpenPBR) | `engine.assets.gltf`, `engine.graphics.model` | `loadGltfMesh` / `loadGltfPbr` (first primitive) and `loadGltfAsset` (all meshes, primitives, materials, node tree; `.glb`, `data:` buffers, embedded images) with `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy,transmission,volume,dispersion}` + layer texture maps |
 
 ## Open-World Rendering (OW-2)
 
@@ -602,7 +603,7 @@ dub run --config=game
 # Solar system (scene graph + textures + PCF shadows)
 dub run --config=showcase
 
-# OpenPBR Surface v1.1 validation (4×5 spheres + IBL + glTF cube)
+# OpenPBR Surface v1.1 validation (5×5 spheres + layer maps + transmission + IBL + glTF cube)
 dub run --config=pbr
 
 # OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)

@@ -1,6 +1,6 @@
 # Plan: Real-Time OpenPBR Surface v1.1, IBL & Shadows
 
-> **Status:** Phase 1 Done (`PBR-0`–`5`, `OPBR-1`–`5`) · Phase 2 Pending (`OPBR-6`–`9`) · Priority: Medium · See [roadmap.md](roadmap.md)
+> **Status:** Phase 1 Done (`PBR-0`–`5`, `OPBR-1`–`5`) · Phase 2 In Progress (`OPBR-6`–`7` Done; `OPBR-8`–`9` Pending) · Priority: Medium · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -16,7 +16,11 @@ Because the engine is in active development, we prioritize a clean, idiomatic Op
   - **Shaders:** [`assets/shaders/textured3d_pbr.wgsl`](../assets/shaders/textured3d_pbr.wgsl) and [`assets/shaders/common/pbr_brdf.wgsl`](../assets/shaders/common/pbr_brdf.wgsl) — single-pass OpenPBR Surface v1.1 (Fujii Oren-Nayar diffuse, dielectric IOR under coat, $F_{82}$-tint conductor Fresnel, anisotropic & multi-scattering GGX, Airy thin-film iridescence, coat absorption/darkening/roughening, Charlie/Ashikhmin fuzz, emission) with directional/point/spot PCF shadows and IBL.
   - **Shadow Map & IBL Precomputation:** [`source/engine/gpu/shadow.d`](../source/engine/gpu/shadow.d) + [`source/engine/gpu/ibl.d`](../source/engine/gpu/ibl.d) — 3×3 PCF shadows, 64² procedural sky cubemap, 16² irradiance cubemap, 5-mip GGX specular cubemap, and 128² `rgba8Unorm` 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo) bound at `@group(2)`.
   - **Assets, Scene & Editor:** [`source/engine/assets/gltf.d`](../source/engine/assets/gltf.d) (`KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}`), [`source/engine/assets/asset_file.d`](../source/engine/assets/asset_file.d), [`source/engine/scene/scene_file.d`](../source/engine/scene/scene_file.d), [`source/engine/editor/`](../source/engine/editor/), 4×5 showcase in [`source/demo/pbr.d`](../source/demo/pbr.d), and Ocean/River testbed in [`source/demo/water.d`](../source/demo/water.d) (`dub run --config=water`).
-- **Pending (Phase 2 — `OPBR-6`–`9`):** Per-pixel layer texture maps (coat/fuzz/anisotropy/thin-film), multi-pass refractive transmission (`transmission_weight`), subsurface scattering & thin-walled translucency (`subsurface_weight`), and local reflection probes / SSR.
+- **Delivered (`OPBR-6`–`7`, Phase 2):**
+  - **Material UBO & Bindings (`source/engine/graphics/material.d`, `source/engine/gpu/pipeline.d`, `source/engine/gpu/context.d`):** Expanded `MaterialParams` to **176 bytes** (`11 × vec4f`) with `anisotropyRotation`, `thinFilmThicknessMin`, `transmissionColor`, `transmissionWeight`, `transmissionDepth`, `transmissionDispersion`, `transmissionThickness`, and `MaterialFlags.{coat, coatNormal, fuzz, anisotropy, thinFilm, transmission}`; expanded `@group(1)` to `MATERIAL_BINDING_COUNT = 13` (`@binding(8..12)` for `MaterialLayerMaps`) and `@group(0)` to `FRAME_BINDING_COUNT = 12` (`@binding(11) opaqueSceneColorMap`), requesting `maxSampledTexturesPerShaderStage = 32` via `WGPULimits`.
+  - **Opaque HDR Pyramid & Multi-Pass Transmission (`source/engine/gpu/renderer.d`, `source/engine/scene/scene3d_textured.d`):** `Renderer.snapshotOpaque` builds a 5-mip `rgba16Float` HDR pyramid (`OPAQUE_COLOR_MIPS = 5`) using `post_bloom_down.wgsl`; `Scene3DTextured.end()` routes `Material.transmissive` batches to back-to-front Pass 1, captures the opaque snapshot on demand, binds `opaqueSceneColorMap` at `@group(0) @binding(11)` for Pass 1, and restores the 1×1 placeholder outside Pass 1.
+  - **WGSL Shaders & glTF Packing (`textured3d_pbr.wgsl`, `common/pbr_brdf.wgsl`, `engine.assets.gltf`):** Per-pixel clearcoat/coat-normal/fuzz/anisotropy/thin-film modulation, screen-space IOR refraction (`refract(-V, N, 1/ior)`), roughness mip selection, Beer-Lambert absorption, chromatic dispersion, coat/fuzz transmittance, and `buildGltfLayerMaps` + `KHR_materials_{transmission,volume,dispersion}`; `source/demo/pbr.d` expanded to 5×5 with procedural layer maps and transmissive spheres.
+- **Pending (`OPBR-8`–`9`, Phase 2):** Subsurface scattering & thin-walled translucency (`subsurface_weight`), and local reflection probes / SSR.
 
 ## Out of Scope
 
@@ -199,22 +203,22 @@ Consolidated from the original metallic-roughness + IBL + shadow plan (`plan-pbr
 
 **DoD:** `dub build --config=pbr`, `dub run --config=editor -- --headless-frames=600 --assert-no-gc`, and `dub run --config=player -- --headless-frames=600 --assert-no-gc` pass with zero GC allocations in the frame loop.
 
-### Phase 2 — Multi-Pass Slabs, Layer Textures & Local Reflections (`OPBR-6`–`OPBR-9`, Pending)
+### Phase 2 — Multi-Pass Slabs, Layer Textures & Local Reflections (`OPBR-6`–`7` Done, `OPBR-8`–`9` Pending)
 
-#### OPBR-6 — Per-Pixel Layer Texture Maps (Coat, Fuzz, Anisotropy & Thin-Film)
+#### OPBR-6 — Per-Pixel Layer Texture Maps (Coat, Fuzz, Anisotropy & Thin-Film) — Done
 
-- [ ] Extend `Material` (`@group(1)`) with packed layer texture channels (`coatWeight`/`Roughness`, `coatNormal`, `fuzzColor`/`Roughness`, `anisotropyDirection`/`Strength`, `thinFilmThickness`) using 1×1 default fallbacks when omitted.
-- [ ] Parse `clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`, `sheenColorTexture`, `sheenRoughnessTexture`, `anisotropyTexture`, and `iridescenceThicknessTexture` in `source/engine/assets/gltf.d`.
+- [x] Extend `Material` (`@group(1)`) with packed layer texture channels (`coatWeight`/`Roughness`, `coatNormal`, `fuzzColor`/`Roughness`, `anisotropyDirection`/`Strength`, `thinFilmThickness`) using 1×1 default fallbacks when omitted, and request `maxSampledTexturesPerShaderStage = 32` via `WGPULimits`.
+- [x] Parse `clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`, `sheenColorTexture`, `sheenRoughnessTexture`, `anisotropyTexture`, `anisotropyRotation`, `iridescenceThicknessMinimum`, and `iridescenceThicknessTexture` in `source/engine/assets/gltf.d` and pack them via `buildGltfLayerMaps`.
 
 **DoD:** glTF 2.0 assets with per-pixel clearcoat, sheen, anisotropy, or iridescence textures render with spatially varying slab parameters and zero GC allocations.
 
-#### OPBR-7 — Multi-Pass Refractive Transmission (`transmission_weight`)
+#### OPBR-7 — Multi-Pass Refractive Transmission (`transmission_weight`) — Done
 
-- [ ] Add an opaque HDR scene color copy + roughness mip pyramid pass in `Renderer` / `Scene3DTextured` before transmissive draw calls, with back-to-front sorting for transmissive batches.
-- [ ] Add OpenPBR transmission & volume absorption fields (`transmissionWeight`, `transmissionColor`, `transmissionDepth`, `transmissionDispersion`) and parse `KHR_materials_transmission`, `KHR_materials_volume`, and `KHR_materials_dispersion`.
-- [ ] Sample the mip-mapped opaque scene texture in `textured3d_pbr.wgsl` using IOR-refracted screen-space UVs, roughness-driven mip selection, Beer-Lambert absorption, and optional RGB dispersion.
+- [x] Add an opaque HDR scene color copy + 5-mip roughness pyramid pass in `Renderer.snapshotOpaque` / `Scene3DTextured.end` before transmissive draw calls (`@group(0) @binding(11) opaqueSceneColorMap`), with back-to-front sorting for `Material.transmissive` batches in Pass 1.
+- [x] Add OpenPBR transmission & volume absorption fields (`transmissionWeight`, `transmissionColor`, `transmissionDepth`, `transmissionDispersion`, `transmissionThickness`) to the 176-byte `MaterialParams`, asset/scene serialization, Editor Inspector, and parse `KHR_materials_transmission`, `KHR_materials_volume`, and `KHR_materials_dispersion`.
+- [x] Sample the mip-mapped opaque scene texture in `textured3d_pbr.wgsl` using IOR-refracted screen-space UVs, roughness-driven mip selection, Beer-Lambert absorption, optional RGB dispersion, and coat/fuzz transmittance; showcase in `source/demo/pbr.d` (Row 4).
 
-**DoD:** Rough and smooth glass, water, and transmissive glTF models refract background geometry with physically plausible IOR distortion, blur, and volume tint.
+**DoD:** Rough and smooth glass, water, and transmissive glTF models refract background geometry with physically plausible IOR distortion, blur, and volume tint with zero frame-loop GC allocations.
 
 #### OPBR-8 — Subsurface Scattering & Thin-Walled Translucency (`subsurface_weight`)
 
