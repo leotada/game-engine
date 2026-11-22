@@ -6,6 +6,8 @@ Run: python3 -m unittest tools/test_blender_export_scene.py
 import json
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -97,6 +99,88 @@ class ExportWorldTests(unittest.TestCase):
         self.assertAlmostEqual(q[1], s)
         self.assertAlmostEqual(q[3], s)
         self.assertEqual(bx.cell_of([-1, 0, 257], 256), (-1, 1))
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_GESC = os.path.join(REPO, "game-engine-gesc")
+
+
+class GescFormatTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.root, "assets/w/t/meshes"))
+        with open(os.path.join(self.root, "assets/w/t/meshes/rock.glb"), "wb") as f:
+            f.write(b"glTF")
+        self._env = os.environ.pop("GAME_ENGINE_GESC", None)
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+        if self._env is not None:
+            os.environ["GAME_ENGINE_GESC"] = self._env
+
+    desc = ExportWorldTests.desc
+    read = ExportWorldTests.read
+
+    def fake_tool(self):
+        """A stand-in tool: `encode` copies, `verify` succeeds. Records invocations."""
+        path = os.path.join(self.root, "fake-gesc")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\necho \"$@\" >> \"$0.log\"\n"
+                    "[ \"$1\" = encode ] && cp \"$2\" \"$3\"\nexit 0\n")
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        return path
+
+    def test_missing_tool_is_a_clear_error(self):
+        from unittest import mock
+        fake_module = os.path.join(self.root, "tools", "blender_export_scene.py")
+        with mock.patch.object(bx, "__file__", fake_module), mock.patch.dict(os.environ, {"PATH": ""}):
+            with self.assertRaises(FileNotFoundError) as cm:
+                bx.find_gesc_tool(None, self.root)
+        self.assertIn("dub build --config=gesc", str(cm.exception))
+        with self.assertRaises(FileNotFoundError):
+            bx.export_world(self.desc(), self.root, "assets/w", 256, log=lambda m: None,
+                            fmt="gesc", gesc_tool=os.path.join(self.root, "nope"))
+
+    def test_unknown_format_rejected(self):
+        with self.assertRaises(ValueError):
+            bx.export_world(self.desc(), self.root, "assets/w", 256, log=lambda m: None, fmt="bin")
+
+    def test_gesc_format_with_fake_tool(self):
+        tool = self.fake_tool()
+        r = bx.export_world(self.desc(), self.root, "assets/w", 256, log=lambda m: None,
+                            fmt="gesc", gesc_tool=tool, gesc_level=3)
+        base = "assets/w/t/chunks/chunk_%d_0"
+        self.assertEqual([c["scenePath"] for c in r["chunks"]], [(base % 0) + ".gesc", (base % 1) + ".gesc"])
+        self.assertEqual(r["chunks"][0]["sourcePath"], (base % 0) + ".scene.json")
+        for i in (0, 1):  # editable JSON sources are still written
+            self.assertTrue(os.path.exists(os.path.join(self.root, (base % i) + ".scene.json")))
+            self.assertTrue(os.path.exists(os.path.join(self.root, (base % i) + ".gesc")))
+        root = self.read("assets/w/t.scene.json")
+        self.assertEqual([i["scenePath"] for i in root["chunks"]["items"]],
+                         [(base % 0) + ".gesc", (base % 1) + ".gesc"])
+        with open(tool + ".log") as f:
+            log = f.read()
+        self.assertIn("--level=3", log)
+        self.assertIn("verify", log)
+
+    def test_default_format_is_json(self):
+        r = bx.export_world(self.desc(), self.root, "assets/w", 256, log=lambda m: None)
+        self.assertTrue(all(c["scenePath"].endswith(".scene.json") for c in r["chunks"]))
+
+    @unittest.skipUnless(os.path.isfile(REAL_GESC), "game-engine-gesc not built (dub build --config=gesc)")
+    def test_gesc_round_trip_with_real_tool(self):
+        r = bx.export_world(self.desc(), self.root, "assets/w", 256, log=lambda m: None,
+                            fmt="gesc", gesc_tool=REAL_GESC)
+        for c in r["chunks"]:
+            src = self.read(c["sourcePath"])
+            out = os.path.join(self.root, "decoded.scene.json")
+            subprocess.run([REAL_GESC, "decode", os.path.join(self.root, c["scenePath"]), out], check=True,
+                           capture_output=True)
+            with open(out, encoding="utf-8") as f:
+                dec = json.load(f)
+            self.assertEqual(len(dec["entities"]), len(src["entities"]))
+            self.assertEqual([e["name"] for e in dec["entities"]], [e["name"] for e in src["entities"]])
+            self.assertEqual(dec.get("cellBounds"), src.get("cellBounds"))
 
 
 if __name__ == "__main__":

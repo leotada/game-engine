@@ -50,6 +50,13 @@ Options (after ``--``):
     --build-test-level    replace the scene with the generated multi-biome test level
     --from-json=FILE      no Blender: export a neutral description (see below)
     --dump-json=FILE      also write the neutral description gathered from Blender
+    --format=json|gesc    chunk output (default json). ``gesc`` keeps every ``.scene.json`` as the
+                          editable source and also encodes each chunk to ``chunk_<x>_<z>.gesc`` with
+                          the ``game-engine-gesc`` tool; the root manifest then points at the ``.gesc``
+    --gesc-tool=PATH      game-engine-gesc executable (default: $GAME_ENGINE_GESC, then
+                          <project-root>/game-engine-gesc, <repo>/game-engine-gesc, then PATH;
+                          build it with ``dub build --config=gesc``)
+    --gesc-level=N        zstd level for ``--format=gesc`` (default 6)
 
 The backend (``export_world``) is pure Python so it can be exercised without
 Blender: ``python3 tools/blender_export_scene.py --from-json=desc.json``
@@ -59,6 +66,8 @@ writes scenes/splines/assets for meshes whose ``.glb`` already exist.
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
 import uuid
 
@@ -309,8 +318,46 @@ def model_asset_json(name, glb_path, hull_points):
     }
 
 
+GESC_TOOL_NAME = "game-engine-gesc"
+
+
+def find_gesc_tool(explicit=None, project_root="."):
+    """Locate the ``game-engine-gesc`` executable or raise ``FileNotFoundError``.
+
+    Order: explicit path, ``$GAME_ENGINE_GESC``, ``<project_root>/game-engine-gesc``,
+    ``<repo>/game-engine-gesc`` (next to ``tools/``), then ``PATH``.
+    """
+    if explicit and not (os.path.isfile(explicit) and os.access(explicit, os.X_OK)):
+        raise FileNotFoundError("--gesc-tool=%s is not an executable file (build the tool with "
+                                "`dub build --config=gesc`)" % explicit)
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [explicit, os.environ.get("GAME_ENGINE_GESC"),
+                  os.path.join(project_root, GESC_TOOL_NAME),
+                  os.path.join(os.path.dirname(here), GESC_TOOL_NAME)]
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return os.path.abspath(c)
+    found = shutil.which(GESC_TOOL_NAME)
+    if found:
+        return found
+    raise FileNotFoundError(
+        "--format=gesc needs the %s tool but it was not found (tried: %s, PATH). "
+        "Build it with `dub build --config=gesc` or pass --gesc-tool=PATH / set GAME_ENGINE_GESC."
+        % (GESC_TOOL_NAME, ", ".join(c for c in candidates if c) or "no explicit path"))
+
+
+def encode_gesc(tool, src, dst, level=6):
+    """Encode one ``.scene.json`` chunk to ``.gesc`` and verify it decodes."""
+    for cmd in ([tool, "encode", src, dst, "--level=%d" % level], [tool, "verify", dst]):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("%s failed for %s: %s" % (" ".join(cmd[:2]), src,
+                                                         (r.stderr or r.stdout).strip()))
+
+
 def export_world(desc, project_root=".", out_dir="assets/world", cell_size=256.0,
-                 load_radius=None, unload_radius=None, log=print):
+                 load_radius=None, unload_radius=None, log=print,
+                 fmt="json", gesc_tool=None, gesc_level=6):
     """Write a chunked world from a neutral description.
 
     ``desc`` = {
@@ -326,7 +373,11 @@ def export_world(desc, project_root=".", out_dir="assets/world", cell_size=256.0
       "settings": optional scene settings object,
     }
     All coordinates are engine Y-up. Returns the export report dict.
+    ``fmt="gesc"`` additionally encodes every chunk with the gesc tool (see ``find_gesc_tool``).
     """
+    if fmt not in ("json", "gesc"):
+        raise ValueError("unknown format %r (expected json or gesc)" % fmt)
+    tool = find_gesc_tool(gesc_tool, project_root) if fmt == "gesc" else None
     name = desc["name"]
     if cell_size <= 0:
         raise ValueError("cell size must be > 0")
@@ -385,8 +436,13 @@ def export_world(desc, project_root=".", out_dir="assets/world", cell_size=256.0
         rel = "%s/chunks/chunk_%d_%d.scene.json" % (world_dir, cx, cz)
         write_json(abs_path(rel), sb.to_json(cell_bounds=bounds))
         write_meta(abs_path(rel), "scene", rel)
-        items.append({"coord": [cx, cz], "bounds": bounds, "scenePath": rel})
-        report_chunks.append({"coord": [cx, cz], "entities": len(sb.entities), "scenePath": rel})
+        streamed = rel
+        if tool:
+            streamed = rel[:-len(".scene.json")] + ".gesc"
+            encode_gesc(tool, abs_path(rel), abs_path(streamed), gesc_level)
+        items.append({"coord": [cx, cz], "bounds": bounds, "scenePath": streamed})
+        report_chunks.append({"coord": [cx, cz], "entities": len(sb.entities), "scenePath": streamed,
+                              "sourcePath": rel})
 
     # 4. Splines.
     splines_rel = None
@@ -813,7 +869,9 @@ def main(argv):
         desc = gather_blender_scene(name, project_root, out_dir, args.get("collection"))
         if "dump-json" in args:
             write_json(args["dump-json"], desc)
-    report = export_world(desc, project_root, out_dir, cell, load_r, unload_r)
+    fmt = args.get("format", "json")
+    report = export_world(desc, project_root, out_dir, cell, load_r, unload_r, fmt=fmt,
+                          gesc_tool=args.get("gesc-tool"), gesc_level=int(args.get("gesc-level", 6)))
     return 0 if report else 1
 
 
