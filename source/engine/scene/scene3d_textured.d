@@ -371,6 +371,9 @@ struct Scene3DTextured {
     private WGPUSampler boundShadowSampler;
     private WGPUTextureView[7] boundShadowViews;
     private WGPUTextureView defaultShadowArrayView;
+    private WGPUTexture defaultSceneColorTex;
+    private WGPUTextureView defaultSceneColorView;
+    private WGPUTextureView boundSceneColorView;
 
     // Camera captured in `begin` (cascade fitting).
     private Camera frameCamera;
@@ -671,7 +674,8 @@ struct Scene3DTextured {
         rebuildFrameBindGroup(
             sampler, dirView,
             boundPoints[0], boundPoints[1], boundPoints[2], boundPoints[3],
-            boundSpots[0], boundSpots[1]);
+            boundSpots[0], boundSpots[1],
+            defaultSceneColorView);
     }
 
     /// Copy `cascadeSet` into the frame uniforms, or switch to the fixed map.
@@ -1428,6 +1432,7 @@ struct Scene3DTextured {
         if (!frame.valid) return;
 
         ensureSkinPalettesUploaded();
+        setSceneColorView(defaultSceneColorView);
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
 
@@ -1437,8 +1442,9 @@ struct Scene3DTextured {
             return dx * dx + dy * dy + dz * dz;
         }
 
-        // Pass 0: depth-writing batches in submission order. Pass 1: alpha
-        // batches without depth write, back to front. Pass 2: additive.
+        // Pass 0: depth-writing opaque batches + hooks + sky.
+        // Pass 1: alpha/transmissive batches back-to-front (snapshots HDR pyramid once if transmissive exists).
+        // Pass 2: additive.
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0) continue;
             prepareBatch(b, null);
@@ -1452,8 +1458,7 @@ struct Scene3DTextured {
             orderCount = 0;
             foreach (i, ref b; batches[0 .. batchCount]) {
                 if (b.colorCount == 0) continue;
-                immutable st = b.material.renderState;
-                immutable p = st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
+                immutable p = renderPassOf(*b.material);
                 if (p != pass) continue;
                 if (pass == 1) {
                     b.instances[b.colorFirst .. b.colorFirst + b.colorCount]
@@ -1463,8 +1468,22 @@ struct Scene3DTextured {
                 }
                 sortOrder[orderCount++] = cast(uint) i;
             }
-            if (pass == 1)
+            if (pass == 1) {
                 sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
+                bool hasTransmissive = false;
+                foreach (idx; sortOrder[0 .. orderCount]) {
+                    if (batches[idx].material.transmissive) {
+                        hasTransmissive = true;
+                        break;
+                    }
+                }
+                if (hasTransmissive && frame.owner !is null) {
+                    frame.owner.snapshotOpaque(frame);
+                    setSceneColorView(frame.owner.opaqueColorView());
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                }
+            }
             foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
             if (pass == 0) {
                 foreach (sib; staticBufs[0 .. staticCount]) drawStatic(frame, *sib);
@@ -1478,6 +1497,7 @@ struct Scene3DTextured {
                 }
             }
         }
+        setSceneColorView(defaultSceneColorView);
     }
 
     /**
@@ -1721,6 +1741,14 @@ struct Scene3DTextured {
             wgpuTextureRelease(defaultShadowCubeTex);
             defaultShadowCubeTex = null;
         }
+        if (defaultSceneColorView !is null) {
+            wgpuTextureViewRelease(defaultSceneColorView);
+            defaultSceneColorView = null;
+        }
+        if (defaultSceneColorTex !is null) {
+            wgpuTextureRelease(defaultSceneColorTex);
+            defaultSceneColorTex = null;
+        }
         if (hasOwnedDirShadow) { ownedDirShadow.destroy(); hasOwnedDirShadow = false; }
         foreach (i; 0 .. MAX_POINT_SHADOW_CASTERS) {
             if (hasOwnedPointShadow[i]) { ownedPointShadows[i].destroy(); hasOwnedPointShadow[i] = false; }
@@ -1802,6 +1830,30 @@ struct Scene3DTextured {
             clearDepthView(device, faceView);
             wgpuTextureViewRelease(faceView);
         }
+
+        // 1×1 rgba16Float opaque scene color placeholder until snapshotOpaque provides the pyramid.
+        {
+            WGPUTextureDescriptor td;
+            td.usage = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;
+            td.dimension = WGPUTextureDimension.dim2D;
+            td.size = WGPUExtent3D(1, 1, 1);
+            td.format = Renderer.sceneFormat();
+            defaultSceneColorTex = wgpuDeviceCreateTexture(device, &td);
+
+            WGPUImageCopyTexture dst;
+            dst.texture = defaultSceneColorTex;
+            WGPUTextureDataLayout layout;
+            layout.bytesPerRow = 8;
+            layout.rowsPerImage = 1;
+            WGPUExtent3D extent = WGPUExtent3D(1, 1, 1);
+            immutable ubyte[8] zeroColor = 0;
+            wgpuQueueWriteTexture(queue, &dst, zeroColor.ptr, zeroColor.sizeof, &layout, &extent);
+
+            WGPUTextureViewDescriptor vd;
+            vd.format = Renderer.sceneFormat();
+            vd.dimension = WGPUTextureViewDimension.dim2D;
+            defaultSceneColorView = wgpuTextureCreateView(defaultSceneColorTex, &vd);
+        }
     }
 
     private void clearDepthView(WGPUDevice device, WGPUTextureView view) @trusted {
@@ -1829,13 +1881,17 @@ struct Scene3DTextured {
         WGPUTextureView dirView,
         WGPUTextureView point0, WGPUTextureView point1,
         WGPUTextureView point2, WGPUTextureView point3,
-        WGPUTextureView spot0, WGPUTextureView spot1) @trusted
+        WGPUTextureView spot0, WGPUTextureView spot1,
+        WGPUTextureView sceneColorView = null) @trusted
     {
         WGPUTextureView[7] views = [dirView, point0, point1, point2, point3, spot0, spot1];
-        if (frameBindGroup !is null && shadowSampler is boundShadowSampler && views == boundShadowViews)
+        WGPUTextureView resolvedSceneColor = sceneColorView !is null ? sceneColorView : defaultSceneColorView;
+        if (frameBindGroup !is null && shadowSampler is boundShadowSampler
+            && views == boundShadowViews && resolvedSceneColor is boundSceneColorView)
             return;
         boundShadowSampler = shadowSampler;
         boundShadowViews = views;
+        boundSceneColorView = resolvedSceneColor;
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -1869,6 +1925,8 @@ struct Scene3DTextured {
         entries[10].buffer = waterDataBuf;
         entries[10].offset = 0;
         entries[10].size = WATER_DATA_SIZE;
+        entries[11].binding = 11;
+        entries[11].textureView = resolvedSceneColor;
 
         WGPUBindGroupDescriptor desc;
         desc.layout = pipeline.frameBindGroupLayout;
@@ -1876,6 +1934,16 @@ struct Scene3DTextured {
         desc.entries = entries.ptr;
         frameBindGroup = wgpuDeviceCreateBindGroup(device, &desc);
         if (frameBindGroup is null) fatal("Failed to create frame bind group");
+    }
+
+    private void setSceneColorView(WGPUTextureView sceneColorView) @trusted {
+        rebuildFrameBindGroup(
+            boundShadowSampler,
+            boundShadowViews[0],
+            boundShadowViews[1], boundShadowViews[2],
+            boundShadowViews[3], boundShadowViews[4],
+            boundShadowViews[5], boundShadowViews[6],
+            sceneColorView !is null ? sceneColorView : defaultSceneColorView);
     }
 
     private Batch* findOrAdd(ref TexMesh mesh, ref Material material, ubyte lod) nothrow @nogc @trusted {
@@ -2226,4 +2294,30 @@ package(engine) struct BatchMap {
     staging.release();
     cand.release();
     spheres.release();
+}
+
+/// Classify a material into Scene3DTextured's 3 draw passes:
+/// 0 = opaque depth-writing, 1 = alpha / transmissive (post-snapshot back-to-front), 2 = additive.
+package(engine) uint renderPassOf(ref const Material m) pure nothrow @nogc {
+    immutable st = m.renderState;
+    if (m.transmissive) return st.blend == BlendMode.additive ? 2 : 1;
+    return st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
+}
+
+@("scene3d.transmissivePassClassification") @safe unittest {
+    Material opaqueMat;
+    assert(renderPassOf(opaqueMat) == 0);
+
+    Material glassMat;
+    glassMat.transmissive = true;
+    assert(glassMat.renderState.depthWrite);
+    assert(renderPassOf(glassMat) == 1);
+
+    Material alphaMat;
+    alphaMat.renderState = RenderState(BlendMode.alpha, false);
+    assert(renderPassOf(alphaMat) == 1);
+
+    Material additiveMat;
+    additiveMat.renderState = RenderState(BlendMode.additive, false);
+    assert(renderPassOf(additiveMat) == 2);
 }

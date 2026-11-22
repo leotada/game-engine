@@ -88,6 +88,7 @@ struct FrameUniforms {
 @group(0) @binding(7) var spotShadow0: texture_depth_2d;
 @group(0) @binding(8) var spotShadow1: texture_depth_2d;
 @group(0) @binding(9) var<storage, read> pointLights: array<PointLight>;
+@group(0) @binding(11) var opaqueSceneColorMap: texture_2d<f32>;
 
 /// 3×3 PCF on one directional shadow layer (explicit LOD: valid in
 /// non-uniform control flow).

@@ -5,7 +5,8 @@ import bindings.wgpu;
 import engine.gpu.context;
 import engine.gpu.post : PostProcessor, PostSettings, PostStage, SCENE_COLOR_FORMAT;
 import engine.gpu.shader : createShaderModule;
-import engine.gpu.shaders : depthCopyShaderSource;
+import engine.gpu.shaders : depthCopyShaderSource, bloomDownsampleShaderSource;
+import engine.graphics.texture : mipCount;
 import engine.graphics.types : Color4;
 import engine.core.log;
 
@@ -30,10 +31,19 @@ struct Renderer {
     // Frame capture (screenshots for verification): readback buffer filled during endFrame.
     private WGPUBuffer captureBuf;
     private uint captureStride, captureW, captureH;
-    // Lazy opt-in opaque snapshot (HDR color copy + depth32Float resolve for water/transmission).
+    // Lazy opt-in opaque snapshot (HDR color pyramid + depth32Float resolve for water/transmission).
+    private enum uint OPAQUE_COLOR_MIPS = 5;
     private bool snapshotActive = false;
+    private uint opaqueMipCount = 0;
     private WGPUTexture        opaqueColorTex;
     private WGPUTextureView    opaqueColorView_;
+    private WGPUTextureView[OPAQUE_COLOR_MIPS] opaqueMipViews;
+    private WGPUBindGroup[OPAQUE_COLOR_MIPS]   opaqueDownBG;
+    private WGPUSampler        opaqueDownSampler;
+    private WGPUShaderModule   opaqueDownSM;
+    private WGPUBindGroupLayout opaqueDownBGL;
+    private WGPUPipelineLayout opaqueDownPL;
+    private WGPURenderPipeline opaqueDownPipe;
     private WGPUTexture        opaqueDepthTex;
     private WGPUTextureView    opaqueDepthView_;
     private WGPUShaderModule   depthCopySM;
@@ -145,17 +155,46 @@ struct Renderer {
         if (w == 0 || h == 0) return;
 
         {
+            immutable uint maxMips = mipCount(w, h);
+            opaqueMipCount = maxMips < OPAQUE_COLOR_MIPS ? maxMips : OPAQUE_COLOR_MIPS;
+
             WGPUTextureDescriptor td;
-            td.usage     = WGPUTextureUsage.copyDst | WGPUTextureUsage.textureBinding;
-            td.dimension = WGPUTextureDimension.dim2D;
-            td.size      = WGPUExtent3D(w, h, 1);
-            td.format    = SCENE_COLOR_FORMAT;
+            td.usage         = WGPUTextureUsage.copyDst | WGPUTextureUsage.textureBinding | WGPUTextureUsage.renderAttachment;
+            td.dimension     = WGPUTextureDimension.dim2D;
+            td.size          = WGPUExtent3D(w, h, 1);
+            td.format        = SCENE_COLOR_FORMAT;
+            td.mipLevelCount = opaqueMipCount;
             opaqueColorTex = wgpuDeviceCreateTexture(device, &td);
             if (opaqueColorTex is null) fatal("Opaque color snapshot texture creation failed");
             WGPUTextureViewDescriptor vd;
-            vd.format    = SCENE_COLOR_FORMAT;
-            vd.dimension = WGPUTextureViewDimension.dim2D;
+            vd.format        = SCENE_COLOR_FORMAT;
+            vd.dimension     = WGPUTextureViewDimension.dim2D;
+            vd.baseMipLevel  = 0;
+            vd.mipLevelCount = opaqueMipCount;
             opaqueColorView_ = wgpuTextureCreateView(opaqueColorTex, &vd);
+
+            foreach (m; 0 .. opaqueMipCount) {
+                WGPUTextureViewDescriptor mvd;
+                mvd.format        = SCENE_COLOR_FORMAT;
+                mvd.dimension     = WGPUTextureViewDimension.dim2D;
+                mvd.baseMipLevel  = m;
+                mvd.mipLevelCount = 1;
+                opaqueMipViews[m] = wgpuTextureCreateView(opaqueColorTex, &mvd);
+            }
+            if (opaqueDownBGL !is null && opaqueDownSampler !is null) {
+                foreach (m; 1 .. opaqueMipCount) {
+                    WGPUBindGroupEntry[2] e;
+                    e[0].binding     = 0;
+                    e[0].sampler     = opaqueDownSampler;
+                    e[1].binding     = 1;
+                    e[1].textureView = opaqueMipViews[m - 1];
+                    WGPUBindGroupDescriptor bgd;
+                    bgd.layout     = opaqueDownBGL;
+                    bgd.entryCount = 2;
+                    bgd.entries    = e.ptr;
+                    opaqueDownBG[m] = wgpuDeviceCreateBindGroup(device, &bgd);
+                }
+            }
         }
 
         {
@@ -189,11 +228,73 @@ struct Renderer {
         if (depthCopyBG !is null)      { wgpuBindGroupRelease(depthCopyBG); depthCopyBG = null; }
         if (opaqueDepthView_ !is null) { wgpuTextureViewRelease(opaqueDepthView_); opaqueDepthView_ = null; }
         if (opaqueDepthTex !is null)   { wgpuTextureRelease(opaqueDepthTex); opaqueDepthTex = null; }
+        foreach (i; 0 .. OPAQUE_COLOR_MIPS) {
+            if (opaqueDownBG[i] !is null)   { wgpuBindGroupRelease(opaqueDownBG[i]); opaqueDownBG[i] = null; }
+            if (opaqueMipViews[i] !is null) { wgpuTextureViewRelease(opaqueMipViews[i]); opaqueMipViews[i] = null; }
+        }
+        opaqueMipCount = 0;
         if (opaqueColorView_ !is null) { wgpuTextureViewRelease(opaqueColorView_); opaqueColorView_ = null; }
         if (opaqueColorTex !is null)   { wgpuTextureRelease(opaqueColorTex); opaqueColorTex = null; }
     }
 
     private void ensureOpaqueSnapshot() nothrow @nogc @trusted {
+        if (opaqueDownPipe is null) {
+            WGPUSamplerDescriptor sd;
+            sd.addressModeU  = WGPUAddressMode.clampToEdge;
+            sd.addressModeV  = WGPUAddressMode.clampToEdge;
+            sd.addressModeW  = WGPUAddressMode.clampToEdge;
+            sd.magFilter     = WGPUFilterMode.linear;
+            sd.minFilter     = WGPUFilterMode.linear;
+            sd.mipmapFilter  = WGPUMipmapFilterMode.nearest;
+            sd.lodMinClamp   = 0;
+            sd.lodMaxClamp   = 1;
+            sd.maxAnisotropy = 1;
+            opaqueDownSampler = wgpuDeviceCreateSampler(device, &sd);
+
+            WGPUBindGroupLayoutEntry[2] bglEntries;
+            bglEntries[0].binding      = 0;
+            bglEntries[0].visibility   = WGPUShaderStage.fragment;
+            bglEntries[0].sampler.type = WGPUSamplerBindingType.filtering;
+            bglEntries[1].binding               = 1;
+            bglEntries[1].visibility            = WGPUShaderStage.fragment;
+            bglEntries[1].texture.sampleType    = WGPUTextureSampleType.float_;
+            bglEntries[1].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+            WGPUBindGroupLayoutDescriptor bgld;
+            bgld.entryCount = 2;
+            bgld.entries    = bglEntries.ptr;
+            opaqueDownBGL = wgpuDeviceCreateBindGroupLayout(device, &bgld);
+
+            WGPUPipelineLayoutDescriptor pld;
+            pld.bindGroupLayoutCount = 1;
+            pld.bindGroupLayouts     = &opaqueDownBGL;
+            opaqueDownPL = wgpuDeviceCreatePipelineLayout(device, &pld);
+
+            static immutable string downSrc = bloomDownsampleShaderSource;
+            opaqueDownSM = createShaderModule(device, downSrc);
+            if (opaqueDownSM is null) fatal("Failed to compile post_bloom_down.wgsl for opaque pyramid");
+
+            WGPUColorTargetState ct;
+            ct.format    = SCENE_COLOR_FORMAT;
+            ct.writeMask = WGPUColorWriteMask.all;
+
+            WGPUFragmentState fs;
+            fs.module_     = opaqueDownSM;
+            fs.entryPoint  = wgpuStringView("fs_main");
+            fs.targetCount = 1;
+            fs.targets     = &ct;
+
+            WGPURenderPipelineDescriptor pd;
+            pd.layout             = opaqueDownPL;
+            pd.vertex.module_     = opaqueDownSM;
+            pd.vertex.entryPoint  = wgpuStringView("vs_main");
+            pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+            pd.fragment           = &fs;
+            pd.multisample.count  = 1;
+            pd.multisample.mask   = ~0u;
+            opaqueDownPipe = wgpuDeviceCreateRenderPipeline(device, &pd);
+            if (opaqueDownPipe is null) fatal("Failed to create opaque downsample pipeline");
+        }
         if (depthCopyPipe is null) {
             WGPUBindGroupLayoutEntry bgle;
             bgle.binding = 0;
@@ -260,9 +361,30 @@ struct Renderer {
                 WGPUImageCopyTexture src;
                 src.texture = hdrTexture;
                 WGPUImageCopyTexture dst;
-                dst.texture = opaqueColorTex;
+                dst.texture  = opaqueColorTex;
+                dst.mipLevel = 0;
                 immutable copySz = WGPUExtent3D(rtW, rtH, 1);
                 wgpuCommandEncoderCopyTextureToTexture(frame.encoder, &src, &dst, &copySz);
+            }
+
+            if (opaqueDownPipe !is null) {
+                foreach (m; 1 .. opaqueMipCount) {
+                    if (opaqueMipViews[m] is null || opaqueDownBG[m] is null) break;
+                    WGPURenderPassColorAttachment ca;
+                    ca.view       = opaqueMipViews[m];
+                    ca.loadOp     = WGPULoadOp.clear;
+                    ca.storeOp    = WGPUStoreOp.store;
+                    ca.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+                    WGPURenderPassDescriptor mpd;
+                    mpd.colorAttachmentCount = 1;
+                    mpd.colorAttachments     = &ca;
+                    auto mipPass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &mpd);
+                    wgpuRenderPassEncoderSetPipeline(mipPass, opaqueDownPipe);
+                    wgpuRenderPassEncoderSetBindGroup(mipPass, 0, opaqueDownBG[m], 0, null);
+                    wgpuRenderPassEncoderDraw(mipPass, 3, 1, 0, 0);
+                    wgpuRenderPassEncoderEnd(mipPass);
+                    wgpuRenderPassEncoderRelease(mipPass);
+                }
             }
 
             {
@@ -339,6 +461,7 @@ struct Renderer {
         auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
 
         FrameContext frame;
+        frame.owner = &this;
         frame.encoder = encoder;
         frame.pass = pass;
         frame.sceneColorView = hdrView;
@@ -570,6 +693,11 @@ struct Renderer {
 
     void destroy() nothrow @nogc @trusted {
         releaseSceneTargets();
+        if (opaqueDownPipe !is null)    { wgpuRenderPipelineRelease(opaqueDownPipe); opaqueDownPipe = null; }
+        if (opaqueDownPL !is null)      { wgpuPipelineLayoutRelease(opaqueDownPL); opaqueDownPL = null; }
+        if (opaqueDownBGL !is null)     { wgpuBindGroupLayoutRelease(opaqueDownBGL); opaqueDownBGL = null; }
+        if (opaqueDownSM !is null)      { wgpuShaderModuleRelease(opaqueDownSM); opaqueDownSM = null; }
+        if (opaqueDownSampler !is null) { wgpuSamplerRelease(opaqueDownSampler); opaqueDownSampler = null; }
         if (depthCopyPipe !is null) { wgpuRenderPipelineRelease(depthCopyPipe); depthCopyPipe = null; }
         if (depthCopyPL !is null)   { wgpuPipelineLayoutRelease(depthCopyPL); depthCopyPL = null; }
         if (depthCopyBGL !is null)  { wgpuBindGroupLayoutRelease(depthCopyBGL); depthCopyBGL = null; }
@@ -583,6 +711,7 @@ struct Renderer {
 }
 
 struct FrameContext {
+    package(engine) Renderer* owner = null;
     WGPUTexture            texture; // swapchain texture after resolvePost
     WGPUTextureView        view;    // swapchain view after resolvePost
     WGPUCommandEncoder     encoder;

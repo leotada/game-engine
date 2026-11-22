@@ -391,8 +391,8 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 /// Point lights live in a separate storage buffer at @binding(9).
 enum FRAME_UNIFORMS_SIZE = 1280;
 /// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
-/// 7 shadow maps, point lights (9) and the shared water data (10).
-enum uint FRAME_BINDING_COUNT = 11;
+/// 7 shadow maps, point lights (9), shared water data (10), and opaque scene color pyramid (11).
+enum uint FRAME_BINDING_COUNT = 12;
 /// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7 block, 11 × vec4<f32> = 176 bytes).
 enum MATERIAL_PARAMS_SIZE = 176;
 /// Entries in the material bind group (@group(1)): params UBO, sampler,
@@ -486,6 +486,11 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[10].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
     frameEntries[10].buffer.type = WGPUBufferBindingType.readOnlyStorage;
     frameEntries[10].buffer.minBindingSize = WATER_DATA_SIZE;
+
+    frameEntries[11].binding = 11;
+    frameEntries[11].visibility = WGPUShaderStage.fragment;
+    frameEntries[11].texture.sampleType = WGPUTextureSampleType.float_;
+    frameEntries[11].texture.viewDimension = WGPUTextureViewDimension.dim2D;
 
     WGPUBindGroupLayoutDescriptor frameBglDesc;
     frameBglDesc.entryCount = FRAME_BINDING_COUNT;

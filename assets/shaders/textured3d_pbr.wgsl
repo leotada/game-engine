@@ -642,6 +642,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Coat IBL
     var totalEmission = emissive;
     var coatFresnelMax = 0.0;
+    var coatAttenIbl = vec3<f32>(1.0);
     if (coatW > 0.001) {
         let cW = clamp(coatW, 0.0, 1.0);
         let cR = clamp(coatR, 0.04, 1.0);
@@ -661,26 +662,71 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             pow(max(coatCol, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV_c, 0.05))),
             cW
         );
-        ambient = ambient * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl) + coatSpecIbl;
-        totalEmission = totalEmission * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl);
+        let coatAtten = coatTransIbl * (vec3<f32>(1.0) - Fc_ibl);
+        coatAttenIbl = coatAtten;
+        ambient = ambient * coatAtten + coatSpecIbl;
+        totalEmission = totalEmission * coatAtten;
     }
 
     // Fuzz IBL
+    var fuzzTransIbl = 1.0;
     if (mat.fuzzWeight > 0.001) {
         let fuzzW = clamp(mat.fuzzWeight, 0.0, 1.0);
         let fuzzTrans = clamp(1.0 - fuzzW * fuzzE, 0.0, 1.0);
+        fuzzTransIbl = fuzzTrans;
         let fuzzIbl = fuzzW * irradiance * fuzzCol * fuzzE * ao;
         ambient = ambient * fuzzTrans + fuzzIbl;
         totalEmission = totalEmission * fuzzTrans;
     }
 
-    var color = direct + ambient + totalEmission;
+    // OPBR-7: Screen-space refractive transmission from the opaque HDR mip pyramid.
+    var transRadiance = vec3<f32>(0.0);
+    if (transWeight > 0.001) {
+        let texDim = max(vec2<f32>(textureDimensions(opaqueSceneColorMap)), vec2<f32>(1.0));
+        let screenUv = in.clipPos.xy / texDim;
+        let eta = 1.0 / max(mat.specularIor, 1.001);
+        var refrDir = refract(-V, N, eta);
+        if (dot(refrDir, refrDir) < 1e-6) {
+            refrDir = normalize(-V - N * (mat.specularIor - 1.0) * 0.25);
+        }
+        let geomThick = select(0.15, transThick, transThick > 0.001);
+        let exitPos = in.worldPos + refrDir * geomThick;
+        let entryClip = frame.viewProj * vec4<f32>(in.worldPos, 1.0);
+        let entryUv = (entryClip.xy / max(abs(entryClip.w), 1e-4)) * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+        let exitClip = frame.viewProj * vec4<f32>(exitPos, 1.0);
+        let exitUv = (exitClip.xy / max(abs(exitClip.w), 1e-4)) * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+        let uvDelta = clamp(exitUv - entryUv, vec2<f32>(-0.25), vec2<f32>(0.25));
+        let transMip = clamp(effectiveRoughness * SPECULAR_MIPS * clamp((mat.specularIor - 1.0) * 2.0, 0.35, 1.25), 0.0, SPECULAR_MIPS);
+
+        var refrSample = textureSampleLevel(
+            opaqueSceneColorMap, iblSampler,
+            clamp(screenUv + uvDelta, vec2<f32>(0.002), vec2<f32>(0.998)), transMip
+        ).rgb;
+        if (mat.transmissionDispersion > 0.001) {
+            let disp = clamp(mat.transmissionDispersion * 0.12, 0.0, 0.18);
+            let rUv = clamp(screenUv + uvDelta * (1.0 - disp), vec2<f32>(0.002), vec2<f32>(0.998));
+            let bUv = clamp(screenUv + uvDelta * (1.0 + disp), vec2<f32>(0.002), vec2<f32>(0.998));
+            let refrR = textureSampleLevel(opaqueSceneColorMap, iblSampler, rUv, transMip).r;
+            let refrB = textureSampleLevel(opaqueSceneColorMap, iblSampler, bUv, transMip).b;
+            refrSample = vec3<f32>(refrR, refrSample.g, refrB);
+        }
+
+        var volTint = mat.transmissionColor;
+        if (mat.transmissionDepth > 0.001) {
+            let sigma = -log(max(mat.transmissionColor, vec3<f32>(1e-4))) / mat.transmissionDepth;
+            volTint = exp(-sigma * geomThick);
+        }
+        transRadiance = refrSample * volTint * baseColor * (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness) * transWeight;
+    }
+
+    var color = direct + ambient + transRadiance * coatAttenIbl * fuzzTransIbl + totalEmission;
     color = max(color, vec3<f32>(0.0)) * cascadeDebugTint(in.worldPos);
     color = applyFog(color, in.worldPos);
     let rawAlpha = clamp(surfaceOpacity, 0.0, 1.0);
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
     let viewReflectance = clamp(baseFresnelMax + coatFresnelMax * (1.0 - baseFresnelMax), 0.0, 1.0);
-    let outAlpha = select(rawAlpha, mix(rawAlpha, 1.0, viewReflectance), rawAlpha < 0.999);
+    var outAlpha = select(rawAlpha, mix(rawAlpha, 1.0, viewReflectance), rawAlpha < 0.999);
+    outAlpha = mix(outAlpha, 1.0, transWeight);
     if (dissolveKill) {
         discard;
     }

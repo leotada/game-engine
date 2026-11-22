@@ -2,7 +2,7 @@
 /// directional + point + spot lights with shadows, IBL, and one glTF PBR cube.
 module demo.pbr;
 
-import std.math : sin, cos, PI;
+import std.math : sin, cos, atan2, sqrt, PI;
 
 import engine.app;
 import engine.assets.gltf : loadGltfPbr;
@@ -10,7 +10,7 @@ import engine.core.log;
 import engine.gpu.buffer;
 import engine.gpu.shadow;
 import engine.gpu.text;
-import engine.graphics.material : Material, MaterialParams;
+import engine.graphics.material : Material, MaterialFlags, MaterialLayerMaps, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, Sampler, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, InstanceData;
@@ -52,19 +52,51 @@ void main() {
     auto casterTex = Texture.solid(app.gpu, 200, 200, 210, 255);
     scope(exit) casterTex.destroy();
 
+    // Procedural OPBR-6 layer textures: diagonal coat stripe mask & swirl anisotropy map.
+    enum MAP_SZ = 64;
+    auto coatStripePixels = new ubyte[MAP_SZ * MAP_SZ * 4];
+    auto anisoSwirlPixels = new ubyte[MAP_SZ * MAP_SZ * 4];
+    foreach (y; 0 .. MAP_SZ) {
+        foreach (x; 0 .. MAP_SZ) {
+            immutable size_t off = (cast(size_t) y * MAP_SZ + x) * 4;
+            immutable bool stripe = ((x + y) / 8) % 2 == 0;
+            coatStripePixels[off + 0] = stripe ? 255 : 24;
+            coatStripePixels[off + 1] = stripe ? 32 : 210;
+            coatStripePixels[off + 2] = 0;
+            coatStripePixels[off + 3] = 255;
+
+            immutable float fx = (cast(float) x + 0.5f) / MAP_SZ - 0.5f;
+            immutable float fy = (cast(float) y + 0.5f) / MAP_SZ - 0.5f;
+            immutable float ang = atan2(fy, fx) + PI * 0.5f;
+            immutable float r = sqrt(fx * fx + fy * fy);
+            immutable float dx = cos(ang);
+            immutable float dy = sin(ang);
+            anisoSwirlPixels[off + 0] = cast(ubyte)(clampByte(dx * 0.5f + 0.5f));
+            anisoSwirlPixels[off + 1] = cast(ubyte)(clampByte(dy * 0.5f + 0.5f));
+            anisoSwirlPixels[off + 2] = 255;
+            anisoSwirlPixels[off + 3] = cast(ubyte)(clampByte(r * 2.0f));
+        }
+    }
+    auto coatStripeTex = Texture.fromPixels(app.gpu, coatStripePixels, MAP_SZ, MAP_SZ);
+    scope(exit) coatStripeTex.destroy();
+    auto anisoSwirlTex = Texture.fromPixels(app.gpu, anisoSwirlPixels, MAP_SZ, MAP_SZ);
+    scope(exit) anisoSwirlTex.destroy();
+
     auto layout = scene.materialLayout();
 
-    // 5 cols × 4 rows (OpenPBR Surface v1.1 showcase):
+    // 5 cols × 5 rows (OpenPBR Surface v1.1 + OPBR-6/7 showcase):
     //   Row 0: Dielectric + Fujii Oren-Nayar diffuse (roughness 0.04 -> 1.0)
-    //   Row 1: Conductor F82 edge tint + Anisotropy (roughness 0.04 -> 0.8)
-    //   Row 2: Automotive Clearcoat + Darkening (coatRoughness 0.02 -> 0.4)
+    //   Row 1: Conductor F82 edge tint + Anisotropy (cols 0..1 use procedural swirl anisoFilm map)
+    //   Row 2: Automotive Clearcoat (cols 0..1 use procedural stripe coat map)
     //   Row 3: Velvet Fuzz (cols 0..2) + Thin-Film Iridescence (cols 3..4)
+    //   Row 4: OPBR-7 Refractive Transmission (clear glass, frosted glass, emerald volume, prism dispersion, ruby coat)
     enum COLS = 5;
-    enum ROWS = 4;
+    enum ROWS = 5;
     Material[COLS * ROWS] sphereMats;
     foreach (row; 0 .. ROWS) {
         foreach (col; 0 .. COLS) {
             MaterialParams p;
+            MaterialLayerMaps layers;
             immutable t = cast(float) col / cast(float)(COLS - 1);
             if (row == 0) {
                 p.baseColor = [0.9f, 0.15f, 0.12f];
@@ -76,17 +108,25 @@ void main() {
                 p.baseColor = [0.95f, 0.78f, 0.45f];
                 p.specularColor = [1.0f, 0.65f, 0.35f];
                 p.baseMetalness = 1.0f;
-                p.specularAnisotropy = 0.6f;
-                p.specularRoughness = 0.04f + t * 0.76f;
+                p.specularAnisotropy = 0.75f;
+                p.specularRoughness = 0.06f + t * 0.65f;
+                if (col < 2) {
+                    p.flags |= MaterialFlags.anisotropy;
+                    layers.anisoFilm = () @trusted { return &anisoSwirlTex; }();
+                }
             } else if (row == 2) {
                 p.baseColor = [0.08f, 0.25f, 0.75f];
                 p.baseMetalness = 0.6f;
                 p.specularRoughness = 0.35f;
                 p.coatWeight = 1.0f;
                 p.coatColor = [0.85f, 0.95f, 1.0f];
-                p.coatRoughness = 0.02f + t * 0.38f;
+                p.coatRoughness = 0.04f + t * 0.38f;
                 p.coatDarkening = 1.0f;
-            } else if (col < 3) {
+                if (col < 2) {
+                    p.flags |= MaterialFlags.coat;
+                    layers.coat = () @trusted { return &coatStripeTex; }();
+                }
+            } else if (row == 3 && col < 3) {
                 p.baseColor = [0.35f, 0.08f, 0.45f];
                 p.baseMetalness = 0.0f;
                 p.specularWeight = 0.2f;
@@ -94,16 +134,61 @@ void main() {
                 p.fuzzWeight = 1.0f;
                 p.fuzzColor = [0.85f, 0.65f, 1.0f];
                 p.fuzzRoughness = 0.2f + cast(float) col * 0.3f;
-            } else {
+            } else if (row == 3) {
                 p.baseColor = [0.15f, 0.15f, 0.18f];
                 p.baseMetalness = 0.8f;
                 p.specularRoughness = 0.12f;
                 p.thinFilmWeight = 1.0f;
                 p.thinFilmThickness = 380.0f + cast(float)(col - 3) * 140.0f;
                 p.thinFilmIor = 1.5f;
+            } else if (col == 0) {
+                // Clear borosilicate glass
+                p.baseColor = [1.0f, 1.0f, 1.0f];
+                p.specularIor = 1.5f;
+                p.specularRoughness = 0.04f;
+                p.transmissionWeight = 0.96f;
+                p.transmissionThickness = 0.25f;
+            } else if (col == 1) {
+                // Frosted privacy glass (samples blurred mip pyramid)
+                p.baseColor = [0.98f, 0.99f, 1.0f];
+                p.specularIor = 1.52f;
+                p.specularRoughness = 0.45f;
+                p.transmissionWeight = 0.92f;
+                p.transmissionThickness = 0.25f;
+            } else if (col == 2) {
+                // Emerald Beer-Lambert volume absorption
+                p.baseColor = [1.0f, 1.0f, 1.0f];
+                p.specularIor = 1.55f;
+                p.specularRoughness = 0.06f;
+                p.transmissionWeight = 0.95f;
+                p.transmissionColor = [0.15f, 0.88f, 0.38f];
+                p.transmissionDepth = 0.35f;
+                p.transmissionThickness = 0.45f;
+            } else if (col == 3) {
+                // Dispersive diamond prism
+                p.baseColor = [1.0f, 1.0f, 1.0f];
+                p.specularIor = 2.1f;
+                p.specularRoughness = 0.04f;
+                p.transmissionWeight = 0.97f;
+                p.transmissionDispersion = 0.65f;
+                p.transmissionThickness = 0.35f;
+            } else {
+                // Ruby coated crystal with subtle dispersion and iridescence
+                p.baseColor = [1.0f, 1.0f, 1.0f];
+                p.specularIor = 1.65f;
+                p.specularRoughness = 0.08f;
+                p.coatWeight = 0.9f;
+                p.coatRoughness = 0.04f;
+                p.thinFilmWeight = 0.65f;
+                p.thinFilmThickness = 460.0f;
+                p.transmissionWeight = 0.92f;
+                p.transmissionColor = [0.95f, 0.18f, 0.25f];
+                p.transmissionDepth = 0.40f;
+                p.transmissionDispersion = 0.25f;
+                p.transmissionThickness = 0.30f;
             }
             sphereMats[row * COLS + col] = Material.create(
-                app.gpu, layout, sampler, whiteTex, p, null, null, null, null);
+                app.gpu, layout, sampler, whiteTex, p, null, null, null, null, layers);
         }
     }
     scope(exit) foreach (ref m; sphereMats) m.destroy();
@@ -276,7 +361,7 @@ void main() {
 
         import std.format : format;
         text.beginFrame();
-        text.drawText(frame, "OpenPBR v1.1: Oren-Nayar / F82 Aniso / Coat / Fuzz & Thin-Film", 16, 16, 2);
+        text.drawText(frame, "OpenPBR v1.1: Oren-Nayar / F82 Aniso / Coat / Fuzz / Thin-Film / Transmission", 16, 16, 2);
         text.drawText(frame, format("IBL + bloom/FXAA  exp=%.2f  B=%s  F=%s",
             app.post.exposure,
             app.post.bloom ? "on" : "off",
@@ -287,4 +372,9 @@ void main() {
     }
 
     app.destroy();
+}
+
+private uint clampByte(float v) pure nothrow @nogc {
+    immutable scaled = v * 255.0f + 0.5f;
+    return scaled <= 0.0f ? 0 : (scaled >= 255.0f ? 255 : cast(uint) scaled);
 }
