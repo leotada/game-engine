@@ -46,9 +46,31 @@ buoys, input, HUD, benchmark flags). Target: the demo shrinks to roughly
 
 Each phase is one or more small commits with tests green.
 
-### WP-0 — Reference capture
-- Run `dub run --config=water` for ocean and river, save `--capture` BMPs and `--bench` numbers into `docs/` notes (not committed binaries unless small).
-- Confirms the demo still works after recent shader/material layout changes (open item in `Lacunas da Engine.md`).
+### WP-0 — Reference capture ✅ (2026-11-22)
+
+Build: `dub build --config=water --compiler=ldc2 --build=release`, 1280×720,
+`--bench=600` (120 warm-up frames, immediate present, device poll per frame).
+Two runs per scenario differed by < 1%.
+
+| Scenario | Command | avg ms | p50 | p95 | p99 | GC delta |
+|:---|:---|---:|---:|---:|---:|---:|
+| Ocean | `--bench=600` | 5.58 | 5.54 | 5.89 | 6.15 | 0 |
+| River | `--bench=600 --river` | 3.22 | 3.19 | 3.37 | 3.69 | 0 |
+| No-Water (ocean scene) | `--bench=600 --no-water` | 2.04 | 1.98 | 2.33 | 3.27 | 0 |
+| No-Water (river scene) | `--bench=600 --river --no-water` | 1.86 | 1.83 | 2.18 | 2.73 | 0 |
+
+Reference images (`--capture=… --no-hud`, time ≈ 1.8 s):
+[ocean](images/water-wp0-ocean.jpg) · [river](images/water-wp0-river.jpg).
+Both scenes render correctly after the recent shader/material layout changes.
+
+Findings:
+- **DMD 2.113 segfaults** compiling the water config (backend stack overflow
+  in `cgcod.codelem` ↔ `cod2.cdcomma`, while generating
+  `demo.water.WaterShaderPipelines.create`). LDC builds fine; other configs
+  build with DMD. WP-3 must not reproduce this function shape: split pipeline
+  creation into small per-pipeline functions in the engine `WaterRenderer`.
+- `--no-hud` still draws the "[F1] Show Controls HUD" hint.
+- The ocean lighthouse renders as an untextured white box.
 
 ### WP-1 — Wave model (`engine/water/waves.d`)
 - `WaveComponent`, `WaveSet` (up to 8 components, POD), presets `WaveSet.ocean()` / `WaveSet.river()`.
