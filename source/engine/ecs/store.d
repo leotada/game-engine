@@ -48,6 +48,32 @@ struct ComponentStore(T) if (is(T == struct)) {
         _length++;
     }
 
+    /// Insert `comps[i]` for `ids[i]` in one pass (arrays grow once). An id already present is overwritten.
+    void addBatch(scope const(EntityId)[] ids, scope const(T)[] comps) nothrow @trusted {
+        assert(ids.length == comps.length);
+        if (ids.length == 0) return;
+        EntityId maxId = 0;
+        foreach (id; ids)
+            if (id > maxId) maxId = id;
+        if (maxId >= sparse.length)
+            sparse.length = cast(size_t) maxId + 1;
+        immutable need = _length + ids.length;
+        if (need > dense.length) {
+            dense.length = need;
+            denseToEntity.length = need;
+        }
+        foreach (i, id; ids) {
+            if (has(id)) {
+                dense[sparse[id]] = comps[i];
+            } else {
+                sparse[id] = cast(uint) _length;
+                dense[_length] = comps[i];
+                denseToEntity[_length] = id;
+                _length++;
+            }
+        }
+    }
+
     void remove(EntityId id) nothrow @nogc @trusted {
         if (!has(id)) return;
 
@@ -93,4 +119,16 @@ struct ComponentStore(T) if (is(T == struct)) {
     const(EntityId)[] entities() const nothrow @nogc @trusted {
         return denseToEntity[0 .. _length];
     }
+}
+
+@("componentStore.addBatch") @safe unittest {
+    static struct V { float a = 0; uint b = 0; }
+    ComponentStore!V st;
+    st.addBatch([5u, 2, 9], [V(5, 1), V(2, 2), V(9, 3)]);
+    assert(st.length == 3 && st.entities == [5u, 2, 9]);
+    assert(st.get(2).a == 2 && st.get(9).b == 3);
+    st.addBatch([2u, 100], [V(20, 0), V(100, 0)]);      // overwrite + grow the sparse array
+    assert(st.length == 4 && st.get(2).a == 20 && st.has(100) && st.sparseLength >= 101);
+    st.remove(5);
+    assert(!st.has(5) && st.length == 3 && st.get(100).a == 100);
 }
