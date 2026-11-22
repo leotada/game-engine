@@ -21,7 +21,6 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
-import engine.gpu.shaders : causticsBedShaderSource;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
@@ -37,7 +36,7 @@ import engine.scene.light :
     SPOT_SHADOW_RESOLUTION;
 import engine.scene.scene3d_textured : Scene3DTextured;
 import engine.water : MAX_WATER_OBSTACLES, sampleWaves, WaterBody, WaterFeature,
-    WaterObstacle, WaterRenderer, WaterSurfaceUniforms, WaveSet;
+    WaterObstacle, WaterRenderer, WaveSet;
 
 @safe:
 
@@ -108,138 +107,6 @@ private ubyte clampByte(float v) pure nothrow @nogc {
     return cast(ubyte) v;
 }
 
-
-/// Lightweight static vertex+index GPU mesh for stride-32 `TexVert` buffers.
-private struct StaticMesh32 {
-    WGPUBuffer vbuf;
-    WGPUBuffer ibuf;
-    ulong vSize;
-    ulong iSize;
-    uint indexCount;
-
-    @disable this(this);
-
-    static StaticMesh32 create(ref GpuContext gpu, scope const(TexVert)[] verts, scope const(ushort)[] indices) @trusted {
-        StaticMesh32 m;
-        auto dev = gpu.getDevice();
-        auto q   = gpu.getQueue();
-        m.vSize = verts.length * TexVert.sizeof;
-        m.iSize = indices.length * ushort.sizeof;
-        m.vbuf = createVertexBuffer(dev, q, verts.ptr, m.vSize);
-        m.ibuf = createIndexBuffer(dev, q, indices.ptr, m.iSize);
-        m.indexCount = cast(uint) indices.length;
-        return m;
-    }
-
-    void destroy() nothrow @nogc {
-        destroyBuffer(vbuf); vbuf = null;
-        destroyBuffer(ibuf); ibuf = null;
-    }
-}
-
-private void drawNonIndexed(ref FrameContext frame, uint vertexCount) nothrow @nogc @trusted {
-    wgpuRenderPassEncoderDraw(frame.pass, vertexCount, 1, 0, 0);
-}
-
-/// Procedural sand bed with caustics (`caustics_bed.wgsl`), drawn as an
-/// opaque hook. Temporary until WP-5 moves caustics into the PBR shaders.
-private struct BedPipeline {
-    WGPUBindGroupLayout layout;
-    WGPUPipelineLayout  pipeLayout;
-    WGPUShaderModule    module_;
-    WGPURenderPipeline  pipe;
-    WGPUBuffer          ubo;
-    WGPUBindGroup       bindGroup;
-
-    @disable this(this);
-
-    void initialize(ref GpuContext gpu, WGPUBindGroupLayout frameLayout, WGPUBindGroupLayout iblLayout) @trusted {
-        auto dev = gpu.getDevice();
-        WGPUBindGroupLayoutEntry e;
-        e.binding = 0;
-        e.visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
-        e.buffer.type = WGPUBufferBindingType.uniform;
-        e.buffer.minBindingSize = WaterSurfaceUniforms.sizeof;
-        WGPUBindGroupLayoutDescriptor ld;
-        ld.entryCount = 1;
-        ld.entries = &e;
-        layout = wgpuDeviceCreateBindGroupLayout(dev, &ld);
-        WGPUBindGroupLayout[3] layouts = [frameLayout, layout, iblLayout];
-        WGPUPipelineLayoutDescriptor pld;
-        pld.bindGroupLayoutCount = 3;
-        pld.bindGroupLayouts = layouts.ptr;
-        pipeLayout = wgpuDeviceCreatePipelineLayout(dev, &pld);
-        ubo = createUniformBuffer(dev, WaterSurfaceUniforms.sizeof);
-        bindGroup = createUniformBindGroup(dev, layout, ubo, WaterSurfaceUniforms.sizeof);
-        module_ = createShaderModule(dev, bedShaderSrc);
-        if (module_ is null) fatal("Failed to compile caustics_bed.wgsl");
-        pipe = createBedPipeline(dev, pipeLayout, module_);
-        if (pipe is null) fatal("Failed to create caustics bed pipeline");
-    }
-
-    void destroy() nothrow @nogc @trusted {
-        if (pipe !is null)       { wgpuRenderPipelineRelease(pipe); pipe = null; }
-        if (module_ !is null)    { wgpuShaderModuleRelease(module_); module_ = null; }
-        releaseBindGroup(bindGroup); bindGroup = null;
-        destroyBuffer(ubo); ubo = null;
-        if (pipeLayout !is null) { wgpuPipelineLayoutRelease(pipeLayout); pipeLayout = null; }
-        if (layout !is null)     { wgpuBindGroupLayoutRelease(layout); layout = null; }
-    }
-}
-
-// A module-level immutable: the CTFE shader `enum` used inside a function
-// crashes DMD 2.113's backend.
-private immutable string bedShaderSrc = causticsBedShaderSource;
-
-private WGPURenderPipeline createBedPipeline(WGPUDevice dev, WGPUPipelineLayout layout,
-                                             WGPUShaderModule mod) @trusted {
-    WGPUVertexAttribute[3] vertAttrs = [
-        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
-        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
-        { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
-    ];
-    WGPUVertexBufferLayout vbl;
-    vbl.arrayStride = TexVert.sizeof;
-    vbl.stepMode = WGPUVertexStepMode.vertex;
-    vbl.attributeCount = 3;
-    vbl.attributes = vertAttrs.ptr;
-    WGPUColorTargetState colorTarget;
-    colorTarget.format = Renderer.sceneFormat();
-    colorTarget.writeMask = WGPUColorWriteMask.all;
-    WGPUFragmentState fragState;
-    fragState.module_ = mod;
-    fragState.entryPoint = wgpuStringView("fs_main");
-    fragState.targetCount = 1;
-    fragState.targets = &colorTarget;
-    WGPUDepthStencilState depthState;
-    depthState.format = WGPUTextureFormat.depth24Plus;
-    depthState.depthWriteEnabled = WGPUOptionalBool.true_;
-    depthState.depthCompare = WGPUCompareFunction.less;
-    WGPURenderPipelineDescriptor desc;
-    desc.layout = layout;
-    desc.vertex.module_ = mod;
-    desc.vertex.entryPoint = wgpuStringView("vs_main");
-    desc.vertex.bufferCount = 1;
-    desc.vertex.buffers = &vbl;
-    desc.primitive.topology = WGPUPrimitiveTopology.triangleList;
-    desc.primitive.frontFace = WGPUFrontFace.ccw;
-    desc.primitive.cullMode = WGPUCullMode.back;
-    desc.depthStencil = &depthState;
-    desc.fragment = &fragState;
-    return wgpuDeviceCreateRenderPipeline(dev, &desc);
-}
-
-private StaticMesh32 buildBedQuad32(ref GpuContext gpu) {
-    immutable float h = WATER_HALF;
-    TexVert[4] verts = [
-        TexVert([-h, -1.15f, -h], [0, 1, 0], [0.0f, 0.0f]),
-        TexVert([ h, -1.15f, -h], [0, 1, 0], [8.0f, 0.0f]),
-        TexVert([ h, -1.15f,  h], [0, 1, 0], [8.0f, 8.0f]),
-        TexVert([-h, -1.15f,  h], [0, 1, 0], [0.0f, 8.0f]),
-    ];
-    ushort[6] indices = [0, 2, 1, 0, 3, 2];
-    return StaticMesh32.create(gpu, verts[], indices[]);
-}
 
 private void buildHeightNormalMap(const(float)[] height, uint sz, float strength, ubyte[] normalOut) pure nothrow @nogc {
     foreach (y; 0 .. sz) {
@@ -344,6 +211,54 @@ private void generateEnvTextures(ref GpuContext gpu,
     woodNormalTex    = Texture.fromPixels(gpu, woodN, SZ, SZ);
     masonryAlbedoTex = Texture.fromPixels(gpu, masonryA, SZ, SZ);
     masonryNormalTex = Texture.fromPixels(gpu, masonryN, SZ, SZ);
+}
+
+/// Seabed sand: dark sand with scattered pebbles, silt variation and soft
+/// ripples (tiles every `BED_TILE_M` meters).
+private void generateSandTextures(ref GpuContext gpu, out Texture albedoTex, out Texture normalTex) {
+    enum uint SZ = 512;
+    auto a = new ubyte[SZ * SZ * 4];
+    auto n = new ubyte[SZ * SZ * 4];
+    auto h = new float[SZ * SZ];
+    foreach (y; 0 .. SZ) {
+        immutable float v = cast(float) y / cast(float) SZ;
+        foreach (x; 0 .. SZ) {
+            immutable float u = cast(float) x / cast(float) SZ;
+            immutable coarse = fbmPeriodic(u + 0.21f, v + 0.63f, 4, 4);
+            immutable gravel = fbmPeriodic(u + 0.47f, v + 0.12f, 24, 3);
+            immutable pebbleN = fbmPeriodic(u + 0.83f, v + 0.41f, 36, 2);
+            immutable silt = fbmPeriodic(u + 0.05f, v + 0.77f, 6, 3);
+            immutable ripple = sin((u * 3.0f + v * 1.0f + coarse * 0.55f) * PI_2 * 2.0f) * 0.5f + 0.5f;
+            immutable pebble = pebbleN < 0.54f ? 0.0f : (pebbleN > 0.72f ? 1.0f : (pebbleN - 0.54f) / 0.18f);
+            h[y * SZ + x] = coarse * 0.55f + gravel * 0.30f + ripple * 0.15f + pebble * 0.25f;
+            immutable float tone = 0.78f + 0.42f * silt;
+            immutable float pm = pebble * 0.78f;
+            immutable idx = (y * SZ + x) * 4;
+            a[idx + 0] = clampByte(((0.18f * (1 - pm) + 0.09f * pm) * tone) * 255.0f);
+            a[idx + 1] = clampByte(((0.16f * (1 - pm) + 0.09f * pm) * tone) * 255.0f);
+            a[idx + 2] = clampByte(((0.12f * (1 - pm) + 0.085f * pm) * tone) * 255.0f);
+            a[idx + 3] = 255;
+        }
+    }
+    buildHeightNormalMap(h, SZ, 2.6f, n);
+    albedoTex = Texture.fromPixels(gpu, a, SZ, SZ);
+    normalTex = Texture.fromPixels(gpu, n, SZ, SZ);
+}
+
+private enum float BED_Y = -1.15f;
+private enum float BED_TILE_M = 3.5f;
+
+/// Flat seabed quad of half size `half` at `BED_Y`, UVs tiling every `BED_TILE_M`.
+private TexMesh buildBedMesh(ref GpuContext gpu, float half) {
+    immutable float t = 2.0f * half / BED_TILE_M;
+    TexVert[4] verts = [
+        TexVert([-half, BED_Y, -half], [0, 1, 0], [0.0f, 0.0f]),
+        TexVert([ half, BED_Y, -half], [0, 1, 0], [t, 0.0f]),
+        TexVert([ half, BED_Y,  half], [0, 1, 0], [t, t]),
+        TexVert([-half, BED_Y,  half], [0, 1, 0], [0.0f, t]),
+    ];
+    ushort[6] indices = [0, 2, 1, 0, 3, 2];
+    return TexMesh.fromData(gpu, verts[].dup, indices[].dup);
 }
 
 /// Game content: bridge piers (river) and emergent boulders as water obstacles.
@@ -781,16 +696,15 @@ void main(string[] args) {
     scope(exit) cobbleRockMesh.destroy();
     auto cube = TexMesh.cube(app.gpu);
     scope(exit) cube.destroy();
-    auto bedQuad = buildBedQuad32(app.gpu);
-    scope(exit) bedQuad.destroy();
+    // Seabed: plain PBR meshes; the engine adds caustics below the water level.
+    auto oceanBedMesh = buildBedMesh(app.gpu, WATER_HALF * 10.5f);
+    scope(exit) oceanBedMesh.destroy();
+    auto riverBedMesh = buildBedMesh(app.gpu, WATER_HALF);
+    scope(exit) riverBedMesh.destroy();
     auto leftBankMesh = buildRiverBankMesh(app.gpu, -1.0f);
     scope(exit) leftBankMesh.destroy();
     auto rightBankMesh = buildRiverBankMesh(app.gpu, 1.0f);
     scope(exit) rightBankMesh.destroy();
-    BedPipeline bed;
-    bed.initialize(app.gpu, scene.frameLayout(), scene.iblLayout());
-    scope(exit) bed.destroy();
-
     // Engine water: one body, drawn after the sky by the transparent hook.
     auto water = WaterRenderer.create(app.gpu, scene);
     scope(exit) water.destroy();
@@ -801,16 +715,6 @@ void main(string[] args) {
         waterBody = water.addBody(initialBody);
     }
 
-    void drawBed(ref FrameContext frame) nothrow @nogc @trusted {
-        frame.setPipeline(bed.pipe);
-        frame.setBindGroup(0, scene.frameGroup());
-        frame.setBindGroup(1, bed.bindGroup);
-        frame.setBindGroup(2, scene.iblGroup());
-        frame.setVertexBuffer(0, bedQuad.vbuf, bedQuad.vSize);
-        frame.setIndexBuffer(bedQuad.ibuf, WGPUIndexFormat.uint16, bedQuad.iSize);
-        frame.drawIndexed(bedQuad.indexCount, 1);
-    }
-    scene.addOpaqueHook(&drawBed);
 
     auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
     scope(exit) sampler.destroy();
@@ -889,6 +793,19 @@ void main(string[] args) {
     bankP.flags = MaterialFlags.normal;
     auto bankMat = makePbrMat(bankAlbedoTex, bankP, null, &bankNormalTex);
     scope(exit) bankMat.destroy();
+
+    Texture sandAlbedoTex, sandNormalTex;
+    generateSandTextures(app.gpu, sandAlbedoTex, sandNormalTex);
+    scope(exit) { sandAlbedoTex.destroy(); sandNormalTex.destroy(); }
+    MaterialParams sandP;
+    sandP.baseColor = [1.0f, 1.0f, 1.0f];
+    sandP.baseDiffuseRoughness = 0.88f;
+    sandP.specularWeight = 0.6f;
+    sandP.specularRoughness = 0.78f;
+    sandP.specularIor = 1.48f;
+    sandP.flags = MaterialFlags.normal;
+    auto sandMat = makePbrMat(sandAlbedoTex, sandP, null, &sandNormalTex);
+    scope(exit) sandMat.destroy();
 
     MaterialParams woodP;
     woodP.baseColor = [1.0f, 1.0f, 1.0f];
@@ -1256,14 +1173,6 @@ void main(string[] args) {
 
         // Engine water: shared wave data, surface uniforms, simulation step.
         water.update(camera, time);
-        {
-            // Caustics bed uniforms (layout-compatible with the water UBO head).
-            WaterSurfaceUniforms bu;
-            bu.params0 = [time, waveScale, camera.near, camera.far];
-            bu.flags0 = [riverMode ? 1u : 0u, 0u, 0u, 0u];
-            bu.counts = [0u, 0u, (!noWater && renderStage >= 2) ? 1u : 0u, 0u];
-            () @trusted { updateBuffer(app.gpu.getQueue(), bed.ubo, &bu, WaterSurfaceUniforms.sizeof); }();
-        }
 
         immutable bgCol = lowSun
             ? Color4(0.16f, 0.12f, 0.11f, 1.0f)
@@ -1294,6 +1203,8 @@ void main(string[] args) {
             drawRock(rk, model);
         }
 
+        scene.draw(riverMode ? riverBedMesh : oceanBedMesh, sandMat,
+                   Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
         if (riverMode) {
             scene.draw(leftBankMesh, bankMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
             scene.draw(rightBankMesh, bankMat, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f), Color4.white);
@@ -1314,8 +1225,7 @@ void main(string[] args) {
 
         scene.end(frame);
 
-        // The caustics bed (opaque hook) and the water surface (transparent
-        // hook, after the sky) were drawn by scene.end.
+        // The water surface (transparent hook, after the sky) was drawn by scene.end.
 
         app.resolvePost(frame);
         if (!frame.valid) continue;

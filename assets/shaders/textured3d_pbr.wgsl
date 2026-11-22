@@ -1,6 +1,7 @@
 #include "common/shadows.wgsl"
 #include "common/atmosphere.wgsl"
 #include "common/waves.wgsl"
+#include "common/caustics.wgsl"
 
 struct MaterialParams {
     baseColor: vec3<f32>,
@@ -436,6 +437,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
         }
         direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
+        // Sun caustics below the level of a water body (zero elsewhere).
+        direct += radiance * waterCausticsAt(in.worldPos, N, L, shadow) * baseColor;
     }
 
     // --- Point lights ---

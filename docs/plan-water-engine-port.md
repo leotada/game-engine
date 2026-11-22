@@ -145,7 +145,19 @@ Original scope:
 - `WaterRenderer.setObstacles(scope const(WaterObstacle)[])` (x, z, radius, strength; max 16).
 - Disabled bodies pay nothing (no textures allocated).
 
-### WP-5 — Generic caustics
+### WP-5 — Generic caustics ✅ (2026-11-22)
+
+Done: `common/caustics.wgsl` (`waterCausticsAt`), called from the sun term of
+`textured3d_pbr.wgsl` and `common/simple_pbr.wgsl` (terrain and decals).
+`caustics_bed.wgsl`, the demo's bed pipeline and the water surface's
+screen-space prop caustics are gone; the demo seabed is a PBR quad with a
+procedural sand texture. Deviations: the caustics use the body's rest level
+(not the per-fragment wave height) and cheap early-outs (shadow, facing,
+< 0.2 m depth, outside the river channel) run before the six Voronoi
+layers. Submerged rocks now get the same physically scaled caustics as the
+bed (dimmer than the old surface hack). Benchmark: Ocean 5.29 ms (WP-0
+5.49), River 3.47 ms (WP-0 3.26, +6.5%), GC 0.
+
 - Caustics evaluated in `textured3d_pbr.wgsl` and `terrain_pbr.wgsl` for fragments below the wave surface (reads binding 10), modulated by the sun shadow.
 - Delete `caustics_bed.wgsl` and the bed quad; the demo seabed becomes a normal mesh or terrain.
 

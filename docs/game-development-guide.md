@@ -300,7 +300,8 @@ WaveSample s = sampleWaves(waves, gx, gz, time); // displaced surface point + no
 - Up to 8 Gerstner components, plus optional wave-group modulation and a river channel taper.
 - `WaterBody` (POD): position, level, `WaterStyle` ocean/river, `WaveSet`, `WaterOptics`, `WaterFeature` bits (refraction, SSR, transparency, simulation, OpenPBR, wet marks); `setObstacles` for rocks and piers.
 - Enable the engine sky (`scene.setSkyEnabled(true)`); the water reflects it.
-- Caustics, buoyancy and the editor component are still being ported; see the guide.
+- Submerged meshes, terrain and decals get sun caustics automatically (`WaterBody.causticsStrength`).
+- Buoyancy and the editor component are still being ported; see the guide.
 
 Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water` (`--river`).
 

@@ -518,7 +518,13 @@ current API are in [water-guide.md](water-guide.md).
   per body and handles up to 16 obstacles per body. The surface shader takes
   per-body uniforms (center, size, level, style, optics), so it no longer
   assumes water at the origin or at Y = 0.
-- **Still demo-only:** the caustics bed (`caustics_bed.wgsl`, until WP-5).
+- **Caustics:** `common/caustics.wgsl` (`waterCausticsAt`) adds animated sun
+  caustics to every fragment below the level of a body with
+  `causticsStrength > 0`. `textured3d_pbr.wgsl` and `common/simple_pbr.wgsl`
+  (terrain, decals) call it in their directional-light term, scaled by the
+  sun shadow. Rivers scroll the pattern with the current and fade it outside
+  the channel. Submerged props reach the water surface already lit through
+  the opaque snapshot; the surface shader does not add caustics itself.
 
 ## SceneGraph
 

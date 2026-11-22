@@ -94,7 +94,6 @@ enum terrainPbrShaderSource = preprocessShader(import("terrain_pbr.wgsl"), "terr
 enum terrainShadowShaderSource = preprocessShader(import("terrain_shadow.wgsl"), "terrain_shadow.wgsl").code;
 /// Projected decals — `engine.graphics.decals.DecalRenderer`.
 enum decalPbrShaderSource = preprocessShader(import("decal_pbr.wgsl"), "decal_pbr.wgsl").code;
-enum causticsBedShaderSource = preprocessShader(import("caustics_bed.wgsl"), "caustics_bed.wgsl").code;
 enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;
 enum depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;
 enum waterSimCsShaderSource = preprocessShader(import("water_sim_cs.wgsl"), "water_sim_cs.wgsl").code;

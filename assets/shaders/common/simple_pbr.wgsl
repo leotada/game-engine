@@ -3,6 +3,10 @@
 /// split-sum IBL from `@group(2)`. Requires `common/pbr_brdf.wgsl` and
 /// `common/shadows.wgsl`. `Ng` is the geometric normal used for shadow
 /// offsets. Uses only explicit-LOD sampling (safe in non-uniform flow).
+/// Submerged surfaces get sun caustics from the shared water data.
+
+#include "waves.wgsl"
+#include "caustics.wgsl"
 
 @group(2) @binding(0) var irradianceMap: texture_cube<f32>;
 @group(2) @binding(1) var specularMap: texture_cube<f32>;
@@ -20,6 +24,7 @@ fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, albed
             shadow = sampleDirShadowPCF(P, Ng, L);
         }
         direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+        direct += radiance * waterCausticsAt(P, N, L, shadow) * albedo * (1.0 - metallic);
     }
     let pc = min(frame.pointCount, arrayLength(&pointLights));
     for (var i = 0u; i < pc; i++) {

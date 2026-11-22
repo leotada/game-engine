@@ -1,8 +1,8 @@
 # Water Guide
 
 > **Status:** being ported from `source/demo/water.d` into `engine.water` — see
-> [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation
-> and obstacles are in the engine; caustics, gameplay queries, wet material
+> [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation,
+> obstacles and caustics are in the engine; gameplay queries, wet material
 > presets and the editor component follow.
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
@@ -180,6 +180,20 @@ the body's waves at the fragment (`waterWaveY`, scaled by `contactChop`).
 Surfaces the water reached in the last ~5 s stay wet and dry out over time.
 Surfaces above the highest possible wave stay dry and matte. Outside every
 body the flag has no effect.
+
+## Caustics
+
+Anything under water is lit by animated sun caustics: PBR meshes
+(`textured3d_pbr.wgsl`), terrain and decals (`common/simple_pbr.wgsl`). No
+material flag or extra mesh is needed. A fragment gets caustics when it is
+inside a body's bounds, at least 0.2 m below its `level`, facing up and in
+sunlight. Brightness is `WaterBody.causticsStrength` (0.18 ocean, 0.09 river;
+0 disables), scaled by the wave amplitude. Rivers scroll the pattern
+downstream and fade it beyond the channel's half width. The pattern lives in
+`assets/shaders/common/caustics.wgsl` (`waterCausticsAt`).
+
+A seabed is just geometry: the water demo draws a flat PBR quad with a
+procedural sand texture at Y = -1.15.
 
 ## Sky reflection
 

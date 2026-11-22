@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Generic underwater caustics (WP-5, `2026-11-22`)**: `assets/shaders/common/caustics.wgsl` (`waterCausticsAt`) lights every PBR mesh, terrain and decal fragment below a water body's level with animated sun caustics (strength `WaterBody.causticsStrength`, river flow and channel fade from the shared water data). **Removed:** `caustics_bed.wgsl` / `causticsBedShaderSource`, `evalCausticsRgb` / `voronoiCausticLayer` (`common/water_env.wgsl`) and the water surface's screen-space prop caustics. The water demo's seabed is now a PBR mesh.
+
 - **`WaterRenderer` + `WaterBody` (WP-3/WP-4 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
   - `engine.water.water_body`: POD `WaterBody` (center, half extent, level, grid resolution, `WaterStyle` ocean/river, `WaveSet`, `WaterOptics`, `WaterFeature` bits, current, bed depth, wet-mark and caustics settings) with `ocean()` / `river()` presets; `WaterObstacle`.
   - `engine.water.renderer`: `WaterRenderer` draws up to 4 bodies after the sky (transparent hook, one shared opaque snapshot), steps a 256² compute wave/foam simulation per body, takes up to 16 obstacles per body and fills the shared water data. `water_surface.wgsl` / `water_sim_cs.wgsl` take per-body uniforms (`WaterSurfaceUniforms`) instead of assuming water at the origin and Y = 0.

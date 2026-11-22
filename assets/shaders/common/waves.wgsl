@@ -89,6 +89,12 @@ fn waterPhaseWarp(bi: u32, xz: vec2<f32>, t: f32) -> f32 {
          + waterData.bodies[bi].channelA.x * cos(xz.x * 0.14 + xz.y * 0.25 - t * 0.22);
 }
 
+/// Distance from `xz` to the body's channel center line.
+fn waterChannelDistance(bi: u32, xz: vec2<f32>) -> f32 {
+    let cb = waterData.bodies[bi].channelB;
+    return abs((xz.x - cb.x) * cb.w - (xz.y - cb.y) * cb.z);
+}
+
 /// Channel taper (`WaveChannel.scaleAt` in D).
 fn waterChannelScale(bi: u32, xz: vec2<f32>) -> f32 {
     let ca = waterData.bodies[bi].channelA;
@@ -96,8 +102,7 @@ fn waterChannelScale(bi: u32, xz: vec2<f32>) -> f32 {
     if (halfWidth <= 0.0) {
         return 1.0;
     }
-    let cb = waterData.bodies[bi].channelB;
-    let d = abs((xz.x - cb.x) * cb.w - (xz.y - cb.y) * cb.z);
+    let d = waterChannelDistance(bi, xz);
     if (d <= halfWidth) {
         return 1.0;
     }

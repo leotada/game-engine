@@ -126,7 +126,7 @@ Gameplay queries are `terrain.heightAt(x, z)`, `terrain.normalAt(x, z)`, `terrai
   - The smooth normal comes from a mipmapped normal map (central differences at load). Layer normals add detail, scaled by `normalStrength`.
   - Rain wetness (`frame.globalWetness`) darkens and glosses upward-facing ground.
   - Detail normals are bent toward the camera at grazing angles.
-- **Lighting:** `common/simple_pbr.wgsl` (`shadeSimplePbr`) provides the directional light with CSM, point and spot lights with shadows, and split-sum IBL. Fog is applied last.
+- **Lighting:** `common/simple_pbr.wgsl` (`shadeSimplePbr`) provides the directional light with CSM, point and spot lights with shadows, and split-sum IBL. Terrain below a water body's level gets sun caustics ([water-guide.md](water-guide.md#caustics)). Fog is applied last.
 
 ### Shadows
 

@@ -304,8 +304,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("common/waves.wgsl");
         case "common/sky_frame.wgsl":
             return import("common/sky_frame.wgsl");
-        case "caustics_bed.wgsl":
-            return import("caustics_bed.wgsl");
+        case "common/caustics.wgsl":
+            return import("common/caustics.wgsl");
         case "water_surface.wgsl":
             return import("water_surface.wgsl");
         case "depth_copy.wgsl":

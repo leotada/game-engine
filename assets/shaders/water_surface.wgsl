@@ -402,7 +402,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var rawRayThickness = rayDepth;
     var chosenRayZ = rayDepth;
     var geomContact = 0.0;
-    var bgValidGeo = false;
     let depthDims = vec2<i32>(textureDimensions(sceneDepthMap, 0));
     let dimsF = vec2<f32>(depthDims);
     let baseUv = in.clipPos.xy / max(dimsF, vec2<f32>(1.0));
@@ -424,8 +423,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Reject refracted pixels belonging to foreground geometry sitting above the water surface.
         let validRefr = refrLinZ >= waterLinZ - 0.02;
         let finalUv = select(baseUv, refrUv, validRefr);
-        let finalRawDepth = select(rawBgDepth, refrRawDepth, validRefr);
-        bgValidGeo = finalRawDepth < 0.9995;
         chosenRayZ = select(rawRayThickness, max(refrLinZ - waterLinZ, 0.0), validRefr);
         rayDepth = min(chosenRayZ, 6.0);
 
@@ -512,20 +509,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             dirShadow = sampleDirShadowPCF(in.worldPos, N, sunL);
         }
         direct += evalOpenPbrDirect(pbrIn, sunL, sunRad) * dirShadow;
-
-        // Soft submerged-only caustics on underwater rocks and bridge piers (impossible above water
-        // because they operate strictly on refracted behind-water geometry pixels).
-        if (enableRefraction && bgValidGeo) {
-            let underPos = in.worldPos - V * chosenRayZ;
-            let onPropMask = smoothstep(bedY + 0.06, bedY + 0.26, underPos.y)
-                           * smoothstep(0.10, 0.48, verticalDepth);
-            if (onPropMask > 0.001) {
-                let propC = evalCausticsRgb(underPos - vec3<f32>(0.0, level, 0.0), sunL, time, riverMode);
-                let propCaustGain = wu.coatColor.w;
-                let subAtten = dirShadow * exp(-verticalDepth * 0.85) * onPropMask * propCaustGain;
-                refractedBg += refractedBg * propC * sunRad * subAtten;
-            }
-        }
+        // Submerged props reach this shader already lit (caustics included)
+        // through the opaque snapshot.
     }
 
     let sc = min(frame.spotCount, 4u);
