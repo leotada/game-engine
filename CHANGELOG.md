@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **GESC binary chunks** (`engine.scene.chunk_binary`, `docs/chunk-format.md`): columnar, zstd-compressed,
+  CRC-checked scene chunks with game-defined user blocks; `WorldStreamer` loads GESC or JSON chunks by content
+  and calls `GescBlockHandler`s on load/unload. `game-engine-gesc` tool (`encode`, `decode`, `info`, `verify`,
+  `split`, `bench`).
+- `engine.assets.zstd`: `@nogc` one-shot zstd (vendored zstd 1.5.7 in `vendor/zstd`, `libzstd_engine.a`).
+
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Because the repository has not yet published tagged releases, entries are grouped chronologically under `[Unreleased]` by development milestone and commit history (`git log`).

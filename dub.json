@@ -318,6 +318,23 @@
             "versions": ["NoSDL", "NoWGPU"]
         },
         {
+            "name": "gesc",
+            "targetType": "executable",
+            "targetName": "game-engine-gesc",
+            "mainSourceFile": "tools/gesc_main.d",
+            "sourcePaths": [],
+            "importPaths": ["source", "source/bindings/zstd"],
+            "sourceFiles": [
+                "tools/gesc_main.d",
+                "source/engine/scene/scene_file.d",
+                "source/engine/scene/chunk_binary.d",
+                "source/engine/assets/zstd.d",
+                "source/bindings/zstd/package.d"
+            ],
+            "libs": ["zstd_engine"],
+            "versions": ["NoSDL", "NoWGPU"]
+        },
+        {
             "name": "test-scene",
             "targetType": "executable",
             "targetName": "game-engine-test-scene",

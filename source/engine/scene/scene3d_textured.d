@@ -294,12 +294,14 @@ struct Scene3DTextured {
     private WGPUSampler defaultShadowSampler;
 
     private FrameUniforms frameData;
-    private enum uint INITIAL_POINT_LIGHT_CAP = 128;
-    private enum uint INITIAL_SPOT_LIGHT_CAP = 32;
+    private enum uint INITIAL_POINT_LIGHT_CAP = MAX_POINT_LIGHTS;
+    private enum uint INITIAL_SPOT_LIGHT_CAP = MAX_SPOT_LIGHTS;
     private PodBuffer!GpuPointLightUbo pointLightsStaging;
     private PodBuffer!GpuSpotLightUbo spotLightsStaging;
     private uint pointLightBufCap = 0;
     private uint spotLightBufCap = 0;
+    private uint lightBufGen = 0;
+    private uint boundLightBufGen = uint.max;
     private bool localLightsDirty = false;
     private WGPUBuffer boundPointLightsBuf;
     private WGPUBuffer boundSpotLightsBuf;
@@ -661,6 +663,7 @@ struct Scene3DTextured {
             destroyBuffer(pointLightsBuf);
             pointLightBufCap = newCap;
             pointLightsBuf = createStorageBuffer(device, pointLightBufCap * GpuPointLightUbo.sizeof);
+            lightBufGen++;
             rebuiltBuf = true;
         }
         if (pointLightsStaging.length > 0) {
@@ -675,6 +678,7 @@ struct Scene3DTextured {
             destroyBuffer(spotLightsBuf);
             spotLightBufCap = newCap;
             spotLightsBuf = createStorageBuffer(device, spotLightBufCap * GpuSpotLightUbo.sizeof);
+            lightBufGen++;
             rebuiltBuf = true;
         }
         if (spotLightsStaging.length > 0) {
@@ -1666,6 +1670,7 @@ struct Scene3DTextured {
                 frame.encoder, queue,
                 pointLightsBuf, pointLightBufCap * GpuPointLightUbo.sizeof,
                 spotLightsBuf, spotLightBufCap * GpuSpotLightUbo.sizeof,
+                lightBufGen,
                 frameCamera, frameData.pointCount, frameData.spotCount);
             frame.resumeScenePass();
         }
@@ -2170,6 +2175,7 @@ struct Scene3DTextured {
         if (frameBindGroup !is null && shadowSampler is boundShadowSampler
             && views == boundShadowViews && resolvedSceneColor is boundSceneColorView
             && resolvedSceneDepth is boundSceneDepthView
+            && lightBufGen == boundLightBufGen
             && pointLightsBuf is boundPointLightsBuf && spotLightsBuf is boundSpotLightsBuf)
             return;
         boundShadowSampler = shadowSampler;
@@ -2178,6 +2184,7 @@ struct Scene3DTextured {
         boundSceneDepthView = resolvedSceneDepth;
         boundPointLightsBuf = pointLightsBuf;
         boundSpotLightsBuf = spotLightsBuf;
+        boundLightBufGen = lightBufGen;
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
