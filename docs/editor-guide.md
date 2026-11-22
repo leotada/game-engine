@@ -111,6 +111,8 @@ The editor features a non-destructive Play Mode:
 - **Blender Worlds:** `tools/blender_export_scene.py` writes a root scene + per-cell chunk scenes + GLB models + `*.splines.json` that open directly in the editor and stream in the player. See [world-pipeline-guide.md §5](world-pipeline-guide.md#5-blender-scenechunk-exporter).
 - **Runtime Streaming (`engine.scene.streamer`):** `WorldStreamer` loads/unloads cells with hysteresis (`unloaded → loading → active → unloading`), runs file I/O on a GC-excluded background worker (`ScopedGcExcludedThread`), bounds GPU/ECS uploads per frame (`processUploadQueue`), and reference-counts `GltfAsset`, `Texture`, `CookedMesh`, and `NavMesh` tiles. The standalone player ([tools/player/player_main.d](../tools/player/player_main.d)) activates `WorldStreamer` automatically when a scene embeds `ChunkManifest`.
 
+**GESC binary chunks.** For large worlds the chunk files streamed by `WorldStreamer` may be compact binary `.gesc` files instead of `.scene.json`; the streamer detects the format by content. `.scene.json` stays the editable source that the editor opens, and `tools/blender_export_scene.py --format=gesc` (or `game-engine-gesc encode|split`) derives the `.gesc` files from it. GESC decoding runs GC-free on the streamer worker, chunks can be read from a mounted asset pak, and custom components can be cooked into binary blocks with `encodeChunkWithComponents`. See [chunk-format.md](chunk-format.md) and [world-pipeline-guide.md §5](world-pipeline-guide.md#5-blender-scenechunk-exporter).
+
 ### 4.2 Asset, Prefab, Scene & Tunable Hot-Reload
 
 The editor polls an `AssetHotReloader` over `assets/` every frame. It is disabled in `--headless-frames` runs, so `--assert-no-gc` stays at 0 bytes.

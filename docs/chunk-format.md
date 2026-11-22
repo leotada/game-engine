@@ -143,3 +143,19 @@ strings are renumbered per chunk) plus `world.scene.json`, a v2 root scene with 
 New data = a new block kind (old readers skip it); data an old reader must not lose bumps the version, as the
 binary component blocks do (`GESC_VERSION = 2`, `GESC_VERSION_BASE = 1`). An incompatible change bumps `GESC_VERSION`; convert old
 files with `decode` + `encode` or rebuild them from the JSON source, which stays the editable form.
+
+## Known limitations
+
+- **Integrity:** CRC32 covers block payloads only. The file header, the block table and alignment padding have no
+  checksum; table fields are bounds-checked on decode, so a flipped bit there is either rejected or harmless padding.
+- **Failed chunks:** a chunk that fails to decode goes `active` with zero entities, counts as a load and is retried on
+  every reload (two warning lines each time). The rest of the world keeps streaming.
+- **CLI tool:** `game-engine-gesc` does not link the component layer (it does not know game types). `decode` refuses
+  files with binary component blocks and `encode` cannot cook them; call `encodeChunkWithComponents` from the game.
+- **Pak:** `scenePath` values must equal the pak keys (for example `Assets/world/x.gesc`). The engine does not mount
+  the embedded pak at startup (`mountAssetPak`); the game must. Do not unmount a pak while workers are streaming.
+- **GC use on the main thread:** non-cooked `customJson` and `.scene.json` chunks are parsed with the GC on the main
+  thread; cook components into binary blocks to avoid it.
+- **Compression:** the zipd codec supports levels 1..9 only, a 1 MiB encoder window and no dictionaries; decoding is
+  several times slower than libzstd but small in absolute terms (well under 1 ms for a typical chunk).
+- **Not implemented:** block index for mmap, header/table checksum, and an automatic version migration command.

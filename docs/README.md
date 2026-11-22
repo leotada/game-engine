@@ -17,6 +17,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |
 | [world-pipeline-guide.md](world-pipeline-guide.md) | Asset/prefab/scene hot-reload, `*.tune.json` tunables, 3D road splines, `*.splines.json`, and the Blender chunk exporter |
+| [chunk-format.md](chunk-format.md) | GESC binary world-chunk format: columnar entities, zstd (zipd) blocks, binary component blocks (v2), GC-free worker decode, `game-engine-gesc` tool |
 | [export-guide.md](export-guide.md) | Multiplatform release export (`--target=<id>` specs, CLI flags, static deps, and media formats) |
 | [dmd-inline-crash.md](dmd-inline-crash.md) | DMD 2.113 `-inline` SIGSEGV in the SIMD backend: cause, reproducer, fix |
 | [scripting-guide.md](scripting-guide.md) | D scripting API, reflection attributes, lifecycle, and hot-reload rules |

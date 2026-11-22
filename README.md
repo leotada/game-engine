@@ -52,10 +52,12 @@ source/
 │   └── scene/             # Camera, controllers, graph, Scene3D (+ textured)
 ├── vendor/
 │   ├── box3d/             # Box3D physics engine C headers
-│   └── symgc/             # steadygc — optional concurrent card-marking GC
+│   ├── symgc/             # steadygc — optional concurrent card-marking GC
+│   └── zipd/              # zipd — pure-D zstd codec behind `engine.assets.zstd` (GESC chunk compression)
 ├── tools/
 │   ├── build_sdl3_deps.sh # Static/dev builder for SDL3, SDL3_image, SDL3_ttf & FreeType
 │   ├── export_main.d      # Multiplatform release exporter CLI (`--config=export`)
+│   ├── gesc_main.d        # `game-engine-gesc`: encode/decode/info/verify/split/bench for `.gesc` chunks (`--config=gesc`)
 │   ├── player/            # Standalone runtime player (`--config=player` / `player-static`)
 │   └── web/shell.html     # HTML5 WebGPU Emscripten shell template
 └── demo/
