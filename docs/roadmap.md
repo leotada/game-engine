@@ -20,7 +20,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 5 | Skeletal animation | [plan-animation.md](plan-animation.md) | Medium | glTF loader; engine storage poses must be `isPod` |
 | 6 | Scene editor / level design | [plan-editor-ux.md](plan-editor-ux.md) | **Done** (v1) | `dub run --config=editor`; multi-light with shadows; hull+mesh; asset DB; multi-select + undo |
 | 7 | Terrain and water editor | [plan-terrain-water.md](plan-terrain-water.md) | Medium | After scene editor; heightfield (P5); brushes + water plane |
-| 7b | Water engine port (demo → `engine/water/`) | [plan-water-engine-port.md](plan-water-engine-port.md) | Pending | `WaterRenderer`/`WaterBody`, shared wave buffer, compute sim, generic caustics, buoyancy, sky unification; demo keeps game code only |
+| 7b | Water engine port (demo → `engine/water/`) | [plan-water-engine-port.md](plan-water-engine-port.md) | Implemented | `WaterRenderer`/`WaterBody`, shared wave buffer, compute sim, generic caustics, buoyancy, sky unification; demo keeps game code only |
 | 8 | Hot reload (assets + data + shaders) | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) · [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Medium (Shaders Done) | Day-to-day iteration; shader hot-reload complete |
 | 9 | Parallel ECS | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Low | Stable serial API; opt-in scheduler |
 | 10 | Networking | [plan-networking.md](plan-networking.md) | Low | `engine.ser` + stable physics |

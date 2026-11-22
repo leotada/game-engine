@@ -1,6 +1,6 @@
 # Plan: Port the Water Demo into Reusable Engine Features
 
-> **Status:** pending · Follows [plan-water-realism.md](plan-water-realism.md) (WTR-0–WTR-6) · Covers the water part of [plan-terrain-water.md](plan-terrain-water.md) (TW-4, minus the editor gizmo) · See [roadmap.md](roadmap.md)
+> **Status:** implemented (WP-0–WP-10, 2026-11-22) · Follows [plan-water-realism.md](plan-water-realism.md) (WTR-0–WTR-6) · Covers the water part of [plan-terrain-water.md](plan-terrain-water.md) (TW-4, minus the editor gizmo) · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -221,7 +221,34 @@ yet. Verified in the player and editor with a water scene (0 B GC).
 - `@component struct WaterBody` registered in the editor components; serialized in `scene_file`; editable in the Inspector; the editor scene renderer feeds `WaterRenderer`.
 - Elevation gizmo and `terrain_water.scene.json` remain in TW-4.
 
-### WP-10 — Demo cleanup and docs
+### WP-10 — Demo cleanup and docs ✅ (2026-11-22)
+
+Done: the demo (1108 lines, from ~1880) holds game code only — procedural
+textures, bank mesh, rock tables, buoys, bridge, lighthouse, keys, HUD and
+bench/capture flags. The camera is the engine `OrbitCamera` (new
+`minPitch`/`maxPitch`, `wheelZoomSpeed`, `dragToRotate`); the hand-written
+shadow passes became `scene.renderShadows(frame, lights)` (banks, seabed and
+submerged pebbles now cast and receive shadows like any mesh); `--no-hud`
+hides the F1 hint. Captures vs WP-8: 46–48 dB PSNR. The lighthouse stays a
+plain white tower (content, not engine).
+
+Final benchmark (LDC release, 1280×720, `--bench=600`, GC delta 0):
+
+| Scenario | WP-0 (re-measured) | WP-10 | Δ |
+|:---|---:|---:|---:|
+| Ocean | 5.49 ms | 5.32 ms | −3% |
+| River | 3.26 ms | 3.47–3.56 ms | +7–9% |
+| No-Water (ocean scene) | 1.99 ms | 1.71 ms | −14% |
+| No-Water (river scene) | 1.86 ms | 1.81 ms | −3% |
+
+River investigation: caustics cost nothing measurable (strength 0 → same
+time); the PBR wet marks cost 0.63 ms of the river frame (wetline off →
+2.82 ms). Halving the wet-history samples (24 → 12) saves only 0.05 ms, so
+the cost is the per-fragment setup — wave data now comes from the shared
+buffer with a dynamic count, where WP-0 had six constant waves the compiler
+unrolled. Open item: a cheaper wetline (e.g. a low-resolution wet-history
+texture written by the simulation) if the river budget matters.
+
 - Demo keeps only game code (see list above).
 - New `docs/water-guide.md`; update `docs/graphics.md`, `docs/game-development-guide.md`, `docs/README.md`, `CHANGELOG.md`; mark `plan-water-realism.md` and `plan-terrain-water.md` accordingly.
 - Verify: `dub test --config=library`, `dub run --config=lint`, `dub run --config=water -- --bench=…` vs WP-0 numbers, visual comparison against WP-0 captures.

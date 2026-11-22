@@ -7,7 +7,7 @@ import std.math : sin, cos, PI, PI_2;
 
 import engine.math.vec : Vec2, Vec3;
 import engine.platform.gamepad : PadButton;
-import engine.platform.input : InputState, Key;
+import engine.platform.input : InputState, Key, MouseButton;
 import engine.scene.camera : Camera;
 
 @safe:
@@ -36,6 +36,15 @@ struct OrbitCamera {
     float padZoomSpeed = 10.0f;  // units per second via LT (out) / RT (in)
     uint  padSlot = 0;
     bool  useGamepad = true;
+    /// Pitch limits (radians). Raise `minPitch` above 0 to keep the camera
+    /// over the ground or a water surface.
+    float minPitch = -cast(float) PI_2 + EPS;
+    float maxPitch = cast(float) PI_2 - EPS;
+    /// Units per mouse-wheel notch (0 = wheel ignored).
+    float wheelZoomSpeed = 0.0f;
+    /// When true the mouse only rotates while the left or right button is held
+    /// (windowed demos); when false every mouse delta rotates (captured mouse).
+    bool  dragToRotate = false;
 
     static OrbitCamera create(Vec3 target, float distance, float yaw = 0, float pitch = 0.5f) {
         OrbitCamera c;
@@ -58,8 +67,11 @@ struct OrbitCamera {
         if (input.keyDown(Key.w)) distance -= zoomSpeed * dt;
         if (input.keyDown(Key.s)) distance += zoomSpeed * dt;
 
-        yaw   += input.mdx() * mouseSensitivity;
-        pitch -= input.mdy() * mouseSensitivity;
+        if (!dragToRotate || input.mouseDown(MouseButton.left) || input.mouseDown(MouseButton.right)) {
+            yaw   += input.mdx() * mouseSensitivity;
+            pitch -= input.mdy() * mouseSensitivity;
+        }
+        distance -= input.wheelY() * wheelZoomSpeed;
 
         if (useGamepad && input.padConnected(padSlot)) {
             immutable Vec2 rs = input.padRightStick(padSlot);
@@ -68,7 +80,7 @@ struct OrbitCamera {
             distance += (input.padLeftTrigger(padSlot) - input.padRightTrigger(padSlot)) * padZoomSpeed * dt;
         }
 
-        pitch    = clamp(pitch, -cast(float) PI_2 + EPS, cast(float) PI_2 - EPS);
+        pitch    = clamp(pitch, minPitch, maxPitch);
         distance = clamp(distance, minDistance, maxDistance);
 
         immutable cp = cos(pitch);

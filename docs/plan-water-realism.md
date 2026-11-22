@@ -1,6 +1,6 @@
 # Plan: Realistic Water Rendering & Renderer Integration Benchmark
 
-> **Status:** WTR-0–WTR-6 Implemented (including `256×256` JONSWAP + ping-pong advected foam compute pass and visual realism refinements) · Links to [plan-openpbr.md](plan-openpbr.md) (`OPBR-7`, `OPBR-9`) & [plan-terrain-water.md](plan-terrain-water.md) · See [roadmap.md](roadmap.md)
+> **Status:** WTR-0–WTR-6 Implemented, then moved from the demo into `engine.water` by [plan-water-engine-port.md](plan-water-engine-port.md) (including `256×256` JONSWAP + ping-pong advected foam compute pass and visual realism refinements) · Links to [plan-openpbr.md](plan-openpbr.md) (`OPBR-7`, `OPBR-9`) & [plan-terrain-water.md](plan-terrain-water.md) · See [roadmap.md](roadmap.md)
 
 ## Objective
 

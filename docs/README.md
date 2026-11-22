@@ -12,7 +12,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [audio-guide.md](audio-guide.md) | 8-bus audio mixer, real-time `@nogc` DSP (VHF radio/biquads), 3D Doppler spatialization, and OGG Vorbis streaming |
 | [navigation-guide.md](navigation-guide.md) | 3D Recast/Detour NavMesh baking, `.navmesh` persistence, `TileCache` dynamic obstacles, `NavCrowd`, and ECS integration |
 | [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU), open-world and outdoor rendering (CSM, fog, sky, weather, IBL, decals) |
-| [water-guide.md](water-guide.md) | Water: Gerstner wave model (`WaveSet`, presets, `sampleWaves`, `waveHeightAt`); surface rendering and buoyancy as the port lands |
+| [water-guide.md](water-guide.md) | Water: `WaterRenderer` / `WaterBody`, Gerstner waves, shared GPU wave data, caustics, wet marks, gameplay queries, buoyancy, wet material presets, `WaterSurface` scene component |
 | [terrain-guide.md](terrain-guide.md) | Chunked heightmap terrain: splat layers, LOD/geomorphing, shadows, Box3D colliders, procedural generation |
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |
@@ -36,6 +36,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-animation.md](plan-animation.md) | Pending | Skeletal animation + glTF skinning (#5) |
 | [plan-editor-ux.md](plan-editor-ux.md) | Delivered (v1) | Full scene editor UX (#6) |
 | [plan-terrain-water.md](plan-terrain-water.md) | Pending | Terrain and water editor (#7) |
+| [plan-water-engine-port.md](plan-water-engine-port.md) | Implemented (`WP-0–10`) | Water demo → `engine.water`: `WaterRenderer`/`WaterBody`, shared wave buffer, generic caustics, buoyancy, wet presets, `WaterSurface` editor component |
 | [plan-water-realism.md](plan-water-realism.md) | Implemented (`WTR-0–6`) | Realistic water optical pipeline (`snapshotOpaque`, refraction, SSR, submerged caustics, horizon skirt, `256×256` JONSWAP + advected foam compute sim) + Before/After benchmarks |
 | [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md) | In Progress (Shaders done) | Asset and data hot-reload (#8) |
 | [plan-parallel-ecs.md](plan-parallel-ecs.md) | Pending | Parallel system scheduler (#9) |

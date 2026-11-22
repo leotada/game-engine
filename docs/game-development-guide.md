@@ -165,7 +165,7 @@ scene.end(frame);
   graph.updateWorld();
   scene.drawMatrix(mesh, mat, graph.worldMatrix(moon), Color4.white());
   ```
-- **Camera controllers (`engine.scene.controllers`):** `OrbitCamera.create(target, dist)`, `FlyCamera.create(startPos)`, and `FirstPersonCamera.create()` — update via `.update(app.input, dt, camera)` (or `.update(app.input, dt, eyePos, camera)` for first-person).
+- **Camera controllers (`engine.scene.controllers`):** `OrbitCamera.create(target, dist)` (options: `minPitch`/`maxPitch`, `wheelZoomSpeed`, `dragToRotate`), `FlyCamera.create(startPos)`, and `FirstPersonCamera.create()` — update via `.update(app.input, dt, camera)` (or `.update(app.input, dt, eyePos, camera)` for first-person).
 - **Math, procedural shapes & noise:** `Mat4.trs(pos, rot, scale)` pairs with `engine.graphics.shapes` (`MeshData` builders: `box`, `quad`, `uvSphere`, `icosphere`, `cylinder`, `cone`, `frustum`, `capsule`, `prism`, `torus` with `.transform()`, `.merge()`, `.toTexMesh(gpu)`) and `engine.math.noise` (`valueNoise2D/3D`, `simplex2D/3D`, `fbm2D/3D`, `ridged2D/3D`).
 
 ### 3.5 Open-World Scenes: glTF Assets, Static Props, Culling & LOD

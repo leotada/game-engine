@@ -549,6 +549,8 @@ Transform hierarchy for composite objects (solar systems, body + limbs, cockpit 
 
 All controllers update the internal `Camera` via `lookAt` — they are controllers, not cameras themselves.
 
+`OrbitCamera` options: `minDistance` / `maxDistance`, `minPitch` / `maxPitch` (keep the view above ground or water), `wheelZoomSpeed` (0 = wheel ignored) and `dragToRotate` (rotate only while a mouse button is held, for windowed apps without a captured mouse).
+
 ## Audio
 
 `engine/audio/engine.d` provides a simple API built on SDL3 audio streams:

@@ -1,26 +1,21 @@
-/// Interactive OpenPBR Surface v1.1 Ocean & River Water Showcase.
+/// OpenPBR water showcase: an ocean cove and a mountain river.
 ///
-/// Renders realistic water in a single HDR pass using dedicated WGSL shaders:
-/// GPU 6-octave Gerstner wave displacement (160x160 grid), 4-octave
-/// procedural capillary micro-normals with river streamline deflection around
-/// boulders/piers, analytical Beer-Lambert depth absorption, backlit wave-crest
-/// subsurface scattering, crisp whitecap & obstacle wake foam, animated RGB
-/// Voronoi riverbed caustics modulated by shadows, and a coherent procedural
-/// atmospheric sky dome with drifting clouds and sun corona.
+/// Game code only. Water, caustics, wet marks, sky, shadows and buoyancy come
+/// from the engine (`engine.water`, `Scene3DTextured`, `engine.physics`);
+/// this file holds the content: procedural sand / bank / timber / masonry
+/// textures, the river-bank mesh, rock placements, buoys, bridge and
+/// lighthouse, key bindings, HUD and the `--bench` / `--capture` flags.
+/// See docs/water-guide.md.
 module demo.water;
 
 import std.math : cos, fabs, floor, sin, sqrt, tan, PI, PI_2;
 
-import bindings.wgpu;
+import bindings.wgpu : WGPU_TRUE, WGPUPresentMode, wgpuDevicePoll;
 import engine.app;
 import engine.assets.bmp : loadBmpTexture;
 import engine.assets.gltf : loadGltfMesh;
 import engine.core.log;
-import engine.core.pod : isPod;
-import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.renderer : FrameContext, Renderer;
-import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
@@ -28,20 +23,18 @@ import engine.graphics.material_presets : dryStoneParams, mossSurfaceParams,
     submergedSurfaceParams, wetSurfaceParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureFilter, TextureWrap;
-import engine.graphics.types : Color4, InstanceData, TexTanVert, TexVert;
+import engine.graphics.types : Color4, TexTanVert, TexVert;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.platform.input : InputState, Key, MouseButton;
 import engine.scene.camera : Camera;
-import engine.scene.light :
-    GpuSpotLight, LightSet, MAX_POINT_SHADOW_CASTERS, MAX_SPOT_SHADOW_CASTERS,
-    SPOT_SHADOW_RESOLUTION;
+import engine.scene.controllers : OrbitCamera;
+import engine.scene.light : GpuSpotLight, LightSet;
 import engine.scene.scene3d_textured : Scene3DTextured;
 import bindings.box3d : b3BodyId;
 import engine.physics : BodyDesc, createSphereBody, getPosition, getRotation, PhysicsWorld;
 import engine.water : applyBuoyancy, MAX_WATER_OBSTACLES, sphereProbes, waterSurfaceHeight,
-    WaterSurfacePoint, WaterBody, WaterFeature,
-    WaterObstacle, WaterRenderer, WaveSet;
+    WaterSurfacePoint, WaterBody, WaterFeature, WaterObstacle, WaterRenderer;
 
 @safe:
 
@@ -433,39 +426,19 @@ private enum RockPlacement[34] RIVER_ROCKS = [
     RockPlacement(Vec3( 10.2f, -0.76f, -0.6f), Vec3(2.1f, 0.62f, 1.8f), 1.65f, 3, 2),
 ];
 
-private struct OrbitState {
-    Vec3 target = Vec3(0.0f, 0.2f, 0.0f);
-    float distance = 16.5f;
-    float yaw = 0.85f;
-    float pitch = 0.42f;
-
-    void update(ref const InputState input, float dt, ref Camera camera) {
-        if (input.keyDown(Key.left))  yaw   -= 1.6f * dt;
-        if (input.keyDown(Key.right)) yaw   += 1.6f * dt;
-        if (input.keyDown(Key.up))    pitch += 0.9f * dt;
-        if (input.keyDown(Key.down))  pitch -= 0.9f * dt;
-        if (input.keyDown(Key.w)) distance -= 9.0f * dt;
-        if (input.keyDown(Key.s)) distance += 9.0f * dt;
-
-        if (input.mouseDown(MouseButton.left) || input.mouseDown(MouseButton.right)) {
-            yaw   += input.mdx() * 0.005f;
-            pitch -= input.mdy() * 0.005f;
-        }
-        distance -= input.wheelY() * 1.2f;
-
-        if (pitch < 0.08f) pitch = 0.08f;
-        if (pitch > 1.42f) pitch = 1.42f;
-        if (distance < 4.5f) distance = 4.5f;
-        if (distance > 34.0f) distance = 34.0f;
-
-        immutable cp = cos(pitch);
-        immutable eye = target + Vec3(
-            cos(yaw) * cp * distance,
-            sin(pitch) * distance,
-            sin(yaw) * cp * distance,
-        );
-        camera.lookAt(eye, target);
-    }
+/// Showcase orbit: drag to rotate, wheel / W,S to zoom, stays above the water.
+private OrbitCamera makeOrbit() {
+    auto o = OrbitCamera.create(Vec3(0.0f, 0.2f, 0.0f), 16.5f, 0.85f, 0.42f);
+    o.minDistance = 4.5f;
+    o.maxDistance = 34.0f;
+    o.minPitch = 0.08f;
+    o.maxPitch = 1.42f;
+    o.rotateSpeed = 1.6f;
+    o.zoomSpeed = 9.0f;
+    o.mouseSensitivity = 0.005f;
+    o.wheelZoomSpeed = 1.2f;
+    o.dragToRotate = true;
+    return o;
 }
 
 private struct RockTextureSet {
@@ -574,6 +547,7 @@ void main(string[] args) {
     bool initRiver = false;
     bool initLowSun = true;
     bool initHud = true;
+    bool hudHint = true;   // "[F1] Show Controls HUD" while the HUD is hidden
     bool noWater = false;
     bool initImmediate = false;
     bool benchSync = false;
@@ -591,6 +565,7 @@ void main(string[] args) {
             initLowSun = false;
         } else if (a == "--no-hud") {
             initHud = false;
+            hudHint = false;
         } else if (a == "--no-water") {
             noWater = true;
         } else if (a == "--immediate") {
@@ -823,23 +798,8 @@ void main(string[] args) {
         app.gpu, layout, sampler, whiteTex, beaconP, null, null, null, null);
     scope(exit) beaconMat.destroy();
 
-    // Shadows (Directional + Lighthouse/Bridge Spot)
-    auto shadowPipe = createShadowPipeline(app.gpu.getDevice());
-    scope(exit) shadowPipe.release();
-    auto lightBuf = createUniformBuffer(app.gpu.getDevice(), 64);
-    scope(exit) destroyBuffer(lightBuf);
-    auto lightBg = createUniformBindGroup(app.gpu.getDevice(), shadowPipe.bindGroupLayout, lightBuf, 64);
-    scope(exit) releaseBindGroup(lightBg);
-    auto shadowInstanceBuf = createDynamicVertexBuffer(app.gpu.getDevice(), 64 * InstanceData.sizeof);
-    scope(exit) destroyBuffer(shadowInstanceBuf);
-
-    auto dirShadow = ShadowMap.create(app.gpu, 2048);
-    scope(exit) dirShadow.destroy();
-    auto spotShadow = SpotShadowMap.create(app.gpu, SPOT_SHADOW_RESOLUTION);
-    scope(exit) spotShadow.destroy();
-
     auto camera = Camera.create(0.85f, cast(int) winW, cast(int) winH, 0.1f, 260.0f);
-    auto orbit = OrbitState();
+    auto orbit = makeOrbit();
     auto text = TextRenderer.create(app.gpu, winW, winH);
     scope(exit) text.destroy();
     auto fps = FpsCounter.create();
@@ -882,11 +842,11 @@ void main(string[] args) {
         if (app.input.keyPressed(Key.digit5)) { waveLevel = (waveLevel + 1) % 3; }
         if (app.input.keyPressed(Key.digit6)) { transparent = !transparent; paramsDirty = true; }
         if (app.input.keyPressed(Key.digit7)) { ssrEnabled = !ssrEnabled; }
-        if (app.input.keyPressed(Key.f1))     { showHud = !showHud; }
+        if (app.input.keyPressed(Key.f1))     { showHud = !showHud; hudHint = true; }
         if (app.input.keyPressed(Key.b))      { app.post.bloom = !app.post.bloom; }
         if (app.input.keyPressed(Key.f))      { app.post.fxaa = !app.post.fxaa; }
         if (app.input.keyPressed(Key.g))      { app.post.tonemapMode = 1 - app.post.tonemapMode; }
-        if (app.input.keyPressed(Key.r))      { orbit = OrbitState(); }
+        if (app.input.keyPressed(Key.r))      { orbit = makeOrbit(); }
         if (app.input.keyPressed(Key.equals) || app.input.keyPressed(Key.kpPlus))
             app.post.exposure += 0.1f;
         if (app.input.keyPressed(Key.minus) || app.input.keyPressed(Key.kpMinus)) {
@@ -895,8 +855,6 @@ void main(string[] args) {
         }
 
         immutable float waveScale = waveLevel == 0 ? 0.35f : (waveLevel == 1 ? 1.0f : 1.75f);
-        WaveSet waveSet = riverMode ? WaveSet.river() : WaveSet.ocean();
-        waveSet.amplitudeScale = waveScale;
         if (waveScale >= wetMemoryScale) {
             wetMemoryScale = waveScale;
         } else {
@@ -994,115 +952,7 @@ void main(string[] args) {
                 buoyModels[i] = Mat4.trs(getPosition(bb), getRotation(bb), Vec3(0.85f, 0.85f, 0.85f));
         }
 
-        // Gather shadow casters (rocks by mesh kind + buoys + bridge/lighthouse)
         const rocks = riverMode ? RIVER_ROCKS : SEA_ROCKS;
-        InstanceData[48] cliffCasters;
-        InstanceData[48] boulderCasters;
-        InstanceData[48] cobbleCasters;
-        uint cliffCount = 0;
-        uint boulderCount = 0;
-        uint cobbleCount = 0;
-        foreach (ref rk; rocks) {
-            if (rk.kind == 3) continue; // submerged pebbles don't cast overhead shadows
-            immutable inst = InstanceData(
-                (Mat4.translation(rk.pos.x, rk.pos.y, rk.pos.z)
-                 * Mat4.rotationY(rk.rotY)
-                 * Mat4.scaling(rk.scale.x, rk.scale.y, rk.scale.z)).m,
-                Color4.white.toArray());
-            if (rk.meshKind == 0)
-                cliffCasters[cliffCount++] = inst;
-            else if (rk.meshKind == 1)
-                boulderCasters[boulderCount++] = inst;
-            else
-                cobbleCasters[cobbleCount++] = inst;
-        }
-        InstanceData[8] structureCasters;
-        uint sCount = 0;
-        if (riverMode) {
-            // Wooden footbridge, piers, stone abutments, and lantern post
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 1.35f, 0.0f) * Mat4.scaling(1.8f, 0.28f, 16.2f)).m,
-                Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.10f, -4.6f) * Mat4.scaling(0.55f, 2.6f, 0.55f)).m,
-                Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.10f,  4.6f) * Mat4.scaling(0.55f, 2.6f, 0.55f)).m,
-                Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.65f, -7.8f) * Mat4.scaling(2.3f, 1.25f, 1.8f)).m,
-                Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-1.5f, 0.65f,  7.8f) * Mat4.scaling(2.3f, 1.25f, 1.8f)).m,
-                Color4.white.toArray());
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-0.7f, 1.75f, -5.6f) * Mat4.scaling(0.16f, 0.65f, 0.16f)).m,
-                Color4.white.toArray());
-        } else {
-            // Coastal headland lighthouse tower
-            structureCasters[sCount++] = InstanceData(
-                (Mat4.translation(-11.4f, 3.6f, -6.4f) * Mat4.scaling(1.4f, 5.2f, 1.4f)).m,
-                Color4.white.toArray());
-        }
-
-        InstanceData[3] buoyCasters;
-        if (!riverMode) {
-            foreach (i; 0 .. 3)
-                buoyCasters[i] = InstanceData(buoyModels[i].m, Color4.white.toArray());
-        }
-
-        // Directional shadow pass
-        bool firstDirShadow = true;
-        if (cliffCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, cliffCasters[0 .. cliffCount]);
-            submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                             cliffRockMesh, shadowInstanceBuf, cliffCount, firstDirShadow);
-            firstDirShadow = false;
-        }
-        if (boulderCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, boulderCasters[0 .. boulderCount]);
-            submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                             boulderRockMesh, shadowInstanceBuf, boulderCount, firstDirShadow);
-            firstDirShadow = false;
-        }
-        if (cobbleCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, cobbleCasters[0 .. cobbleCount]);
-            submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                             cobbleRockMesh, shadowInstanceBuf, cobbleCount, firstDirShadow);
-            firstDirShadow = false;
-        }
-        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, structureCasters[0 .. sCount]);
-        submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                         cube, shadowInstanceBuf, sCount, firstDirShadow);
-        if (!riverMode) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, buoyCasters[]);
-            submitShadowPass(app.gpu, dirShadow, shadowPipe, lightBg, lightBuf, lightVP,
-                             sphere, shadowInstanceBuf, 3, false);
-        }
-
-        // Spot shadow pass
-        bool firstSpotShadow = true;
-        if (cliffCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, cliffCasters[0 .. cliffCount]);
-            submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
-                                 cliffRockMesh, shadowInstanceBuf, cliffCount, firstSpotShadow);
-            firstSpotShadow = false;
-        }
-        if (boulderCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, boulderCasters[0 .. boulderCount]);
-            submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
-                                 boulderRockMesh, shadowInstanceBuf, boulderCount, firstSpotShadow);
-            firstSpotShadow = false;
-        }
-        if (cobbleCount > 0) {
-            updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, cobbleCasters[0 .. cobbleCount]);
-            submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
-                                 cobbleRockMesh, shadowInstanceBuf, cobbleCount, firstSpotShadow);
-            firstSpotShadow = false;
-        }
-        updateBuffer(app.gpu.getQueue(), shadowInstanceBuf, structureCasters[0 .. sCount]);
-        submitSpotShadowPass(app.gpu, spotShadow, shadowPipe, lightBg, lightBuf, spotVP,
-                             cube, shadowInstanceBuf, sCount, firstSpotShadow);
 
         LightSet lights;
         lights.dirEnabled = true;
@@ -1117,11 +967,6 @@ void main(string[] args) {
             18.0f, 44.0f, spotVP, true);
         lights.spotCount = 1;
         lights.shadowBias = 0.0005f;
-
-        PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointMaps;
-        SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotMaps;
-        spotMaps[0] = &spotShadow;
-        scene.setLights(lights, &dirShadow, pointMaps, spotMaps);
 
         // Engine water: shared wave data, surface uniforms, simulation step.
         water.update(camera, time);
@@ -1175,6 +1020,8 @@ void main(string[] args) {
             scene.drawMatrix(sphere, goldBuoyMat, buoyModels[2], Color4.white);
         }
 
+        // Shadows for everything queued above (sun + spot), then the frame.
+        scene.renderShadows(frame, lights);
         scene.end(frame);
 
         // The water surface (transparent hook, after the sky) was drawn by scene.end.
@@ -1211,7 +1058,7 @@ void main(string[] args) {
                 text.drawText(frame, "[B] Bloom    [F] FXAA      [G] Tonemap   [+/-] Exposure", 16, 204, 2);
                 text.drawText(frame, "[Drag/Arrows] Orbit        [W/S/Wheel] Zoom  [R] Reset", 16, 224, 2);
                 text.drawText(frame, "[F1] Hide HUD              [ESC] Quit", 16, 244, 2);
-            } else {
+            } else if (hudHint) {
                 text.drawText(frame, "[F1] Show Controls HUD", 16, 14, 2);
             }
         }

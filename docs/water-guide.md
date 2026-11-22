@@ -1,9 +1,8 @@
 # Water Guide
 
-> **Status:** being ported from `source/demo/water.d` into `engine.water` — see
-> [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation,
-> obstacles, caustics, gameplay queries, buoyancy, wet material presets and
-> the editor / scene component are in the engine.
+> **Status:** implemented — ported from the water demo by
+> [plan-water-engine-port.md](plan-water-engine-port.md). Open item: the PBR
+> wet marks are the main water cost in the river scene (see the plan).
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
 
@@ -312,6 +311,13 @@ both the visible sky and the reflection. See the sky section of
 ## Demo
 
 `dub run --config=water` (ocean) or `-- --river`. Builds with DMD and LDC.
+
+The demo is game code only: content (procedural textures, rocks, buoys,
+bridge, lighthouse), an `OrbitCamera`, automatic shadows
+(`scene.renderShadows`) and one `WaterRenderer` body rebuilt from the preset
+each frame from the HUD toggles. Keys: `1`/`2` ocean/river, `3` sun, `4`
+OpenPBR A/B, `5` waves, `6` opacity, `7` SSR, `F1` HUD; `--no-hud`,
+`--no-water`, `--bench=N`, `--capture=file.bmp`, `--frames=N`.
 
 > **DMD gotcha:** using a CTFE-built shader `enum` (e.g.
 > `waterSurfaceShaderSource`) directly inside a function makes DMD 2.113's

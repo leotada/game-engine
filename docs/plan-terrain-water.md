@@ -1,6 +1,6 @@
 # Plan: Terrain and Water Editor
 
-> **Status:** pending · Priority: low–medium · See [roadmap.md](roadmap.md)
+> **Status:** pending (water: the surface, caustics and the `WaterSurface` scene entity of TW-4 were delivered by [plan-water-engine-port.md](plan-water-engine-port.md); the level gizmo and `terrain_water.scene.json` remain) · Priority: low–medium · See [roadmap.md](roadmap.md)
 
 ## Objective
 
