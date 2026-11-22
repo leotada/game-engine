@@ -16,6 +16,7 @@ enum text2dShaderSource = import("text2d.wgsl");
 
 enum textured3dShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl").code;
 enum textured3dTangentShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT"]).code;
+enum textured3dSkinnedShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT", "SKINNED"]).code;
 
 /// PBR shader variants with the custom-surface hook enabled. They still hold
 /// the splice markers; build the final source with `composeSurfaceShader`.
@@ -62,6 +63,7 @@ unittest {
 }
 
 enum shadowDepthShaderSource = import("shadow_depth.wgsl");
+enum shadowDepthSkinnedShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["SKINNED"]).code;
 
 enum gizmoLineShaderSource = import("gizmo_line.wgsl");
 

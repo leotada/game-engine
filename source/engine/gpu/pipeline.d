@@ -9,6 +9,8 @@ import engine.water.gpu_data : WATER_DATA_SIZE;
 
 @safe:
 
+private immutable string kTextured3dSkinnedWgsl = textured3dSkinnedShaderSource;
+
 struct Pipeline3D {
     WGPURenderPipeline  pipeline;
     /// Primary layout: colored/cube = group0; textured = material group1.
@@ -17,15 +19,25 @@ struct Pipeline3D {
     WGPUBindGroupLayout frameBindGroupLayout;
     /// Textured pipeline only: IBL @group(2). Null for colored pipelines.
     WGPUBindGroupLayout iblBindGroupLayout;
+    /// Skinned PBR pipeline only: joint palette storage buffer @group(3).
+    WGPUBindGroupLayout skinBindGroupLayout;
     WGPUPipelineLayout  pipelineLayout;
+    WGPUPipelineLayout  skinnedPipelineLayout;
     WGPUShaderModule    shaderModule;
     /// Stride-48 PBR pipeline (`TexTanVert`). Null on colored pipelines.
     WGPURenderPipeline  pipelineTangent;
     WGPUShaderModule    shaderModuleTangent;
+    /// Stride-80 skinned PBR pipeline (`SkinnedVertex`). Null on non-PBR pipelines.
+    WGPURenderPipeline  pipelineSkinned;
+    WGPUShaderModule    shaderModuleSkinned;
 
     @disable this(this);
 
     void release() nothrow @nogc @trusted {
+        if (pipelineSkinned !is null)       { wgpuRenderPipelineRelease(pipelineSkinned); pipelineSkinned = null; }
+        if (shaderModuleSkinned !is null)   { wgpuShaderModuleRelease(shaderModuleSkinned); shaderModuleSkinned = null; }
+        if (skinnedPipelineLayout !is null) { wgpuPipelineLayoutRelease(skinnedPipelineLayout); skinnedPipelineLayout = null; }
+        if (skinBindGroupLayout !is null)   { wgpuBindGroupLayoutRelease(skinBindGroupLayout); skinBindGroupLayout = null; }
         if (pipelineTangent !is null) { wgpuRenderPipelineRelease(pipelineTangent); pipelineTangent = null; }
         if (shaderModuleTangent !is null) { wgpuShaderModuleRelease(shaderModuleTangent); shaderModuleTangent = null; }
         if (pipeline !is null)        { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
@@ -554,7 +566,37 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     if (result.pipelineTangent is null)
         fatal("Failed to create textured 3D tangent render pipeline");
 
-    info("Textured 3D PBR pipeline created (frame + material + IBL)");
+    // --- Group 3 (skinned PBR): concatenated joint palette storage buffer ---
+    WGPUBindGroupLayoutEntry skinEntry;
+    skinEntry.binding = 0;
+    skinEntry.visibility = WGPUShaderStage.vertex;
+    skinEntry.buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    skinEntry.buffer.minBindingSize = 64;
+    WGPUBindGroupLayoutDescriptor skinBglDesc;
+    skinBglDesc.entryCount = 1;
+    skinBglDesc.entries = &skinEntry;
+    result.skinBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &skinBglDesc);
+
+    WGPUBindGroupLayout[4] skinLayouts = [
+        result.frameBindGroupLayout,
+        result.bindGroupLayout,
+        result.iblBindGroupLayout,
+        result.skinBindGroupLayout,
+    ];
+    WGPUPipelineLayoutDescriptor splDesc;
+    splDesc.bindGroupLayoutCount = 4;
+    splDesc.bindGroupLayouts = skinLayouts.ptr;
+    result.skinnedPipelineLayout = wgpuDeviceCreatePipelineLayout(device, &splDesc);
+
+    result.shaderModuleSkinned = createShaderModule(device, kTextured3dSkinnedWgsl, "textured3d_skinned");
+    if (result.shaderModuleSkinned is null)
+        fatal("Failed to create textured 3D skinned shader module");
+    result.pipelineSkinned = createSkinnedTexturedDrawPipeline(
+        device, result.shaderModuleSkinned, result.skinnedPipelineLayout, surfaceFormat);
+    if (result.pipelineSkinned is null)
+        fatal("Failed to create textured 3D skinned render pipeline");
+
+    info("Textured 3D PBR pipeline created (frame + material + IBL + skin)");
     return result;
 }
 
@@ -567,6 +609,32 @@ WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUShaderModul
         { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
         { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 8 },
     ];
+    return createTexturedDrawPipelineWithAttrs(
+        device, shader, layout, surfaceFormat,
+        stride, vertexAttrs.ptr, tangent ? 4 : 3, state);
+}
+
+/// Stride-80 skinned PBR pipeline (`SkinnedVertex`: pos, normal, uv, tangent, joints, weights).
+WGPURenderPipeline createSkinnedTexturedDrawPipeline(WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout, WGPUTextureFormat surfaceFormat, RenderState state = RenderState.init) nothrow @nogc @trusted {
+    WGPUVertexAttribute[6] vertexAttrs = [
+        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+        { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 8 },
+        { format: WGPUVertexFormat.uint32x4,  offset: 48, shaderLocation: 10 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 11 },
+    ];
+    return createTexturedDrawPipelineWithAttrs(
+        device, shader, layout, surfaceFormat,
+        80, vertexAttrs.ptr, 6, state);
+}
+
+private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
+    WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout,
+    WGPUTextureFormat surfaceFormat, ulong stride,
+    const(WGPUVertexAttribute)* vertexAttrs, uint vertexAttrCount,
+    RenderState state) nothrow @nogc @trusted
+{
     WGPUVertexAttribute[6] instanceAttrs = [
         { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
         { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
@@ -579,8 +647,8 @@ WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUShaderModul
         {
             arrayStride: stride,
             stepMode: WGPUVertexStepMode.vertex,
-            attributeCount: tangent ? 4 : 3,
-            attributes: vertexAttrs.ptr,
+            attributeCount: vertexAttrCount,
+            attributes: vertexAttrs,
         },
         {
             arrayStride: TexInstanceData.sizeof,

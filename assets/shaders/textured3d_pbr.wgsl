@@ -171,6 +171,10 @@ fn evalRecentWaterWetness(bi: u32, worldPos: vec3<f32>, time: f32, curScale: f32
     return vec2<f32>(filmWet, poreWet);
 }
 
+#ifdef SKINNED
+@group(3) @binding(0) var<storage, read> skinPalettes: array<mat4x4<f32>>;
+#endif
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -183,6 +187,10 @@ struct VertexInput {
     @location(9) custom: vec4<f32>,
 #ifdef MESH_TANGENT
     @location(8) tangent: vec4<f32>,
+#endif
+#ifdef SKINNED
+    @location(10) joints: vec4<u32>,
+    @location(11) weights: vec4<f32>,
 #endif
 };
 
@@ -203,7 +211,22 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
+#ifdef SKINNED
+    let palBase = bitcast<u32>(in.model0.w) & 0xFFFFu;
+    let instModel = mat4x4<f32>(
+        vec4<f32>(in.model0.xyz, 0.0),
+        vec4<f32>(in.model1.xyz, 0.0),
+        vec4<f32>(in.model2.xyz, 0.0),
+        vec4<f32>(in.model3.xyz, 1.0)
+    );
+    let skinMat = skinPalettes[palBase + in.joints.x] * in.weights.x
+                + skinPalettes[palBase + in.joints.y] * in.weights.y
+                + skinPalettes[palBase + in.joints.z] * in.weights.z
+                + skinPalettes[palBase + in.joints.w] * in.weights.w;
+    let model = instModel * skinMat;
+#else
     let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+#endif
     var localPos = in.position;
 #ifdef CUSTOM_SURFACE
 //@@DISPLACE_CALL@@

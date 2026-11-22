@@ -37,12 +37,14 @@ import bindings.wgpu;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader  : createShaderModule;
-import engine.gpu.shaders : shadowDepthShaderSource;
+import engine.gpu.shaders : shadowDepthShaderSource, shadowDepthSkinnedShaderSource;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.math.mat    : Mat4;
 import engine.math.vec    : Vec3;
 
 @safe:
+
+private immutable string kShadowDepthSkinnedWgsl = shadowDepthSkinnedShaderSource;
 
 /// Match `engine.scene.light.POINT_SHADOW_RESOLUTION`.
 enum uint DEFAULT_POINT_SHADOW_RESOLUTION = 512;
@@ -333,9 +335,13 @@ struct TexShadowPipeline {
     WGPURenderPipeline  pipe48Back;
     WGPURenderPipeline  pipe32None;
     WGPURenderPipeline  pipe48None;
+    WGPURenderPipeline  pipeSkinnedBack;
+    WGPURenderPipeline  pipeSkinnedNone;
     WGPUBindGroupLayout bindGroupLayout;
     WGPUPipelineLayout  pipelineLayout;
+    WGPUPipelineLayout  skinnedPipelineLayout;
     WGPUShaderModule    shaderModule;
+    WGPUShaderModule    skinnedShaderModule;
 
     @disable this(this);
 
@@ -345,18 +351,25 @@ struct TexShadowPipeline {
         return vertexStride == 48 ? pipe48Back : pipe32Back;
     }
 
+    WGPURenderPipeline skinnedPipelineFor(bool doubleSided) pure nothrow @nogc {
+        return doubleSided ? pipeSkinnedNone : pipeSkinnedBack;
+    }
+
     void release() nothrow @nogc @trusted {
         void rel(ref WGPURenderPipeline p) {
             if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
         }
         rel(pipe32Back); rel(pipe48Back); rel(pipe32None); rel(pipe48None);
-        if (pipelineLayout !is null)  { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
-        if (bindGroupLayout !is null) { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
-        if (shaderModule !is null)    { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
+        rel(pipeSkinnedBack); rel(pipeSkinnedNone);
+        if (skinnedPipelineLayout !is null) { wgpuPipelineLayoutRelease(skinnedPipelineLayout); skinnedPipelineLayout = null; }
+        if (pipelineLayout !is null)        { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
+        if (bindGroupLayout !is null)       { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
+        if (skinnedShaderModule !is null)   { wgpuShaderModuleRelease(skinnedShaderModule); skinnedShaderModule = null; }
+        if (shaderModule !is null)          { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
     }
 }
 
-TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
+TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout skinBindGroupLayout = null) @trusted {
     TexShadowPipeline r;
     r.shaderModule = createShaderModule(device, shadowDepthShaderSource);
     if (r.shaderModule is null) fatal("Tex shadow depth shader compile failed");
@@ -391,10 +404,12 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
         { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
     ];
 
-    WGPURenderPipeline buildPipe(uint vStride, bool doubleSided) {
+    WGPURenderPipeline buildPipe(WGPUPipelineLayout layout, WGPUShaderModule mod,
+                                 uint vStride, const(WGPUVertexAttribute)* vAttrs, uint vAttrCount,
+                                 bool doubleSided) {
         WGPUVertexBufferLayout[2] bufferLayouts = [
             { arrayStride: vStride, stepMode: WGPUVertexStepMode.vertex,
-              attributeCount: 3, attributes: vertexAttrs.ptr },
+              attributeCount: vAttrCount, attributes: vAttrs },
             { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
               attributeCount: 5, attributes: instanceAttrs.ptr },
         ];
@@ -407,8 +422,8 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
         depthState.depthBiasClamp    = 0.0f;
 
         WGPURenderPipelineDescriptor pd;
-        pd.layout = r.pipelineLayout;
-        pd.vertex.module_ = r.shaderModule;
+        pd.layout = layout;
+        pd.vertex.module_ = mod;
         pd.vertex.entryPoint = wgpuStringView("vs_main");
         pd.vertex.bufferCount = 2;
         pd.vertex.buffers = bufferLayouts.ptr;
@@ -421,10 +436,30 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device) @trusted {
         return pipe;
     }
 
-    r.pipe32Back = buildPipe(32, false);
-    r.pipe48Back = buildPipe(48, false);
-    r.pipe32None = buildPipe(32, true);
-    r.pipe48None = buildPipe(48, true);
+    r.pipe32Back = buildPipe(r.pipelineLayout, r.shaderModule, 32, vertexAttrs.ptr, 3, false);
+    r.pipe48Back = buildPipe(r.pipelineLayout, r.shaderModule, 48, vertexAttrs.ptr, 3, false);
+    r.pipe32None = buildPipe(r.pipelineLayout, r.shaderModule, 32, vertexAttrs.ptr, 3, true);
+    r.pipe48None = buildPipe(r.pipelineLayout, r.shaderModule, 48, vertexAttrs.ptr, 3, true);
+
+    if (skinBindGroupLayout !is null) {
+        r.skinnedShaderModule = createShaderModule(device, kShadowDepthSkinnedWgsl, "shadow_depth_skinned");
+        if (r.skinnedShaderModule is null) fatal("Skinned shadow depth shader compile failed");
+        WGPUBindGroupLayout[2] skinLayouts = [r.bindGroupLayout, skinBindGroupLayout];
+        WGPUPipelineLayoutDescriptor splDesc;
+        splDesc.bindGroupLayoutCount = 2;
+        splDesc.bindGroupLayouts = skinLayouts.ptr;
+        r.skinnedPipelineLayout = wgpuDeviceCreatePipelineLayout(device, &splDesc);
+
+        WGPUVertexAttribute[5] skinnedAttrs = [
+            { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+            { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+            { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+            { format: WGPUVertexFormat.uint32x4,  offset: 48, shaderLocation: 10 },
+            { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 11 },
+        ];
+        r.pipeSkinnedBack = buildPipe(r.skinnedPipelineLayout, r.skinnedShaderModule, 80, skinnedAttrs.ptr, 5, false);
+        r.pipeSkinnedNone = buildPipe(r.skinnedPipelineLayout, r.skinnedShaderModule, 80, skinnedAttrs.ptr, 5, true);
+    }
     return r;
 }
 

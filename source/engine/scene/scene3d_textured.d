@@ -14,8 +14,10 @@ import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
-    createSurfacePipelines, createTexturedDrawPipeline, createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
+    createSkinnedTexturedDrawPipeline, createSurfacePipelines, createTexturedDrawPipeline,
+    createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
 import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.skinned : SkinnedMesh;
 import engine.gpu.sky : SkyRenderer;
 import engine.gpu.shadow :
     beginShadowPassView, createTexShadowPipeline, endShadowPass,
@@ -25,8 +27,9 @@ import engine.graphics.types : Color4;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.graphics.material : Material;
 import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
-import engine.math.bounds : BoundingSphere, maxAxisScale;
+import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
+import engine.meshopt.internal.bits : bitsFloat, floatBits;
 import engine.scene.static_instances : collectVisibleRuns, StaticInstanceBuffer, StaticRun, StaticViewParams;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
@@ -96,6 +99,9 @@ alias OpaqueDrawHook = void delegate(ref FrameContext frame) nothrow @nogc;
 /// `drawMatrix` LOD argument: pick the level from the camera distance and the
 /// mesh's simplifier errors (LOD0 for meshes without a chain).
 enum ubyte LOD_AUTO = 0xFF;
+private enum ubyte SKINNED_BATCH_LOD = 0xFE;
+private enum size_t INITIAL_SKIN_PALETTE_MATRICES = 4096;
+private enum size_t MAX_SKIN_PALETTE_MATRICES = 65536;
 
 /// Maximum `StaticInstanceBuffer`s submitted per frame.
 enum MAX_STATIC_SUBMISSIONS = 8;
@@ -154,14 +160,20 @@ struct CasterRange {
 void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere localSphere,
                         Vec3 lightPos, float range, scope const(Frustum)[] views,
                         ref PodBuffer!TexInstanceData staging, scope CasterRange[] outRanges,
-                        ref PodBuffer!uint candScratch, ref PodBuffer!BoundingSphere sphereScratch) nothrow @nogc {
+                        ref PodBuffer!uint candScratch, ref PodBuffer!BoundingSphere sphereScratch,
+                        bool isSkinned = false) nothrow @nogc {
     assert(outRanges.length >= views.length);
     candScratch.clear();
     sphereScratch.clear();
     foreach (i, ref inst; items) {
-        Mat4 model;
-        model.m = inst.model;
-        immutable ws = localSphere.transformed(model);
+        BoundingSphere ws;
+        if (isSkinned) {
+            ws = unpackSkinnedWorldSphere(inst);
+        } else {
+            Mat4 model;
+            model.m = inst.model;
+            ws = localSphere.transformed(model);
+        }
         if (range > 0 && (ws.center - lightPos).length() > range + ws.radius) continue;
         candScratch.put(cast(uint) i);
         sphereScratch.put(ws);
@@ -263,20 +275,29 @@ struct Scene3DTextured {
     /// keeps its capacity across frames, so steady-state submission never
     /// allocates.
     private struct Batch {
-        TexMesh*   mesh;
-        Material*  material;
-        ubyte      lod;
+        TexMesh*     mesh;
+        SkinnedMesh* skinnedMesh;
+        Material*    material;
+        ubyte        lod;
         PodBuffer!TexInstanceData instances;
-        WGPUBuffer instanceBuf;
-        size_t     capacity;
-        bool       uploaded = false;
+        WGPUBuffer   instanceBuf;
+        size_t       capacity;
+        bool         uploaded = false;
         /// Culling partition (see `prepareBatch`): color pass draws
         /// `[colorFirst, colorFirst + colorCount)`, the directional shadow
         /// pass `[dirFirst, dirFirst + dirCount)`; point / spot shadows draw all.
-        bool       prepared = false;
-        uint       colorFirst, colorCount, dirFirst, dirCount;
+        bool         prepared = false;
+        uint         colorFirst, colorCount, dirFirst, dirCount;
     }
     private BatchMap batchMap;
+
+    // Concatenated joint palettes for `drawSkinned` batches (@group(3) / shadow @group(1)).
+    private PodBuffer!Mat4 skinPaletteStaging;
+    private WGPUBuffer skinPaletteBuf;
+    private size_t skinPaletteCapacity;
+    private WGPUBindGroup skinPaletteBg;
+    private bool skinPalettesUploaded = false;
+    private bool warnedSkinPaletteOverflow = false;
 
     // Culling state, captured in `begin`.
     private Frustum cameraFrustum;
@@ -324,6 +345,7 @@ struct Scene3DTextured {
         RenderState state;
         WGPURenderPipeline pipeline;
         WGPURenderPipeline pipelineTangent;
+        WGPURenderPipeline pipelineSkinned;
     }
     private enum MAX_VARIANTS = 64;
     private PipelineVariant[MAX_VARIANTS] variants;
@@ -424,6 +446,9 @@ struct Scene3DTextured {
                 device, INITIAL_INSTANCES_PER_BATCH * TexInstanceData.sizeof);
             b.capacity = INITIAL_INSTANCES_PER_BATCH;
         }
+        s.skinPaletteCapacity = INITIAL_SKIN_PALETTE_MATRICES;
+        s.skinPaletteBuf = createStorageBuffer(device, s.skinPaletteCapacity * Mat4.sizeof);
+        s.rebuildSkinPaletteBindGroup();
         return s;
     }
 
@@ -851,6 +876,8 @@ struct Scene3DTextured {
         batchCount = 0;
         batchMap.reset();
         staticCount = 0;
+        skinPaletteStaging.clear();
+        skinPalettesUploaded = false;
     }
 
     /**
@@ -1025,6 +1052,7 @@ struct Scene3DTextured {
 
         if (maxSlotUsed == 0) return;
         wgpuQueueWriteBuffer(queue, shadowVpBuf, 0, shadowVpStaging.ptr, maxSlotUsed * SHADOW_VP_STRIDE);
+        ensureSkinPalettesUploaded();
 
         // Cull dynamic casters per point-face / spot view (the directional
         // view uses the batch partition from `prepareBatch`).
@@ -1116,7 +1144,7 @@ struct Scene3DTextured {
 
     private void ensureShadowResources() @trusted {
         if (shadowPipeReady) return;
-        shadowPipe = createTexShadowPipeline(device);
+        shadowPipe = createTexShadowPipeline(device, pipeline.skinBindGroupLayout);
         shadowVpBuf = createUniformBuffer(device, MAX_SHADOW_PASS_SLOTS * SHADOW_VP_STRIDE);
 
         WGPUBindGroupEntry bge;
@@ -1165,6 +1193,18 @@ struct Scene3DTextured {
                     }
                 }
                 if (count == 0) continue;
+                if (b.skinnedMesh !is null) {
+                    auto p = shadowPipe.skinnedPipelineFor(b.material.renderState.doubleSided);
+                    wgpuRenderPassEncoderSetPipeline(pass, p);
+                    wgpuRenderPassEncoderSetBindGroup(pass, 1, skinPaletteBg, 0, null);
+                    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.skinnedMesh.vertexBuffer, 0, b.skinnedMesh.vertexBufSize);
+                    wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instBuf, 0, instBytes);
+                    wgpuRenderPassEncoderSetIndexBuffer(pass, b.skinnedMesh.indexBuffer, b.skinnedMesh.indexFormat, 0, b.skinnedMesh.indexBufSize);
+                    wgpuRenderPassEncoderDrawIndexed(pass, b.skinnedMesh.indexCount, count, 0, 0, first);
+                    frameStats.shadowDrawCalls++;
+                    frameStats.shadowInstancesDrawn += count;
+                    continue;
+                }
                 auto p = shadowPipe.pipelineFor(b.mesh.vertexStride, b.material.renderState.doubleSided);
                 wgpuRenderPassEncoderSetPipeline(pass, p);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
@@ -1202,12 +1242,16 @@ struct Scene3DTextured {
         CasterRange[6] ranges;
         foreach (bi, ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
-            if (!cullingEnabled || !b.mesh.hasBounds) {
+            immutable bool hasBounds = b.skinnedMesh !is null
+                ? b.skinnedMesh.hasBounds : (b.mesh !is null && b.mesh.hasBounds);
+            if (!cullingEnabled || !hasBounds) {
                 foreach (slot; slots) casterRanges[slot * batchCount + bi] = CasterRange(0, 0, true);
                 continue;
             }
-            gatherLightCasters(b.instances[], b.mesh.localSphere, lightPos, range, views[0 .. slots.length],
-                               casterStaging, ranges[0 .. slots.length], casterCandidates, casterSpheres);
+            immutable localSphere = b.mesh !is null ? b.mesh.localSphere : BoundingSphere.init;
+            gatherLightCasters(b.instances[], localSphere, lightPos, range, views[0 .. slots.length],
+                               casterStaging, ranges[0 .. slots.length], casterCandidates, casterSpheres,
+                               b.skinnedMesh !is null);
             foreach (k, slot; slots) casterRanges[slot * batchCount + bi] = ranges[k];
         }
     }
@@ -1325,6 +1369,49 @@ struct Scene3DTextured {
         b.instances.put(TexInstanceData(model.m, tint.toArray(), custom));
     }
 
+    /// Draw a GPU-skinned mesh through the full OpenPBR pipeline (IBL, CSM, local lights,
+    /// fog, rain wetness, bloom) and shadow passes, instanced per `(SkinnedMesh, Material)`.
+    /// `modelPoseSphere` is the character's current model-space bounding sphere
+    /// (e.g. from `poseBoundingSphere(pose.model)`), used for frustum/shadow culling.
+    void drawSkinned(ref SkinnedMesh mesh, ref Material material, Mat4 model, Color4 tint,
+                     scope const(Mat4)[] palette, BoundingSphere modelPoseSphere,
+                     float[4] custom = [1.0f, 0.0f, 0.0f, 0.0f]) nothrow @nogc {
+        if (!mesh.valid) return;
+        auto b = findOrAddSkinned(mesh, material);
+        if (b is null) return;
+
+        immutable size_t need = palette.length > 0 ? palette.length : 1;
+        uint palOffset = 0;
+        if (skinPaletteStaging.length + need <= MAX_SKIN_PALETTE_MATRICES) {
+            palOffset = cast(uint) skinPaletteStaging.length;
+            if (palette.length > 0) {
+                foreach (ref m; palette)
+                    skinPaletteStaging.put(m);
+            } else {
+                skinPaletteStaging.put(Mat4.identity());
+            }
+        } else if (!warnedSkinPaletteOverflow) {
+            warn("Scene3DTextured: skin palette buffer exceeded ", MAX_SKIN_PALETTE_MATRICES, " matrices");
+            warnedSkinPaletteOverflow = true;
+        }
+
+        immutable ws = modelPoseSphere.transformed(model);
+        TexInstanceData inst = TexInstanceData(model.m, tint.toArray(), custom);
+        inst.model[3] = packSkinnedOffsetAndRadius(palOffset, ws.radius);
+        inst.model[7] = ws.center.x;
+        inst.model[11] = ws.center.y;
+        inst.model[15] = ws.center.z;
+        b.instances.put(inst);
+    }
+
+    /// Overload deriving the current pose's bounding sphere from `mesh.localSphere` and `palette`.
+    void drawSkinned(ref SkinnedMesh mesh, ref Material material, Mat4 model, Color4 tint,
+                     scope const(Mat4)[] palette,
+                     float[4] custom = [1.0f, 0.0f, 0.0f, 0.0f]) nothrow @nogc {
+        drawSkinned(mesh, material, model, tint, palette,
+                    estimatePoseSphereFromPalette(mesh.localSphere, palette), custom);
+    }
+
     /// Screen-space LOD for one instance (stateless: no hysteresis).
     private ubyte autoLod(ref const TexMesh mesh, ref const Mat4 model) const nothrow @nogc {
         auto errors = mesh.lodErrorList();
@@ -1340,6 +1427,7 @@ struct Scene3DTextured {
 
         if (!frame.valid) return;
 
+        ensureSkinPalettesUploaded();
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
 
@@ -1403,20 +1491,27 @@ struct Scene3DTextured {
         b.prepared = true;
         b.uploaded = false;
         immutable n = cast(uint) b.instances.length;
-        if (!cullingEnabled || !b.mesh.hasBounds || n == 0) {
+        immutable bool isSkinned = b.skinnedMesh !is null;
+        immutable bool hasBounds = isSkinned ? b.skinnedMesh.hasBounds : (b.mesh !is null && b.mesh.hasBounds);
+        if (!cullingEnabled || !hasBounds || n == 0) {
             b.colorFirst = 0;
             b.colorCount = n;
             b.dirFirst = 0;
             b.dirCount = n;
             return;
         }
-        immutable local = b.mesh.localSphere;
+        immutable local = isSkinned ? BoundingSphere.init : b.mesh.localSphere;
         partitionClasses.resize(n);
         partitionScratch.resize(n);
         foreach (i, ref inst; b.instances[]) {
-            Mat4 model;
-            model.m = inst.model;
-            immutable ws = local.transformed(model);
+            BoundingSphere ws;
+            if (isSkinned) {
+                ws = unpackSkinnedWorldSphere(inst);
+            } else {
+                Mat4 model;
+                model.m = inst.model;
+                ws = local.transformed(model);
+            }
             immutable bool cam = cameraFrustum.intersectsSphere(ws) && passesDistanceCull(ws);
             immutable bool lit = light !is null && light.intersectsSphere(ws);
             partitionClasses[i] = cam ? (lit ? 1 : 0) : (lit ? 2 : 3);
@@ -1459,6 +1554,21 @@ struct Scene3DTextured {
     private void drawBatch(ref FrameContext frame, ref Batch b) @trusted {
         ensureBatchUploaded(b);
 
+        if (b.skinnedMesh !is null) {
+            auto pipe = skinnedPipelineFor(b.material.renderState);
+            if (pipe is null) return;
+            frame.setPipeline(pipe);
+            frame.setBindGroup(1, b.material.bindGroup);
+            frame.setBindGroup(3, skinPaletteBg);
+            frame.setVertexBuffer(0, b.skinnedMesh.vertexBuffer, b.skinnedMesh.vertexBufSize);
+            frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
+            frame.setIndexBuffer(b.skinnedMesh.indexBuffer, b.skinnedMesh.indexFormat, b.skinnedMesh.indexBufSize);
+            frame.drawIndexed(b.skinnedMesh.indexCount, b.colorCount, 0, 0, b.colorFirst);
+            frameStats.drawCalls++;
+            frameStats.lodHistogram[0] += b.colorCount;
+            return;
+        }
+
         immutable tangent = b.mesh.vertexStride == 48;
         auto pipe = pipelineFor(b.material.surfaceShader, b.material.renderState, tangent);
         if (pipe is null) return;
@@ -1481,16 +1591,23 @@ struct Scene3DTextured {
             auto custom = &surfaceShaders[shaderId - 1];
             return tangent ? custom.pipelineTangent : custom.pipeline;
         }
+        auto module32 = shaderId == 0 ? pipeline.shaderModule : surfaceShaders[shaderId - 1].shaderModule;
+        auto module48 = shaderId == 0 ? pipeline.shaderModuleTangent : surfaceShaders[shaderId - 1].shaderModuleTangent;
         foreach (ref v; variants[0 .. variantCount]) {
-            if (v.shaderId == shaderId && v.state == state)
+            if (v.shaderId == shaderId && v.state == state) {
+                if (v.pipeline is null)
+                    v.pipeline = createTexturedDrawPipeline(device, module32, pipeline.pipelineLayout,
+                                                            Renderer.sceneFormat(), 32, false, state);
+                if (v.pipelineTangent is null)
+                    v.pipelineTangent = createTexturedDrawPipeline(device, module48, pipeline.pipelineLayout,
+                                                                   Renderer.sceneFormat(), 48, true, state);
                 return tangent ? v.pipelineTangent : v.pipeline;
+            }
         }
         if (variantCount >= MAX_VARIANTS) {
             warn("Textured pipeline variant table full; drawing with the default render state");
             return pipelineFor(shaderId, RenderState.init, tangent);
         }
-        auto module32 = shaderId == 0 ? pipeline.shaderModule : surfaceShaders[shaderId - 1].shaderModule;
-        auto module48 = shaderId == 0 ? pipeline.shaderModuleTangent : surfaceShaders[shaderId - 1].shaderModuleTangent;
         PipelineVariant v;
         v.shaderId = shaderId;
         v.state = state;
@@ -1502,6 +1619,32 @@ struct Scene3DTextured {
         return tangent ? v.pipelineTangent : v.pipeline;
     }
 
+    /// Skinned PBR pipeline for `state`, built on first use.
+    private WGPURenderPipeline skinnedPipelineFor(RenderState state) @trusted {
+        if (state.isDefault) return pipeline.pipelineSkinned;
+        foreach (ref v; variants[0 .. variantCount]) {
+            if (v.shaderId == 0 && v.state == state) {
+                if (v.pipelineSkinned is null)
+                    v.pipelineSkinned = createSkinnedTexturedDrawPipeline(
+                        device, pipeline.shaderModuleSkinned, pipeline.skinnedPipelineLayout,
+                        Renderer.sceneFormat(), state);
+                return v.pipelineSkinned;
+            }
+        }
+        if (variantCount >= MAX_VARIANTS) {
+            warn("Textured pipeline variant table full; drawing skinned mesh with default render state");
+            return pipeline.pipelineSkinned;
+        }
+        PipelineVariant v;
+        v.shaderId = 0;
+        v.state = state;
+        v.pipelineSkinned = createSkinnedTexturedDrawPipeline(
+            device, pipeline.shaderModuleSkinned, pipeline.skinnedPipelineLayout,
+            Renderer.sceneFormat(), state);
+        variants[variantCount++] = v;
+        return v.pipelineSkinned;
+    }
+
     /// Drop cached variants of one shader (after a hot reload).
     private void releaseVariants(uint shaderId) nothrow @nogc @trusted {
         uint kept = 0;
@@ -1509,6 +1652,7 @@ struct Scene3DTextured {
             if (v.shaderId == shaderId) {
                 if (v.pipeline !is null) wgpuRenderPipelineRelease(v.pipeline);
                 if (v.pipelineTangent !is null) wgpuRenderPipelineRelease(v.pipelineTangent);
+                if (v.pipelineSkinned !is null) wgpuRenderPipelineRelease(v.pipelineSkinned);
             } else {
                 variants[kept++] = v;
             }
@@ -1520,8 +1664,13 @@ struct Scene3DTextured {
         foreach (ref v; variants[0 .. variantCount]) {
             if (v.pipeline !is null) wgpuRenderPipelineRelease(v.pipeline);
             if (v.pipelineTangent !is null) wgpuRenderPipelineRelease(v.pipelineTangent);
+            if (v.pipelineSkinned !is null) wgpuRenderPipelineRelease(v.pipelineSkinned);
         }
         variantCount = 0;
+        if (skinPaletteBg !is null) { wgpuBindGroupRelease(skinPaletteBg); skinPaletteBg = null; }
+        destroyBuffer(skinPaletteBuf); skinPaletteBuf = null;
+        skinPaletteCapacity = 0;
+        skinPaletteStaging.release();
         foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
         surfaceShaderCount = 0;
         foreach (ref b; batches) {
@@ -1742,6 +1891,7 @@ struct Scene3DTextured {
         }
         auto b = &batches[batchCount];
         b.mesh = &mesh;
+        b.skinnedMesh = null;
         b.material = &material;
         b.lod = lod;
         b.instances.clear();
@@ -1751,6 +1901,102 @@ struct Scene3DTextured {
         batchCount++;
         return b;
     }
+
+    private Batch* findOrAddSkinned(ref SkinnedMesh mesh, ref Material material) nothrow @nogc @trusted {
+        immutable meshKey = cast(size_t) &mesh;
+        immutable matKey = cast(size_t) &material;
+        immutable found = batchMap.find(meshKey, matKey, SKINNED_BATCH_LOD);
+        if (found != BatchMap.none) return &batches[found];
+        if (batchCount >= batches.length) {
+            if (!warnedBatchOverflow)
+                warn("Scene3DTextured: more than ", batches.length, " batches; extra draws are dropped");
+            warnedBatchOverflow = true;
+            return null;
+        }
+        auto b = &batches[batchCount];
+        b.mesh = null;
+        b.skinnedMesh = &mesh;
+        b.material = &material;
+        b.lod = SKINNED_BATCH_LOD;
+        b.instances.clear();
+        b.uploaded = false;
+        b.prepared = false;
+        batchMap.insert(meshKey, matKey, SKINNED_BATCH_LOD, batchCount);
+        batchCount++;
+        return b;
+    }
+
+    private void rebuildSkinPaletteBindGroup() nothrow @nogc @trusted {
+        if (skinPaletteBg !is null) {
+            wgpuBindGroupRelease(skinPaletteBg);
+            skinPaletteBg = null;
+        }
+        WGPUBindGroupEntry entry;
+        entry.binding = 0;
+        entry.buffer = skinPaletteBuf;
+        entry.offset = 0;
+        entry.size = skinPaletteCapacity * Mat4.sizeof;
+        WGPUBindGroupDescriptor desc;
+        desc.layout = pipeline.skinBindGroupLayout;
+        desc.entryCount = 1;
+        desc.entries = &entry;
+        skinPaletteBg = wgpuDeviceCreateBindGroup(device, &desc);
+        if (skinPaletteBg is null) fatal("Failed to create skin palette bind group");
+    }
+
+    private void ensureSkinPalettesUploaded() nothrow @nogc @trusted {
+        if (skinPalettesUploaded || skinPaletteStaging.length == 0) return;
+        if (skinPaletteStaging.length > skinPaletteCapacity) {
+            size_t cap = skinPaletteCapacity ? skinPaletteCapacity : INITIAL_SKIN_PALETTE_MATRICES;
+            while (cap < skinPaletteStaging.length) cap *= 2;
+            destroyBuffer(skinPaletteBuf);
+            skinPaletteBuf = createStorageBuffer(device, cap * Mat4.sizeof);
+            skinPaletteCapacity = cap;
+            rebuildSkinPaletteBindGroup();
+        }
+        wgpuQueueWriteBuffer(queue, skinPaletteBuf, 0, skinPaletteStaging[].ptr,
+                             skinPaletteStaging.length * Mat4.sizeof);
+        skinPalettesUploaded = true;
+    }
+}
+
+/// Packs a 16-bit palette base offset (low 16 bits) and a rounded-up bfloat16
+/// bounding-sphere radius (high 16 bits) into `TexInstanceData.model[3]`.
+package(engine) float packSkinnedOffsetAndRadius(uint paletteOffset, float worldRadius) pure nothrow @nogc {
+    uint bf16 = 0;
+    if (worldRadius > 0.0f) {
+        immutable rBits = floatBits(worldRadius);
+        bf16 = (rBits + 0x7FFFu) >> 16;
+        if (bf16 == 0) bf16 = 1;
+        if (bf16 > 0x7F7Fu) bf16 = 0x7F7Fu;
+    }
+    return bitsFloat((paletteOffset & 0xFFFFu) | (bf16 << 16));
+}
+
+package(engine) uint unpackSkinnedPaletteOffset(ref const TexInstanceData inst) pure nothrow @nogc {
+    return floatBits(inst.model[3]) & 0xFFFFu;
+}
+
+package(engine) BoundingSphere unpackSkinnedWorldSphere(ref const TexInstanceData inst) pure nothrow @nogc {
+    immutable packed = floatBits(inst.model[3]);
+    immutable float radius = bitsFloat(packed & 0xFFFF_0000u);
+    return BoundingSphere(Vec3(inst.model[7], inst.model[11], inst.model[15]), radius);
+}
+
+/// Estimates a model-space pose sphere when the caller does not pass `poseBoundingSphere`.
+package(engine) BoundingSphere estimatePoseSphereFromPalette(BoundingSphere bindSphere,
+                                                             scope const(Mat4)[] palette) pure nothrow @nogc {
+    if (palette.length == 0) return bindSphere;
+    Aabb centers;
+    immutable c = bindSphere.center;
+    foreach (ref m; palette) {
+        centers.extend(Vec3(
+            m.m[0] * c.x + m.m[4] * c.y + m.m[8]  * c.z + m.m[12],
+            m.m[1] * c.x + m.m[5] * c.y + m.m[9]  * c.z + m.m[13],
+            m.m[2] * c.x + m.m[6] * c.y + m.m[10] * c.z + m.m[14]
+        ));
+    }
+    return BoundingSphere(centers.center(), centers.halfExtents().length() + bindSphere.radius);
 }
 
 /**
@@ -1919,6 +2165,64 @@ package(engine) struct BatchMap {
     // Unit spheres touch neighbouring faces at most along edges, so far
     // fewer copies than 6 faces × 5 instances.
     assert(total < 12 && total == staging.length);
+    staging.release();
+    cand.release();
+    spheres.release();
+}
+
+@("scene3dTextured.skinnedPackingAndPoseCulling") @safe unittest {
+    import std.math : abs;
+
+    TexInstanceData inst;
+    inst.model = Mat4.translation(1.0f, 2.0f, 3.0f).m;
+    immutable worldPose = BoundingSphere(Vec3(12.0f, 0.5f, -4.0f), 1.75f);
+    inst.model[3] = packSkinnedOffsetAndRadius(1340u, worldPose.radius);
+    inst.model[7] = worldPose.center.x;
+    inst.model[11] = worldPose.center.y;
+    inst.model[15] = worldPose.center.z;
+
+    assert(unpackSkinnedPaletteOffset(inst) == 1340u);
+    immutable unpacked = unpackSkinnedWorldSphere(inst);
+    assert(unpacked.center == worldPose.center);
+    assert(unpacked.radius >= worldPose.radius && unpacked.radius < worldPose.radius + 0.05f);
+
+    // Pose sphere estimate tracks palette translation (e.g. ragdoll/root motion away from bind origin).
+    Mat4[2] pal = [Mat4.translation(0, 0, 0), Mat4.translation(10, 0, 0)];
+    immutable est = estimatePoseSphereFromPalette(BoundingSphere(Vec3(0, 1, 0), 1.0f), pal[]);
+    assert(abs(est.center.x - 5.0f) < 1e-4f);
+    assert(est.radius >= 6.0f);
+
+    // Light caster culling uses the unpacked pose sphere, not bind-pose origin (model[12..14]).
+    // Instance 0 has model origin at (50, 0, 0) (far outside light) but posed sphere at (2, 0, 0) (inside +X).
+    // Instance 1 has model origin at (0, 0, 0) (inside light) but posed sphere at (40, 0, 0) (outside range 10).
+    TexInstanceData[2] items;
+    items[0].model = Mat4.translation(50, 0, 0).m;
+    items[0].model[3] = packSkinnedOffsetAndRadius(0, 1.0f);
+    items[0].model[7] = 2.0f; items[0].model[11] = 0.0f; items[0].model[15] = 0.0f;
+
+    items[1].model = Mat4.translation(0, 0, 0).m;
+    items[1].model[3] = packSkinnedOffsetAndRadius(64, 1.0f);
+    items[1].model[7] = 40.0f; items[1].model[11] = 0.0f; items[1].model[15] = 0.0f;
+
+    import engine.gpu.shadow : pointLightFaceVPs;
+    immutable vps = pointLightFaceVPs(Vec3(0, 0, 0), 0.1f, 10.0f);
+    Frustum[6] views;
+    foreach (f; 0 .. 6) views[f] = Frustum.fromViewProj(vps[f]);
+
+    PodBuffer!TexInstanceData staging;
+    PodBuffer!uint cand;
+    PodBuffer!BoundingSphere spheres;
+    CasterRange[6] ranges;
+    gatherLightCasters(items[], BoundingSphere.init, Vec3(0, 0, 0), 10.0f, views[],
+                       staging, ranges[], cand, spheres, true);
+
+    bool saw0 = false, saw1 = false;
+    foreach (ref it; staging[]) {
+        immutable off = unpackSkinnedPaletteOffset(it);
+        if (off == 0) saw0 = true;
+        if (off == 64) saw1 = true;
+    }
+    assert(saw0 && !saw1);
     staging.release();
     cand.release();
     spheres.release();
