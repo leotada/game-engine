@@ -23,7 +23,7 @@ import core.stdc.string : memcpy, memset;
 import std.json : JSONValue, parseJSON;
 
 import engine.assets.zstd : zstdContentSize, zstdDecompress;
-import engine.editor.scene_load : SceneLoadOptions, SceneLoadResult;
+import engine.editor.scene_load : SceneLoadOptions, SceneLoadResult, loadSceneAdditive;
 import engine.ecs.scene_world : SceneWorld;
 import engine.math.vec : Vec3;
 import engine.scene.chunk_binary;
@@ -822,4 +822,74 @@ version (unittest) {
         assert(readChunkNoGc(files["user"], scoped, err), err);
     }
     assert(gescNoGcLiveAllocations() == liveBefore, "the destructor releases the blocks");
+}
+
+/// Benchmark, enabled by `GESC_BENCH_DIR=<dir with .gesc chunks>`: main-thread cost per chunk before (GC decode +
+/// apply) and after (apply only; the decode moved to the worker), plus the worker-side decode time.
+@("chunkNoGc.benchmarkDirectory") unittest {
+    import core.time : MonoTime;
+    import std.file : dirEntries, read, SpanMode;
+    import std.process : environment;
+    import std.stdio : writefln;
+    import engine.editor.components : Visual;
+    import engine.scene.graph : Transform;
+    immutable dir = environment.get("GESC_BENCH_DIR", "");
+    if (dir.length == 0)
+        return;
+    ubyte[][] files;
+    foreach (e; dirEntries(dir, "*.gesc", SpanMode.shallow))
+        files ~= () @trusted { return cast(ubyte[]) read(e.name); }();
+    SceneLoadOptions opts;
+    opts.validate = false;
+    opts.checkAssetFiles = false;
+    long oldMain, newWorker, newMain, customParse, loadOnly;
+    size_t withCustom;
+    size_t ents;
+    enum reps = 5;
+    foreach (rep; 0 .. reps)
+        foreach (bytes; files) {
+            SceneWorld w1, w2;
+            foreach (w; [&w1, &w2]) {
+                w.ensureRegistered!Transform();
+                w.ensureRegistered!Visual();
+            }
+            GescApplyResult c;
+            auto t0 = MonoTime.currTime();
+            auto gc = parseChunkBytes(bytes);
+            auto r1 = applyChunk(w1, gc, Vec3(0, 0, 0), opts, c);
+            oldMain += (MonoTime.currTime() - t0).total!"usecs";
+            GescChunkNoGc ng;
+            string err;
+            t0 = MonoTime.currTime();
+            assert(readChunkNoGc(bytes, ng, err), err);
+            newWorker += (MonoTime.currTime() - t0).total!"usecs";
+            t0 = MonoTime.currTime();
+            auto r2 = applyChunkNoGc(w2, ng, Vec3(0, 0, 0), opts, c);
+            newMain += (MonoTime.currTime() - t0).total!"usecs";
+            assert(r1.spawnedEntities.length == r2.spawnedEntities.length);
+            if (ng.customBlock.length) {
+                ++withCustom;
+                t0 = MonoTime.currTime();
+                auto dup = ng.scene.entities.dup;
+                attachCustomJson(dup, ng.customBlock, err);
+                customParse += (MonoTime.currTime() - t0).total!"usecs";
+            }
+            {
+                SceneWorld w3;
+                w3.ensureRegistered!Transform();
+                w3.ensureRegistered!Visual();
+                t0 = MonoTime.currTime();
+                auto sf = ng.scene;
+                loadSceneAdditive(w3, sf, Vec3(0, 0, 0), opts);
+                loadOnly += (MonoTime.currTime() - t0).total!"usecs";
+            }
+            if (rep == 0)
+                ents += r1.spawnedEntities.length;
+        }
+    immutable n = files.length * reps;
+    writefln("GESC bench: %s chunks, %s entities; per chunk: main before %.1f us (decode+apply), "
+            ~ "main after %.1f us (apply), worker decode %.1f us; "
+            ~ "%s/%s chunks have custom JSON (parse %.1f us/chunk avg), loadSceneAdditive alone %.1f us", files.length, ents,
+            cast(double) oldMain / n, cast(double) newMain / n, cast(double) newWorker / n, withCustom, n,
+            cast(double) customParse / n, cast(double) loadOnly / n);
 }
