@@ -32,7 +32,7 @@ struct ClusterState {
 @group(0) @binding(5) var<storage, read_write> clusterState: ClusterState;
 
 const WORKGROUP_THREADS: u32 = 64u;
-const MAX_POINTS_PER_WG: u32 = 256u;
+const MAX_POINTS_PER_WG: u32 = 1024u;
 const MAX_SPOTS_PER_WG: u32 = 256u;
 
 var<workgroup> wgMinAabb: vec3<f32>;
@@ -42,7 +42,7 @@ var<workgroup> wgSpotCount: atomic<u32>;
 var<workgroup> wgBaseOffset: u32;
 var<workgroup> wgStoredPoints: u32;
 var<workgroup> wgStoredSpots: u32;
-var<workgroup> wgPoints: array<u32, 256>;
+var<workgroup> wgPoints: array<u32, 1024>;
 var<workgroup> wgSpots: array<u32, 256>;
 
 fn unprojectCorner(ndcXY: vec2<f32>, ndcZ: f32) -> vec3<f32> {

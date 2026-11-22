@@ -23,8 +23,8 @@ enum uint CLUSTER_GRID_X = 16;
 enum uint CLUSTER_GRID_Y = 9;
 enum uint CLUSTER_GRID_Z = 24;
 enum uint CLUSTER_COUNT = CLUSTER_GRID_X * CLUSTER_GRID_Y * CLUSTER_GRID_Z; // 3456
-enum uint CLUSTER_AVG_LIGHTS_BUDGET = 256;
-enum uint CLUSTER_INDEX_CAPACITY = CLUSTER_COUNT * CLUSTER_AVG_LIGHTS_BUDGET; // 884,736 uints (~3.38 MiB)
+enum uint CLUSTER_AVG_LIGHTS_BUDGET = 384;
+enum uint CLUSTER_INDEX_CAPACITY = CLUSTER_COUNT * CLUSTER_AVG_LIGHTS_BUDGET; // 1,327,104 uints (~5.06 MiB)
 
 /// GPU mirror of WGSL `ClusterRecord` (16 bytes).
 struct ClusterRecord {
@@ -222,6 +222,7 @@ struct ClusteredLightCuller {
     private ulong boundPointSize;
     private WGPUBuffer boundSpotBuf;
     private ulong boundSpotSize;
+    private uint boundBufGen = uint.max;
 
     @disable this(this);
 
@@ -315,11 +316,12 @@ struct ClusteredLightCuller {
     void encode(WGPUCommandEncoder encoder, WGPUQueue queue,
                 WGPUBuffer pointBuf, ulong pointBytes,
                 WGPUBuffer spotBuf, ulong spotBytes,
+                uint bufferGen,
                 ref const Camera camera, uint pointCount, uint spotCount) nothrow @nogc @trusted {
         if (encoder is null || resetPipe is null || cullPipe is null) return;
         if (pointBuf is null || spotBuf is null) return;
 
-        ensureBindGroup(pointBuf, pointBytes, spotBuf, spotBytes);
+        ensureBindGroup(pointBuf, pointBytes, spotBuf, spotBytes, bufferGen);
 
         ClusterCullUniforms u;
         u.viewMatrix = Mat4.lookAt(camera.position, camera.target, camera.up).m;
@@ -358,8 +360,10 @@ struct ClusteredLightCuller {
     }
 
     private void ensureBindGroup(WGPUBuffer pointBuf, ulong pointBytes,
-                                 WGPUBuffer spotBuf, ulong spotBytes) nothrow @nogc @trusted {
-        if (cachedBg !is null && pointBuf is boundPointBuf && pointBytes == boundPointSize
+                                 WGPUBuffer spotBuf, ulong spotBytes,
+                                 uint bufferGen) nothrow @nogc @trusted {
+        if (cachedBg !is null && bufferGen == boundBufGen
+                && pointBuf is boundPointBuf && pointBytes == boundPointSize
                 && spotBuf is boundSpotBuf && spotBytes == boundSpotSize) {
             return;
         }
@@ -384,6 +388,7 @@ struct ClusteredLightCuller {
         boundPointSize = pointBytes;
         boundSpotBuf = spotBuf;
         boundSpotSize = spotBytes;
+        boundBufGen = bufferGen;
     }
 
     void destroy() nothrow @nogc @trusted {
