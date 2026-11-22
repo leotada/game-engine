@@ -215,6 +215,12 @@
             "mainSourceFile": "source/demo/clustered_bench.d"
         },
         {
+            "name": "surface-shadow-check",
+            "targetType": "executable",
+            "targetName": "game-engine-surface-shadow-check",
+            "mainSourceFile": "source/demo/surface_shadow_check.d"
+        },
+        {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
