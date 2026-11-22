@@ -19,6 +19,7 @@ import engine.animation.math.simd;
 import engine.animation.math.soa;
 import engine.animation.sampling;
 import engine.animation.skeleton;
+import engine.math.bounds : Aabb, BoundingSphere;
 import engine.math.mat : Mat4, decomposeAffine;
 import engine.scene.graph : Transform;
 
@@ -276,6 +277,47 @@ Mat4 mat4FromFloat4x4(const Float4x4 f) @trusted pure nothrow @nogc {
 /// Converts an engine `Mat4` to an ozz `Float4x4`.
 Float4x4 float4x4FromMat4(const Mat4 m) @trusted pure nothrow @nogc {
     return *cast(const(Float4x4)*) &m;
+}
+
+/// World-space transform of `jointIndex` on a posed character (`characterWorld * pose.model[jointIndex] * localOffset`).
+/// Use this to attach rigid props (weapons, flashlights, shoulder cameras) without an ECS `BoneSocket`.
+Mat4 jointWorldMatrix(const(Pose)* pose, uint jointIndex,
+                      Mat4 characterWorld = Mat4.identity(),
+                      Mat4 localOffset = Mat4.identity()) pure nothrow @nogc {
+    if (pose is null || jointIndex >= pose.model.length)
+        return characterWorld * localOffset;
+    return characterWorld * mat4FromFloat4x4(pose.model[jointIndex]) * localOffset;
+}
+
+/// Model-space bounding sphere enclosing every joint translation in `jointModels`
+/// padded by `jointRadiusMargin` (for flesh/limb extent around bone origins).
+/// Pass this to `Scene3DTextured.drawSkinned` so ragdolls or root-motion animations
+/// are culled by their current pose instead of bind-pose bounds.
+BoundingSphere poseBoundingSphere(scope const(Mat4)[] jointModels, float jointRadiusMargin = 0.35f) pure nothrow @nogc {
+    import core.math : sqrt;
+    import engine.math.vec : Vec3;
+
+    if (jointModels.length == 0)
+        return BoundingSphere.init;
+    Aabb box;
+    foreach (ref m; jointModels)
+        box.extend(Vec3(m.m[12], m.m[13], m.m[14]));
+    immutable c = box.center();
+    float maxR2 = 0.0f;
+    foreach (ref m; jointModels) {
+        immutable dx = m.m[12] - c.x;
+        immutable dy = m.m[13] - c.y;
+        immutable dz = m.m[14] - c.z;
+        immutable d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > maxR2) maxR2 = d2;
+    }
+    immutable margin = jointRadiusMargin > 0.0f ? jointRadiusMargin : 0.0f;
+    return BoundingSphere(c, sqrt(maxR2) + margin);
+}
+
+/// Overload accepting `Pose.model` (`const(Float4x4)[]`) directly.
+BoundingSphere poseBoundingSphere(scope const(Float4x4)[] jointModels, float jointRadiusMargin = 0.35f) pure nothrow @nogc {
+    return poseBoundingSphere(asMat4(jointModels), jointRadiusMargin);
 }
 
 /// Updates `Transform` of entities carrying `BoneSocket` to `targetWorld * pose.model[jointIndex] * localSocket`.
@@ -573,4 +615,22 @@ unittest {
     assert(abs(propXf.position.x - expPos.x) < 1e-3f);
     assert(abs(propXf.position.y - expPos.y) < 1e-3f);
     assert(abs(propXf.position.z - expPos.z) < 1e-3f);
+
+    // jointWorldMatrix matches charXf * pose.model[subRoot] * localOffset.
+    immutable jw = jointWorldMatrix(pose, cast(uint) subRoot, charXf.localMatrix(), Mat4.translation(0.5f, 0.0f, 0.0f));
+    assert(abs(jw.m[12] - expPos.x) < 1e-3f);
+    assert(abs(jw.m[13] - expPos.y) < 1e-3f);
+    assert(abs(jw.m[14] - expPos.z) < 1e-3f);
+
+    // poseBoundingSphere follows shifted joint positions (e.g. a fallen ragdoll away from origin).
+    Mat4[3] shifted = [
+        Mat4.translation(14.0f, 0.2f, -8.0f),
+        Mat4.translation(15.0f, 0.2f, -8.0f),
+        Mat4.translation(16.0f, 0.2f, -8.0f),
+    ];
+    immutable ps = poseBoundingSphere(shifted[], 0.35f);
+    assert(abs(ps.center.x - 15.0f) < 1e-4f);
+    assert(abs(ps.center.y - 0.2f) < 1e-4f);
+    assert(abs(ps.center.z - (-8.0f)) < 1e-4f);
+    assert(ps.radius >= 1.34f && ps.radius <= 1.36f);
 }

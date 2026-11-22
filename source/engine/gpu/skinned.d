@@ -14,6 +14,8 @@ import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.shader   : createShaderModule;
 import engine.gpu.shaders  : skinnedShaderSource;
 import engine.graphics.types : Color4;
+public import engine.graphics.types : SkinnedVertex;
+import engine.math.bounds : Aabb, BoundingSphere;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 
@@ -21,12 +23,84 @@ import engine.math.vec : Vec3;
 
 enum size_t maxJoints = 1024;
 
-/// POD vertex uploaded to the GPU (56 bytes).
-struct SkinnedVertex {
-    float[3] position = 0;
-    float[3] normal = 0;
-    uint[4] joints = 0;
-    float[4] weights = 0;
+/// GPU-resident skinned mesh (80-byte `SkinnedVertex` buffer + 16/32-bit index buffer)
+/// drawn by `Scene3DTextured.drawSkinned`.
+struct SkinnedMesh {
+    package(engine) WGPUBuffer vertexBuffer;
+    package(engine) WGPUBuffer indexBuffer;
+    package(engine) uint indexCount;
+    package(engine) uint vertexCount;
+    package(engine) ulong vertexBufSize;
+    package(engine) ulong indexBufSize;
+    package(engine) WGPUIndexFormat indexFormat = WGPUIndexFormat.uint32;
+    /// Bind-pose object-space bounds computed from the vertex positions at upload.
+    Aabb localBounds;
+    /// Bind-pose bounding sphere (fallback when a caller omits a pose sphere).
+    BoundingSphere localSphere;
+
+    @disable this(this);
+
+    /// Build a `SkinnedMesh` from vertex + index data.
+    /// `uint` indices are narrowed to `ushort` when every index fits in 65535.
+    static SkinnedMesh fromData(I)(ref GpuContext gpu, const(SkinnedVertex)[] verts, const(I)[] indices)
+    if (is(I == ushort) || is(I == uint)) {
+        static if (is(I == uint)) {
+            if (skinnedIndicesFitU16(indices)) {
+                auto narrowed = narrowSkinnedU16(indices);
+                return uploadSkinned(gpu, verts, narrowed);
+            }
+        }
+        return uploadSkinned(gpu, verts, indices);
+    }
+
+    bool valid() const pure nothrow @nogc {
+        return vertexBuffer !is null && indexBuffer !is null && indexCount > 0;
+    }
+
+    bool hasBounds() const pure nothrow @nogc { return !localBounds.empty; }
+
+    void destroy() nothrow @nogc {
+        destroyBuffer(vertexBuffer);
+        destroyBuffer(indexBuffer);
+        vertexBuffer = null;
+        indexBuffer = null;
+        indexCount = 0;
+        vertexCount = 0;
+        vertexBufSize = 0;
+        indexBufSize = 0;
+    }
+}
+
+private bool skinnedIndicesFitU16(scope const(uint)[] indices) pure nothrow @nogc {
+    foreach (i; indices)
+        if (i > 65535) return false;
+    return true;
+}
+
+private ushort[] narrowSkinnedU16(const(uint)[] indices) {
+    auto dst = new ushort[indices.length];
+    foreach (i, v; indices) dst[i] = cast(ushort) v;
+    return dst;
+}
+
+private SkinnedMesh uploadSkinned(I)(ref GpuContext gpu, const(SkinnedVertex)[] verts, const(I)[] indices)
+if (is(I == ushort) || is(I == uint)) {
+    auto device = gpu.getDevice();
+    auto queue = gpu.getQueue();
+    SkinnedMesh m;
+    m.vertexBuffer = createVertexBuffer(device, queue, verts);
+    m.indexBuffer = createIndexBuffer(device, queue, indices);
+    m.vertexCount = cast(uint) verts.length;
+    m.indexCount = cast(uint) indices.length;
+    m.vertexBufSize = verts.length * SkinnedVertex.sizeof;
+    m.indexBufSize = indices.length * I.sizeof;
+    m.localBounds = Aabb.fromPositions(verts);
+    m.localSphere = BoundingSphere.fromAabb(m.localBounds);
+    static if (is(I == uint))
+        m.indexFormat = WGPUIndexFormat.uint32;
+    else
+        m.indexFormat = WGPUIndexFormat.uint16;
+    return m;
 }
 
 private enum size_t UNIFORM_SIZE = 64 + 16 + 16;
@@ -115,8 +189,8 @@ struct SkinnedRenderer {
         WGPUVertexAttribute[4] attrs = [
             { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
             { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
-            { format: WGPUVertexFormat.uint32x4,  offset: 24, shaderLocation: 2 },
-            { format: WGPUVertexFormat.float32x4, offset: 40, shaderLocation: 3 },
+            { format: WGPUVertexFormat.uint32x4,  offset: 48, shaderLocation: 2 },
+            { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 3 },
         ];
         WGPUVertexBufferLayout layout;
         layout.arrayStride = SkinnedVertex.sizeof;

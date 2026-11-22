@@ -30,6 +30,22 @@ struct TexTanVert {
 static assert(TexVert.sizeof == 32);
 static assert(TexTanVert.sizeof == 48);
 
+/// Per-vertex data for GPU-skinned meshes (80 bytes).
+/// Offsets 0..48 match `TexTanVert` (`position`, `normal`, `uv`, `tangent`);
+/// offsets 48..80 carry 4 joint indices and 4 blend weights.
+struct SkinnedVertex {
+    float[3] position = [0, 0, 0];
+    float[3] normal   = [0, 1, 0];
+    float[2] uv       = [0, 0];
+    float[4] tangent  = [1, 0, 0, 1];
+    uint[4]  joints   = [0, 0, 0, 0];
+    float[4] weights  = [1, 0, 0, 0];
+
+    alias pos = position;
+}
+static assert(SkinnedVertex.sizeof == 80);
+static assert(is(typeof(SkinnedVertex.init.pos) == float[3]));
+
 /// Per-instance data: model matrix + RGBA color.
 /// Buffer 1, stride = 80 bytes. Matches colored3dShaderSource layout.
 struct InstanceData {
