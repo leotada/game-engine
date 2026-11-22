@@ -209,6 +209,12 @@
             "excludedSourceFiles": ["source/demo/main.d", "source/demo/benchmark.d", "source/demo/benchmark2.d", "source/demo/game.d", "source/demo/showcase.d", "source/demo/editor.d", "source/demo/test_physics.d", "source/demo/test_physics_box3d.d", "source/demo/gc_benchmark.d", "source/demo/marble_run.d", "source/demo/pong3d.d", "source/demo/pbr.d", "source/demo/test_asset.d", "source/demo/test_scene.d", "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/outdoor.d", "source/demo/_legacy/*"]
         },
         {
+            "name": "clustered-bench",
+            "targetType": "executable",
+            "targetName": "game-engine-clustered-bench",
+            "mainSourceFile": "source/demo/clustered_bench.d"
+        },
+        {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
@@ -287,7 +293,7 @@
             "excludedSourceFiles": [
                 "tools/export_main.d", "tools/spikes/*", "tools/ozz/*", "tools/meshopt-oracle/*", "tools/player/*", "tools/benchmarks/*",
                 "source/demo/*",
-                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/clustered_bench.d", "source/demo/_legacy/*",
                 "source/engine/*",
                 "source/bindings/*",
                 "source/bindings/box3d/box3d_import.c",
@@ -334,7 +340,7 @@
                 "source/demo/pong3d.d",
                 "source/demo/pbr.d",
                 "source/demo/test_asset.d",
-                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/clustered_bench.d", "source/demo/_legacy/*",
                 "source/bindings/box3d/box3d_import.c",
                 "source/bindings/recast/recast_import.c"
             ],
@@ -365,7 +371,7 @@
                 "source/demo/pong3d.d",
                 "source/demo/pbr.d",
                 "source/demo/test_scene.d",
-                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/_legacy/*",
+                "source/demo/golf.d", "source/demo/openworld_bench.d", "source/demo/water.d", "source/demo/clustered_bench.d", "source/demo/_legacy/*",
                 "source/bindings/box3d/box3d_import.c",
                 "source/bindings/recast/recast_import.c"
             ],
