@@ -487,6 +487,24 @@ The scene renders in this order:
 4. sky;
 5. alpha-blended batches, then additive batches.
 
+## Water (`engine.water`)
+
+Water is being moved from the water demo into the engine
+([plan-water-engine-port.md](plan-water-engine-port.md)). Usage and the
+current API are in [water-guide.md](water-guide.md).
+
+- **Available now:** the Gerstner wave model `engine.water.waves` (`WaveSet`,
+  `sampleWaves`, `waveHeightAt`). It runs on the CPU only.
+- **Still demo-only:** the surface pipeline, the compute wave/foam simulation
+  and the caustics bed (`source/demo/water.d`).
+- **Already in the engine:** the water shaders, `Renderer.snapshotOpaque`
+  (opaque color and depth copy used for refraction and SSR) and the
+  `MaterialFlags.waterWetCaustics` / `waterRiverMode` wetline flags.
+- **Known duplication:** until WP-2, the wave tables are still repeated in
+  `water_surface.wgsl` (uploaded by the demo) and in `evalExactWaveY` in
+  `textured3d_pbr.wgsl`. WP-2 replaces both with one shared GPU buffer filled
+  from the `WaveSet`.
+
 ## SceneGraph
 
 Transform hierarchy for composite objects (solar systems, body + limbs, cockpit camera, etc.).
@@ -561,7 +579,8 @@ dub run --config=showcase
 dub run --config=pbr
 
 # OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)
-dub run --config=water
+# LDC only for now: DMD 2.113 crashes on the demo's pipeline setup (fixed in WP-3)
+dub run --config=water --compiler=ldc2 -- --river
 
 # Outdoor (OW-3): 3 km terrain, CSM, fog, sky, day/night + rain, dynamic IBL, 500 decals
 dub run --config=outdoor -- --headless-frames=600 --assert-no-gc
