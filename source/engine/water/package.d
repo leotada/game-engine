@@ -9,3 +9,4 @@ public import engine.water.water_body;
 public import engine.water.renderer;
 public import engine.water.query;
 public import engine.water.buoyancy;
+public import engine.water.component;

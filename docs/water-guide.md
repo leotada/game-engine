@@ -2,8 +2,8 @@
 
 > **Status:** being ported from `source/demo/water.d` into `engine.water` — see
 > [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation,
-> obstacles, caustics, gameplay queries, buoyancy and wet material presets
-> are in the engine; the editor component follows.
+> obstacles, caustics, gameplay queries, buoyancy, wet material presets and
+> the editor / scene component are in the engine.
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
 
@@ -203,6 +203,41 @@ dry.flags |= MaterialFlags.waterWetCaustics;
 auto wetMat = Material.create(gpu, layout, sampler, albedo, wetSurfaceParams(dry),
                               &mr, &normal, &ao, null);
 ```
+
+## Scenes and the editor (`engine.water.component`)
+
+`WaterSurface` is the scene component (POD, saved in scene files through
+reflection). The full `WaterBody` has nested structs the scene serializer
+does not store, so the component keeps only flat authoring fields and
+`toWaterBody(surface, transform)` builds the body:
+
+| Field | Meaning |
+|:---|:---|
+| `style` | `WaterStyle.ocean` / `river` preset (waves, optics, current) |
+| `halfExtent` | Half size of the simulated square (m) |
+| `waveScale` | Wave height multiplier |
+| `flowScale` | Current multiplier (river current, ocean drift) |
+| `causticsScale` | Caustics brightness multiplier (0 = off) |
+| `bedDepth` | Fallback bed depth below the surface (m) |
+| `gridResolution` | Surface grid cells per side (16–254) |
+| `features` | `WaterFeature` bits |
+
+The entity `Transform` places the body: position X/Z = center, Y = water
+level; the rotation turns waves, the river channel and the current around Y
+(a river flows along the entity's local +X).
+
+In the editor, **Criar > Água** adds a water entity and the inspector's
+**Água** section edits it. `SceneRenderer` (editor and player) draws up to
+`MAX_WATER_BODIES` water entities and turns the engine sky on while any
+exists. Register the component before loading a scene in your own runtime:
+
+```d
+world.ensureRegistered!WaterSurface();
+renderer.enableWater(app.gpu, app.renderer);   // SceneRenderer, once
+```
+
+Obstacles are not authored per entity yet (call `WaterRenderer.setObstacles`
+from code).
 
 ## Gameplay queries (`engine.water.query`)
 

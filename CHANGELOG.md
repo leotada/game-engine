@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Water in scenes and the editor (WP-9, `2026-11-22`)**: `engine.water.component.WaterSurface` (`@component`, flat POD saved in scene files) and `toWaterBody`; the editor's **Criar > Água** and inspector section **Água**; `SceneRenderer.enableWater` draws `WaterSurface` entities in the editor and the player and shows the engine sky while water exists. Undo snapshots keep the component.
+
 - **Wet material presets (WP-8, `2026-11-22`)**: `engine.graphics.material_presets` — `dryStoneParams`, `wetSurfaceParams`, `mossSurfaceParams`, `submergedSurfaceParams` (OpenPBR water coat / moss fuzz, with a non-OpenPBR fallback). The water demo uses them instead of its own builders.
 
 - **Water gameplay queries and buoyancy (WP-7, `2026-11-22`)**: `engine.water.query` (`waterSurfaceAt` / `waterSurfaceHeight` → height, normal and river current; `WaterRenderer.surfaceAt`; `WaterQuery`) and `engine.water.buoyancy` (`applyBuoyancy` with spherical `BuoyancyProbe`s, `sphereProbes`, `BuoyancySettings`). Physics: `applyForce` (at a world point), `getMass`, `getRotation`. The water demo's buoys are now Box3D bodies.

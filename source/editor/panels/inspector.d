@@ -1,10 +1,12 @@
-/// Inspector: name, transform, mesh, color, physics, and Camera3D.
+/// Inspector: name, transform, mesh, color, physics, Camera3D and WaterSurface.
 /// The text buffer lives on `EditorApp` — this panel only displays it.
 module editor.panels.inspector;
 
 import engine.ecs.store : EntityId;
 import engine.editor.components : Camera3D, MaterialOverride, PhysicsBody, PhysicsMotion, Visual, VisualKind;
 import engine.editor.selection : Selection;
+import engine.water.component : WaterSurface;
+import engine.water.water_body : WaterStyle;
 import engine.graphics.types : Color4;
 import engine.math.quat;
 import engine.math.vec : Vec3;
@@ -16,6 +18,8 @@ import engine.ui;
 enum nameFieldTag = 0xE000_0001;
 enum physicsToggleTag = 0xC000_0020;
 enum cameraCurrentTag = 0xC000_0021;
+enum waterOceanTag = 0xC000_0022;
+enum waterRiverTag = 0xC000_0023;
 enum meshCubeTag = 0xC000_0010;
 enum meshSphereTag = 0xC000_0011;
 enum meshPlaneTag = 0xC000_0012;
@@ -197,6 +201,20 @@ struct InspectorPanel {
             tagDrag(tree, camBox, "FOV", cam.fovYDeg, theme, 12, editable, 160.0f);
             tagDrag(tree, camBox, "Near", cam.nearPlane, theme, 13, editable, 160.0f);
             tagDrag(tree, camBox, "Far", cam.farPlane, theme, 14, editable, 160.0f);
+        }
+
+        if (world.has!WaterSurface(e)) {
+            auto ws = world.get!WaterSurface(e);
+            auto waterBox = section("Água");
+            auto row = tree.createNode(waterBox);
+            tree.get(row).style.direction = UiFlexDirection.row;
+            tree.get(row).style.gap = 4.0f;
+            meshButton(tree, row, "Oceano", ws.style == WaterStyle.ocean, waterOceanTag, theme, editable);
+            meshButton(tree, row, "Rio", ws.style == WaterStyle.river, waterRiverTag, theme, editable);
+            tagDrag(tree, waterBox, "Metade", ws.halfExtent, theme, 19, editable, 160.0f);
+            tagDrag(tree, waterBox, "Ondas", ws.waveScale, theme, 20, editable, 160.0f);
+            tagDrag(tree, waterBox, "Correnteza", ws.flowScale, theme, 21, editable, 160.0f);
+            tagDrag(tree, waterBox, "Cáusticas", ws.causticsScale, theme, 22, editable, 160.0f);
         }
     }
 }

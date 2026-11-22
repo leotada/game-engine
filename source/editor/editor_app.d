@@ -33,6 +33,8 @@ import engine.editor.scene_load :
     SceneLoadResult, UnresolvedComponent, loadSceneIntoWorld, worldToSceneFile;
 import engine.editor.scene_picker : findScenePaths, isScenePath, scenePickerLabel;
 import engine.editor.scene_renderer : SceneRenderer;
+import engine.water.component : WaterSurface;
+import engine.water.water_body : WaterStyle;
 import engine.editor.selection : Selection, noSelection;
 import engine.graphics.types : Color4;
 import engine.hotreload.build_runner : Diagnostic;
@@ -84,6 +86,7 @@ enum MenuAction : uint {
     winProject = 15,
     winConsole = 16,
     camera = 22,
+    water = 23,
     exportLinux = 30,
     exportWindows = 31,
     exportMacOS = 32,
@@ -191,6 +194,7 @@ struct EditorApp {
     MaterialOverride dragMatBefore;
     bool dragHadMaterial = false;
     Camera3D dragCamBefore;
+    WaterSurface dragWaterBefore;
 
     string currentScenePath = "assets/scenes/untitled.scene.json";
     bool sceneDirty = false;
@@ -218,6 +222,7 @@ struct EditorApp {
             app = App.create("Game Engine Editor — Unity/Godot style", 1280, 768);
             uiRenderer.init(app.gpu.getDevice(), app.gpu.getQueue(), app.gpu.getFormat(), font);
             sceneRenderer = SceneRenderer.create(app.gpu);
+            sceneRenderer.enableWater(app.gpu, app.renderer);
             gizmos = GizmoRenderer.create(app.gpu);
             gpuSceneReady = true;
             shaderReloader.init("assets/shaders");
@@ -230,6 +235,7 @@ struct EditorApp {
 
         world = SceneWorld.init;
         world.ensureRegistered!Camera3D();
+        world.ensureRegistered!WaterSurface();
         camera = Camera.create(0.9f, 16.0f / 9.0f, 0.1f, 1000.0f);
         gizmoTool.space = GizmoSpace.world;
         gizmoTool.snapEnabled = false;
@@ -662,7 +668,7 @@ struct EditorApp {
             case PopupKind.gameObject: return 0;
             case PopupKind.janela: return 6;
             case PopupKind.ajuda: return 0;
-            case PopupKind.criar: return 4;
+            case PopupKind.criar: return 5;
             case PopupKind.componente: return 0;
             case PopupKind.scenePicker: return scenePaths.length == 0 ? 1 : cast(uint) scenePaths.length;
         }
@@ -734,6 +740,7 @@ struct EditorApp {
                 item("Esfera", "", MenuAction.sphere);
                 item("Plano", "", MenuAction.plane);
                 item("Câmera", "", MenuAction.camera);
+                item("Água", "", MenuAction.water);
                 break;
             case PopupKind.janela:
                 item("Cena", "", MenuAction.winHierarchy);
@@ -836,6 +843,10 @@ struct EditorApp {
             toggleDynamicPhysics();
         } else if (tag == cameraCurrentTag) {
             toggleCurrentCamera();
+        } else if (tag == waterOceanTag) {
+            setWaterStyle(WaterStyle.ocean);
+        } else if (tag == waterRiverTag) {
+            setWaterStyle(WaterStyle.river);
         } else if (tag == meshCubeTag) {
             setMeshKind(VisualKind.cube);
         } else if (tag == meshSphereTag) {
@@ -962,6 +973,9 @@ struct EditorApp {
             case MenuAction.camera:
                 spawnCamera();
                 break;
+            case MenuAction.water:
+                spawnWater();
+                break;
             case MenuAction.winHierarchy:
                 showPanel("Cena");
                 break;
@@ -1044,6 +1058,7 @@ struct EditorApp {
 
     private bool openSceneFile(string path) {
         world.ensureRegistered!Camera3D();
+        world.ensureRegistered!WaterSurface();
         SceneFile sf;
         try {
             sf = loadSceneFile(path);
@@ -1230,6 +1245,7 @@ struct EditorApp {
 
     private void spawnGroundAndCube() {
         world.ensureRegistered!Camera3D();
+        world.ensureRegistered!WaterSurface();
         placeholders = null;
         spawnDemoLevel(world, selection);
         commands.clear();
@@ -1267,10 +1283,56 @@ struct EditorApp {
         sceneDirty = true;
     }
 
+    private void spawnWater() {
+        if (!playMode.isEditing())
+            return;
+        world.ensureRegistered!WaterSurface();
+        Transform t;
+        immutable ahead = flyCam.position + flyCam.forward() * 10;
+        t.position = Vec3(ahead.x, 0, ahead.z);
+        t.scale = Vec3(1, 1, 1);
+
+        Visual vis;
+        vis.kind = VisualKind.none;
+        vis.localHalfExtents = Vec3(1, 0.1f, 1);
+
+        auto id = world.spawn();
+        world.set(id, t);
+        world.set(id, vis);
+        world.set(id, WaterSurface.init);
+        world.set(id, Name(world.strings.intern("Água")));
+
+        CommandEntry cmd;
+        cmd.kind = CommandKind.spawn;
+        cmd.entity = id;
+        cmd.after = captureEntity(world, id);
+        commands.push(cmd);
+        selection.select(id);
+        nameBound = noSelection;
+        sceneDirty = true;
+    }
+
+    private void setWaterStyle(WaterStyle style) {
+        if (!playMode.isEditing())
+            return;
+        if (selection.empty() || !world.alive(selection.primary))
+            return;
+        auto e = selection.primary;
+        if (!world.has!WaterSurface(e))
+            return;
+        auto w = world.get!WaterSurface(e);
+        if (w.style == style)
+            return;
+        w.style = style;
+        world.set(e, w);
+        sceneDirty = true;
+    }
+
     private void spawnCamera() {
         if (!playMode.isEditing())
             return;
         world.ensureRegistered!Camera3D();
+        world.ensureRegistered!WaterSurface();
         Transform t;
         t.position = flyCam.position + flyCam.forward() * 4;
         immutable pitchDeg = flyCam.pitch * (180.0f / cast(float) PI);
@@ -1669,6 +1731,11 @@ struct EditorApp {
                 return;
             dragCamBefore = world.get!Camera3D(dragEntity);
             draggingValue = true;
+        } else if (slot >= 19 && slot <= 22) {
+            if (!world.has!WaterSurface(dragEntity))
+                return;
+            dragWaterBefore = world.get!WaterSurface(dragEntity);
+            draggingValue = true;
         }
     }
 
@@ -1742,6 +1809,26 @@ struct EditorApp {
                 if (c.farPlane < c.nearPlane + 0.1f) c.farPlane = c.nearPlane + 0.1f;
             }
             world.set(dragEntity, c);
+        } else if (d != 0 && dragSlot >= 19 && dragSlot <= 22 && world.has!WaterSurface(dragEntity)) {
+            auto w = world.get!WaterSurface(dragEntity);
+            if (dragSlot == 19) {
+                w.halfExtent += d * 10.0f;
+                if (w.halfExtent < 1) w.halfExtent = 1;
+                if (w.halfExtent > 1000) w.halfExtent = 1000;
+            } else if (dragSlot == 20) {
+                w.waveScale += d;
+                if (w.waveScale < 0) w.waveScale = 0;
+                if (w.waveScale > 3) w.waveScale = 3;
+            } else if (dragSlot == 21) {
+                w.flowScale += d;
+                if (w.flowScale < 0) w.flowScale = 0;
+                if (w.flowScale > 4) w.flowScale = 4;
+            } else {
+                w.causticsScale += d;
+                if (w.causticsScale < 0) w.causticsScale = 0;
+                if (w.causticsScale > 4) w.causticsScale = 4;
+            }
+            world.set(dragEntity, w);
         }
 
         if (!input.mouseDown(MouseButton.left)) {
@@ -1758,6 +1845,9 @@ struct EditorApp {
                         recordMaterial(commands, dragEntity, dragMatBefore, after);
                     sceneDirty = true;
                 }
+            } else if (dragSlot >= 19 && dragSlot <= 22 && world.has!WaterSurface(dragEntity)) {
+                if (world.get!WaterSurface(dragEntity) != dragWaterBefore)
+                    sceneDirty = true;
             } else if (dragSlot <= 14 && world.has!Camera3D(dragEntity)) {
                 auto after = world.get!Camera3D(dragEntity);
                 if (after.fovYDeg != dragCamBefore.fovYDeg

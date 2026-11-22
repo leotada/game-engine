@@ -11,6 +11,9 @@
  *   (`render.source`) is loaded once into a cached `GltfAsset` (all nodes,
  *   primitives and materials; `.meta` `settings.lod` builds LOD chains) and
  *   drawn with `drawModel`. Missing or broken assets fall back to a cube.
+ * - `Transform` + `WaterSurface` entities become `WaterRenderer` bodies
+ *   once `enableWater` was called (up to `MAX_WATER_BODIES`); the engine
+ *   sky, which the water reflects, is drawn while any water exists.
  * - `Light` components are packed with `packLightsFromWorld` and rendered
  *   with shadows. A scene without lights gets a default sun so it is never
  *   black.
@@ -40,6 +43,12 @@ import engine.scene.camera : Camera;
 import engine.scene.graph : Transform;
 import engine.scene.light : LightSet;
 import engine.scene.scene3d_textured : Scene3DTextured;
+import engine.ecs.store : EntityId;
+import engine.gpu.renderer : Renderer;
+import engine.water.component : WaterSurface, toWaterBody;
+import engine.water.gpu_data : MAX_WATER_BODIES;
+import engine.water.renderer : WaterRenderer;
+import core.time : MonoTime;
 
 @safe:
 
@@ -90,6 +99,12 @@ struct SceneRenderer {
     private bool trackDeps;
     private ModelInstance defaultInstance;
     private bool ready;
+    /// Water: one `WaterRenderer` body per `WaterSurface` entity.
+    private WaterRenderer water;
+    private bool waterReady;
+    private EntityId[MAX_WATER_BODIES] waterEntity;
+    private int[MAX_WATER_BODIES] waterId = -1;
+    private MonoTime waterStart;
 
     @disable this(this);
 
@@ -225,6 +240,7 @@ struct SceneRenderer {
                    ref const SceneLightSettings lightSettings, float viewportHeight) {
         if (!ready || !frame.valid) return;
         syncAssets(gpu, world);
+        if (waterReady) syncWater(world, camera);
 
         LightSet lights = packLightsFromWorld(world, lightSettings);
         if (lightSetIsEmpty(lights))
@@ -271,8 +287,63 @@ struct SceneRenderer {
         scene.end(frame);
     }
 
+    /**
+     * Draw `WaterSurface` entities from now on. Call once, after this
+     * renderer and `renderer` reached their final addresses (the water draw
+     * hook keeps pointers to both). Allocates GPU resources.
+     */
+    void enableWater(ref GpuContext gpu, ref Renderer renderer) @trusted {
+        if (!ready || waterReady) return;
+        water = WaterRenderer.create(gpu, scene);
+        water.attach(scene, renderer);
+        waterId[] = -1;
+        waterStart = MonoTime.currTime;
+        waterReady = true;
+    }
+
+    /// Adds, updates and removes water bodies to match the world's
+    /// `WaterSurface` entities, then uploads the water frame data. Adding a
+    /// body allocates GPU resources (first frame it appears only).
+    private void syncWater(W)(ref W world, ref const Camera camera) @trusted {
+        bool[MAX_WATER_BODIES] seen;
+        foreach (e; world.query!(Transform, WaterSurface)()) {
+            if (!world.alive(e)) continue;
+            immutable ws = world.get!WaterSurface(e);
+            immutable tr = world.get!Transform(e);
+            immutable wb = toWaterBody(ws, tr);
+            int slot = -1;
+            foreach (i; 0 .. MAX_WATER_BODIES)
+                if (waterId[i] >= 0 && waterEntity[i] == e) { slot = cast(int) i; break; }
+            if (slot < 0) {
+                foreach (i; 0 .. MAX_WATER_BODIES)
+                    if (waterId[i] < 0) { slot = cast(int) i; break; }
+                if (slot < 0) continue;   // every body slot is in use
+                waterId[slot] = water.addBody(wb);
+                if (waterId[slot] < 0) continue;
+                waterEntity[slot] = e;
+            } else {
+                water.setBody(waterId[slot], wb);
+                water.setGridResolution(waterId[slot], wb.gridResolution);   // no-op when unchanged
+            }
+            seen[slot] = true;
+        }
+        foreach (i; 0 .. MAX_WATER_BODIES) {
+            if (waterId[i] < 0 || seen[i]) continue;
+            water.removeBody(waterId[i]);
+            waterId[i] = -1;
+        }
+        // The water reflects the engine sky: show it while any water exists.
+        scene.setSkyEnabled(water.bodyCount() > 0);
+        immutable float t = (MonoTime.currTime - waterStart).total!"usecs" * 1e-6f;
+        water.update(camera, t);
+    }
+
     void destroy() @trusted {
         if (!ready) return;
+        if (waterReady) {
+            water.destroy();
+            waterReady = false;
+        }
         foreach (a; assets) if (a !is null) a.destroy();
         assets = null;
         assetSlot = null;

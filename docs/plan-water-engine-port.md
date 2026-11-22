@@ -205,7 +205,19 @@ pixel-identical.
 
 - `engine/graphics/material_presets.d` (or `water/materials.d`): `wetRock`, `mossRock`, `submergedRock`, `dryRock` builders taking base textures.
 
-### WP-9 — ECS + scene file + Inspector
+### WP-9 — ECS + scene file + Inspector ✅ (2026-11-22)
+
+Done: `engine/water/component.d` — `@component WaterSurface` (flat POD) +
+`toWaterBody(surface, transform)`; registered in the editor and player,
+saved and loaded through reflection (round-trip test in `scene_load.d`),
+undo snapshots, **Criar > Água**, inspector section **Água** (preset
+buttons + 4 drag fields), `SceneRenderer.enableWater` syncs entities to a
+`WaterRenderer` and enables the sky while water exists. Deviations: the
+component is `WaterSurface`, not `WaterBody` — the scene serializer skips
+nested structs and fixed arrays, so the full body cannot be stored; the
+transform supplies center, level and Y rotation. No per-entity obstacles
+yet. Verified in the player and editor with a water scene (0 B GC).
+
 - `@component struct WaterBody` registered in the editor components; serialized in `scene_file`; editable in the Inspector; the editor scene renderer feeds `WaterRenderer`.
 - Elevation gizmo and `terrain_water.scene.json` remain in TW-4.
 

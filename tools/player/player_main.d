@@ -23,6 +23,7 @@ import engine.scene.camera : Camera;
 import engine.scene.scene_file : SceneFile, loadSceneFile;
 import engine.scene.streamer : WorldStreamer;
 import engine.editor.scene_renderer : SceneRenderer;
+import engine.water.component : WaterSurface;
 import engine.hotreload.asset_reload : AssetHotReloader, HotReloadTargets, batchContains;
 import engine.hotreload.tunables : TunableRegistry;
 import engine.core.log : info, warn, err;
@@ -65,6 +66,7 @@ void main(string[] args) {
 
     SceneWorld world = SceneWorld.init;
     world.ensureRegistered!Camera3D();
+    world.ensureRegistered!WaterSurface();
     SceneLightSettings lightSettings;
     WorldStreamer streamer;
     bool streamingEnabled = false;
@@ -120,6 +122,7 @@ void main(string[] args) {
 
     App app = App.create("Game Player", 1280, 720);
     SceneRenderer renderer = SceneRenderer.create(app.gpu);
+    renderer.enableWater(app.gpu, app.renderer);
     renderer.syncAssets(app.gpu, world); // import every model before the first frame
 
     AssetHotReloader hotReload;

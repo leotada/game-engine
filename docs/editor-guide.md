@@ -41,6 +41,7 @@ The Scene View, the Game View and the standalone player all draw the scene with 
 - **Primitives** (Cubo, Esfera, Plano) use a white OpenPBR material; the entity's `MaterialOverride.baseColor` / `geometryOpacity` is applied as the instance tint. The other OpenPBR override fields (metalness, roughness, coat…) are not applied per entity yet.
 - **Mesh entities** (`Visual.kind = mesh`, `*.asset.json`) load the asset's glTF/GLB `render.source` once with `loadGltfAsset` — every node, primitive, material and texture (mipmapped, 8× anisotropic sampler). Assets that fail to load are logged once and drawn as a cube.
 - **Lights** come from the scene's `Light` components (`packLightsFromWorld`) with directional, point and spot shadows. A scene with no lights gets a default sun, so it is never black.
+- **Water** (`WaterSurface` entities, **Criar > Água**) is drawn by an `engine.water.WaterRenderer` owned by the `SceneRenderer` (editor and player call `enableWater` once). The entity's position sets the center and water level, its Y rotation turns the waves, river channel and current. Up to 4 water entities are drawn; while any exists, the engine sky (which the water reflects) is shown. See [water-guide.md § Scenes and the editor](water-guide.md#scenes-and-the-editor-enginewatercomponent).
 - **Culling and LOD** are automatic (frustum culling, per-view shadow caster culling, screen-space LOD for meshes with LOD chains). Call `renderer.unloadAsset(stringId)` to release cached `GltfAsset` slots when streamed chunks unload.
 - **Environment (Scene / IBL panel, no entity selected):**
   - **Cascaded shadows** turns 4 cascades on or off for the scene sun.
@@ -60,6 +61,7 @@ See [graphics.md § Open-World Rendering](graphics.md#open-world-rendering-ow-2)
   - Strings and interned `StringId` identifiers.
   - Generational handles (`Handle!T`, `EntityRef`, `AssetRef!T`).
 - Prefab header with **Apply** and **Revert** actions for prefab instances.
+- **Água** section for `WaterSurface` entities: **Oceano** / **Rio** preset buttons and drag fields for half size (**Metade**), wave height (**Ondas**), current (**Correnteza**) and caustics (**Cáusticas**). Changes show live and are saved with the scene; undo/redo of spawn and delete keeps the component.
 
 ### 2.5 Project & Asset Browser (`Project`)
 - Directory tree and asset grid for `assets/` and `scripts/`.

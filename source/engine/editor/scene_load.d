@@ -976,6 +976,38 @@ private string toStringy(uint v) {
     assert(world2.get!Camera3D(0).farPlane == 400);
 }
 
+@("sceneLoad.waterSurface") @safe unittest {
+    // WaterSurface survives save -> JSON -> load (enum, float and uint fields).
+    import engine.ecs.scene_world : SceneWorld;
+    import engine.scene.scene_file : parseSceneJson, sceneToMinifiedJson;
+    import engine.water.component : WaterSurface;
+    import engine.water.water_body : WaterFeature, WaterStyle;
+
+    SceneWorld world;
+    world.ensureRegistered!WaterSurface();
+    auto e1 = world.spawn();
+    world.set(e1, Transform(Vec3(3, 0.5f, -2), Vec3(1, 1, 1), Quat.identity()));
+    WaterSurface ws;
+    ws.style = WaterStyle.river;
+    ws.halfExtent = 22;
+    ws.waveScale = 0.6f;
+    ws.causticsScale = 0;
+    ws.gridResolution = 128;
+    ws.features = WaterFeature.all & ~WaterFeature.ssr;
+    world.set(e1, ws);
+
+    SceneLightSettings lights;
+    auto json = sceneToMinifiedJson(worldToSceneFile(world, lights));
+    auto scene = parseSceneJson(json);
+
+    SceneWorld world2;
+    world2.ensureRegistered!WaterSurface();
+    SceneLightSettings lights2;
+    cast(void) loadSceneIntoWorld(world2, scene, lights2);
+    assert(world2.has!WaterSurface(0));
+    assert(world2.get!WaterSurface(0) == ws);
+}
+
 @("sceneLoad.unresolvedComponents") unittest {
     // "viatura.prop" is not registered in SceneWorld: the entity loads, the component is reported.
     enum json = `{"format":"game-engine.scene","version":1,"meta":{"name":"t","units":"meters"},` ~

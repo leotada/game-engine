@@ -1,6 +1,7 @@
 /// Editor commands: spawn / delete / duplicate / focus + undo stack base (ED-8).
 module engine.editor.commands;
 
+import engine.water.component : WaterSurface;
 import engine.core.log : warn;
 import engine.core.strings : StringId, StringTable;
 import engine.editor.components :
@@ -36,6 +37,7 @@ struct EntitySnapshot {
     Light light = Light.init;
     PhysicsBody physics = PhysicsBody.init;
     Camera3D camera = Camera3D.init;
+    WaterSurface water = WaterSurface.init;
     bool hasVisual;
     bool hasMaterial;
     bool hasLight;
@@ -43,6 +45,7 @@ struct EntitySnapshot {
     bool hasParent;
     bool hasName;
     bool hasCamera;
+    bool hasWater;
 }
 
 EntitySnapshot captureEntity(W)(ref W world, EntityId id) nothrow @nogc {
@@ -58,6 +61,8 @@ EntitySnapshot captureEntity(W)(ref W world, EntityId id) nothrow @nogc {
     }
     if (world.has!Light(id)) { s.light = world.get!Light(id); s.hasLight = true; }
     if (world.has!Camera3D(id)) { s.camera = world.get!Camera3D(id); s.hasCamera = true; }
+    static if (__traits(compiles, world.has!WaterSurface(id)))
+        if (world.has!WaterSurface(id)) { s.water = world.get!WaterSurface(id); s.hasWater = true; }
     if (world.has!PhysicsBody(id)) {
         s.physics = world.get!PhysicsBody(id);
         s.hasPhysics = true;
@@ -95,6 +100,12 @@ void applySnapshotTo(W)(ref W world, EntityId id, ref const EntitySnapshot s) {
     if (s.hasPhysics) {
         PhysicsBody phy = s.physics;
         world.set(id, phy);
+    }
+    static if (__traits(compiles, world.set(id, s.water))) {
+        if (s.hasWater) {
+            WaterSurface ws = s.water;
+            world.set(id, ws);
+        }
     }
 }
 
