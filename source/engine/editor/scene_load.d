@@ -88,11 +88,23 @@ SceneLoadResult loadSceneAdditive(W)(
         enforce(false, msg);
     }
 
-    // First pass: spawn entities + components (parents deferred).
-    foreach (ref e; scene.entities) {
-        auto id = world.spawn();
+    // First pass: spawn entities + components (parents deferred). Worlds with a batch API (SceneWorld) get the
+    // entities spawned at once and the Transform / Name columns inserted in one pass each.
+    enum batched = __traits(hasMember, W, "spawnBatch") && __traits(hasMember, W, "setBatch");
+    static if (batched) {
+        result.spawnedEntities = world.spawnBatch(scene.entities.length);
+        auto transforms = new Transform[scene.entities.length];
+        EntityId[] nameIds;
+        Name[] names;
+    }
+    foreach (idx, ref e; scene.entities) {
+        static if (batched) {
+            auto id = result.spawnedEntities[idx];
+        } else {
+            auto id = world.spawn();
+            result.spawnedEntities ~= id;
+        }
         result.fileIdToEntity[e.id] = id;
-        result.spawnedEntities ~= id;
 
         Transform t;
         t.position = Vec3(e.transform.pos[0], e.transform.pos[1], e.transform.pos[2]);
@@ -102,11 +114,18 @@ SceneLoadResult loadSceneAdditive(W)(
             e.transform.rot[0], e.transform.rot[1],
             e.transform.rot[2], e.transform.rot[3]);
         t.scale = Vec3(e.transform.scale[0], e.transform.scale[1], e.transform.scale[2]);
-        world.set(id, t);
+        static if (batched)
+            transforms[idx] = t;
+        else
+            world.set(id, t);
 
         if (e.hasName && e.name >= 0 && e.name < cast(int) scene.strings.length) {
             auto sid = world.strings.intern(scene.strings[e.name]);
-            world.set(id, Name(sid));
+            static if (batched) {
+                nameIds ~= id;
+                names ~= Name(sid);
+            } else
+                world.set(id, Name(sid));
         }
 
         StringId assetSid = StringId.init;
@@ -153,6 +172,11 @@ SceneLoadResult loadSceneAdditive(W)(
             foreach (ref comp; e.customComponents)
                 result.unresolvedComponents ~= UnresolvedComponent(id, comp.typeName);
         }
+    }
+
+    static if (batched) {
+        world.setBatch(result.spawnedEntities, transforms);
+        world.setBatch(nameIds, names);
     }
 
     // Second pass: parent links (file id 0 = none).
