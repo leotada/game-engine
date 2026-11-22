@@ -650,6 +650,7 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
   blender -b level01.blend -P tools/blender_export_scene.py -- --name=level01 --cell-size=256
   game-engine-player --scene=assets/world/level01.scene.json
   ```
+  Add `--format=gesc` (after `dub build --config=gesc`) to also emit compact binary `.gesc` chunks; see [docs/world-pipeline-guide.md](world-pipeline-guide.md) 5.1.1.
   Deep dive (custom properties `ge_physics` / `ge_surface` / `ge_role`, file layout, prefab reload rules): [world-pipeline-guide.md](world-pipeline-guide.md).
 
 ---
