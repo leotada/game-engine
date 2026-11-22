@@ -34,6 +34,10 @@ struct formerlyNamed {
     string oldName;
 }
 
+/// Marks a `uint` field as an entity reference: scene loaders remap it from the chunk-local entity id to the live
+/// `EntityId` (binary GESC component blocks do this; `FieldKind.entityRef`).
+struct entityRef {}
+
 /// Indicates that a component script or system executes inside the editor even when Play Mode is stopped.
 struct runInEditor {}
 

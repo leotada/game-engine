@@ -128,6 +128,47 @@ struct TypeRegistry {
         return defaultStorage[t.defaultOffset .. t.defaultOffset + t.defaultLength];
     }
 
+    /// Register a type that has no D struct in this process, from a schema (name, size, fields). Used to read
+    /// self-describing data (GESC `types` block) and by tools; defaults are zero bytes unless `defaults` is given.
+    /// Returns the existing id when `name` is already registered.
+    /// `FieldT` is any struct with `name`, `formerlyNamed` (strings), `kind` (`FieldKind`), `offset`, `size` and
+    /// `arrayLen` members (for example `GescFieldSchema`); it is a template parameter so this registry module
+    /// holds no GC-owning field type.
+    ComponentTypeId registerRuntime(FieldT)(scope const(char)[] name, uint size, uint alignment,
+            scope const(FieldT)[] runtimeFields, ref StringTable strings,
+            scope const(ubyte)[] defaults = null) @trusted {
+        auto existing = find(name, strings);
+        if (existing != invalidComponentTypeId)
+            return existing;
+        TypeDescriptor desc;
+        desc.qualifiedName = strings.intern(name);
+        desc.size = size;
+        desc.alignment = alignment;
+        desc.defaultOffset = cast(uint) defaultStorage.length;
+        desc.defaultLength = size;
+        immutable base = defaultStorage.length;
+        defaultStorage.length = base + size;
+        defaultStorage[base .. base + size] = 0;
+        if (defaults.length == size)
+            defaultStorage[base .. base + size] = defaults[];
+        desc.firstField = cast(uint) fields.length;
+        foreach (ref const f; runtimeFields) {
+            FieldDescriptor fd;
+            fd.name = strings.intern(f.name);
+            fd.offset = f.offset;
+            fd.size = f.size;
+            fd.kind = f.kind;
+            fd.arrayLen = f.arrayLen;
+            if (f.formerlyNamed.length)
+                fd.attrs.formerlyNamed = strings.intern(f.formerlyNamed);
+            fields ~= fd;
+            desc.fieldCount++;
+        }
+        immutable typeId = cast(ComponentTypeId) types.length;
+        types ~= desc;
+        return typeId;
+    }
+
     ComponentTypeId register(T)(ref StringTable strings) @trusted {
         static assert(is(T == struct), "T must be a struct");
         static assert(isPod!T, "Component struct must be POD (no GC indirections)");
@@ -223,6 +264,9 @@ private FieldDescriptor describeField(T, string memberName)(ref StringTable stri
             fd.attrs.formerlyNamed = strings.intern(attr.oldName);
         } else static if (is(attr == hide)) {
             fd.attrs.hidden = true;
+        } else static if (is(attr == entityRef)) {
+            static assert(is(FieldType == uint), "@entityRef requires a uint field");
+            fd.kind = FieldKind.entityRef;
         }
     }
 

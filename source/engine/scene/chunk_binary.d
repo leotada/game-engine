@@ -14,7 +14,11 @@
 /// flags, names and the transform as one column per float), `visual`/`material`/`physics`/`light` (records
 /// in entity order), `assetLinks`, `customJson` (custom components as `{entity index, type, json}`) and
 /// `user` (opaque, named blocks that a game interprets: packed instance arrays, light lists...).
-/// Unknown block kinds are ignored, so new blocks do not break old readers.
+/// Version 2 adds `types` (schema of every binary component type: name, sizeof, fields) and one `component`
+/// block per type (entity indices + the raw component structs), written by `engine.scene.chunk_components`.
+/// Unknown block kinds are ignored, so new blocks do not break old readers; a file that contains binary
+/// component blocks is stamped version 2 so that a version-1 reader rejects it instead of silently dropping
+/// the components. A file without them stays version 1, and the current reader accepts both.
 ///
 /// This is the scene-format layer (GC allowed), like `scene_file.d`; hot-path decoding that avoids the GC is
 /// built on `readBlocks`.
@@ -29,7 +33,10 @@ import engine.scene.scene_file;
 @safe:
 
 enum ubyte[4] GESC_MAGIC = [0x47, 0x45, 0x53, 0x43]; // "GESC"
-enum uint GESC_VERSION = 1;
+/// Highest version this reader understands (and the one stamped on files with binary component blocks).
+enum uint GESC_VERSION = 2;
+/// Version of files without `types`/`component` blocks (readable by every GESC reader).
+enum uint GESC_VERSION_BASE = 1;
 enum size_t GESC_HEADER_SIZE = 16;
 enum size_t GESC_TABLE_ENTRY_SIZE = 32;
 /// Hard ceiling for a decoded block (guards against a corrupt size field asking for gigabytes).
@@ -46,6 +53,8 @@ enum GescBlockKind : uint {
     assetLinks = 7,
     customJson = 8,
     user = 9,
+    types = 10,        /// schema table for the `component` blocks (version 2)
+    component = 11,    /// one component type: entity indices + raw structs (version 2)
 }
 
 enum GescCodec : uint {
@@ -59,10 +68,22 @@ struct GescUserBlock {
     const(ubyte)[] data;
 }
 
-/// Decoded chunk: the scene content plus the game's user blocks.
+/// A block the container carries without interpreting it: `engine.scene.chunk_components` writes and reads the
+/// `types` / `component` payloads.
+struct GescExtraBlock {
+    GescBlockKind kind;
+    const(ubyte)[] data;
+}
+
+/// Decoded chunk: the scene content plus the game's user blocks. The binary component blocks are kept as raw
+/// payloads (`typesBlock`, `componentBlocks`): decoding them needs the target world's type registry, so they are
+/// resolved by `engine.scene.chunk_components.applyGescComponents` (or `gescMaterializeJson` for tools). This
+/// keeps decoding (`decodeChunk`, buffers in, buffers out) separate from applying a chunk to a world.
 struct GescChunk {
     SceneFile scene;
     GescUserBlock[] user;
+    const(ubyte)[] typesBlock;
+    const(ubyte)[][] componentBlocks;
 }
 
 /// A game's handler for one named user block: called when a chunk that carries it becomes active, and when
@@ -109,7 +130,7 @@ uint crc32Of(const(ubyte)[] data) pure nothrow @nogc {
 // Byte writer / reader
 // ---------------------------------------------------------------------------
 
-private struct Writer {
+package struct Writer {
     ubyte[] buf;
 
     void u8(ubyte v) { buf ~= v; }
@@ -119,7 +140,7 @@ private struct Writer {
     void str(const(char)[] s) { u32(cast(uint) s.length); buf ~= cast(const(ubyte)[]) s; }
 }
 
-private struct Reader {
+package struct Reader {
     const(ubyte)[] d;
     size_t p;
     bool bad;
@@ -292,7 +313,8 @@ private ubyte[] encodeCustom(const ref SceneFile s) {
 }
 
 /// Encode `scene` (and the game's `user` blocks) into a `.gesc` file. `level` is the zstd level (1..9; other values are clamped).
-ubyte[] encodeChunk(const ref SceneFile scene, const(GescUserBlock)[] user = null, int level = 6) {
+ubyte[] encodeChunk(const ref SceneFile scene, const(GescUserBlock)[] user = null, int level = 6,
+        const(GescExtraBlock)[] extra = null) {
     RawBlock[] blocks;
     blocks ~= RawBlock(GescBlockKind.header, encodeHeader(scene));
     blocks ~= RawBlock(GescBlockKind.entities, encodeEntities(scene));
@@ -306,6 +328,8 @@ ubyte[] encodeChunk(const ref SceneFile scene, const(GescUserBlock)[] user = nul
         blocks ~= RawBlock(GescBlockKind.assetLinks, w.buf);
     }
     blocks ~= RawBlock(GescBlockKind.customJson, encodeCustom(scene));
+    foreach (ref x; extra)
+        blocks ~= RawBlock(x.kind, x.data.dup);
     foreach (ref u; user) {
         Writer w;
         w.str(u.name);
@@ -341,7 +365,7 @@ ubyte[] encodeChunk(const ref SceneFile scene, const(GescUserBlock)[] user = nul
 
     Writer w;
     w.buf ~= GESC_MAGIC[];
-    w.u32(GESC_VERSION);
+    w.u32(extra.length ? GESC_VERSION : GESC_VERSION_BASE);
     w.u32(cast(uint) stored.length);
     w.u32(0);
     ulong off = GESC_HEADER_SIZE + stored.length * GESC_TABLE_ENTRY_SIZE;
@@ -386,7 +410,7 @@ private bool readTable(const(ubyte)[] bytes, out TableEntry[] table, out string 
     immutable ver = r.u32();
     immutable n = r.u32();
     r.u32();
-    if (ver != GESC_VERSION) {
+    if (ver < GESC_VERSION_BASE || ver > GESC_VERSION) {
         err = "unsupported GESC version";
         return false;
     }
@@ -451,7 +475,7 @@ bool gescInfo(const(ubyte)[] bytes, out GescBlockInfo[] info, out string err) {
         return false;
     foreach (ref t; table) {
         GescBlockInfo i = GescBlockInfo(t.kind, t.codec, t.stored, t.raw, null);
-        if (t.kind == GescBlockKind.user) {
+        if (t.kind == GescBlockKind.user || t.kind == GescBlockKind.component) {
             ubyte[] raw;
             if (inflate(bytes, t, raw, err)) {
                 auto r = Reader(raw);
@@ -476,7 +500,7 @@ bool decodeChunk(const(ubyte)[] bytes, out GescChunk chunk, out string err) {
     ubyte[] hdr, ent, vis, mat, phy, lig, links, custom;
     foreach (ref t; table) {
         ubyte[] raw;
-        if (t.kind < GescBlockKind.header || t.kind > GescBlockKind.user)
+        if (t.kind < GescBlockKind.header || t.kind > GescBlockKind.component)
             continue;                       // a newer writer's block kind: skipped
         if (!inflate(bytes, t, raw, err))
             return false;
@@ -499,6 +523,8 @@ bool decodeChunk(const(ubyte)[] bytes, out GescChunk chunk, out string err) {
                 chunk.user ~= GescUserBlock(name, raw[r.p .. $]);
                 break;
             }
+            case GescBlockKind.types: chunk.typesBlock = raw; break;
+            case GescBlockKind.component: chunk.componentBlocks ~= raw; break;
             default: break;   // a newer writer's block kind: skipped
         }
     }

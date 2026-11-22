@@ -51,6 +51,7 @@ void main() @trusted
             || rel.canFind("/project/")
             || rel.canFind("scene_file.d")
             || rel.canFind("chunk_binary.d")
+            || rel.canFind("chunk_components.d")
             || rel.canFind("scene_load.d")
             // ozz port: asset-owned data (clip) and load-time readers never live in components.
             || rel.canFind("animation/clip.d")
