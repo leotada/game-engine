@@ -76,6 +76,18 @@ struct FrameUniforms {
     /// xyz = sun direction for the sky, w = 1 when set (else use dirLight).
     skySunDir: vec4<f32>,
     skySunColor: vec4<f32>,
+    ssrParams: vec4<f32>,
+    probeCount: u32,
+    _probePad0: u32,
+    _probePad1: u32,
+    _probePad2: u32,
+    probes: array<ReflectionProbeData, 4>,
+};
+
+struct ReflectionProbeData {
+    posRadius: vec4<f32>,
+    boxBlend: vec4<f32>,
+    tintIntensity: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -89,6 +101,7 @@ struct FrameUniforms {
 @group(0) @binding(8) var spotShadow1: texture_depth_2d;
 @group(0) @binding(9) var<storage, read> pointLights: array<PointLight>;
 @group(0) @binding(11) var opaqueSceneColorMap: texture_2d<f32>;
+@group(0) @binding(12) var opaqueSceneDepthMap: texture_depth_2d;
 
 /// 3×3 PCF on one directional shadow layer (explicit LOD: valid in
 /// non-uniform control flow).

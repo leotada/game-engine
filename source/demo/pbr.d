@@ -7,6 +7,7 @@ import std.math : sin, cos, atan2, sqrt, PI;
 import engine.app;
 import engine.assets.gltf : loadGltfPbr;
 import engine.core.log;
+import engine.editor.components : ReflectionProbe;
 import engine.gpu.buffer;
 import engine.gpu.shadow;
 import engine.gpu.text;
@@ -84,14 +85,15 @@ void main() {
 
     auto layout = scene.materialLayout();
 
-    // 5 cols × 5 rows (OpenPBR Surface v1.1 + OPBR-6/7 showcase):
+    // 5 cols × 6 rows (Complete OpenPBR Surface v1.1 showcase):
     //   Row 0: Dielectric + Fujii Oren-Nayar diffuse (roughness 0.04 -> 1.0)
     //   Row 1: Conductor F82 edge tint + Anisotropy (cols 0..1 use procedural swirl anisoFilm map)
-    //   Row 2: Automotive Clearcoat (cols 0..1 use procedural stripe coat map)
+    //   Row 2: Automotive Clearcoat + SSR (cols 0..1 use procedural stripe coat map)
     //   Row 3: Velvet Fuzz (cols 0..2) + Thin-Film Iridescence (cols 3..4)
-    //   Row 4: OPBR-7 Refractive Transmission (clear glass, frosted glass, emerald volume, prism dispersion, ruby coat)
+    //   Row 4: OPBR-7 Refractive Transmission (clear glass, frosted glass, emerald volume, prism dispersion, chrome SSR mirror)
+    //   Row 5: OPBR-8 Subsurface & Thin-Walled Translucency (skin, candle wax, imperial jade, foliage leaf, silk shade)
     enum COLS = 5;
-    enum ROWS = 5;
+    enum ROWS = 6;
     Material[COLS * ROWS] sphereMats;
     foreach (row; 0 .. ROWS) {
         foreach (col; 0 .. COLS) {
@@ -122,6 +124,7 @@ void main() {
                 p.coatColor = [0.85f, 0.95f, 1.0f];
                 p.coatRoughness = 0.04f + t * 0.38f;
                 p.coatDarkening = 1.0f;
+                p.flags |= MaterialFlags.ssr;
                 if (col < 2) {
                     p.flags |= MaterialFlags.coat;
                     layers.coat = () @trusted { return &coatStripeTex; }();
@@ -141,21 +144,21 @@ void main() {
                 p.thinFilmWeight = 1.0f;
                 p.thinFilmThickness = 380.0f + cast(float)(col - 3) * 140.0f;
                 p.thinFilmIor = 1.5f;
-            } else if (col == 0) {
+            } else if (row == 4 && col == 0) {
                 // Clear borosilicate glass
                 p.baseColor = [1.0f, 1.0f, 1.0f];
                 p.specularIor = 1.5f;
                 p.specularRoughness = 0.04f;
                 p.transmissionWeight = 0.96f;
                 p.transmissionThickness = 0.25f;
-            } else if (col == 1) {
+            } else if (row == 4 && col == 1) {
                 // Frosted privacy glass (samples blurred mip pyramid)
                 p.baseColor = [0.98f, 0.99f, 1.0f];
                 p.specularIor = 1.52f;
                 p.specularRoughness = 0.45f;
                 p.transmissionWeight = 0.92f;
                 p.transmissionThickness = 0.25f;
-            } else if (col == 2) {
+            } else if (row == 4 && col == 2) {
                 // Emerald Beer-Lambert volume absorption
                 p.baseColor = [1.0f, 1.0f, 1.0f];
                 p.specularIor = 1.55f;
@@ -164,7 +167,7 @@ void main() {
                 p.transmissionColor = [0.15f, 0.88f, 0.38f];
                 p.transmissionDepth = 0.35f;
                 p.transmissionThickness = 0.45f;
-            } else if (col == 3) {
+            } else if (row == 4 && col == 3) {
                 // Dispersive diamond prism
                 p.baseColor = [1.0f, 1.0f, 1.0f];
                 p.specularIor = 2.1f;
@@ -172,20 +175,56 @@ void main() {
                 p.transmissionWeight = 0.97f;
                 p.transmissionDispersion = 0.65f;
                 p.transmissionThickness = 0.35f;
+            } else if (row == 4) {
+                // Chrome mirror sphere with OPBR-9 SSR + local reflection probe
+                p.baseColor = [0.92f, 0.94f, 0.98f];
+                p.baseMetalness = 1.0f;
+                p.specularRoughness = 0.05f;
+                p.flags |= MaterialFlags.ssr;
+            } else if (col == 0) {
+                // Pre-integrated human skin SSS
+                p.baseColor = [0.85f, 0.62f, 0.52f];
+                p.specularRoughness = 0.42f;
+                p.specularIor = 1.44f;
+                p.subsurfaceWeight = 0.85f;
+                p.subsurfaceColor = [0.95f, 0.32f, 0.22f];
+                p.subsurfaceRadius = 0.9f;
+                p.subsurfaceRadiusScale = [1.0f, 0.32f, 0.14f];
+            } else if (col == 1) {
+                // Warm candle wax SSS with forward scattering
+                p.baseColor = [0.96f, 0.84f, 0.62f];
+                p.specularRoughness = 0.32f;
+                p.subsurfaceWeight = 0.92f;
+                p.subsurfaceColor = [1.0f, 0.58f, 0.20f];
+                p.subsurfaceRadius = 1.2f;
+                p.subsurfaceAnisotropy = 0.45f;
+            } else if (col == 2) {
+                // Imperial jade SSS
+                p.baseColor = [0.16f, 0.56f, 0.32f];
+                p.specularRoughness = 0.14f;
+                p.subsurfaceWeight = 0.80f;
+                p.subsurfaceColor = [0.22f, 0.90f, 0.45f];
+                p.subsurfaceRadius = 0.75f;
+                p.subsurfaceRadiusScale = [0.35f, 1.0f, 0.55f];
+                p.coatWeight = 0.5f;
+                p.coatRoughness = 0.08f;
+            } else if (col == 3) {
+                // Back-lit thin-walled foliage leaf
+                p.baseColor = [0.22f, 0.52f, 0.14f];
+                p.specularRoughness = 0.48f;
+                p.subsurfaceWeight = 0.85f;
+                p.subsurfaceColor = [0.45f, 0.88f, 0.16f];
+                p.subsurfaceAnisotropy = 0.55f;
+                p.flags |= MaterialFlags.thinWalled;
             } else {
-                // Ruby coated crystal with subtle dispersion and iridescence
-                p.baseColor = [1.0f, 1.0f, 1.0f];
-                p.specularIor = 1.65f;
-                p.specularRoughness = 0.08f;
-                p.coatWeight = 0.9f;
-                p.coatRoughness = 0.04f;
-                p.thinFilmWeight = 0.65f;
-                p.thinFilmThickness = 460.0f;
-                p.transmissionWeight = 0.92f;
-                p.transmissionColor = [0.95f, 0.18f, 0.25f];
-                p.transmissionDepth = 0.40f;
-                p.transmissionDispersion = 0.25f;
-                p.transmissionThickness = 0.30f;
+                // Thin-walled warm silk lampshade
+                p.baseColor = [0.95f, 0.86f, 0.72f];
+                p.specularRoughness = 0.65f;
+                p.fuzzWeight = 0.6f;
+                p.fuzzRoughness = 0.5f;
+                p.subsurfaceWeight = 0.9f;
+                p.subsurfaceColor = [1.0f, 0.72f, 0.42f];
+                p.flags |= MaterialFlags.thinWalled;
             }
             sphereMats[row * COLS + col] = Material.create(
                 app.gpu, layout, sampler, whiteTex, p, null, null, null, null, layers);
@@ -208,7 +247,7 @@ void main() {
     scope(exit) destroyBuffer(lightBuf);
     auto lightBg = createUniformBindGroup(app.gpu.getDevice(), shadowPipe.bindGroupLayout, lightBuf, 64);
     scope(exit) releaseBindGroup(lightBg);
-    auto shadowInstanceBuf = createDynamicVertexBuffer(app.gpu.getDevice(), 32 * InstanceData.sizeof);
+    auto shadowInstanceBuf = createDynamicVertexBuffer(app.gpu.getDevice(), 40 * InstanceData.sizeof);
     scope(exit) destroyBuffer(shadowInstanceBuf);
 
     auto dirShadow = ShadowMap.create(app.gpu, 2048);
@@ -225,6 +264,16 @@ void main() {
 
     auto camera = Camera.create(0.85f, W, H);
     camera.lookAt(Vec3(0, 4.5f, 11), Vec3(0, 1.2f, 0));
+
+    // OPBR-9: enable screen-space reflections & local parallax-corrected box probe.
+    scene.setSsr(true, 16.0f, 0.35f, 1.0f);
+    ReflectionProbe[1] gridProbes;
+    gridProbes[0].position = Vec3(0.0f, 2.0f, 0.0f);
+    gridProbes[0].boxExtents = Vec3(9.0f, 6.0f, 9.0f);
+    gridProbes[0].blendDistance = 2.0f;
+    gridProbes[0].intensity = 1.05f;
+    gridProbes[0].boxProjection = 1;
+    scene.setReflectionProbes(gridProbes[]);
 
     auto text = TextRenderer.create(app.gpu, W, H);
     scope(exit) text.destroy();
@@ -361,7 +410,7 @@ void main() {
 
         import std.format : format;
         text.beginFrame();
-        text.drawText(frame, "OpenPBR v1.1: Oren-Nayar / F82 Aniso / Coat / Fuzz / Thin-Film / Transmission", 16, 16, 2);
+        text.drawText(frame, "OpenPBR v1.1: Oren-Nayar / F82 Aniso / Coat / Fuzz / Thin-Film / Transmission / SSS / SSR", 16, 16, 2);
         text.drawText(frame, format("IBL + bloom/FXAA  exp=%.2f  B=%s  F=%s",
             app.post.exposure,
             app.post.bloom ? "on" : "off",

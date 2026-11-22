@@ -386,15 +386,17 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 }
 
 /// Frame uniform size for textured PBR pipeline (multi-light UBO).
-/// Layout must match `shadows.wgsl` FrameUniforms (1280 bytes):
+/// Layout must match `shadows.wgsl` FrameUniforms (1504 bytes):
 /// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts/time(16)
 /// + iblIntensity/wetness/rain/clouds(16) + SpotLight[4](512)
-/// + cascades(352) + camera(96) + atmosphere/sky(112).
+/// + cascades(352) + camera(96) + atmosphere/sky(112)
+/// + ssrParams(16) + probeCount/pad(16) + ReflectionProbeData[4](192).
 /// Point lights live in a separate storage buffer at @binding(9).
-enum FRAME_UNIFORMS_SIZE = 1280;
+enum FRAME_UNIFORMS_SIZE = 1504;
 /// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
-/// 7 shadow maps, point lights (9), shared water data (10), and opaque scene color pyramid (11).
-enum uint FRAME_BINDING_COUNT = 12;
+/// 7 shadow maps, point lights (9), shared water data (10),
+/// opaque scene color pyramid (11), and opaque scene depth (12).
+enum uint FRAME_BINDING_COUNT = 13;
 /// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7/8 block, 13 × vec4<f32> = 208 bytes).
 enum MATERIAL_PARAMS_SIZE = 208;
 /// Entries in the material bind group (@group(1)): params UBO, sampler,
@@ -493,6 +495,11 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[11].visibility = WGPUShaderStage.fragment;
     frameEntries[11].texture.sampleType = WGPUTextureSampleType.float_;
     frameEntries[11].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+    frameEntries[12].binding = 12;
+    frameEntries[12].visibility = WGPUShaderStage.fragment;
+    frameEntries[12].texture.sampleType = WGPUTextureSampleType.depth;
+    frameEntries[12].texture.viewDimension = WGPUTextureViewDimension.dim2D;
 
     WGPUBindGroupLayoutDescriptor frameBglDesc;
     frameBglDesc.entryCount = FRAME_BINDING_COUNT;

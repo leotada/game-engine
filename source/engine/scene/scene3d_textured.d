@@ -10,6 +10,7 @@ import bindings.wgpu;
 import engine.core.log;
 import engine.core.podbuf : PodBuffer;
 import engine.core.pod : Pod;
+import engine.editor.components : MAX_REFLECTION_PROBES, ReflectionProbe;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
@@ -186,6 +187,14 @@ void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere loc
     }
 }
 
+/// GPU mirror of WGSL `ReflectionProbeData` (48 bytes = 3 × vec4<f32>).
+struct GpuReflectionProbeUbo {
+    float[4] posRadius = [0, 1, 0, 8];    // xyz = center, |w| = radius (w > 0 => box projection)
+    float[4] boxBlend = [8, 4, 8, 2];     // xyz = half-extents, w = blend distance
+    float[4] tintIntensity = [1, 1, 1, 0]; // rgb = tint, w = intensity (0 = disabled)
+}
+static assert(GpuReflectionProbeUbo.sizeof == 48);
+
 /// CPU mirror of WGSL FrameUniforms (`FRAME_UNIFORMS_SIZE` bytes).
 struct FrameUniforms {
     float[16] viewProj;
@@ -240,6 +249,15 @@ struct FrameUniforms {
     float[4] skySunDir = [0, 1, 0, 0];
     /// rgb = sun color for the sky.
     float[4] skySunColor = [1, 0.97f, 0.92f, 0];
+
+    // --- OPBR-9: Local Reflection Probes & Screen-Space Reflections ---
+    /// x = enabled (0/1), y = maxDistance (m), z = thickness (m), w = intensity.
+    float[4] ssrParams = [0.0f, 16.0f, 0.35f, 1.0f];
+    uint probeCount = 0;
+    uint _probePad0 = 0;
+    uint _probePad1 = 0;
+    uint _probePad2 = 0;
+    GpuReflectionProbeUbo[MAX_REFLECTION_PROBES] probes;
 }
 static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
 
@@ -374,6 +392,7 @@ struct Scene3DTextured {
     private WGPUTexture defaultSceneColorTex;
     private WGPUTextureView defaultSceneColorView;
     private WGPUTextureView boundSceneColorView;
+    private WGPUTextureView boundSceneDepthView;
 
     // Camera captured in `begin` (cascade fitting).
     private Camera frameCamera;
@@ -434,7 +453,8 @@ struct Scene3DTextured {
             s.defaultShadowArrayView,
             s.defaultShadowCubeView, s.defaultShadowCubeView,
             s.defaultShadowCubeView, s.defaultShadowCubeView,
-            s.defaultShadow2dView, s.defaultShadow2dView);
+            s.defaultShadow2dView, s.defaultShadow2dView,
+            s.defaultSceneColorView, s.defaultShadow2dView);
 
         s.ownedIbl = IblEnvironment.create(gpu, s.pipeline.iblBindGroupLayout);
         s.iblBindGroup = s.ownedIbl.bindGroup;
@@ -675,7 +695,7 @@ struct Scene3DTextured {
             sampler, dirView,
             boundPoints[0], boundPoints[1], boundPoints[2], boundPoints[3],
             boundSpots[0], boundSpots[1],
-            defaultSceneColorView);
+            defaultSceneColorView, defaultShadow2dView);
     }
 
     /// Copy `cascadeSet` into the frame uniforms, or switch to the fixed map.
@@ -823,6 +843,37 @@ struct Scene3DTextured {
 
     /// Make the sky follow the directional light again.
     void clearSkySun() nothrow @nogc { frameData.skySunDir[3] = 0; }
+
+    /// Configure Screen-Space Reflections (`OPBR-9`) for materials with `MaterialFlags.ssr`.
+    void setSsr(bool enabled, float maxDistance = 16.0f, float thickness = 0.35f, float intensity = 1.0f) nothrow @nogc {
+        frameData.ssrParams = [
+            enabled ? 1.0f : 0.0f,
+            maxDistance > 1.0f ? maxDistance : 1.0f,
+            thickness > 0.01f ? thickness : 0.01f,
+            intensity > 0.0f ? intensity : 0.0f,
+        ];
+    }
+
+    /// Upload up to `MAX_REFLECTION_PROBES` parallax-corrected local reflection probes (`OPBR-9`).
+    void setReflectionProbes(scope const(ReflectionProbe)[] probes) nothrow @nogc {
+        uint count = 0;
+        foreach (ref const p; probes) {
+            if (count >= MAX_REFLECTION_PROBES) break;
+            if (p.enabled == 0 || p.intensity <= 0.0f) continue;
+            immutable float rad = p.radius > 0.01f ? p.radius : 0.01f;
+            auto gpu = &frameData.probes[count];
+            gpu.posRadius = [p.position.x, p.position.y, p.position.z, p.boxProjection != 0 ? rad : -rad];
+            gpu.boxBlend = [
+                p.boxExtents.x > 0.01f ? p.boxExtents.x : 0.01f,
+                p.boxExtents.y > 0.01f ? p.boxExtents.y : 0.01f,
+                p.boxExtents.z > 0.01f ? p.boxExtents.z : 0.01f,
+                p.blendDistance > 0.001f ? p.blendDistance : 0.001f,
+            ];
+            gpu.tintIntensity = [p.tint[0], p.tint[1], p.tint[2], p.intensity];
+            count++;
+        }
+        frameData.probeCount = count;
+    }
 
     /// Weather inputs (call before `begin`): `wetness` darkens and glosses
     /// rain-exposed surfaces (instances with `custom.w = 1` are sheltered),
@@ -1432,7 +1483,7 @@ struct Scene3DTextured {
         if (!frame.valid) return;
 
         ensureSkinPalettesUploaded();
-        setSceneColorView(defaultSceneColorView);
+        setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
 
@@ -1442,9 +1493,10 @@ struct Scene3DTextured {
             return dx * dx + dy * dy + dz * dz;
         }
 
-        // Pass 0: depth-writing opaque batches + hooks + sky.
-        // Pass 1: alpha/transmissive batches back-to-front (snapshots HDR pyramid once if transmissive exists).
-        // Pass 2: additive.
+        // Pass 0: standard opaque batches + hooks + sky.
+        // Pass 1: SSR-enabled opaque batches (after opaque snapshot) + transparentHooks (water).
+        // Pass 2: alpha/transmissive batches back-to-front (re-snapshots if pass 1/water drew).
+        // Pass 3: additive.
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0) continue;
             prepareBatch(b, null);
@@ -1454,13 +1506,15 @@ struct Scene3DTextured {
         }
 
         uint orderCount = 0;
-        foreach (pass; 0 .. 3) {
+        bool snapshotTaken = false;
+        bool sceneDirtySinceSnapshot = false;
+        foreach (pass; 0 .. 4) {
             orderCount = 0;
             foreach (i, ref b; batches[0 .. batchCount]) {
                 if (b.colorCount == 0) continue;
                 immutable p = renderPassOf(*b.material);
                 if (p != pass) continue;
-                if (pass == 1) {
+                if (pass == 2) {
                     b.instances[b.colorFirst .. b.colorFirst + b.colorCount]
                         .sort!((x, y) => distSq(x, cam) > distSq(y, cam));
                     b.uploaded = false;
@@ -1468,7 +1522,14 @@ struct Scene3DTextured {
                 }
                 sortOrder[orderCount++] = cast(uint) i;
             }
-            if (pass == 1) {
+            if (pass == 1 && orderCount > 0 && frame.owner !is null) {
+                frame.owner.snapshotOpaque(frame);
+                snapshotTaken = true;
+                sceneDirtySinceSnapshot = false;
+                setSceneSnapshotViews(frame.owner.opaqueColorView(), frame.owner.opaqueDepthView());
+                frame.setBindGroup(0, frameBindGroup);
+                frame.setBindGroup(2, iblBindGroup);
+            } else if (pass == 2) {
                 sortOrder[0 .. orderCount].sort!((x, y) => sortFarthest[x] > sortFarthest[y]);
                 bool hasTransmissive = false;
                 foreach (idx; sortOrder[0 .. orderCount]) {
@@ -1477,27 +1538,52 @@ struct Scene3DTextured {
                         break;
                     }
                 }
-                if (hasTransmissive && frame.owner !is null) {
+                if (hasTransmissive && frame.owner !is null && (!snapshotTaken || sceneDirtySinceSnapshot)) {
                     frame.owner.snapshotOpaque(frame);
-                    setSceneColorView(frame.owner.opaqueColorView());
+                    snapshotTaken = true;
+                    sceneDirtySinceSnapshot = false;
+                    setSceneSnapshotViews(frame.owner.opaqueColorView(), frame.owner.opaqueDepthView());
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }
             }
-            foreach (idx; sortOrder[0 .. orderCount]) drawBatch(frame, batches[idx]);
+            foreach (idx; sortOrder[0 .. orderCount]) {
+                drawBatch(frame, batches[idx]);
+                sceneDirtySinceSnapshot = true;
+            }
             if (pass == 0) {
-                foreach (sib; staticBufs[0 .. staticCount]) drawStatic(frame, *sib);
-                foreach (hook; opaqueHooks[0 .. opaqueHookCount]) hook(frame);
-                foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) hook(frame);
-                if (skyEnabled) sky.draw(frame, frameBindGroup);
-                foreach (hook; transparentHooks[0 .. transparentHookCount]) hook(frame);
-                if (skyEnabled || opaqueHookCount > 0 || postOpaqueHookCount > 0 || transparentHookCount > 0) {
+                foreach (sib; staticBufs[0 .. staticCount]) {
+                    drawStatic(frame, *sib);
+                    sceneDirtySinceSnapshot = true;
+                }
+                foreach (hook; opaqueHooks[0 .. opaqueHookCount]) {
+                    hook(frame);
+                    sceneDirtySinceSnapshot = true;
+                }
+                foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) {
+                    hook(frame);
+                    sceneDirtySinceSnapshot = true;
+                }
+                if (skyEnabled) {
+                    sky.draw(frame, frameBindGroup);
+                    sceneDirtySinceSnapshot = true;
+                }
+                if (opaqueHookCount > 0 || postOpaqueHookCount > 0) {
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                }
+            } else if (pass == 1) {
+                foreach (hook; transparentHooks[0 .. transparentHookCount]) {
+                    hook(frame);
+                    sceneDirtySinceSnapshot = true;
+                }
+                if (transparentHookCount > 0) {
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }
             }
         }
-        setSceneColorView(defaultSceneColorView);
+        setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);
     }
 
     /**
@@ -1882,16 +1968,20 @@ struct Scene3DTextured {
         WGPUTextureView point0, WGPUTextureView point1,
         WGPUTextureView point2, WGPUTextureView point3,
         WGPUTextureView spot0, WGPUTextureView spot1,
-        WGPUTextureView sceneColorView = null) @trusted
+        WGPUTextureView sceneColorView = null,
+        WGPUTextureView sceneDepthView = null) @trusted
     {
         WGPUTextureView[7] views = [dirView, point0, point1, point2, point3, spot0, spot1];
         WGPUTextureView resolvedSceneColor = sceneColorView !is null ? sceneColorView : defaultSceneColorView;
+        WGPUTextureView resolvedSceneDepth = sceneDepthView !is null ? sceneDepthView : defaultShadow2dView;
         if (frameBindGroup !is null && shadowSampler is boundShadowSampler
-            && views == boundShadowViews && resolvedSceneColor is boundSceneColorView)
+            && views == boundShadowViews && resolvedSceneColor is boundSceneColorView
+            && resolvedSceneDepth is boundSceneDepthView)
             return;
         boundShadowSampler = shadowSampler;
         boundShadowViews = views;
         boundSceneColorView = resolvedSceneColor;
+        boundSceneDepthView = resolvedSceneDepth;
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -1927,6 +2017,8 @@ struct Scene3DTextured {
         entries[10].size = WATER_DATA_SIZE;
         entries[11].binding = 11;
         entries[11].textureView = resolvedSceneColor;
+        entries[12].binding = 12;
+        entries[12].textureView = resolvedSceneDepth;
 
         WGPUBindGroupDescriptor desc;
         desc.layout = pipeline.frameBindGroupLayout;
@@ -1936,14 +2028,15 @@ struct Scene3DTextured {
         if (frameBindGroup is null) fatal("Failed to create frame bind group");
     }
 
-    private void setSceneColorView(WGPUTextureView sceneColorView) @trusted {
+    private void setSceneSnapshotViews(WGPUTextureView sceneColorView, WGPUTextureView sceneDepthView) @trusted {
         rebuildFrameBindGroup(
             boundShadowSampler,
             boundShadowViews[0],
             boundShadowViews[1], boundShadowViews[2],
             boundShadowViews[3], boundShadowViews[4],
             boundShadowViews[5], boundShadowViews[6],
-            sceneColorView !is null ? sceneColorView : defaultSceneColorView);
+            sceneColorView !is null ? sceneColorView : defaultSceneColorView,
+            sceneDepthView !is null ? sceneDepthView : defaultShadow2dView);
     }
 
     private Batch* findOrAdd(ref TexMesh mesh, ref Material material, ubyte lod) nothrow @nogc @trusted {
@@ -2296,28 +2389,34 @@ package(engine) struct BatchMap {
     spheres.release();
 }
 
-/// Classify a material into Scene3DTextured's 3 draw passes:
-/// 0 = opaque depth-writing, 1 = alpha / transmissive (post-snapshot back-to-front), 2 = additive.
+/// Classify a material into Scene3DTextured's 4 draw passes:
+/// 0 = opaque depth-writing, 1 = SSR opaque depth-writing,
+/// 2 = alpha / transmissive (back-to-front after snapshot), 3 = additive.
 package(engine) uint renderPassOf(ref const Material m) pure nothrow @nogc {
     immutable st = m.renderState;
-    if (m.transmissive) return st.blend == BlendMode.additive ? 2 : 1;
-    return st.depthWrite ? 0 : (st.blend == BlendMode.additive ? 2 : 1);
+    if (m.transmissive) return st.blend == BlendMode.additive ? 3 : 2;
+    if (st.depthWrite) return m.ssr ? 1 : 0;
+    return st.blend == BlendMode.additive ? 3 : 2;
 }
 
 @("scene3d.transmissivePassClassification") @safe unittest {
     Material opaqueMat;
     assert(renderPassOf(opaqueMat) == 0);
 
+    Material ssrMat;
+    ssrMat.ssr = true;
+    assert(renderPassOf(ssrMat) == 1);
+
     Material glassMat;
     glassMat.transmissive = true;
     assert(glassMat.renderState.depthWrite);
-    assert(renderPassOf(glassMat) == 1);
+    assert(renderPassOf(glassMat) == 2);
 
     Material alphaMat;
     alphaMat.renderState = RenderState(BlendMode.alpha, false);
-    assert(renderPassOf(alphaMat) == 1);
+    assert(renderPassOf(alphaMat) == 2);
 
     Material additiveMat;
     additiveMat.renderState = RenderState(BlendMode.additive, false);
-    assert(renderPassOf(additiveMat) == 2);
+    assert(renderPassOf(additiveMat) == 3);
 }

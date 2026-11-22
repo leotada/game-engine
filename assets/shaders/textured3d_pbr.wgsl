@@ -105,6 +105,152 @@ fn engineDissolveNoise(x: vec3<f32>) -> f32 {
         u.z);
 }
 
+fn linearizeSceneDepth(z: f32, nearZ: f32, farZ: f32) -> f32 {
+    return (nearZ * farZ) / max(farZ - z * (farZ - nearZ), 1e-4);
+}
+
+/// OPBR-9: Parallax-corrected local reflection probes (returns rgb + blend weight in .a).
+fn evalLocalReflectionProbes(worldPos: vec3<f32>, R: vec3<f32>, roughness: f32, iblScale: f32) -> vec4<f32> {
+    let pc = min(frame.probeCount, 4u);
+    if (pc == 0u) {
+        return vec4<f32>(0.0);
+    }
+    var accumCol = vec3<f32>(0.0);
+    var accumW = 0.0;
+    var maxW = 0.0;
+    let safeR = vec3<f32>(
+        select(1e-5, R.x, abs(R.x) >= 1e-5),
+        select(1e-5, R.y, abs(R.y) >= 1e-5),
+        select(1e-5, R.z, abs(R.z) >= 1e-5),
+    );
+    let mip = clamp(roughness * SPECULAR_MIPS, 0.0, SPECULAR_MIPS);
+
+    for (var i = 0u; i < pc; i++) {
+        let pr = frame.probes[i];
+        let intensity = max(pr.tintIntensity.w, 0.0);
+        if (intensity <= 0.001) {
+            continue;
+        }
+        let center = pr.posRadius.xyz;
+        let isBox = pr.posRadius.w > 0.0;
+        let radius = max(abs(pr.posRadius.w), 0.01);
+        let ext = max(pr.boxBlend.xyz, vec3<f32>(0.01));
+        let blendDist = max(pr.boxBlend.w, 0.001);
+
+        var w = 0.0;
+        var reflDir = R;
+        if (isBox) {
+            let delta = abs(worldPos - center);
+            let minMargin = min(ext.x - delta.x, min(ext.y - delta.y, ext.z - delta.z));
+            if (minMargin <= 0.0) {
+                continue;
+            }
+            w = smoothstep(0.0, blendDist, minMargin);
+            let bMin = center - ext;
+            let bMax = center + ext;
+            let tMin = (bMin - worldPos) / safeR;
+            let tMax = (bMax - worldPos) / safeR;
+            let tFar = max(tMin, tMax);
+            let tHit = max(min(min(tFar.x, tFar.y), tFar.z), 0.0);
+            reflDir = normalize((worldPos + R * tHit) - center);
+        } else {
+            let oc = worldPos - center;
+            let d = length(oc);
+            if (d >= radius) {
+                continue;
+            }
+            w = smoothstep(radius, max(radius - blendDist, 0.0), d);
+            let b = dot(oc, R);
+            let c = dot(oc, oc) - radius * radius;
+            let disc = max(b * b - c, 0.0);
+            let tHit = max(-b + sqrt(disc), 0.0);
+            reflDir = normalize(oc + R * tHit);
+        }
+
+        let probeSample = textureSampleLevel(specularMap, iblSampler, reflDir, mip).rgb
+                        * iblScale * pr.tintIntensity.rgb * intensity;
+        accumCol += probeSample * w;
+        accumW += w;
+        maxW = max(maxW, w);
+    }
+
+    if (accumW <= 1e-4) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(accumCol / accumW, clamp(maxW, 0.0, 1.0));
+}
+
+/// OPBR-9: Adaptive 16-step screen-space raymarch + 3-step binary refinement
+/// against `opaqueSceneDepthMap` & `opaqueSceneColorMap` 5-mip pyramid.
+fn evalScreenSpaceReflection(worldPos: vec3<f32>, R: vec3<f32>, roughness: f32) -> vec4<f32> {
+    if (frame.ssrParams.x < 0.5 || roughness > 0.72) {
+        return vec4<f32>(0.0);
+    }
+    let depthDims = vec2<i32>(textureDimensions(opaqueSceneDepthMap));
+    if (depthDims.x <= 1 || depthDims.y <= 1) {
+        return vec4<f32>(0.0);
+    }
+    let dimsF = vec2<f32>(depthDims);
+    let maxDist = max(frame.ssrParams.y, 1.0);
+    let maxThick = max(frame.ssrParams.z, 0.05);
+    let ssrScale = clamp(frame.ssrParams.w, 0.0, 2.0);
+    let nearZ = max(frame.cameraNear, 0.01);
+    let farZ = max(frame.cameraFar, nearZ + 1.0);
+    let stepLen = maxDist / 16.0;
+    var tPrev = 0.08;
+
+    for (var s = 0; s < 16; s++) {
+        let tCur = tPrev + stepLen;
+        let rayP = worldPos + R * tCur;
+        let clip = frame.viewProj * vec4<f32>(rayP, 1.0);
+        if (clip.w <= 0.05) {
+            break;
+        }
+        let ndc = clip.xyz / clip.w;
+        let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        if (uv.x <= 0.002 || uv.x >= 0.998 || uv.y <= 0.002 || uv.y >= 0.998 || ndc.z <= 0.0 || ndc.z >= 1.0) {
+            break;
+        }
+        let sPix = clamp(vec2<i32>(uv * dimsF), vec2<i32>(0), depthDims - vec2<i32>(1));
+        let sRawZ = textureLoad(opaqueSceneDepthMap, sPix, 0);
+        if (sRawZ < 0.9995) {
+            let sceneLin = linearizeSceneDepth(sRawZ, nearZ, farZ);
+            let rayLin = linearizeSceneDepth(ndc.z, nearZ, farZ);
+            let diff = rayLin - sceneLin;
+            if (diff > 0.02 && diff < (maxThick + 0.04 * tCur)) {
+                var lo = tPrev;
+                var hi = tCur;
+                var bestUv = uv;
+                for (var b = 0; b < 3; b++) {
+                    let mid = (lo + hi) * 0.5;
+                    let mClip = frame.viewProj * vec4<f32>(worldPos + R * mid, 1.0);
+                    let mNdc = mClip.xyz / max(mClip.w, 0.05);
+                    let mUv = clamp(vec2<f32>(mNdc.x * 0.5 + 0.5, 0.5 - mNdc.y * 0.5), vec2<f32>(0.002), vec2<f32>(0.998));
+                    let mPix = clamp(vec2<i32>(mUv * dimsF), vec2<i32>(0), depthDims - vec2<i32>(1));
+                    let mRawZ = textureLoad(opaqueSceneDepthMap, mPix, 0);
+                    let mSceneLin = linearizeSceneDepth(mRawZ, nearZ, farZ);
+                    let mRayLin = linearizeSceneDepth(mNdc.z, nearZ, farZ);
+                    if (mRayLin > mSceneLin && mRawZ < 0.9995) {
+                        hi = mid;
+                        bestUv = mUv;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                let ssrMip = clamp(roughness * SPECULAR_MIPS, 0.0, SPECULAR_MIPS);
+                let ssrCol = max(textureSampleLevel(opaqueSceneColorMap, iblSampler, bestUv, ssrMip).rgb, vec3<f32>(0.0));
+                let edgeFade = smoothstep(0.0, 0.08, min(bestUv.x, 1.0 - bestUv.x))
+                             * smoothstep(0.0, 0.08, min(bestUv.y, 1.0 - bestUv.y));
+                let roughFade = 1.0 - smoothstep(0.25, 0.72, roughness);
+                let distFade = 1.0 - smoothstep(maxDist * 0.55, maxDist, tCur);
+                return vec4<f32>(ssrCol, clamp(edgeFade * roughFade * distFade * ssrScale, 0.0, 1.0));
+            }
+        }
+        tPrev = tCur;
+    }
+    return vec4<f32>(0.0);
+}
+
 #include "common/pbr_brdf.wgsl"
 
 #ifdef CUSTOM_SURFACE
@@ -683,7 +829,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let R = reflect(-V, iblNormal);
     let mip = effectiveRoughness * SPECULAR_MIPS;
-    let prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb * iblScale;
+    let useSsr = (mat.flags & FLAG_SSR) != 0u;
+    var prefiltered = textureSampleLevel(specularMap, iblSampler, R, mip).rgb * iblScale;
+    if (frame.probeCount > 0u) {
+        let probeBase = evalLocalReflectionProbes(in.worldPos, R, effectiveRoughness, iblScale);
+        prefiltered = mix(prefiltered, probeBase.rgb, probeBase.a);
+    }
+    if (useSsr) {
+        let ssrBase = evalScreenSpaceReflection(in.worldPos, R, effectiveRoughness);
+        prefiltered = mix(prefiltered, ssrBase.rgb, ssrBase.a);
+    }
     let E_o = clamp(directionalAlbedo, 0.05, 1.0);
     let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
     let specularIbl = prefiltered * (F_ibl * lutBase.r + lutBase.g) * msScale;
@@ -702,7 +857,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
         let coatLut = textureSampleLevel(brdfLut, iblSampler, vec2<f32>(NdotV_c, cR), 0.0).rg;
         let coatRefl = reflect(-V, coatN);
-        let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb * iblScale;
+        var coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb * iblScale;
+        if (frame.probeCount > 0u) {
+            let probeCoat = evalLocalReflectionProbes(in.worldPos, coatRefl, cR, iblScale);
+            coatPrefiltered = mix(coatPrefiltered, probeCoat.rgb, probeCoat.a);
+        }
+        if (useSsr) {
+            let ssrCoat = evalScreenSpaceReflection(in.worldPos, coatRefl, cR);
+            coatPrefiltered = mix(coatPrefiltered, ssrCoat.rgb, ssrCoat.a);
+        }
         let f90Coat = max(1.0 - cR, f0Coat.x);
         let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * cW;
         let horizonOcclusion = clamp(coatRefl.y * 0.65 + 0.55, 0.18, 1.0);

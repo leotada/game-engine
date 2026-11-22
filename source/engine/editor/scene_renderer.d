@@ -27,7 +27,7 @@ module engine.editor.scene_renderer;
 
 import engine.assets.asset_file : AssetKind, loadAssetFile;
 import engine.core.log;
-import engine.editor.components : MaterialOverride, Visual, VisualKind, worldMatrix;
+import engine.editor.components : MaterialOverride, MAX_REFLECTION_PROBES, ReflectionProbe, Visual, VisualKind, worldMatrix;
 import engine.editor.light_panel : applyCascadeSettings, SceneLightSettings, packLightsFromWorld;
 import engine.gpu.context : GpuContext;
 import engine.gpu.renderer : FrameContext;
@@ -247,6 +247,19 @@ struct SceneRenderer {
             lights = defaultSunLight(lightSettings);
         scene.setIblIntensity(lightSettings.iblIntensity);
         scene.setFog(lightSettings.fog);
+        static if (is(typeof(world.query!(Transform, ReflectionProbe)()))) {
+            ReflectionProbe[MAX_REFLECTION_PROBES] probes;
+            uint probeCount = 0;
+            foreach (e; world.query!(Transform, ReflectionProbe)()) {
+                if (!world.alive(e)) continue;
+                auto pr = world.get!ReflectionProbe(e);
+                immutable tr = world.get!Transform(e);
+                pr.position = tr.position;
+                probes[probeCount++] = pr;
+                if (probeCount >= MAX_REFLECTION_PROBES) break;
+            }
+            scene.setReflectionProbes(probes[0 .. probeCount]);
+        }
         if (viewportHeight >= 1) scene.setLodScreenHeight(viewportHeight);
 
         scene.begin(camera);

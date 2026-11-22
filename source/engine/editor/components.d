@@ -252,8 +252,27 @@ alias EditorWorld = World!(
     Light,
     PhysicsBody,
     Camera3D,
-    MeshLod
+    MeshLod,
+    ReflectionProbe
 );
+
+/// Maximum simultaneous local reflection probes bound per frame (`OPBR-9`).
+enum uint MAX_REFLECTION_PROBES = 4;
+
+/// Local parallax-corrected reflection probe (`OPBR-9`).
+@component
+struct ReflectionProbe {
+    Vec3 position = Vec3(0.0f, 1.0f, 0.0f);
+    @export_ @range(0.5f, 500.0f) float radius = 8.0f;
+    @export_ Vec3 boxExtents = Vec3(8.0f, 4.0f, 8.0f);
+    @export_ @range(0.0f, 50.0f) float blendDistance = 2.0f;
+    @export_ @range(0.0f, 8.0f) float intensity = 1.0f;
+    @export_ float[3] tint = [1.0f, 1.0f, 1.0f];
+    @export_ uint boxProjection = 1;
+    @export_ uint enabled = 1;
+}
+
+static assert(isPod!ReflectionProbe);
 
 /// True when shape is triangle mesh and motion is dynamic (forbidden).
 bool isMeshDynamicForbidden(uint shape, uint motion) pure nothrow @nogc {
