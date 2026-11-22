@@ -2,12 +2,13 @@
 /// frame-time-budgeted GPU/ECS upload queue, and reference-counted asset unloading.
 module engine.scene.streamer;
 
-import core.atomic : atomicLoad, atomicStore, MemoryOrder;
+import core.atomic : atomicLoad, atomicOp, atomicStore, MemoryOrder;
 import core.stdc.stdio : fclose, fopen, fread, fseek, ftell, SEEK_END, SEEK_SET;
 import core.stdc.stdlib : free, malloc;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime;
+import std.string : fromStringz;
 
 import engine.core.gc : ScopedGcExcludedThread;
 import engine.core.log : info, warn;
@@ -28,6 +29,10 @@ import engine.scene.scene_file :
     ChunkManifest, parseSceneJson, SceneFile;
 import engine.scene.chunk_binary : GescBlockHandler, GescChunk, parseChunkBytes;
 import engine.scene.chunk_components : GescApplyResult, applyChunk;
+import engine.scene.chunk_binary : isGesc;
+import engine.scene.chunk_binary_nogc : GescChunkNoGc, applyChunkNoGc, gescChunkNoGcFree, gescChunkNoGcNew,
+    readChunkNoGc;
+import engine.scene.scene_file : SceneFile;
 
 @safe:
 
@@ -115,6 +120,11 @@ struct DecodedChunkJob {
     size_t rawSceneLen = 0;
     ubyte* rawNavBytes = null;
     size_t rawNavLen = 0;
+    /// GESC chunk decoded on the worker (malloc-owned, freed by `freeDecodedBuffers`); when set,
+    /// `rawSceneBytes` has already been released.
+    GescChunkNoGc* gesc = null;
+    /// Static message when the worker could not decode the scene file (reported on the main thread).
+    const(char)* sceneError = null;
 }
 
 enum UploadJobStep : ubyte {
@@ -142,6 +152,11 @@ struct StreamerStats {
     uint activeTextureCount = 0;
     uint activeCookedMeshCount = 0;
     uint activeNavTileCount = 0;
+    /// Cumulative microseconds spent reading + decoding chunk files in `executeDecodeJobNoGc` (worker thread).
+    ulong workerDecodeUsecs = 0;
+    /// Cumulative microseconds the main thread spent in the asset step and the spawn step of chunk loads.
+    ulong mainPrepareUsecs = 0;
+    ulong mainApplyUsecs = 0;
 }
 static assert(isPod!StreamerStats);
 
@@ -181,6 +196,9 @@ struct WorldStreamer {
     private shared bool _workerRunning = false;
     private shared bool _workerStop = false;
 
+    private shared ulong _workerDecodeHns = 0;
+    private ulong _mainPrepareHns = 0;
+    private ulong _mainApplyHns = 0;
     private uint _totalLoads = 0;
     private uint _totalUnloads = 0;
 
@@ -629,6 +647,9 @@ struct WorldStreamer {
         StreamerStats s;
         s.totalLoads = _totalLoads;
         s.totalUnloads = _totalUnloads;
+        s.workerDecodeUsecs = atomicLoad!(MemoryOrder.acq)(_workerDecodeHns) / 10;
+        s.mainPrepareUsecs = _mainPrepareHns / 10;
+        s.mainApplyUsecs = _mainApplyHns / 10;
         foreach (ref c; cells) {
             final switch (c.state) {
                 case ChunkState.unloaded: break;
@@ -718,11 +739,12 @@ struct WorldStreamer {
 
     private void prepareChunkAssets(uint cellIdx, uint jobIdx) @trusted {
         auto cell = &cells[cellIdx];
+        immutable t0 = MonoTime.currTime();
         immutable assetStart = cast(uint) _cellAssets.length;
         uint assetCount = 0;
 
         if (jobIdx < _uploadJobs.length) {
-            const job = _uploadJobs[jobIdx];
+            auto job = _uploadJobs[jobIdx];
             if (job.hasNavData && job.rawNavBytes !is null && job.rawNavLen > 0) {
                 auto navBytes = job.rawNavBytes[0 .. job.rawNavLen];
                 auto r = acquireNavTile(AssetGuid.init, strings.get(cell.navmeshPath), cell.coord, navBytes);
@@ -734,40 +756,15 @@ struct WorldStreamer {
                 assetCount++;
             }
 
-            if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
+            if (job.sceneError !is null) {
+                warn("WorldStreamer: failed to decode chunk scene: ", fromStringz(job.sceneError));
+            } else if (job.gesc !is null) {
+                acquireSceneAssets(job.gesc.scene, cell.coord, _cellAssets, assetCount);
+            } else if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
+                // `*.scene.json` has no GC-free decoder: parsed here, on the main thread.
                 try {
                     _decoded[cellIdx] = parseChunkBytes(job.rawSceneBytes[0 .. job.rawSceneLen]);
-                    auto sf = &_decoded[cellIdx].scene;
-                    foreach (ref link; sf.assetLinks) {
-                        auto guid = AssetGuid.fromString(link.guid);
-                        string path = (link.path >= 0 && link.path < cast(int) sf.strings.length)
-                            ? sf.strings[link.path] : "";
-                        if (link.kind == "texture") {
-                            _cellAssets ~= acquireTexture(guid, path);
-                            assetCount++;
-                        } else if (link.kind == "cookedMesh") {
-                            _cellAssets ~= acquireCookedMesh(guid, path);
-                            assetCount++;
-                        } else if (link.kind == "navmesh") {
-                            _cellAssets ~= acquireNavTile(guid, path, cell.coord);
-                            assetCount++;
-                        } else if (link.kind == "splines") {
-                            // CPU-side path data (`engine.scene.splines`), not a GPU asset.
-                        } else {
-                            _cellAssets ~= acquireGltf(guid, path);
-                            assetCount++;
-                        }
-                    }
-                    foreach (ref e; sf.entities) {
-                        if (e.hasVisual && e.visual.hasAsset &&
-                            e.visual.asset >= 0 && e.visual.asset < cast(int) sf.strings.length) {
-                            auto guid = e.visual.hasAssetGuid
-                                ? AssetGuid.fromString(e.visual.assetGuid)
-                                : AssetGuid.init;
-                            _cellAssets ~= acquireGltf(guid, sf.strings[e.visual.asset]);
-                            assetCount++;
-                        }
-                    }
+                    acquireSceneAssets(_decoded[cellIdx].scene, cell.coord, _cellAssets, assetCount);
                 } catch (Exception ex) {
                     warn("WorldStreamer: failed to parse chunk scene: ", ex.msg);
                 }
@@ -776,16 +773,72 @@ struct WorldStreamer {
 
         cell.assetOffset = assetStart;
         cell.assetCount = assetCount;
+        _mainPrepareHns += (MonoTime.currTime() - t0).total!"hnsecs";
+    }
+
+    private void acquireSceneAssets(ref SceneFile sf, ChunkCoord coord, ref Pod!StreamedAssetRef[] refs,
+            ref uint assetCount) @trusted {
+        foreach (ref link; sf.assetLinks) {
+            auto guid = AssetGuid.fromString(link.guid);
+            string path = (link.path >= 0 && link.path < cast(int) sf.strings.length)
+                ? sf.strings[link.path] : "";
+            if (link.kind == "texture") {
+                refs ~= acquireTexture(guid, path);
+                assetCount++;
+            } else if (link.kind == "cookedMesh") {
+                refs ~= acquireCookedMesh(guid, path);
+                assetCount++;
+            } else if (link.kind == "navmesh") {
+                refs ~= acquireNavTile(guid, path, coord);
+                assetCount++;
+            } else if (link.kind == "splines") {
+                // CPU-side path data (`engine.scene.splines`), not a GPU asset.
+            } else {
+                refs ~= acquireGltf(guid, path);
+                assetCount++;
+            }
+        }
+        foreach (ref e; sf.entities) {
+            if (e.hasVisual && e.visual.hasAsset &&
+                e.visual.asset >= 0 && e.visual.asset < cast(int) sf.strings.length) {
+                auto guid = e.visual.hasAssetGuid
+                    ? AssetGuid.fromString(e.visual.assetGuid)
+                    : AssetGuid.init;
+                refs ~= acquireGltf(guid, sf.strings[e.visual.asset]);
+                assetCount++;
+            }
+        }
     }
 
     private void activateChunkEntities(ref SceneWorld world, uint cellIdx, uint jobIdx) @trusted {
         auto cell = &cells[cellIdx];
+        immutable t0 = MonoTime.currTime();
         immutable entStart = cast(uint) _cellEntities.length;
         uint entCount = 0;
 
         if (jobIdx < _uploadJobs.length) {
-            const job = _uploadJobs[jobIdx];
-            if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
+            auto job = _uploadJobs[jobIdx];
+            if (job.gesc !is null) {
+                try {
+                    SceneLoadOptions opts;
+                    opts.validate = false;
+                    opts.checkAssetFiles = false;
+                    GescApplyResult comps;
+                    auto res = applyChunkNoGc(world, *job.gesc, Vec3(0, 0, 0), opts, comps);
+                    foreach (name; comps.unresolvedTypes)
+                        warn("WorldStreamer: chunk component type not registered: ", name);
+                    foreach (eid; res.spawnedEntities) {
+                        _cellEntities ~= eid;
+                        entCount++;
+                    }
+                    foreach (ref ub; job.gesc.user)
+                        foreach (ref h; _blockHandlers)
+                            if (h.name == ub.name && h.onLoad !is null)
+                                h.onLoad(h.ctx, cell.coord.x, cell.coord.z, ub.data);
+                } catch (Exception ex) {
+                    warn("WorldStreamer: failed to spawn chunk entities: ", ex.msg);
+                }
+            } else if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
                 try {
                     GescChunk local;
                     auto held = cellIdx in _decoded;
@@ -819,16 +872,35 @@ struct WorldStreamer {
         cell.entityCount = entCount;
         cell.state = ChunkState.active;
         _totalLoads++;
+        _mainApplyHns += (MonoTime.currTime() - t0).total!"hnsecs";
     }
 
     private void executeDecodeJobNoGc(ref DecodedChunkJob job) @trusted {
         if (job.cellIndex >= cells.length)
             return;
+        immutable t0 = MonoTime.currTime();
         const cell = cells[job.cellIndex];
         if (!cell.scenePath.isNull) {
             auto path = strings.get(cell.scenePath);
-            if (readFileNoGc(path, job.rawSceneBytes, job.rawSceneLen))
+            if (readFileNoGc(path, job.rawSceneBytes, job.rawSceneLen)) {
                 job.hasSceneData = true;
+                auto bytes = job.rawSceneBytes[0 .. job.rawSceneLen];
+                if (isGesc(bytes)) {
+                    // GESC: validate, inflate and decode here, GC-free; the main thread only instances it.
+                    auto chunk = gescChunkNoGcNew();
+                    string err;
+                    if (chunk !is null && readChunkNoGc(bytes, *chunk, err)) {
+                        job.gesc = chunk;
+                    } else {
+                        gescChunkNoGcFree(chunk);
+                        job.hasSceneData = false;
+                        job.sceneError = chunk is null ? "out of memory".ptr : err.ptr;   // static literals, NUL-terminated
+                    }
+                    free(job.rawSceneBytes);
+                    job.rawSceneBytes = null;
+                    job.rawSceneLen = 0;
+                }
+            }
         }
         if (!cell.navmeshPath.isNull) {
             auto path = strings.get(cell.navmeshPath);
@@ -836,6 +908,7 @@ struct WorldStreamer {
                 job.hasNavData = true;
         }
         job.decoded = true;
+        atomicOp!"+="(_workerDecodeHns, cast(ulong)(MonoTime.currTime() - t0).total!"hnsecs");
     }
 
     private static void workerLoop(WorldStreamer* self) @trusted {
@@ -924,6 +997,10 @@ private bool readDiskFileNoGc(scope const(char)[] path, out ubyte* outPtr, out s
 }
 
 private void freeDecodedBuffers(ref DecodedChunkJob job) nothrow @nogc @trusted {
+    if (job.gesc !is null) {
+        gescChunkNoGcFree(job.gesc);
+        job.gesc = null;
+    }
     if (job.rawSceneBytes !is null) {
         free(job.rawSceneBytes);
         job.rawSceneBytes = null;
@@ -1281,4 +1358,79 @@ version (unittest) {
     // Disk paths still resolve with fallback enabled while the pak lacks them.
     assert(mountAssetPak(buildAssetPak(inputs, 0xC0FFEE), 0xC0FFEE, true));
     assert(runStream(diskManifest, diskWorld) == diskResult, "disk fallback works");
+}
+
+@("streamer.gescDecodeIsGcFreeAndLeakFree") @safe unittest {
+    import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+    import std.format : format;
+    import engine.editor.components : Visual;
+    import engine.scene.chunk_binary : encodeChunk, GescBlockHandler, GescUserBlock;
+    import engine.scene.chunk_binary_nogc : gescNoGcLiveAllocations;
+    import engine.scene.graph : Transform;
+    import engine.scene.scene_file : SceneCellBounds, SceneEntityData;
+
+    immutable tmpDir = "build/test_streamer_gesc_leak";
+    mkdirRecurse(tmpDir);
+    scope (exit) {
+        if (exists(tmpDir)) rmdirRecurse(tmpDir);
+    }
+    immutable baseline = gescNoGcLiveAllocations();
+
+    static void fill(ref WorldStreamer st, string dir) @safe {
+        foreach (cz; 0 .. 3)
+            foreach (cx; 0 .. 3) {
+                SceneFile cf;
+                cf.schemaVersion = 2;
+                foreach (k; 0 .. 5) {
+                    SceneEntityData e;
+                    e.id = cast(uint)(k + 1);
+                    e.transform.pos = [cx * 256.0f + k, 0.0f, cz * 256.0f];
+                    e.hasVisual = true;
+                    e.visual.hasKind = true;
+                    e.visual.kind = "cube";
+                    cf.entities ~= e;
+                }
+                immutable path = format("%s/chunk_%d_%d.gesc", dir, cx, cz);
+                write(path, encodeChunk(cf, [GescUserBlock("u", new ubyte[64])]));
+                st.addCell(ChunkCoord(cx, cz), Aabb(Vec3(cx * 256.0f, -10, cz * 256.0f),
+                        Vec3((cx + 1) * 256.0f, 200, (cz + 1) * 256.0f)), path);
+            }
+    }
+    // a corrupt chunk fails cleanly (no entities, no leak)
+    write(tmpDir ~ "/bad.gesc", cast(const(ubyte)[]) [0x47, 0x45, 0x53, 0x43, 2, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+
+    SceneWorld world;
+    world.ensureRegistered!Transform();
+    world.ensureRegistered!Visual();
+    {
+        WorldStreamer streamer;
+        streamer.loadRadius = 300.0f;
+        streamer.unloadRadius = 420.0f;
+        fill(streamer, tmpDir);
+        streamer.addCell(ChunkCoord(5, 5), Aabb(Vec3(0, 0, 0), Vec3(256, 10, 256)), tmpDir ~ "/bad.gesc");
+
+        // Budget 0 advances one step per update, so decoded chunks sit in the upload queue holding their blocks.
+        streamer.update(world, Vec3(128, 0, 128), 0.0f);
+        assert(gescNoGcLiveAllocations() > baseline, "worker-side decode holds malloc blocks until applied");
+        // Cancel them all by moving away before they spawn: nothing may leak.
+        foreach (_; 0 .. 12)
+            streamer.update(world, Vec3(-9000, 0, -9000), 50.0f);
+        assert(gescNoGcLiveAllocations() == baseline, "cancelled loads released their decoded chunks");
+
+        // Full load, then unload.
+        foreach (_; 0 .. 30)
+            streamer.update(world, Vec3(128, 0, 128), 50.0f);
+        immutable st = streamer.stats();
+        assert(st.activeCount >= 1 && world.entityCount() > 0);
+        assert(st.workerDecodeUsecs > 0 && st.mainApplyUsecs > 0);
+        assert(gescNoGcLiveAllocations() == baseline, "applied chunks released their blocks");
+        foreach (_; 0 .. 10)
+            streamer.update(world, Vec3(-9000, 0, -9000), 50.0f);
+        assert(world.entityCount() == 0 && gescNoGcLiveAllocations() == baseline);
+
+        // Destroy the streamer with decoded chunks still queued.
+        streamer.update(world, Vec3(128, 0, 128), 0.0f);
+        assert(gescNoGcLiveAllocations() > baseline);
+    }
+    assert(gescNoGcLiveAllocations() == baseline, "destroying the streamer released queued chunks");
 }
