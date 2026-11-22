@@ -36,6 +36,7 @@ import engine.scene.light :
     GpuSpotLight, LightSet, MAX_POINT_SHADOW_CASTERS, MAX_SPOT_SHADOW_CASTERS,
     SPOT_SHADOW_RESOLUTION;
 import engine.scene.scene3d_textured : Scene3DTextured;
+import engine.water.gpu_data : GpuWaterData, packWaterBody, WaterSurfaceGpuParams;
 import engine.water.waves : sampleWaves, WaveSet;
 
 @safe:
@@ -115,14 +116,12 @@ private struct WaterUniforms {
     float[4] camUp;            // xyz = up,      w = waterHalf
     float[4] params0;          // x = time, y = waveScale, z = gridSpan, w = seaFloorY
     uint[4]  flags0;           // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
-    uint[4]  counts;           // x = obstacleCount, y = waveCount, z = 0, w = 0
-    float[4][6]  wavesA;       // dirX, dirZ, wavelength, amplitude
-    float[4][6]  wavesB;       // steepness, speedScale, 0, 0
+    uint[4]  counts;           // x = obstacleCount, y = water body index, z = refraction, w = SSR
     float[4][16] obstacles;    // x, z, radius, strength
 }
 
 mixin ValidateUniformLayout!WaterUniforms;
-static assert(WaterUniforms.sizeof == 544);
+static assert(WaterUniforms.sizeof == 352);
 
 /// Lightweight static vertex+index GPU mesh for stride-32 `TexVert` buffers.
 private struct StaticMesh32 {
@@ -726,14 +725,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         lowSun ? 1u : 0u,
     ];
 
-    // The legacy water UBO holds 6 components; WP-2 replaces it with the
-    // shared engine wave buffer.
-    immutable uint waveCount = waveSet.count < 6 ? waveSet.count : 6;
-    foreach (i, ref w; waveSet.active[0 .. waveCount]) {
-        wu.wavesA[i] = [w.dirX, w.dirZ, w.wavelength, w.amplitude];
-        wu.wavesB[i] = [w.steepness, w.speedScale, 0.0f, 0.0f];
-    }
-
+    // Waves come from the shared engine buffer (body 0, `scene.setWaterData`).
     uint obsCount = 0;
     if (riverMode) {
         // Wooden bridge piers breaking stream flow & forming downstream wakes.
@@ -746,7 +738,7 @@ private WaterUniforms packWaterUniforms(ref const Camera camera,
         immutable r = 0.34f * (rk.scale.x + rk.scale.z) * 0.5f;
         wu.obstacles[obsCount++] = [rk.pos.x, rk.pos.z, r, 1.0f];
     }
-    wu.counts = [obsCount, waveCount, enableRefraction ? 1u : 0u, enableSsr ? 1u : 0u];
+    wu.counts = [obsCount, 0u, enableRefraction ? 1u : 0u, enableSsr ? 1u : 0u];
     return wu;
 }
 
@@ -1365,7 +1357,7 @@ void main(string[] args) {
         time += dt;
         if (app.input.keyPressed(Key.escape)) break;
 
-        bool paramsDirty = false;
+        bool paramsDirty = frameNum == 1;
         if (app.input.keyPressed(Key.digit1)) { riverMode = false; paramsDirty = true; }
         if (app.input.keyPressed(Key.digit2)) { riverMode = true;  paramsDirty = true; }
         if (app.input.keyPressed(Key.digit3)) { lowSun = !lowSun; }
@@ -1396,19 +1388,27 @@ void main(string[] args) {
         }
         immutable bool propWaterFx = !noWater && renderStage >= 3;
 
-        if (paramsDirty || propWaterFx) {
-            immutable uint waterFlagBits = propWaterFx
-                ? (MaterialFlags.waterWetCaustics | (riverMode ? MaterialFlags.waterRiverMode : 0u))
-                : 0u;
-            immutable float memFrac = wetMemoryScale * 0.25f;
-            immutable float clampedMem = memFrac < 0.001f ? 0.001f : (memFrac > 0.999f ? 0.999f : memFrac);
-            immutable float packedPad1 = floor(waveScale * 1000.0f + 0.5f) + clampedMem;
+        // Shared water data (frame binding 10): waves, level and wet-mark
+        // memory for the water surface and the PBR wetline.
+        scene.setTime(time);
+        {
+            WaterSurfaceGpuParams surf;
+            // Bounds cover every prop the water can touch (river banks span ±16 m).
+            surf.bounds = riverMode
+                ? [-16.0f, -16.0f, 16.0f, 16.0f]
+                : [-160.0f, -160.0f, 160.0f, 160.0f];
+            surf.recentPeakScale = wetMemoryScale;
+            surf.contactChop = riverMode ? 1.38f : 1.2f;
+            surf.wetline = propWaterFx;
+            GpuWaterData wd;
+            if (!noWater) wd.add(packWaterBody(waveSet, surf));
+            scene.setWaterData(wd);
+        }
+
+        if (paramsDirty) {
+            immutable uint waterFlagBits = propWaterFx ? MaterialFlags.waterWetCaustics : 0u;
             void applyWaterFx(ref MaterialParams p) {
                 p.flags |= waterFlagBits;
-                if (propWaterFx) {
-                    p._pad0 = time;
-                    p._pad1 = packedPad1;
-                }
             }
             auto dryP  = buildDryRockParams();
             auto wetP  = buildWetRockParams(useOpenPbr);

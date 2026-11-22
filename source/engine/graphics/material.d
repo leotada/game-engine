@@ -19,8 +19,11 @@ enum MaterialFlags : uint {
     normal             = 1 << 1,
     occlusion          = 1 << 2,
     emissive           = 1 << 3,
+    /// Wave-contact wet marks inside water bodies whose wetline is enabled
+    /// (`engine.water`, shared wave data at frame binding 10). Rocks, piers
+    /// and banks that waves wash over should set it. Bit 5 is reserved
+    /// (formerly `waterRiverMode`; the wave set now comes from the body).
     waterWetCaustics   = 1 << 4,
-    waterRiverMode     = 1 << 5,
     /// Skip all lighting: output = base color × tint + emission.
     unlit              = 1 << 6,
 }

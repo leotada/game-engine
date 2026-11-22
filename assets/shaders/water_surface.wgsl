@@ -9,6 +9,7 @@
 #include "common/pbr_brdf.wgsl"
 #include "common/shadows.wgsl"
 #include "common/atmosphere.wgsl"
+#include "common/waves.wgsl"
 #include "common/water_env.wgsl"
 
 @group(1) @binding(0) var<uniform> wu: WaterUniforms;
@@ -40,9 +41,10 @@ struct VertexOutput {
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
     let time = wu.params0.x;
-    let waveScale = wu.params0.y;
+    let bi = wu.counts.y;
+    let waveScale = waterData.bodies[bi].surface.y;
     let riverMode = wu.flags0.x;
-    let waveCount = min(wu.counts.y, 6u);
+    let waveCount = waterWaveCount(bi);
 
     let x0 = v.position.x;
     let z0 = v.position.z;
@@ -66,14 +68,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         distAtten = 1.0 - smoothstep(45.0, 145.0, length(vec2<f32>(x, z))) * 0.78;
     }
 
-    var bankMask = 1.0;
-    if (riverMode != 0u) {
-        let az = abs(z);
-        if (az > 4.5) {
-            let t = clamp((az - 4.5) / 3.5, 0.0, 1.0);
-            bankMask = 1.0 - t * 0.85;
-        }
-    }
+    let bankMask = waterChannelScale(bi, vec2<f32>(x, z));
 
     // Slight turbulent chop boost near mid-channel emergent boulders in river mode.
     var rockChop = 1.0;
@@ -85,11 +80,8 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         rockChop += boost * select(0.20, 0.38, riverMode != 0u);
     }
 
-    let waveSet = 0.68
-                + 0.26 * sin(time * 0.62 - x * 0.13 + z * 0.16)
-                + 0.18 * cos(time * 0.41 + x * 0.19 + z * 0.11);
-    let phaseWarp = 0.85 * sin(x * 0.21 - z * 0.17 + time * 0.29)
-                  + 0.55 * cos(x * 0.14 + z * 0.25 - time * 0.22);
+    let waveSet = waterEnvelope(bi, vec2<f32>(x, z), time);
+    let phaseWarp = waterPhaseWarp(bi, vec2<f32>(x, z), time);
 
     var p = vec3<f32>(x, 0.0, z);
     var dPdx = vec3<f32>(1.0, 0.0, 0.0);
@@ -98,8 +90,9 @@ fn vs_main(v: VertexInput) -> VertexOutput {
     var crestWeight = 0.0;
 
     for (var i = 0u; i < waveCount; i++) {
-        let wa = wu.wavesA[i];
-        let wb = wu.wavesB[i];
+        let wave = waterData.bodies[bi].waves[i];
+        let wa = wave.a;
+        let wb = wave.b;
         let dirX = wa.x;
         let dirZ = wa.y;
         let k = (2.0 * PI) / max(wa.z, 0.1);

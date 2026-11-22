@@ -38,6 +38,8 @@ import engine.scene.light :
     MAX_POINT_LIGHTS, MAX_POINT_SHADOW_CASTERS,
     MAX_SPOT_LIGHTS, MAX_SPOT_SHADOW_CASTERS,
     POINT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION;
+import engine.gpu.pipeline : FRAME_BINDING_COUNT;
+import engine.water.gpu_data : GpuWaterData, WATER_DATA_SIZE;
 
 @safe:
 
@@ -234,6 +236,8 @@ struct Scene3DTextured {
     private Pipeline3D pipeline;
     private WGPUBuffer frameUniformBuf;
     private WGPUBuffer pointLightsBuf;
+    /// Shared water data (frame binding 10, `common/waves.wgsl`).
+    private WGPUBuffer waterDataBuf;
     private WGPUBindGroup frameBindGroup;
     private WGPUBindGroup iblBindGroup;
     private IblEnvironment ownedIbl;
@@ -366,6 +370,8 @@ struct Scene3DTextured {
     private uint opaqueHookCount = 0;
     private OpaqueDrawHook[MAX_SHADOW_HOOKS] postOpaqueHooks;
     private uint postOpaqueHookCount = 0;
+    private OpaqueDrawHook[MAX_SHADOW_HOOKS] transparentHooks;
+    private uint transparentHookCount = 0;
 
     @disable this(this);
 
@@ -380,6 +386,9 @@ struct Scene3DTextured {
         s.frameUniformBuf = createUniformBuffer(device, FRAME_UNIFORMS_SIZE);
         s.pointLightsBuf = createStorageBuffer(device, MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof);
         updateBuffer(s.queue, s.pointLightsBuf, s.pointLightsData[]);
+        s.waterDataBuf = createStorageBuffer(device, WATER_DATA_SIZE);
+        GpuWaterData noWater;
+        updateBuffer(s.queue, s.waterDataBuf, &noWater, WATER_DATA_SIZE);
 
         s.frameData = FrameUniforms.init;
         s.frameData.viewProj = Mat4.identity().m;
@@ -491,6 +500,15 @@ struct Scene3DTextured {
 
     /// Seconds exposed to shaders as `frame.time`; call before `begin`.
     void setTime(float seconds) nothrow @nogc { frameData.time = seconds; }
+
+    /// Upload the shared water data (frame binding 10): water bodies with
+    /// their levels, bounds and wave sets, read by the water surface, the
+    /// PBR wetline and caustics. `engine.water.WaterRenderer` calls this;
+    /// scenes without water keep the default (no bodies). Wave animation
+    /// uses the frame time (`setTime`).
+    void setWaterData(ref const GpuWaterData data) nothrow @nogc @trusted {
+        updateBuffer(queue, waterDataBuf, &data, WATER_DATA_SIZE);
+    }
 
     /// Global multiplier for IBL diffuse/specular/coat/fuzz ambient lighting.
     void setIblIntensity(float intensity) nothrow @nogc {
@@ -681,7 +699,23 @@ struct Scene3DTextured {
     }
 
     /// Remove every registered opaque draw hook.
-    void clearOpaqueHooks() nothrow @nogc { opaqueHookCount = 0; postOpaqueHookCount = 0; }
+    void clearOpaqueHooks() nothrow @nogc {
+        opaqueHookCount = 0;
+        postOpaqueHookCount = 0;
+        transparentHookCount = 0;
+    }
+
+    /// Register a renderer drawn after the sky and before the alpha-blended
+    /// batches — refractive surfaces such as water that need the sky in the
+    /// opaque snapshot (`Renderer.snapshotOpaque`) and must still sort under
+    /// particles and other transparent batches.
+    void addTransparentHook(OpaqueDrawHook hook) nothrow @nogc {
+        if (transparentHookCount >= MAX_SHADOW_HOOKS) {
+            warn("Scene3DTextured: transparent hook table full");
+            return;
+        }
+        transparentHooks[transparentHookCount++] = hook;
+    }
 
     /// Register a renderer drawn after every opaque hook and before the sky
     /// and transparent batches — screen-space decals that read the opaque
@@ -1349,7 +1383,8 @@ struct Scene3DTextured {
                 foreach (hook; opaqueHooks[0 .. opaqueHookCount]) hook(frame);
                 foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) hook(frame);
                 if (skyEnabled) sky.draw(frame, frameBindGroup);
-                if (skyEnabled || opaqueHookCount > 0 || postOpaqueHookCount > 0) {
+                foreach (hook; transparentHooks[0 .. transparentHookCount]) hook(frame);
+                if (skyEnabled || opaqueHookCount > 0 || postOpaqueHookCount > 0 || transparentHookCount > 0) {
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }
@@ -1510,6 +1545,8 @@ struct Scene3DTextured {
         destroyBuffer(frameUniformBuf);
         destroyBuffer(pointLightsBuf);
         pointLightsBuf = null;
+        destroyBuffer(waterDataBuf);
+        waterDataBuf = null;
         if (ownsIbl) ownedIbl.destroy();
         if (defaultShadowSampler !is null) {
             wgpuSamplerRelease(defaultShadowSampler);
@@ -1654,7 +1691,7 @@ struct Scene3DTextured {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
         }
-        WGPUBindGroupEntry[10] entries;
+        WGPUBindGroupEntry[FRAME_BINDING_COUNT] entries;
         entries[0].binding = 0;
         entries[0].buffer = frameUniformBuf;
         entries[0].offset = 0;
@@ -1679,10 +1716,14 @@ struct Scene3DTextured {
         entries[9].buffer = pointLightsBuf;
         entries[9].offset = 0;
         entries[9].size = MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof;
+        entries[10].binding = 10;
+        entries[10].buffer = waterDataBuf;
+        entries[10].offset = 0;
+        entries[10].size = WATER_DATA_SIZE;
 
         WGPUBindGroupDescriptor desc;
         desc.layout = pipeline.frameBindGroupLayout;
-        desc.entryCount = 10;
+        desc.entryCount = FRAME_BINDING_COUNT;
         desc.entries = entries.ptr;
         frameBindGroup = wgpuDeviceCreateBindGroup(device, &desc);
         if (frameBindGroup is null) fatal("Failed to create frame bind group");

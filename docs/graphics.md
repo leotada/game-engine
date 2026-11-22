@@ -166,7 +166,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), or tangent-extended vertex layout (`MESH_TANGENT`, stride=48, `vec4f tangent`) for anisotropic GGX and tangent-space normal mapping
 - **Vertex buffer 1** — instances: 4×`float32x4` model + tint `float32x4` (stride=80)
 - **Bind groups:**
-  - `@group(0) Frame` — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos), comparison sampler, directional/point/spot shadow maps
+  - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 11 entries, one layout shared by every scene-space pipeline) — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater))
   - `@group(1) Material` — 144-byte `MaterialParams` UBO (`9 × vec4f`: Base, Specular/Anisotropy/IOR, Coat, Fuzz, Thin-Film, Emission, Geometry Opacity), filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
   - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
 - **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Layered single-pass slabs:
@@ -485,7 +485,9 @@ The scene renders in this order:
 2. opaque batches, static buffers and opaque hooks (terrain);
 3. post-opaque hooks (decals);
 4. sky;
-5. alpha-blended batches, then additive batches.
+5. transparent hooks (`addTransparentHook`: refractive surfaces such as water,
+   which need the sky in their opaque snapshot);
+6. alpha-blended batches, then additive batches.
 
 ## Water (`engine.water`)
 
@@ -493,17 +495,21 @@ Water is being moved from the water demo into the engine
 ([plan-water-engine-port.md](plan-water-engine-port.md)). Usage and the
 current API are in [water-guide.md](water-guide.md).
 
-- **Available now:** the Gerstner wave model `engine.water.waves` (`WaveSet`,
-  `sampleWaves`, `waveHeightAt`). It runs on the CPU only.
+- **Wave model:** `engine.water.waves` (`WaveSet`, `sampleWaves`,
+  `waveHeightAt`) on the CPU.
+- **Shared water data (frame binding 10):** `GpuWaterData` holds up to
+  `MAX_WATER_BODIES` (4) bodies. Each body has XZ bounds, a water level and
+  its own wave set. `Scene3DTextured.setWaterData` uploads it; scenes without
+  water keep zero bodies. `common/waves.wgsl` declares the binding and the
+  shader-side wave functions (`waterBodyAt`, `waterWaveY`, `waterSurfaceY`,
+  `waterEnvelope`, `waterPhaseWarp`, `waterChannelScale`), which match the D
+  evaluators. Wave animation uses the frame time (`Scene3DTextured.setTime`).
+- **PBR wetline:** materials with `MaterialFlags.waterWetCaustics` get
+  wave-contact wet marks only inside a body whose wetline is enabled. Waves,
+  time, contact chop and the recent peak scale come from the shared data.
+  Outside every body the material is shaded normally.
 - **Still demo-only:** the surface pipeline, the compute wave/foam simulation
   and the caustics bed (`source/demo/water.d`).
-- **Already in the engine:** the water shaders, `Renderer.snapshotOpaque`
-  (opaque color and depth copy used for refraction and SSR) and the
-  `MaterialFlags.waterWetCaustics` / `waterRiverMode` wetline flags.
-- **Known duplication:** until WP-2, the wave tables are still repeated in
-  `water_surface.wgsl` (uploaded by the demo) and in `evalExactWaveY` in
-  `textured3d_pbr.wgsl`. WP-2 replaces both with one shared GPU buffer filled
-  from the `WaveSet`.
 
 ## SceneGraph
 

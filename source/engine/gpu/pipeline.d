@@ -5,6 +5,7 @@ import bindings.wgpu;
 import engine.gpu.shader;
 import engine.gpu.shaders;
 import engine.core.log;
+import engine.water.gpu_data : WATER_DATA_SIZE;
 
 @safe:
 
@@ -377,6 +378,9 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
 /// + cascades(352) + camera(96) + atmosphere/sky(112).
 /// Point lights live in a separate storage buffer at @binding(9).
 enum FRAME_UNIFORMS_SIZE = 1280;
+/// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
+/// 7 shadow maps, point lights (9) and the shared water data (10).
+enum uint FRAME_BINDING_COUNT = 11;
 /// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
 enum MATERIAL_PARAMS_SIZE = 144;
 /// Per-instance data of the textured PBR pipeline (buffer 1, stride 96):
@@ -425,8 +429,9 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D shader module");
     }
 
-    // --- Group 0: Frame UBO + comparison sampler + dir/point/spot shadows + point light storage ---
-    WGPUBindGroupLayoutEntry[10] frameEntries;
+    // --- Group 0: Frame UBO + comparison sampler + dir/point/spot shadows + point light storage
+    //     + shared water data (binding 10, `common/waves.wgsl`) ---
+    WGPUBindGroupLayoutEntry[FRAME_BINDING_COUNT] frameEntries;
     frameEntries[0].binding = 0;
     frameEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
     frameEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -461,8 +466,13 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[9].buffer.type = WGPUBufferBindingType.readOnlyStorage;
     frameEntries[9].buffer.minBindingSize = 48; // sizeof(PointLight)
 
+    frameEntries[10].binding = 10;
+    frameEntries[10].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
+    frameEntries[10].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    frameEntries[10].buffer.minBindingSize = WATER_DATA_SIZE;
+
     WGPUBindGroupLayoutDescriptor frameBglDesc;
-    frameBglDesc.entryCount = 10;
+    frameBglDesc.entryCount = FRAME_BINDING_COUNT;
     frameBglDesc.entries = frameEntries.ptr;
     result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 

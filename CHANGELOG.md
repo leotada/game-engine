@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Shared GPU water data (WP-2 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
+  - Frame bind group gains `@binding(10)`: `GpuWaterData` (`engine.water.gpu_data`), up to 4 water bodies with XZ bounds, level and their own `WaveSet`; `Scene3DTextured.setWaterData`; WGSL side in `assets/shaders/common/waves.wgsl` (`waterBodyAt`, `waterWaveY`, `waterSurfaceY`, …). `FRAME_BINDING_COUNT` = 11.
+  - The PBR wetline and the water surface read waves, time (`frame.time`), contact chop and recent peak scale from it, so the wave tables are no longer duplicated in `textured3d_pbr.wgsl` and the water UBO.
+  - `Scene3DTextured.addTransparentHook`: draw stage after the sky and before alpha batches (for refractive water).
+  - **Breaking:** `MaterialFlags.waterRiverMode` removed (bit 5 reserved); river vs ocean waves come from the body's `WaveSet`. `waterWetCaustics` no longer reads `MaterialParams._pad0/_pad1`.
+
 - **Water wave model (`engine.water.waves`, WP-1 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
   - `WaveSet` (POD, up to 8 Gerstner `WaveComponent`s) with `WaveModulation` (wave-group envelope + phase warp), `WaveChannel` (river bank taper) and `amplitudeScale`; presets `WaveSet.ocean()` / `WaveSet.river()`.
   - `sampleWaves` (displaced point, normal, tangent, crest factor with Jacobian folding) and `waveHeightAt` (world-XZ height via fixed-point pullback; 1 iteration matches the PBR wetline).

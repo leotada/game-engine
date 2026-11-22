@@ -1,5 +1,6 @@
 #include "common/shadows.wgsl"
 #include "common/atmosphere.wgsl"
+#include "common/waves.wgsl"
 
 struct MaterialParams {
     baseColor: vec3<f32>,
@@ -55,7 +56,6 @@ const FLAG_NORMAL: u32 = 2u;
 const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
 const FLAG_WATER_WETLINE: u32 = 16u;
-const FLAG_WATER_RIVER: u32 = 32u;
 const FLAG_UNLIT: u32 = 64u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
@@ -125,90 +125,28 @@ struct SurfaceOut {
 //@@SURFACE_CODE@@
 #endif
 
-fn evalRiverBankMask(worldPos: vec3<f32>, isRiver: bool) -> f32 {
-    if (!isRiver) {
-        return 1.0;
-    }
-    let az = abs(worldPos.z);
-    if (az <= 4.5) {
-        return 1.0;
-    }
-    let t = clamp((az - 4.5) / 3.5, 0.0, 1.0);
-    return 1.0 - t * 0.85;
-}
-
-/// Evaluates exact 6-octave Gerstner vertical elevation (with horizontal pullback and near-rock
-/// chop) matching OCEAN_WAVES / RIVER_WAVES in water_surface.wgsl.
-fn evalExactWaveY(worldPos: vec3<f32>, time: f32, waveScale: f32, isRiver: bool) -> f32 {
-    let bankMask = evalRiverBankMask(worldPos, isRiver);
-
-    var dirs: array<vec2<f32>, 6>;
-    var lens: array<f32, 6>;
-    var amps: array<f32, 6>;
-    var stps: array<f32, 6>;
-    var spds: array<f32, 6>;
-
-    if (isRiver) {
-        dirs = array<vec2<f32>, 6>(
-            vec2<f32>(0.96, 0.28), vec2<f32>(0.92, -0.39), vec2<f32>(0.78, 0.62),
-            vec2<f32>(0.85, -0.52), vec2<f32>(0.99, 0.14), vec2<f32>(0.72, -0.69)
-        );
-        lens = array<f32, 6>(4.4, 3.1, 2.1, 1.45, 0.95, 0.68);
-        amps = array<f32, 6>(0.075, 0.055, 0.038, 0.024, 0.014, 0.009);
-        stps = array<f32, 6>(0.40, 0.42, 0.44, 0.38, 0.34, 0.28);
-        spds = array<f32, 6>(1.65, 1.80, 1.95, 2.15, 2.30, 2.45);
-    } else {
-        dirs = array<vec2<f32>, 6>(
-            vec2<f32>(0.86, 0.51), vec2<f32>(0.42, -0.91), vec2<f32>(-0.68, 0.73),
-            vec2<f32>(0.96, -0.28), vec2<f32>(-0.22, -0.97), vec2<f32>(0.61, 0.79)
-        );
-        lens = array<f32, 6>(9.5, 6.2, 4.1, 2.7, 1.8, 1.15);
-        amps = array<f32, 6>(0.24, 0.14, 0.08, 0.045, 0.025, 0.015);
-        stps = array<f32, 6>(0.52, 0.48, 0.44, 0.40, 0.35, 0.30);
-        spds = array<f32, 6>(1.00, 1.15, 1.25, 1.35, 1.50, 1.65);
-    }
-
-    let rockChop = select(1.20, 1.38, isRiver);
-    let waveSet = 0.68
-                + 0.26 * sin(time * 0.62 - worldPos.x * 0.13 + worldPos.z * 0.16)
-                + 0.18 * cos(time * 0.41 + worldPos.x * 0.19 + worldPos.z * 0.11);
-    let phaseWarp = 0.85 * sin(worldPos.x * 0.21 - worldPos.z * 0.17 + time * 0.29)
-                  + 0.55 * cos(worldPos.x * 0.14 + worldPos.z * 0.25 - time * 0.22);
-    let scale = waveScale * bankMask * rockChop * waveSet;
-
-    var dispXZ = vec2<f32>(0.0);
-    for (var i = 0u; i < 6u; i++) {
-        let k = 6.2831853 / lens[i];
-        let c = sqrt(9.81 / k) * spds[i];
-        let a = amps[i] * scale;
-        let phase = k * dot(dirs[i], worldPos.xz) - k * c * time + phaseWarp * min(k * 0.45, 1.0);
-        dispXZ += (stps[i] * a) * dirs[i] * cos(phase);
-    }
-
-    let xz = worldPos.xz - dispXZ;
-    var y = 0.0;
-    for (var i = 0u; i < 6u; i++) {
-        let k = 6.2831853 / lens[i];
-        let c = sqrt(9.81 / k) * spds[i];
-        let a = amps[i] * scale;
-        y += a * sin(k * dot(dirs[i], xz) - k * c * time + phaseWarp * min(k * 0.45, 1.0));
-    }
-
-    return y;
+/// Wave height above body `bi`'s level at `worldPos` (one horizontal pullback)
+/// with the contact chop applied: water runs up a little higher where it
+/// hits props than on the open surface.
+fn evalContactWaveY(bi: u32, worldPos: vec3<f32>, time: f32, waveScale: f32) -> f32 {
+    let chop = waterData.bodies[bi].surface.w;
+    return waterWaveY(bi, worldPos.xz, time, waveScale * chop);
 }
 
 /// Evaluates water wetness [filmWet, poreWet] using fixed world-time snapshots (d(tau)/dt = 0):
 /// - When a wave crest touches the rock, its imprint is locked at fixed world timestamp `tau`.
 /// - As the wave recedes, the wet mark stays stationary at the peak height where water touched
 ///   (neither dropping with the trough nor sliding sideways) and dries in place over 4.8 seconds.
-fn evalRecentWaterWetness(worldPos: vec3<f32>, time: f32, curScale: f32, recentPeakScale: f32,
-                          isRiver: bool, wetNoise: f32) -> vec2<f32> {
-    let yNow = evalExactWaveY(worldPos, time, curScale, isRiver);
+/// `worldPos.y` is relative to the body's water level.
+fn evalRecentWaterWetness(bi: u32, worldPos: vec3<f32>, time: f32, curScale: f32, recentPeakScale: f32,
+                          wetNoise: f32) -> vec2<f32> {
+    let yNow = evalContactWaveY(bi, worldPos, time, curScale);
     let nowMask = 1.0 - smoothstep(yNow - 0.015, yNow + 0.012 + wetNoise * 0.5, worldPos.y);
     var filmWet = nowMask;
     var poreWet = nowMask;
 
-    let maxReachY = select(0.75, 0.38, isRiver) * max(curScale, recentPeakScale);
+    // Highest possible wave + the smoothstep band (0.015) + wet noise.
+    let maxReachY = waterData.bodies[bi].misc.x * max(curScale, recentPeakScale) + 0.03;
     if (worldPos.y > yNow - 0.005 && worldPos.y < maxReachY) {
         let dtStep = 0.20;
         let baseStep = floor(time / dtStep);
@@ -216,7 +154,7 @@ fn evalRecentWaterWetness(worldPos: vec3<f32>, time: f32, curScale: f32, recentP
             let tau = (baseStep - f32(s)) * dtStep;
             let age = max(time - tau, 0.0);
             let pastScale = mix(curScale, recentPeakScale, clamp(age / 1.5, 0.0, 1.0));
-            let yPast = evalExactWaveY(worldPos, tau, pastScale, isRiver);
+            let yPast = evalContactWaveY(bi, worldPos, tau, pastScale);
             let hitMask = 1.0 - smoothstep(yPast - 0.015, yPast + 0.015 + wetNoise, worldPos.y);
 
             let fd = clamp(1.0 - age / 3.4, 0.0, 1.0);
@@ -397,12 +335,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let NdotV = max(dot(N, V), 0.001);
 
-    let enableWaterFx = (mat.flags & FLAG_WATER_WETLINE) != 0u;
-    let waterIsRiver = (mat.flags & FLAG_WATER_RIVER) != 0u;
-    let waterTime = mat._pad0;
-    let packedScale = mat._pad1;
-    let waterScale = select(max(packedScale, 0.01), max(floor(packedScale) * 0.001, 0.01), packedScale >= 10.0);
-    let recentPeakScale = select(waterScale, max(fract(packedScale) * 4.0, waterScale), packedScale >= 10.0);
+    // Wave-contact wet marks: only for `waterWetCaustics` materials inside a
+    // water body whose wetline is enabled (shared data, `common/waves.wgsl`).
+    var waterBody = -1;
+    if ((mat.flags & FLAG_WATER_WETLINE) != 0u) {
+        waterBody = waterBodyAt(in.worldPos.xz);
+        if (waterBody >= 0 && (waterFlags(u32(waterBody)) & WATER_FLAG_WETLINE) == 0u) {
+            waterBody = -1;
+        }
+    }
+    let enableWaterFx = waterBody >= 0;
     var coatW = mat.coatWeight;
     var coatR = mat.coatRoughness;
     var coatIor = mat.coatIor;
@@ -412,7 +354,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (enableWaterFx) {
         let wetNoise = (fract(sin(dot(in.worldPos.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
-        let wetState = evalRecentWaterWetness(in.worldPos, waterTime, waterScale, recentPeakScale, waterIsRiver, wetNoise);
+        let bi = u32(waterBody);
+        let ws = waterData.bodies[bi].surface;
+        let localPos = vec3<f32>(in.worldPos.x, in.worldPos.y - ws.x, in.worldPos.z);
+        let wetState = evalRecentWaterWetness(bi, localPos, frame.time, max(ws.y, 0.01), max(ws.z, ws.y), wetNoise);
         let filmWet = wetState.x;
         let poreWet = wetState.y;
         let anyWet = max(filmWet, poreWet);

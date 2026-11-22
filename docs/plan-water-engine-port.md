@@ -87,7 +87,17 @@ pixel-identical to the WP-0 reference (0 differing pixels, ocean and river).
 - `sampleWaves(ref const WaveSet, float x, float z, float time) -> WaveSample` (`pure nothrow @nogc`).
 - Unit tests: flat set returns y=0 / normal +Y, presets match the demo's current output at fixed points.
 
-### WP-2 — Shared wave buffer (single source of truth)
+### WP-2 — Shared wave buffer (single source of truth) ✅ (2026-11-22)
+
+Done. Deviations: the buffer holds up to 4 **bodies** (bounds + level + own
+`WaveSet` + wetline/caustics settings) instead of one global wave set, so
+several water bodies can coexist; `GpuWaterData` lives in
+`engine.water.gpu_data` and WGSL in `common/waves.wgsl` (shadows.wgsl is
+unchanged). The PBR rock-chop constant became the per-body `contactChop`, and
+the wetline early-out height is computed from the wave amplitudes instead of
+the 0.75 / 0.38 constants. Added `Scene3DTextured.addTransparentHook` (needed
+by WP-3). Demo captures match the WP-0 reference (< 0.1 differing pixel).
+
 - `GpuWaveData` (std430) uploaded by the engine; frame bind group binding 10 (`storage, read`) in `pipeline.d`, `scene3d_textured.d` and `common/shadows.wgsl` (or a new `common/waves.wgsl`).
 - `Scene3DTextured.setWaves(ref const WaveSet, float level)`.
 - `textured3d_pbr.wgsl` (`evalExactWaveY`, `evalRecentWaterWetness`) and `water_surface.wgsl` read the buffer; hard-coded tables removed.

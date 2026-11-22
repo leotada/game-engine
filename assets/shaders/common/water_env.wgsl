@@ -7,9 +7,7 @@ struct WaterUniforms {
     camUp: vec4<f32>,         // xyz = up,      w = waterHalf
     params0: vec4<f32>,       // x = time, y = waveScale, z = nearPlane, w = farPlane
     flags0: vec4<u32>,        // x = riverMode, y = useOpenPbr, z = transparent, w = lowSun
-    counts: vec4<u32>,        // x = obstacleCount, y = waveCount (6), z = enableRefraction, w = enableSsr
-    wavesA: array<vec4<f32>, 6>,     // dirX, dirZ, wavelength, amplitude
-    wavesB: array<vec4<f32>, 6>,     // steepness, speedScale, 0, 0
+    counts: vec4<u32>,        // x = obstacleCount, y = water body index (common/waves.wgsl), z = enableRefraction, w = enableSsr
     obstacles: array<vec4<f32>, 16>, // x, z, radius, strength
 };
 
