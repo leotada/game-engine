@@ -270,7 +270,14 @@ MaterialParams materialOverrideToParams(ref const MaterialOverride m) nothrow @n
     p.fuzzRoughness = m.fuzzRoughness;
     p.thinFilmWeight = m.thinFilmWeight;
     p.thinFilmThickness = m.thinFilmThickness;
+    p.thinFilmThicknessMin = m.thinFilmThicknessMin;
     p.thinFilmIor = m.thinFilmIor;
+    p.anisotropyRotation = m.anisotropyRotation;
+    p.transmissionColor = m.transmissionColor;
+    p.transmissionWeight = m.transmissionWeight;
+    p.transmissionDepth = m.transmissionDepth;
+    p.transmissionDispersion = m.transmissionDispersion;
+    p.transmissionThickness = m.transmissionThickness;
     p.emissionColor = m.emissionColor;
     p.emissionLuminance = m.emissionLuminance;
     p.geometryOpacity = m.geometryOpacity;
@@ -296,8 +303,22 @@ private bool syncNameBuffer(W)(ref W world, EntityId id, ref InspectorState stat
     MaterialOverride m;
     m.specularRoughness = 0.3f;
     m.coatWeight = 0.8f;
+    m.anisotropyRotation = 0.5f;
+    m.thinFilmThicknessMin = 150.0f;
+    m.transmissionWeight = 0.9f;
+    m.transmissionColor = [0.2f, 0.8f, 0.7f];
+    m.transmissionDepth = 1.5f;
+    m.transmissionDispersion = 0.4f;
+    m.transmissionThickness = 0.75f;
     m.active = 1;
     auto p = materialOverrideToParams(m);
     assert(p.specularRoughness == 0.3f);
     assert(p.coatWeight == 0.8f);
+    assert(p.anisotropyRotation == 0.5f);
+    assert(p.thinFilmThicknessMin == 150.0f);
+    assert(p.transmissionWeight == 0.9f);
+    assert(p.transmissionColor[1] == 0.8f);
+    assert(p.transmissionDepth == 1.5f);
+    assert(p.transmissionDispersion == 0.4f);
+    assert(p.transmissionThickness == 0.75f);
 }

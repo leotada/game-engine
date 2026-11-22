@@ -126,8 +126,19 @@ struct GpuContext {
         }
         info("WGPU adapter obtained");
 
-        // 4. Device
+        // 4. Device (request raised maxSampledTexturesPerShaderStage for OpenPBR layer maps)
+        WGPULimits adapterLimits;
+        adapterLimits.nextInChain = null;
+        WGPULimits reqLimits;
+        reqLimits.nextInChain = null;
         WGPUDeviceDescriptor devDesc;
+        if (wgpuAdapterGetLimits(ctx.adapter, &adapterLimits) == WGPUStatus.success) {
+            reqLimits.maxSampledTexturesPerShaderStage =
+                (adapterLimits.maxSampledTexturesPerShaderStage >= 32 ||
+                 adapterLimits.maxSampledTexturesPerShaderStage == 0)
+                    ? 32 : adapterLimits.maxSampledTexturesPerShaderStage;
+            devDesc.requiredLimits = &reqLimits;
+        }
         WGPURequestDeviceCallbackInfo devCb;
         devCb.mode      = WGPUCallbackMode.allowProcessEvents;
         devCb.callback  = &onDeviceReady;

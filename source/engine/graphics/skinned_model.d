@@ -11,13 +11,13 @@ import bindings.wgpu : WGPUBindGroupLayout;
 import engine.animation.ecs.assets : SkinBinding;
 import engine.animation.gltf_skin : GltfSkinnedCharacterCpu, loadGltfSkinnedCharacterCpu;
 import engine.animation.skeleton : Skeleton;
-import engine.assets.gltf : GltfMaterialDesc, loadGltfImage, parseGltfDocument, parseGltfMaterialAt;
+import engine.assets.gltf : buildGltfLayerMaps, GltfMaterialDesc, loadGltfImage, parseGltfDocument, parseGltfMaterialAt;
 import engine.core.log;
 import engine.core.pod : isPod, Pod;
 import engine.core.strings : StringId, StringTable;
 import engine.gpu.context : GpuContext;
 import engine.gpu.skinned : SkinnedMesh;
-import engine.graphics.material : Material, MaterialFlags, MaterialParams;
+import engine.graphics.material : Material, MaterialFlags, MaterialLayerMaps, MaterialParams;
 import engine.graphics.model : DEFAULT_MATERIAL, findMaterialIn;
 import engine.graphics.texture : Sampler, Texture, TextureDesc;
 import engine.graphics.types : Color4;
@@ -116,7 +116,8 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
 
         size_t imageCount = ("images" in doc.root) ? doc.root["images"].array.length : 0;
         immutable matCount = cpu.materials.length;
-        asset.textures = new Texture[imageCount * 2 + matCount + 1];
+        immutable size_t layerTexBase = imageCount * 2 + matCount + 1;
+        asset.textures = new Texture[layerTexBase + matCount * 5];
         bool[] loaded = new bool[imageCount * 2];
 
         Texture* imageTexture(int image, bool normal) {
@@ -162,9 +163,20 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
                 params.flags |= MaterialFlags.emissive;
                 if (params.emissionLuminance == 0.0f) params.emissionLuminance = 1.0f;
             }
-            auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em);
+            Texture[5] layerTexs;
+            bool[5] hasLayers;
+            MaterialLayerMaps layers;
+            if (mi < matCount) {
+                layers = buildGltfLayerMaps(
+                    gpu, doc, md, params, layerTexs, hasLayers, generateMips);
+            }
+            auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em, layers);
             m.renderState.doubleSided = md.doubleSided;
             move(m, asset.materials[mi]);
+            if (mi < matCount) {
+                foreach (li; 0 .. 5)
+                    if (hasLayers[li]) move(layerTexs[li], asset.textures[layerTexBase + mi * 5 + li]);
+            }
         }
 
         asset.subMeshes = new SkinnedMesh[cpu.subMeshes.length];

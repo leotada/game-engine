@@ -20,6 +20,7 @@ struct OpenPbrEvalInput {
     coatRoughness: f32,
     coatIor: f32,
     coatDarkening: f32,
+    coatN: vec3<f32>,
     fuzzWeight: f32,
     fuzzColor: vec3<f32>,
     fuzzRoughness: f32,
@@ -28,6 +29,7 @@ struct OpenPbrEvalInput {
     thinFilmIor: f32,
     directionalAlbedo: f32,
     fuzzAlbedo: f32,
+    transmissionWeight: f32,
 };
 
 fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
@@ -229,21 +231,27 @@ fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) ->
     let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
     let baseSpecular = min(specTerm * msScale, vec3<f32>(16.0));
 
-    let kD = (vec3<f32>(1.0) - F_base) * (1.0 - in.metalness);
+    let kD = (vec3<f32>(1.0) - F_base) * (1.0 - in.metalness) * (1.0 - clamp(in.transmissionWeight, 0.0, 1.0));
     let baseAlbedo = applyCoatDarkening(in.baseColor, in.coatIor, in.coatWeight, in.coatDarkening);
     let baseDiffuse = kD * evalDiffuseFujiiOrenNayar(NdotL, NdotV, LdotV, in.diffuseRoughness, baseAlbedo);
-    var slab = baseDiffuse + baseSpecular;
+    var slab = (baseDiffuse + baseSpecular) * radiance * NdotL;
 
-    // 2. Coat slab (dielectric GGX + Beer-Lambert absorption tint)
+    // 2. Coat slab (dielectric GGX on optional separate coatN + Beer-Lambert absorption tint)
     if (in.coatWeight > 0.001) {
         let coatW = clamp(in.coatWeight, 0.0, 1.0);
         let coatR = clamp(in.coatRoughness, 0.04, 1.0);
+        let NdotV_c = max(dot(in.coatN, V), 0.001);
+        let NdotL_c = max(dot(in.coatN, L), 0.0);
+        let NdotH_c = max(dot(in.coatN, H), 0.0);
         let f0Coat = vec3<f32>(dielectricF0Scalar(in.coatIor));
         let Fc = fresnelSchlick(HdotV, f0Coat) * coatW;
-        let Dc = distributionGGX(NdotH, coatR);
-        let Gc = geometrySmith(NdotV, NdotL, coatR);
-        let coatSpec = min((Dc * Gc * Fc) / max(4.0 * NdotV * NdotL, 0.001), vec3<f32>(16.0));
-        let pathLen = 0.5 / max(NdotV, 0.05) + 0.5 / max(NdotL, 0.05);
+        var coatSpec = vec3<f32>(0.0);
+        if (NdotL_c > 0.0) {
+            let Dc = distributionGGX(NdotH_c, coatR);
+            let Gc = geometrySmith(NdotV_c, NdotL_c, coatR);
+            coatSpec = min((Dc * Gc * Fc) / max(4.0 * NdotV_c * NdotL_c, 0.001), vec3<f32>(16.0)) * radiance * NdotL_c;
+        }
+        let pathLen = 0.5 / max(NdotV_c, 0.05) + 0.5 / max(max(NdotL_c, NdotL), 0.05);
         let coatTrans = mix(vec3<f32>(1.0), pow(max(in.coatColor, vec3<f32>(0.001)), vec3<f32>(pathLen)), coatW);
         slab = slab * coatTrans * (vec3<f32>(1.0) - Fc) + coatSpec;
     }
@@ -254,12 +262,12 @@ fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) ->
         let fuzzR = clamp(in.fuzzRoughness, 0.04, 1.0);
         let Df = distributionCharlie(NdotH, fuzzR);
         let Vf = visibilityAshikhmin(NdotV, NdotL);
-        let fuzzSpec = min(in.fuzzColor * Df * Vf, vec3<f32>(8.0)) * fuzzW;
+        let fuzzSpec = min(in.fuzzColor * Df * Vf, vec3<f32>(8.0)) * fuzzW * radiance * NdotL;
         let fuzzTrans = clamp(1.0 - fuzzW * in.fuzzAlbedo, 0.0, 1.0);
         slab = slab * fuzzTrans + fuzzSpec;
     }
 
-    return slab * radiance * NdotL;
+    return slab;
 }
 
 /// Legacy signature preserved for shader preprocessing tests.
@@ -286,6 +294,7 @@ fn evalBRDF(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, albedo: vec3<f32>,
     inp.coatRoughness = 0.1;
     inp.coatIor = 1.6;
     inp.coatDarkening = 1.0;
+    inp.coatN = N;
     inp.fuzzWeight = 0.0;
     inp.fuzzColor = vec3<f32>(1.0);
     inp.fuzzRoughness = 0.5;
@@ -294,6 +303,7 @@ fn evalBRDF(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, albedo: vec3<f32>,
     inp.thinFilmIor = 1.4;
     inp.directionalAlbedo = 1.0;
     inp.fuzzAlbedo = 0.0;
+    inp.transmissionWeight = 0.0;
     return evalOpenPbrDirect(inp, L, radiance);
 }
 

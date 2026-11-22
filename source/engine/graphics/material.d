@@ -6,7 +6,7 @@ import bindings.wgpu;
 import engine.core.pod : isPod;
 import engine.gpu.buffer : createUniformBuffer, updateBuffer, destroyBuffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.pipeline : MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE, RenderState, BlendMode;
+import engine.gpu.pipeline : MATERIAL_BINDING_COUNT, MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE, RenderState, BlendMode;
 import engine.graphics.texture : Texture, Sampler;
 import engine.core.log;
 
@@ -26,9 +26,21 @@ enum MaterialFlags : uint {
     waterWetCaustics   = 1 << 4,
     /// Skip all lighting: output = base color × tint + emission.
     unlit              = 1 << 6,
+    /// Per-pixel coat weight (R) & coat roughness (G) map (`coatMap`, binding 8).
+    coat               = 1 << 7,
+    /// Tangent-space coat normal map (`coatNormalMap`, binding 9).
+    coatNormal         = 1 << 8,
+    /// Per-pixel fuzz color (RGB) & fuzz roughness (A) map (`fuzzMap`, binding 10).
+    fuzz               = 1 << 9,
+    /// Per-pixel anisotropy direction (RG) & strength (B) in `anisoFilmMap` (binding 11).
+    anisotropy         = 1 << 10,
+    /// Per-pixel thin-film thickness multiplier in `anisoFilmMap.a` (binding 11).
+    thinFilm           = 1 << 11,
+    /// Per-pixel transmission weight (R) & volume thickness (G) (`transmissionMap`, binding 12).
+    transmission       = 1 << 12,
 }
 
-/// Canonical OpenPBR Surface v1.1 uniform block matching WGSL `MaterialParams` (144 bytes = 9 × vec4<f32>).
+/// Canonical OpenPBR Surface v1.1 + OPBR-6/7 uniform block matching WGSL `MaterialParams` (176 bytes = 11 × vec4<f32>).
 struct MaterialParams {
     // vec4 [0] (offset 0..16): Base color & weight
     float[3] baseColor = [1.0f, 1.0f, 1.0f];      // openpbr: base_color
@@ -68,21 +80,32 @@ struct MaterialParams {
     float[3] emissionColor = [1.0f, 1.0f, 1.0f];  // openpbr: emission_color
     float    emissionLuminance = 0.0f;            // openpbr: emission_luminance
 
-    // vec4 [8] (offset 128..144): Geometry opacity & flags
+    // vec4 [8] (offset 128..144): Geometry opacity, flags, anisotropy rotation & thin-film minimum thickness
     float    geometryOpacity = 1.0f;              // openpbr: geometry_opacity [0..1]
     uint     flags = MaterialFlags.none;          // bound texture map bitmask
+    float    anisotropyRotation = 0.0f;           // radians (`KHR_materials_anisotropy.anisotropyRotation`)
+    float    thinFilmThicknessMin = 300.0f;       // nanometers (`KHR_materials_iridescence.iridescenceThicknessMinimum`)
+
+    // vec4 [9] (offset 144..160): Transmission tint & weight
+    float[3] transmissionColor = [1.0f, 1.0f, 1.0f]; // openpbr: transmission_color / volume attenuationColor
+    float    transmissionWeight = 0.0f;           // openpbr: transmission_weight [0..1]
+
+    // vec4 [10] (offset 160..176): Volume attenuation depth, dispersion & slab thickness
+    float    transmissionDepth = 0.0f;            // openpbr: transmission_depth (0 = infinite / no Beer-Lambert drop)
+    float    transmissionDispersion = 0.0f;       // openpbr: transmission_dispersion (`KHR_materials_dispersion`)
+    float    transmissionThickness = 0.0f;        // world-space volume thickness factor (`KHR_materials_volume`)
     float    _pad0 = 0.0f;
-    float    _pad1 = 0.0f;
 }
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);
 
 /// Shared 1×1 fallback textures so every material binds a fixed BGL layout.
 struct MaterialDefaults {
-    Texture white;       // albedo / AO fallback
+    Texture white;       // albedo / AO / coat / fuzz / transmission fallback
     Texture metallicRoughness; // G=1 roughness, B=0 metallic
     Texture flatNormal;  // (0.5, 0.5, 1)
     Texture black;       // emissive fallback
+    Texture anisoDefault; // RG=(1, 0.5)->(+1,0) dir, B=1 strength, A=1 thin-film thickness
     bool ready;
 
     @disable this(this);
@@ -93,6 +116,7 @@ struct MaterialDefaults {
         metallicRoughness = Texture.solid(gpu, 0, 255, 0, 255);
         flatNormal = Texture.solid(gpu, 128, 128, 255, 255);
         black = Texture.solid(gpu, 0, 0, 0, 255);
+        anisoDefault = Texture.solid(gpu, 255, 128, 255, 255);
         ready = true;
     }
 
@@ -102,8 +126,18 @@ struct MaterialDefaults {
         metallicRoughness.destroy();
         flatNormal.destroy();
         black.destroy();
+        anisoDefault.destroy();
         ready = false;
     }
+}
+
+/// Optional per-pixel OPBR-6/7 layer texture maps passed to `Material.create`.
+struct MaterialLayerMaps {
+    Texture* coat;         // R=coatWeight, G=coatRoughness
+    Texture* coatNormal;   // RGB=tangent-space coat normal
+    Texture* fuzz;         // RGB=fuzzColor, A=fuzzRoughness
+    Texture* anisoFilm;    // RG=anisoDir, B=anisoStrength, A=thinFilmThickness
+    Texture* transmission; // R=transmissionWeight, G=volumeThickness
 }
 
 /// Package-level defaults used when optional maps are null.
@@ -117,9 +151,12 @@ struct Material {
     /// Custom surface shader used to draw this material: 0 is the stock PBR
     /// shader, otherwise an id from `Scene3DTextured.createSurfaceShader`.
     uint surfaceShader = 0;
+    /// True when the material uses refractive transmission (`transmissionWeight > 0`
+    /// or `MaterialFlags.transmission`); routed into the post-snapshot back-to-front pass.
+    bool transmissive = false;
     /// Blend mode, depth write and culling. Non-default states get their own
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
-    /// alpha batches back to front, then additive batches.
+    /// alpha/transmissive batches back to front, then additive batches.
     RenderState renderState;
 
     @disable this(this);
@@ -143,15 +180,23 @@ struct Material {
                            Texture* metallicRoughness,
                            Texture* normal,
                            Texture* occlusion,
-                           Texture* emissive) @trusted {
+                           Texture* emissive,
+                           MaterialLayerMaps layers = MaterialLayerMaps.init) @trusted {
         gMaterialDefaults.ensure(gpu);
 
-        Texture* mr  = metallicRoughness !is null ? metallicRoughness : &gMaterialDefaults.metallicRoughness;
-        Texture* nrm = normal !is null ? normal : &gMaterialDefaults.flatNormal;
-        Texture* ao  = occlusion !is null ? occlusion : &gMaterialDefaults.white;
-        Texture* em  = emissive !is null ? emissive : &gMaterialDefaults.black;
+        Texture* mr   = metallicRoughness !is null ? metallicRoughness : &gMaterialDefaults.metallicRoughness;
+        Texture* nrm  = normal !is null ? normal : &gMaterialDefaults.flatNormal;
+        Texture* ao   = occlusion !is null ? occlusion : &gMaterialDefaults.white;
+        Texture* em   = emissive !is null ? emissive : &gMaterialDefaults.black;
+        Texture* coat = layers.coat !is null ? layers.coat : &gMaterialDefaults.white;
+        Texture* cnrm = layers.coatNormal !is null ? layers.coatNormal : &gMaterialDefaults.flatNormal;
+        Texture* fz   = layers.fuzz !is null ? layers.fuzz : &gMaterialDefaults.white;
+        Texture* af   = layers.anisoFilm !is null ? layers.anisoFilm : &gMaterialDefaults.anisoDefault;
+        Texture* tr   = layers.transmission !is null ? layers.transmission : &gMaterialDefaults.white;
 
         Material m;
+        m.transmissive = params.transmissionWeight > 0.0f
+                      || (params.flags & MaterialFlags.transmission) != 0;
         m.paramsBuf = createUniformBuffer(gpu.getDevice(), MATERIAL_PARAMS_SIZE);
         updateBuffer(gpu.getQueue(), m.paramsBuf, (&params)[0 .. 1]);
 
@@ -159,7 +204,7 @@ struct Material {
         immutable float[16] zeroSurface = 0.0f;
         updateBuffer(gpu.getQueue(), m.surfaceBuf, zeroSurface[]);
 
-        WGPUBindGroupEntry[8] entries;
+        WGPUBindGroupEntry[MATERIAL_BINDING_COUNT] entries;
         entries[0].binding = 0;
         entries[0].buffer  = m.paramsBuf;
         entries[0].offset  = 0;
@@ -184,9 +229,20 @@ struct Material {
         entries[7].offset  = 0;
         entries[7].size    = SURFACE_PARAMS_SIZE;
 
+        entries[8].binding  = 8;
+        entries[8].textureView = coat.view;
+        entries[9].binding  = 9;
+        entries[9].textureView = cnrm.view;
+        entries[10].binding = 10;
+        entries[10].textureView = fz.view;
+        entries[11].binding = 11;
+        entries[11].textureView = af.view;
+        entries[12].binding = 12;
+        entries[12].textureView = tr.view;
+
         WGPUBindGroupDescriptor desc;
         desc.layout     = layout;
-        desc.entryCount = 8;
+        desc.entryCount = MATERIAL_BINDING_COUNT;
         desc.entries    = entries.ptr;
 
         m.bindGroup = wgpuDeviceCreateBindGroup(gpu.getDevice(), &desc);
@@ -199,6 +255,8 @@ struct Material {
     /// Upload new PBR params to the material UBO (live editor overrides).
     void updateParams(ref GpuContext gpu, MaterialParams params) nothrow @nogc @trusted {
         if (paramsBuf is null) return;
+        transmissive = params.transmissionWeight > 0.0f
+                    || (params.flags & MaterialFlags.transmission) != 0;
         updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
     }
 

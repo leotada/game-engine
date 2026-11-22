@@ -36,8 +36,16 @@ struct MaterialParams {
 
     geometryOpacity: f32,
     flags: u32,
+    anisotropyRotation: f32,
+    thinFilmThicknessMin: f32,
+
+    transmissionColor: vec3<f32>,
+    transmissionWeight: f32,
+
+    transmissionDepth: f32,
+    transmissionDispersion: f32,
+    transmissionThickness: f32,
     _pad0: f32,
-    _pad1: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
 @group(1) @binding(1) var texSampler: sampler;
@@ -46,6 +54,11 @@ struct MaterialParams {
 @group(1) @binding(4) var normalMap: texture_2d<f32>;
 @group(1) @binding(5) var occlusionMap: texture_2d<f32>;
 @group(1) @binding(6) var emissiveMap: texture_2d<f32>;
+@group(1) @binding(8) var coatMap: texture_2d<f32>;
+@group(1) @binding(9) var coatNormalMap: texture_2d<f32>;
+@group(1) @binding(10) var fuzzMap: texture_2d<f32>;
+@group(1) @binding(11) var anisoFilmMap: texture_2d<f32>;
+@group(1) @binding(12) var transmissionMap: texture_2d<f32>;
 
 @group(2) @binding(0) var irradianceMap: texture_cube<f32>;
 @group(2) @binding(1) var specularMap: texture_cube<f32>;
@@ -58,6 +71,12 @@ const FLAG_AO: u32 = 4u;
 const FLAG_EMISSIVE: u32 = 8u;
 const FLAG_WATER_WETLINE: u32 = 16u;
 const FLAG_UNLIT: u32 = 64u;
+const FLAG_COAT_TEX: u32 = 128u;
+const FLAG_COAT_NORMAL_TEX: u32 = 256u;
+const FLAG_FUZZ_TEX: u32 = 512u;
+const FLAG_ANISO_TEX: u32 = 1024u;
+const FLAG_THIN_FILM_TEX: u32 = 2048u;
+const FLAG_TRANSMISSION_TEX: u32 = 4096u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -306,6 +325,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var N = normalize(in.worldNormal);
     var T = normalize(in.worldTangent);
     var B = normalize(in.worldBitangent);
+    let vertexTBN = mat3x3<f32>(T, B, N);
     if ((mat.flags & FLAG_NORMAL) != 0u) {
         let nSample = textureSample(normalMap, texSampler, in.uv).xyz * 2.0 - 1.0;
         let TBN = mat3x3<f32>(T, B, N);
@@ -324,6 +344,59 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let emTex = textureSample(emissiveMap, texSampler, in.uv).rgb;
         emissive = emTex * mat.emissionColor * max(mat.emissionLuminance, 1.0);
     }
+
+    var coatW = mat.coatWeight;
+    var coatR = mat.coatRoughness;
+    if ((mat.flags & FLAG_COAT_TEX) != 0u) {
+        let cs = textureSample(coatMap, texSampler, in.uv);
+        coatW = clamp(coatW * cs.r, 0.0, 1.0);
+        coatR = clamp(coatR * cs.g, 0.04, 1.0);
+    }
+
+    var hasCoatNormal = false;
+    var coatN = N;
+    if ((mat.flags & FLAG_COAT_NORMAL_TEX) != 0u) {
+        let cnSample = textureSample(coatNormalMap, texSampler, in.uv).xyz * 2.0 - 1.0;
+        coatN = normalize(vertexTBN * cnSample);
+        hasCoatNormal = true;
+    }
+
+    var fuzzCol = mat.fuzzColor;
+    var fuzzR = mat.fuzzRoughness;
+    if ((mat.flags & FLAG_FUZZ_TEX) != 0u) {
+        let fs = textureSample(fuzzMap, texSampler, in.uv);
+        fuzzCol = fuzzCol * fs.rgb;
+        fuzzR = clamp(fuzzR * fs.a, 0.04, 1.0);
+    }
+
+    var anisoStrength = mat.specularAnisotropy;
+    var filmThickness = mat.thinFilmThickness;
+    var anisoDir2D = vec2<f32>(cos(mat.anisotropyRotation), sin(mat.anisotropyRotation));
+    if ((mat.flags & (FLAG_ANISO_TEX | FLAG_THIN_FILM_TEX)) != 0u) {
+        let af = textureSample(anisoFilmMap, texSampler, in.uv);
+        if ((mat.flags & FLAG_ANISO_TEX) != 0u) {
+            let rawDir = af.rg * 2.0 - 1.0;
+            if (dot(rawDir, rawDir) > 1e-6) {
+                let d = normalize(rawDir);
+                let cR = cos(mat.anisotropyRotation);
+                let sR = sin(mat.anisotropyRotation);
+                anisoDir2D = vec2<f32>(d.x * cR - d.y * sR, d.x * sR + d.y * cR);
+            }
+            anisoStrength = mat.specularAnisotropy * af.b;
+        }
+        if ((mat.flags & FLAG_THIN_FILM_TEX) != 0u) {
+            filmThickness = mix(mat.thinFilmThicknessMin, mat.thinFilmThickness, af.a);
+        }
+    }
+
+    var transWeight = mat.transmissionWeight;
+    var transThick = mat.transmissionThickness;
+    if ((mat.flags & FLAG_TRANSMISSION_TEX) != 0u) {
+        let ts = textureSample(transmissionMap, texSampler, in.uv);
+        transWeight = clamp(transWeight * ts.r, 0.0, 1.0);
+        transThick = max(transThick * ts.g, 0.0);
+    }
+    transWeight = clamp(transWeight, 0.0, 1.0);
 
     let V = normalize(frame.cameraPos - in.worldPos);
 
@@ -357,6 +430,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     T = normalize(T - N * dot(N, T));
     B = cross(N, T);
 #endif
+
+    if (!hasCoatNormal) {
+        coatN = N;
+    }
+    let T_aniso = normalize(T * anisoDir2D.x + B * anisoDir2D.y);
+    let B_aniso = cross(N, T_aniso);
 
     // Per-instance emission multiplier and white flash.
     emissive = emissive * max(in.custom.x, 0.0);
@@ -395,12 +474,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     let enableWaterFx = waterBody >= 0;
-    var coatW = mat.coatWeight;
-    var coatR = mat.coatRoughness;
     var coatIor = mat.coatIor;
     var coatDark = mat.coatDarkening;
     var coatCol = mat.coatColor;
-    var effectiveRoughness = coatRoughenBase(roughness, mat.coatRoughness, mat.coatWeight);
+    var effectiveRoughness = coatRoughenBase(roughness, coatR, coatW);
 
     if (enableWaterFx) {
         let wetNoise = (fract(sin(dot(in.worldPos.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
@@ -443,14 +520,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var fuzzE = 0.0;
     if (mat.fuzzWeight > 0.001) {
-        let fuzzR = clamp(mat.fuzzRoughness, 0.04, 1.0);
-        fuzzE = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, fuzzR)).b;
+        fuzzE = textureSampleLevel(brdfLut, iblSampler, vec2<f32>(NdotV, clamp(fuzzR, 0.04, 1.0)), 0.0).b;
     }
 
     var pbrIn: OpenPbrEvalInput;
     pbrIn.N = N;
-    pbrIn.T = T;
-    pbrIn.B = B;
+    pbrIn.T = T_aniso;
+    pbrIn.B = B_aniso;
     pbrIn.V = V;
     pbrIn.baseColor = baseColor;
     pbrIn.metalness = metalness;
@@ -459,20 +535,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.specularRoughness = effectiveRoughness;
     pbrIn.specularColor = mat.specularColor;
     pbrIn.specularIor = mat.specularIor;
-    pbrIn.specularAnisotropy = mat.specularAnisotropy;
+    pbrIn.specularAnisotropy = anisoStrength;
     pbrIn.coatWeight = coatW;
     pbrIn.coatColor = coatCol;
     pbrIn.coatRoughness = coatR;
     pbrIn.coatIor = coatIor;
     pbrIn.coatDarkening = coatDark;
+    pbrIn.coatN = coatN;
     pbrIn.fuzzWeight = mat.fuzzWeight;
-    pbrIn.fuzzColor = mat.fuzzColor;
-    pbrIn.fuzzRoughness = mat.fuzzRoughness;
+    pbrIn.fuzzColor = fuzzCol;
+    pbrIn.fuzzRoughness = fuzzR;
     pbrIn.thinFilmWeight = mat.thinFilmWeight;
-    pbrIn.thinFilmThickness = mat.thinFilmThickness;
+    pbrIn.thinFilmThickness = filmThickness;
     pbrIn.thinFilmIor = mat.thinFilmIor;
     pbrIn.directionalAlbedo = directionalAlbedo;
     pbrIn.fuzzAlbedo = fuzzE;
+    pbrIn.transmissionWeight = transWeight;
 
     var direct = vec3<f32>(0.0);
 
@@ -535,23 +613,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let f0Base = mix(f0Dielectric, baseColor, metalness);
     var F_ibl = fresnelSchlickRoughness(NdotV, f0Base, effectiveRoughness);
     if (mat.thinFilmWeight > 0.001) {
-        let fFilmIbl = evalThinFilmIridescence(NdotV, mat.thinFilmThickness, mat.thinFilmIor, f0Base);
+        let fFilmIbl = evalThinFilmIridescence(NdotV, filmThickness, mat.thinFilmIor, f0Base);
         F_ibl = mix(F_ibl, fFilmIbl, clamp(mat.thinFilmWeight, 0.0, 1.0));
     }
 
     let iblScale = max(frame.iblIntensity, 0.0);
-    let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness);
+    let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness) * (1.0 - transWeight);
     let baseAlbedoIbl = applyCoatDarkening(baseColor, coatIor, coatW, coatDark);
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb * iblScale;
     let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
 
     // Anisotropic bent reflection vector for IBL
     var iblNormal = N;
-    if (abs(mat.specularAnisotropy) > 0.001) {
-        let anisoDir = select(T, B, mat.specularAnisotropy >= 0.0);
+    if (abs(anisoStrength) > 0.001) {
+        let anisoDir = select(T_aniso, B_aniso, anisoStrength >= 0.0);
         let anisoTangent = cross(anisoDir, V);
         let bentNormal = normalize(cross(anisoTangent, anisoDir));
-        iblNormal = normalize(mix(N, bentNormal, abs(mat.specularAnisotropy) * 0.5));
+        iblNormal = normalize(mix(N, bentNormal, abs(anisoStrength) * 0.5));
     }
     let R = reflect(-V, iblNormal);
     let mip = effectiveRoughness * SPECULAR_MIPS;
@@ -567,11 +645,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (coatW > 0.001) {
         let cW = clamp(coatW, 0.0, 1.0);
         let cR = clamp(coatR, 0.04, 1.0);
+        let NdotV_c = max(dot(coatN, V), 0.001);
         let f0Coat = vec3<f32>(dielectricF0Scalar(coatIor));
-        let Fc_ibl = fresnelSchlickRoughness(NdotV, f0Coat, cR) * cW;
+        let Fc_ibl = fresnelSchlickRoughness(NdotV_c, f0Coat, cR) * cW;
         coatFresnelMax = max(Fc_ibl.r, max(Fc_ibl.g, Fc_ibl.b));
-        let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, cR)).rg;
-        let coatRefl = reflect(-V, N);
+        let coatLut = textureSampleLevel(brdfLut, iblSampler, vec2<f32>(NdotV_c, cR), 0.0).rg;
+        let coatRefl = reflect(-V, coatN);
         let coatPrefiltered = textureSampleLevel(specularMap, iblSampler, coatRefl, cR * SPECULAR_MIPS).rgb * iblScale;
         let f90Coat = max(1.0 - cR, f0Coat.x);
         let coatEnvBrdf = (f0Coat * coatLut.r + vec3<f32>(f90Coat * coatLut.g)) * cW;
@@ -579,7 +658,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let coatSpecIbl = coatPrefiltered * coatEnvBrdf * horizonOcclusion * ao;
         let coatTransIbl = mix(
             vec3<f32>(1.0),
-            pow(max(coatCol, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV, 0.05))),
+            pow(max(coatCol, vec3<f32>(0.001)), vec3<f32>(1.0 / max(NdotV_c, 0.05))),
             cW
         );
         ambient = ambient * coatTransIbl * (vec3<f32>(1.0) - Fc_ibl) + coatSpecIbl;
@@ -590,7 +669,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (mat.fuzzWeight > 0.001) {
         let fuzzW = clamp(mat.fuzzWeight, 0.0, 1.0);
         let fuzzTrans = clamp(1.0 - fuzzW * fuzzE, 0.0, 1.0);
-        let fuzzIbl = fuzzW * irradiance * mat.fuzzColor * fuzzE * ao;
+        let fuzzIbl = fuzzW * irradiance * fuzzCol * fuzzE * ao;
         ambient = ambient * fuzzTrans + fuzzIbl;
         totalEmission = totalEmission * fuzzTrans;
     }

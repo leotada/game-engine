@@ -426,9 +426,53 @@ enum WGPUShaderStage : WGPUFlags {
 // ---------------------------------------------------------------------------
 // Sentinel constants
 // ---------------------------------------------------------------------------
-enum uint WGPU_DEPTH_SLICE_UNDEFINED      = 0xFFFF_FFFF;
-enum uint WGPU_MIP_LEVEL_COUNT_UNDEFINED  = 0xFFFF_FFFF;
-enum uint WGPU_ARRAY_LAYER_COUNT_UNDEFINED = 0xFFFF_FFFF;
+enum uint  WGPU_DEPTH_SLICE_UNDEFINED      = 0xFFFF_FFFF;
+enum uint  WGPU_MIP_LEVEL_COUNT_UNDEFINED  = 0xFFFF_FFFF;
+enum uint  WGPU_ARRAY_LAYER_COUNT_UNDEFINED = 0xFFFF_FFFF;
+enum uint  WGPU_LIMIT_U32_UNDEFINED        = 0xFFFF_FFFF;
+enum ulong WGPU_LIMIT_U64_UNDEFINED        = 0xFFFF_FFFF_FFFF_FFFFUL;
+
+/// webgpu.h v29 `WGPULimits` (152 bytes, verified against `libwgpu_native.a`).
+struct WGPULimits {
+    WGPUChainedStruct* nextInChain = null;
+    uint  maxTextureDimension1D = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxTextureDimension2D = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxTextureDimension3D = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxTextureArrayLayers = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxBindGroups = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxBindGroupsPlusVertexBuffers = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxBindingsPerBindGroup = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxDynamicUniformBuffersPerPipelineLayout = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxDynamicStorageBuffersPerPipelineLayout = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxSampledTexturesPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxSamplersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxStorageBuffersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxStorageTexturesPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxUniformBuffersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    ulong maxUniformBufferBindingSize = WGPU_LIMIT_U64_UNDEFINED;
+    ulong maxStorageBufferBindingSize = WGPU_LIMIT_U64_UNDEFINED;
+    uint  minUniformBufferOffsetAlignment = WGPU_LIMIT_U32_UNDEFINED;
+    uint  minStorageBufferOffsetAlignment = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxVertexBuffers = WGPU_LIMIT_U32_UNDEFINED;
+    ulong maxBufferSize = WGPU_LIMIT_U64_UNDEFINED;
+    uint  maxVertexAttributes = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxVertexBufferArrayStride = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxInterStageShaderComponents = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxInterStageShaderVariables = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxColorAttachments = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxColorAttachmentBytesPerSample = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeWorkgroupStorageSize = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeInvocationsPerWorkgroup = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeWorkgroupSizeX = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeWorkgroupSizeY = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeWorkgroupSizeZ = WGPU_LIMIT_U32_UNDEFINED;
+    uint  maxComputeWorkgroupsPerDimension = WGPU_LIMIT_U32_UNDEFINED;
+}
+static assert(WGPULimits.sizeof == 152);
+static assert(WGPULimits.maxSampledTexturesPerShaderStage.offsetof == 0x2c);
+static assert(WGPULimits.maxUniformBufferBindingSize.offsetof == 0x40);
+static assert(WGPULimits.maxBufferSize.offsetof == 0x60);
+static assert(WGPULimits.maxInterStageShaderVariables.offsetof == 0x74);
 
 // ---------------------------------------------------------------------------
 // Callback types
@@ -984,11 +1028,13 @@ void wgpuInstanceAddRef(WGPUInstance instance);
 void wgpuInstanceRelease(WGPUInstance instance);
 
 // Adapter
+WGPUStatus wgpuAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits);
 WGPUFuture wgpuAdapterRequestDevice(WGPUAdapter adapter, const(WGPUDeviceDescriptor)* descriptor, WGPURequestDeviceCallbackInfo callbackInfo);
 void wgpuAdapterAddRef(WGPUAdapter adapter);
 void wgpuAdapterRelease(WGPUAdapter adapter);
 
 // Device
+WGPUStatus wgpuDeviceGetLimits(WGPUDevice device, WGPULimits* limits);
 WGPUQueue wgpuDeviceGetQueue(WGPUDevice device);
 WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, const(WGPUCommandEncoderDescriptor)* descriptor);
 WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const(WGPUShaderModuleDescriptor)* descriptor);

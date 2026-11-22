@@ -89,6 +89,13 @@ struct MaterialOverride {
     float[3] emissionColor = [1.0f, 1.0f, 1.0f];
     float    emissionLuminance = 0.0f;
     float    geometryOpacity = 1.0f;
+    float    anisotropyRotation = 0.0f;
+    float    thinFilmThicknessMin = 300.0f;
+    float[3] transmissionColor = [1.0f, 1.0f, 1.0f];
+    float    transmissionWeight = 0.0f;
+    float    transmissionDepth = 0.0f;
+    float    transmissionDispersion = 0.0f;
+    float    transmissionThickness = 0.0f;
     uint     flags = 0;
     /// Non-zero → override contributes to the viewport material.
     uint     active = 1;

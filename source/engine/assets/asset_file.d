@@ -75,6 +75,13 @@ struct AssetMaterialSlot {
     float[3] emissionColor = [1.0f, 1.0f, 1.0f];
     float    emissionLuminance = 0.0f;
     float    geometryOpacity = 1.0f;
+    float    anisotropyRotation = 0.0f;
+    float    thinFilmThicknessMin = 300.0f;
+    float[3] transmissionColor = [1.0f, 1.0f, 1.0f];
+    float    transmissionWeight = 0.0f;
+    float    transmissionDepth = 0.0f;
+    float    transmissionDispersion = 0.0f;
+    float    transmissionThickness = 0.0f;
     string   albedo; /// texture path; empty = none
     uint     flags = 0;
 }
@@ -284,6 +291,26 @@ void runAssetFileGoldenTests() {
     assert(lod.collision.generated.triangles == [0u, 1, 2]);
     assert(lod.collision.generated.hull.length == 2);
     assert(assetToMinifiedJson(lod) == lodGolden);
+
+    // OPBR-6/7 fields round-trip
+    AssetFile glass = p;
+    glass.materials[0].anisotropyRotation = 0.5f;
+    glass.materials[0].thinFilmThicknessMin = 120.0f;
+    glass.materials[0].transmissionWeight = 0.9f;
+    glass.materials[0].transmissionColor = [0.4f, 0.8f, 0.7f];
+    glass.materials[0].transmissionDepth = 1.8f;
+    glass.materials[0].transmissionDispersion = 0.35f;
+    glass.materials[0].transmissionThickness = 0.6f;
+    immutable glassJson = assetToMinifiedJson(glass);
+    auto glassParsed = parseAssetJson(glassJson);
+    assert(glassParsed.materials[0].anisotropyRotation == 0.5f);
+    assert(glassParsed.materials[0].thinFilmThicknessMin == 120.0f);
+    assert(glassParsed.materials[0].transmissionWeight == 0.9f);
+    assert(glassParsed.materials[0].transmissionColor[1] == 0.8f);
+    assert(glassParsed.materials[0].transmissionDepth == 1.8f);
+    assert(glassParsed.materials[0].transmissionDispersion == 0.35f);
+    assert(glassParsed.materials[0].transmissionThickness == 0.6f);
+    assert(assetToMinifiedJson(glassParsed) == glassJson);
 }
 
 @safe unittest {
@@ -387,9 +414,11 @@ private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
     requireOnlyKeys(v, [
         "baseColor", "baseWeight", "baseMetalness", "baseDiffuseRoughness",
         "specularWeight", "specularRoughness", "specularColor", "specularIor",
-        "specularAnisotropy", "coatWeight", "coatColor", "coatRoughness",
+        "specularAnisotropy", "anisotropyRotation", "coatWeight", "coatColor", "coatRoughness",
         "coatIor", "coatDarkening", "fuzzWeight", "fuzzColor", "fuzzRoughness",
-        "thinFilmWeight", "thinFilmThickness", "thinFilmIor",
+        "thinFilmWeight", "thinFilmThickness", "thinFilmThicknessMin", "thinFilmIor",
+        "transmissionColor", "transmissionWeight", "transmissionDepth",
+        "transmissionDispersion", "transmissionThickness",
         "emissionColor", "emissionLuminance", "geometryOpacity",
         "albedo", "flags"
     ], "materials[]");
@@ -422,7 +451,14 @@ private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
     if ("fuzzRoughness" in v) m.fuzzRoughness = jsonFloat(v["fuzzRoughness"], "materials[].fuzzRoughness");
     if ("thinFilmWeight" in v) m.thinFilmWeight = jsonFloat(v["thinFilmWeight"], "materials[].thinFilmWeight");
     if ("thinFilmThickness" in v) m.thinFilmThickness = jsonFloat(v["thinFilmThickness"], "materials[].thinFilmThickness");
+    if ("thinFilmThicknessMin" in v) m.thinFilmThicknessMin = jsonFloat(v["thinFilmThicknessMin"], "materials[].thinFilmThicknessMin");
     if ("thinFilmIor" in v) m.thinFilmIor = jsonFloat(v["thinFilmIor"], "materials[].thinFilmIor");
+    if ("anisotropyRotation" in v) m.anisotropyRotation = jsonFloat(v["anisotropyRotation"], "materials[].anisotropyRotation");
+    if ("transmissionColor" in v) m.transmissionColor = jsonFloat3(v["transmissionColor"], "materials[].transmissionColor");
+    if ("transmissionWeight" in v) m.transmissionWeight = jsonFloat(v["transmissionWeight"], "materials[].transmissionWeight");
+    if ("transmissionDepth" in v) m.transmissionDepth = jsonFloat(v["transmissionDepth"], "materials[].transmissionDepth");
+    if ("transmissionDispersion" in v) m.transmissionDispersion = jsonFloat(v["transmissionDispersion"], "materials[].transmissionDispersion");
+    if ("transmissionThickness" in v) m.transmissionThickness = jsonFloat(v["transmissionThickness"], "materials[].transmissionThickness");
     if ("emissionColor" in v) m.emissionColor = jsonFloat3(v["emissionColor"], "materials[].emissionColor");
     if ("emissionLuminance" in v) m.emissionLuminance = jsonFloat(v["emissionLuminance"], "materials[].emissionLuminance");
     if ("geometryOpacity" in v) m.geometryOpacity = jsonFloat(v["geometryOpacity"], "materials[].geometryOpacity");
@@ -601,7 +637,14 @@ private void writeMaterial(ref Appender!string app, const ref AssetMaterialSlot 
     if (m.fuzzRoughness != 0.5f) { app.put(`,"fuzzRoughness":`); writeFloat(app, m.fuzzRoughness); }
     if (m.thinFilmWeight != 0.0f) { app.put(`,"thinFilmWeight":`); writeFloat(app, m.thinFilmWeight); }
     if (m.thinFilmThickness != 500.0f) { app.put(`,"thinFilmThickness":`); writeFloat(app, m.thinFilmThickness); }
+    if (m.thinFilmThicknessMin != 300.0f) { app.put(`,"thinFilmThicknessMin":`); writeFloat(app, m.thinFilmThicknessMin); }
     if (m.thinFilmIor != 1.4f) { app.put(`,"thinFilmIor":`); writeFloat(app, m.thinFilmIor); }
+    if (m.anisotropyRotation != 0.0f) { app.put(`,"anisotropyRotation":`); writeFloat(app, m.anisotropyRotation); }
+    if (m.transmissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"transmissionColor":`); writeFloat3(app, m.transmissionColor); }
+    if (m.transmissionWeight != 0.0f) { app.put(`,"transmissionWeight":`); writeFloat(app, m.transmissionWeight); }
+    if (m.transmissionDepth != 0.0f) { app.put(`,"transmissionDepth":`); writeFloat(app, m.transmissionDepth); }
+    if (m.transmissionDispersion != 0.0f) { app.put(`,"transmissionDispersion":`); writeFloat(app, m.transmissionDispersion); }
+    if (m.transmissionThickness != 0.0f) { app.put(`,"transmissionThickness":`); writeFloat(app, m.transmissionThickness); }
     if (m.emissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"emissionColor":`); writeFloat3(app, m.emissionColor); }
     if (m.emissionLuminance != 0.0f) { app.put(`,"emissionLuminance":`); writeFloat(app, m.emissionLuminance); }
     if (m.geometryOpacity != 1.0f) { app.put(`,"geometryOpacity":`); writeFloat(app, m.geometryOpacity); }

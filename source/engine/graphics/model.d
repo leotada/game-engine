@@ -441,10 +441,11 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
         }
     }
 
-    // Textures: one slot per (image, usage) plus one solid fallback per material.
+    // Textures: one slot per (image, usage), one solid fallback per material, plus 5 layer slots per material.
     size_t imageCount = ("images" in doc.root) ? doc.root["images"].array.length : 0;
     immutable matCount = scene.materials.length;
-    asset.textures = new Texture[imageCount * 2 + matCount + 1];
+    immutable size_t layerTexBase = imageCount * 2 + matCount + 1;
+    asset.textures = new Texture[layerTexBase + matCount * 5];
     bool[] loaded = new bool[imageCount * 2];
 
     Texture* imageTexture(int image, bool normal) {
@@ -490,9 +491,21 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
             params.flags |= MaterialFlags.emissive;
             if (params.emissionLuminance == 0.0f) params.emissionLuminance = 1.0f;
         }
-        auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em);
+        import engine.graphics.material : MaterialLayerMaps;
+        Texture[5] layerTexs;
+        bool[5] hasLayers;
+        MaterialLayerMaps layers;
+        if (mi < matCount) {
+            layers = buildGltfLayerMaps(
+                gpu, doc, md, params, layerTexs, hasLayers, opts.generateMips);
+        }
+        auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em, layers);
         m.renderState.doubleSided = md.doubleSided;
         move(m, asset.materials[mi]);
+        if (mi < matCount) {
+            foreach (li; 0 .. 5)
+                if (hasLayers[li]) move(layerTexs[li], asset.textures[layerTexBase + mi * 5 + li]);
+        }
     }
 
     // Sub-meshes: one per (mesh, primitive), shared by every node using the mesh.

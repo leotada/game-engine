@@ -26,7 +26,7 @@ import std.string : toLower;
 import engine.assets.pak : assetExists, readAssetBytes;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
-import engine.graphics.material : Material, MaterialParams, MaterialFlags;
+import engine.graphics.material : Material, MaterialFlags, MaterialLayerMaps, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, TextureDesc, Sampler;
 import engine.graphics.types : TexVert;
@@ -85,6 +85,26 @@ struct GltfMaterialDesc {
     int normalImage = -1;
     int occlusionImage = -1;
     int emissiveImage = -1;
+
+    // OPBR-6 / OPBR-7 per-pixel layer & transmission maps.
+    string clearcoatUri;
+    string clearcoatRoughnessUri;
+    string clearcoatNormalUri;
+    string sheenColorUri;
+    string sheenRoughnessUri;
+    string anisotropyUri;
+    string iridescenceThicknessUri;
+    string transmissionUri;
+    string thicknessUri;
+    int clearcoatImage = -1;
+    int clearcoatRoughnessImage = -1;
+    int clearcoatNormalImage = -1;
+    int sheenColorImage = -1;
+    int sheenRoughnessImage = -1;
+    int anisotropyImage = -1;
+    int iridescenceThicknessImage = -1;
+    int transmissionImage = -1;
+    int thicknessImage = -1;
 }
 
 /// Loaded GPU model: mesh + material (caller destroys both).
@@ -96,11 +116,13 @@ struct GltfModel {
     Texture normal;
     Texture occlusion;
     Texture emissive;
+    Texture[5] layerTextures;
     bool hasAlbedo;
     bool hasMR;
     bool hasNormal;
     bool hasOcclusion;
     bool hasEmissive;
+    bool[5] hasLayerTextures;
 
     void destroy() {
         material.destroy();
@@ -110,6 +132,8 @@ struct GltfModel {
         if (hasNormal) normal.destroy();
         if (hasOcclusion) occlusion.destroy();
         if (hasEmissive) emissive.destroy();
+        foreach (i, has; hasLayerTextures)
+            if (has) layerTextures[i].destroy();
     }
 }
 
@@ -128,7 +152,8 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
         immutable mi = firstPrimitiveMaterial(doc);
         matDesc = parseGltfMaterialAt(doc.root, mi >= 0 ? mi : 0);
     }
-    if (matDesc.normalImage >= 0 || matDesc.params.specularAnisotropy != 0.0f)
+    if (matDesc.normalImage >= 0 || matDesc.clearcoatNormalImage >= 0
+        || matDesc.anisotropyImage >= 0 || matDesc.params.specularAnisotropy != 0.0f)
         generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
     GltfModel model;
@@ -203,14 +228,18 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
         }
     }
 
+    auto layers = buildGltfLayerMaps(
+        gpu, doc, matDesc, params, model.layerTextures, model.hasLayerTextures, true);
+
     model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
-                                     params, mrPtr, nrmPtr, aoPtr, emPtr);
+                                     params, mrPtr, nrmPtr, aoPtr, emPtr, layers);
     model.material.renderState.doubleSided = matDesc.doubleSided;
 
     info("Loaded glTF OpenPBR: ", gltfPath, " (",
          meshCpu.vertices.length, " verts, metalness=", params.baseMetalness,
          " roughness=", params.specularRoughness,
-         " coat=", params.coatWeight, " fuzz=", params.fuzzWeight, ")");
+         " coat=", params.coatWeight, " fuzz=", params.fuzzWeight,
+         " trans=", params.transmissionWeight, ")");
     return model;
 }
 
@@ -295,6 +324,11 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
 
     if ("extensions" in mat && mat["extensions"].type == JSONType.object) {
         auto ext = mat["extensions"];
+        void readTexRef(ref JSONValue obj, string key, ref string uri, ref int img) {
+            if (key in obj && obj[key].type == JSONType.object && "index" in obj[key].object)
+                uri = resolveTextureRef(root, cast(int) obj[key]["index"].integer, img);
+        }
+
         if ("KHR_materials_ior" in ext && ext["KHR_materials_ior"].type == JSONType.object) {
             auto e = ext["KHR_materials_ior"];
             if ("ior" in e) desc.params.specularIor = jsonFloat(e["ior"]);
@@ -312,6 +346,9 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
             auto e = ext["KHR_materials_clearcoat"];
             if ("clearcoatFactor" in e) desc.params.coatWeight = jsonFloat(e["clearcoatFactor"]);
             if ("clearcoatRoughnessFactor" in e) desc.params.coatRoughness = jsonFloat(e["clearcoatRoughnessFactor"]);
+            readTexRef(e, "clearcoatTexture", desc.clearcoatUri, desc.clearcoatImage);
+            readTexRef(e, "clearcoatRoughnessTexture", desc.clearcoatRoughnessUri, desc.clearcoatRoughnessImage);
+            readTexRef(e, "clearcoatNormalTexture", desc.clearcoatNormalUri, desc.clearcoatNormalImage);
         }
         if ("KHR_materials_sheen" in ext && ext["KHR_materials_sheen"].type == JSONType.object) {
             auto e = ext["KHR_materials_sheen"];
@@ -322,12 +359,19 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
                     desc.params.fuzzColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
             }
             if ("sheenRoughnessFactor" in e) desc.params.fuzzRoughness = jsonFloat(e["sheenRoughnessFactor"]);
+            readTexRef(e, "sheenColorTexture", desc.sheenColorUri, desc.sheenColorImage);
+            readTexRef(e, "sheenRoughnessTexture", desc.sheenRoughnessUri, desc.sheenRoughnessImage);
         }
         if ("KHR_materials_iridescence" in ext && ext["KHR_materials_iridescence"].type == JSONType.object) {
             auto e = ext["KHR_materials_iridescence"];
             if ("iridescenceFactor" in e) desc.params.thinFilmWeight = jsonFloat(e["iridescenceFactor"]);
             if ("iridescenceIor" in e) desc.params.thinFilmIor = jsonFloat(e["iridescenceIor"]);
+            if ("iridescenceThicknessMinimum" in e)
+                desc.params.thinFilmThicknessMin = jsonFloat(e["iridescenceThicknessMinimum"]);
+            else if ("iridescenceThicknessTexture" in e)
+                desc.params.thinFilmThicknessMin = 100.0f;
             if ("iridescenceThicknessMaximum" in e) desc.params.thinFilmThickness = jsonFloat(e["iridescenceThicknessMaximum"]);
+            readTexRef(e, "iridescenceThicknessTexture", desc.iridescenceThicknessUri, desc.iridescenceThicknessImage);
         }
         if ("KHR_materials_emissive_strength" in ext && ext["KHR_materials_emissive_strength"].type == JSONType.object) {
             auto e = ext["KHR_materials_emissive_strength"];
@@ -341,6 +385,28 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
         if ("KHR_materials_anisotropy" in ext && ext["KHR_materials_anisotropy"].type == JSONType.object) {
             auto e = ext["KHR_materials_anisotropy"];
             if ("anisotropyStrength" in e) desc.params.specularAnisotropy = jsonFloat(e["anisotropyStrength"]);
+            if ("anisotropyRotation" in e) desc.params.anisotropyRotation = jsonFloat(e["anisotropyRotation"]);
+            readTexRef(e, "anisotropyTexture", desc.anisotropyUri, desc.anisotropyImage);
+        }
+        if ("KHR_materials_transmission" in ext && ext["KHR_materials_transmission"].type == JSONType.object) {
+            auto e = ext["KHR_materials_transmission"];
+            if ("transmissionFactor" in e) desc.params.transmissionWeight = jsonFloat(e["transmissionFactor"]);
+            readTexRef(e, "transmissionTexture", desc.transmissionUri, desc.transmissionImage);
+        }
+        if ("KHR_materials_volume" in ext && ext["KHR_materials_volume"].type == JSONType.object) {
+            auto e = ext["KHR_materials_volume"];
+            if ("thicknessFactor" in e) desc.params.transmissionThickness = jsonFloat(e["thicknessFactor"]);
+            if ("attenuationDistance" in e) desc.params.transmissionDepth = jsonFloat(e["attenuationDistance"]);
+            if ("attenuationColor" in e) {
+                auto arr = e["attenuationColor"].array;
+                if (arr.length >= 3)
+                    desc.params.transmissionColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+            }
+            readTexRef(e, "thicknessTexture", desc.thicknessUri, desc.thicknessImage);
+        }
+        if ("KHR_materials_dispersion" in ext && ext["KHR_materials_dispersion"].type == JSONType.object) {
+            auto e = ext["KHR_materials_dispersion"];
+            if ("dispersion" in e) desc.params.transmissionDispersion = jsonFloat(e["dispersion"]);
         }
     }
 
@@ -744,6 +810,191 @@ Texture loadGltfImage(ref GpuContext gpu, ref GltfDocument doc, int imageIndex,
     return loadImageTexture(gpu, buildPath(doc.baseDir, r.uri), desc);
 }
 
+private struct DecodedImage {
+    ubyte[] rgba;
+    uint w;
+    uint h;
+    bool valid() const pure nothrow @nogc { return w > 0 && h > 0 && rgba.length >= cast(size_t) w * h * 4; }
+}
+
+private DecodedImage decodeGltfImagePixels(ref GltfDocument doc, int imageIndex) @trusted {
+    DecodedImage img;
+    if (imageIndex < 0) return img;
+    GltfImageRef r;
+    try {
+        r = resolveGltfImage(doc, imageIndex);
+    } catch (Exception e) {
+        err("glTF image ", imageIndex, ": ", e.msg);
+        return img;
+    }
+    if (r.bytes.length) {
+        if (!Texture.decodeImageBytes(r.bytes, img.rgba, img.w, img.h, imageTypeHint(r.mimeType)))
+            return DecodedImage.init;
+        return img;
+    }
+    immutable path = buildPath(doc.baseDir, r.uri);
+    if (!assetExists(path)) {
+        err("glTF image not found: ", path);
+        return img;
+    }
+    ubyte[] fileBytes;
+    if (!readAssetBytes(path, fileBytes)) return img;
+    immutable ext = extension(path).toLower;
+    if (ext == ".bmp") {
+        import engine.assets.bmp : decodeBmp;
+        try {
+            auto bmp = decodeBmp(fileBytes);
+            img.rgba = bmp.pixels;
+            img.w = bmp.width;
+            img.h = bmp.height;
+            return img;
+        } catch (Exception e) {
+            err("glTF BMP decode failed: ", path, ": ", e.msg);
+            return DecodedImage.init;
+        }
+    }
+    const(char)* hint = ext == ".tga" ? "TGA".ptr : null;
+    if (!Texture.decodeImageBytes(fileBytes, img.rgba, img.w, img.h, hint))
+        return DecodedImage.init;
+    return img;
+}
+
+private ubyte sampleChannelResized(ref const DecodedImage img, uint x, uint y, uint dw, uint dh, uint ch) pure nothrow @nogc {
+    immutable sx = (img.w == dw) ? x : cast(uint)((cast(size_t) x * img.w) / dw);
+    immutable sy = (img.h == dh) ? y : cast(uint)((cast(size_t) y * img.h) / dh);
+    return img.rgba[(cast(size_t) sy * img.w + sx) * 4 + ch];
+}
+
+private enum LayerPackMode : ubyte {
+    coat,         // R=A.r, G=B.g, B=255, A=255
+    fuzz,         // RGB=A.rgb, A=B.a
+    anisoFilm,    // RGB=A.rgb (or 255,128,255), A=B.g
+    transmission, // R=A.r, G=B.g, B=255, A=255
+}
+
+private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
+                                 int imgIdxA, int imgIdxB, LayerPackMode mode,
+                                 bool generateMips, out bool okA, out bool okB) @trusted {
+    auto a = decodeGltfImagePixels(doc, imgIdxA);
+    auto b = (imgIdxB == imgIdxA) ? a : decodeGltfImagePixels(doc, imgIdxB);
+    okA = a.valid;
+    okB = b.valid;
+    if (!okA && !okB) return Texture.init;
+
+    immutable uint w = (okA && okB) ? (a.w > b.w ? a.w : b.w) : (okA ? a.w : b.w);
+    immutable uint h = (okA && okB) ? (a.h > b.h ? a.h : b.h) : (okA ? a.h : b.h);
+    auto pixels = new ubyte[cast(size_t) w * h * 4];
+
+    foreach (y; 0 .. h) {
+        foreach (x; 0 .. w) {
+            immutable di = (cast(size_t) y * w + x) * 4;
+            final switch (mode) {
+                case LayerPackMode.coat:
+                case LayerPackMode.transmission:
+                    pixels[di + 0] = okA ? sampleChannelResized(a, x, y, w, h, 0) : 255;
+                    pixels[di + 1] = okB ? sampleChannelResized(b, x, y, w, h, 1) : 255;
+                    pixels[di + 2] = 255;
+                    pixels[di + 3] = 255;
+                    break;
+                case LayerPackMode.fuzz:
+                    pixels[di + 0] = okA ? sampleChannelResized(a, x, y, w, h, 0) : 255;
+                    pixels[di + 1] = okA ? sampleChannelResized(a, x, y, w, h, 1) : 255;
+                    pixels[di + 2] = okA ? sampleChannelResized(a, x, y, w, h, 2) : 255;
+                    pixels[di + 3] = okB ? sampleChannelResized(b, x, y, w, h, 3) : 255;
+                    break;
+                case LayerPackMode.anisoFilm:
+                    pixels[di + 0] = okA ? sampleChannelResized(a, x, y, w, h, 0) : 255;
+                    pixels[di + 1] = okA ? sampleChannelResized(a, x, y, w, h, 1) : 128;
+                    pixels[di + 2] = okA ? sampleChannelResized(a, x, y, w, h, 2) : 255;
+                    pixels[di + 3] = okB ? sampleChannelResized(b, x, y, w, h, 1) : 255;
+                    break;
+            }
+        }
+    }
+    return Texture.fromPixels(gpu, pixels, w, h, TextureDesc(generateMips, false));
+}
+
+/**
+ * Decode and pack the OPBR-6/7 glTF layer textures (`clearcoat*Texture`,
+ * `sheen*Texture`, `anisotropyTexture`, `iridescenceThicknessTexture`,
+ * `transmissionTexture`, `thicknessTexture`) into the 5 `MaterialLayerMaps`
+ * slots, updating `params.flags` for each valid map.
+ */
+MaterialLayerMaps buildGltfLayerMaps(
+    ref GpuContext gpu,
+    ref GltfDocument doc,
+    ref const GltfMaterialDesc matDesc,
+    ref MaterialParams params,
+    out Texture[5] outTextures,
+    out bool[5] outHas,
+    bool generateMips = true
+) @trusted {
+    import core.lifetime : move;
+    MaterialLayerMaps maps;
+
+    if (matDesc.clearcoatImage >= 0 || matDesc.clearcoatRoughnessImage >= 0) {
+        bool okA, okB;
+        auto t = packLayerTexture(gpu, doc, matDesc.clearcoatImage,
+                                  matDesc.clearcoatRoughnessImage, LayerPackMode.coat,
+                                  generateMips, okA, okB);
+        if (t.valid) {
+            move(t, outTextures[0]);
+            outHas[0] = true;
+            maps.coat = &outTextures[0];
+            params.flags |= MaterialFlags.coat;
+        }
+    }
+    if (matDesc.clearcoatNormalImage >= 0) {
+        auto t = loadGltfImage(gpu, doc, matDesc.clearcoatNormalImage,
+                               TextureDesc(generateMips, true));
+        if (t.valid) {
+            move(t, outTextures[1]);
+            outHas[1] = true;
+            maps.coatNormal = &outTextures[1];
+            params.flags |= MaterialFlags.coatNormal;
+        }
+    }
+    if (matDesc.sheenColorImage >= 0 || matDesc.sheenRoughnessImage >= 0) {
+        bool okA, okB;
+        auto t = packLayerTexture(gpu, doc, matDesc.sheenColorImage,
+                                  matDesc.sheenRoughnessImage, LayerPackMode.fuzz,
+                                  generateMips, okA, okB);
+        if (t.valid) {
+            move(t, outTextures[2]);
+            outHas[2] = true;
+            maps.fuzz = &outTextures[2];
+            params.flags |= MaterialFlags.fuzz;
+        }
+    }
+    if (matDesc.anisotropyImage >= 0 || matDesc.iridescenceThicknessImage >= 0) {
+        bool okAniso, okFilm;
+        auto t = packLayerTexture(gpu, doc, matDesc.anisotropyImage,
+                                  matDesc.iridescenceThicknessImage, LayerPackMode.anisoFilm,
+                                  generateMips, okAniso, okFilm);
+        if (t.valid) {
+            move(t, outTextures[3]);
+            outHas[3] = true;
+            maps.anisoFilm = &outTextures[3];
+            if (okAniso) params.flags |= MaterialFlags.anisotropy;
+            if (okFilm) params.flags |= MaterialFlags.thinFilm;
+        }
+    }
+    if (matDesc.transmissionImage >= 0
+        || (matDesc.thicknessImage >= 0 && params.transmissionWeight > 0.0f)) {
+        bool okA, okB;
+        auto t = packLayerTexture(gpu, doc, matDesc.transmissionImage,
+                                  matDesc.thicknessImage, LayerPackMode.transmission,
+                                  generateMips, okA, okB);
+        if (t.valid) {
+            move(t, outTextures[4]);
+            outHas[4] = true;
+            maps.transmission = &outTextures[4];
+            if (okA) params.flags |= MaterialFlags.transmission;
+        }
+    }
+    return maps;
+}
+
 // ---------------------------------------------------------------------------
 // Accessors
 // ---------------------------------------------------------------------------
@@ -972,7 +1223,10 @@ GltfSceneCpu parseGltfScene(ref GltfDocument doc) @trusted {
                 finalizeImportedMesh(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
                 if (p.material >= 0) {
                     auto md = &scene.materials[p.material];
-                    if (md.normalImage >= 0 || md.normalUri.length || md.params.specularAnisotropy != 0.0f)
+                    if (md.normalImage >= 0 || md.normalUri.length
+                        || md.clearcoatNormalImage >= 0 || md.clearcoatNormalUri.length
+                        || md.anisotropyImage >= 0 || md.anisotropyUri.length
+                        || md.params.specularAnisotropy != 0.0f)
                         generateMissingTangents(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
                 }
             }
@@ -1444,4 +1698,93 @@ version (unittest) {
     auto m1 = parseGltfMaterialAt(root, 1);
     assert(m0.name == "wire_fence" && m0.doubleSided == true);
     assert(m1.name == "concrete" && m1.doubleSided == false);
+}
+
+@("gltf.opbr6And7Extensions") @safe unittest {
+    import std.math : abs;
+
+    string gltf = `{
+      "asset": {"version": "2.0"},
+      "images": [
+        {"uri": "cc.png"},
+        {"uri": "cc_rough.png"},
+        {"uri": "cc_nrm.png"},
+        {"uri": "sheen_col.png"},
+        {"uri": "sheen_rough.png"},
+        {"uri": "aniso.png"},
+        {"uri": "irid_thick.png"},
+        {"uri": "trans.png"},
+        {"uri": "thick.png"}
+      ],
+      "textures": [
+        {"source": 0}, {"source": 1}, {"source": 2},
+        {"source": 3}, {"source": 4}, {"source": 5},
+        {"source": 6}, {"source": 7}, {"source": 8}
+      ],
+      "materials": [{
+        "name": "opbr_glass_velvet",
+        "pbrMetallicRoughness": {"baseColorFactor": [0.9, 0.95, 1.0, 1.0], "roughnessFactor": 0.15},
+        "extensions": {
+          "KHR_materials_ior": {"ior": 1.52},
+          "KHR_materials_clearcoat": {
+            "clearcoatFactor": 0.8,
+            "clearcoatRoughnessFactor": 0.12,
+            "clearcoatTexture": {"index": 0},
+            "clearcoatRoughnessTexture": {"index": 1},
+            "clearcoatNormalTexture": {"index": 2}
+          },
+          "KHR_materials_sheen": {
+            "sheenColorFactor": [0.4, 0.6, 0.9],
+            "sheenRoughnessFactor": 0.45,
+            "sheenColorTexture": {"index": 3},
+            "sheenRoughnessTexture": {"index": 4}
+          },
+          "KHR_materials_anisotropy": {
+            "anisotropyStrength": 0.7,
+            "anisotropyRotation": 0.785398,
+            "anisotropyTexture": {"index": 5}
+          },
+          "KHR_materials_iridescence": {
+            "iridescenceFactor": 0.65,
+            "iridescenceIor": 1.38,
+            "iridescenceThicknessMinimum": 220.0,
+            "iridescenceThicknessMaximum": 680.0,
+            "iridescenceThicknessTexture": {"index": 6}
+          },
+          "KHR_materials_transmission": {
+            "transmissionFactor": 0.92,
+            "transmissionTexture": {"index": 7}
+          },
+          "KHR_materials_volume": {
+            "thicknessFactor": 1.4,
+            "attenuationDistance": 2.5,
+            "attenuationColor": [0.2, 0.85, 0.6],
+            "thicknessTexture": {"index": 8}
+          },
+          "KHR_materials_dispersion": {
+            "dispersion": 0.6
+          }
+        }
+      }]
+    }`;
+
+    auto desc = parseGltfMaterialJson(gltf);
+    assert(desc.clearcoatImage == 0 && desc.clearcoatUri == "cc.png");
+    assert(desc.clearcoatRoughnessImage == 1 && desc.clearcoatRoughnessUri == "cc_rough.png");
+    assert(desc.clearcoatNormalImage == 2 && desc.clearcoatNormalUri == "cc_nrm.png");
+    assert(desc.sheenColorImage == 3 && desc.sheenColorUri == "sheen_col.png");
+    assert(desc.sheenRoughnessImage == 4 && desc.sheenRoughnessUri == "sheen_rough.png");
+    assert(desc.anisotropyImage == 5 && desc.anisotropyUri == "aniso.png");
+    assert(desc.iridescenceThicknessImage == 6 && desc.iridescenceThicknessUri == "irid_thick.png");
+    assert(desc.transmissionImage == 7 && desc.transmissionUri == "trans.png");
+    assert(desc.thicknessImage == 8 && desc.thicknessUri == "thick.png");
+
+    assert(abs(desc.params.anisotropyRotation - 0.785398f) < 1e-4f);
+    assert(desc.params.thinFilmThicknessMin == 220.0f);
+    assert(desc.params.thinFilmThickness == 680.0f);
+    assert(abs(desc.params.transmissionWeight - 0.92f) < 1e-4f);
+    assert(abs(desc.params.transmissionThickness - 1.4f) < 1e-4f);
+    assert(abs(desc.params.transmissionDepth - 2.5f) < 1e-4f);
+    assert(abs(desc.params.transmissionColor[1] - 0.85f) < 1e-4f);
+    assert(abs(desc.params.transmissionDispersion - 0.6f) < 1e-4f);
 }

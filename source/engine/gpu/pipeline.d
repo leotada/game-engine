@@ -393,8 +393,12 @@ enum FRAME_UNIFORMS_SIZE = 1280;
 /// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
 /// 7 shadow maps, point lights (9) and the shared water data (10).
 enum uint FRAME_BINDING_COUNT = 11;
-/// MaterialParams UBO size (OpenPBR v1.1 surface block, 9 × vec4<f32> = 144 bytes).
-enum MATERIAL_PARAMS_SIZE = 144;
+/// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7 block, 11 × vec4<f32> = 176 bytes).
+enum MATERIAL_PARAMS_SIZE = 176;
+/// Entries in the material bind group (@group(1)): params UBO, sampler,
+/// albedo/MR/normal/AO/emissive maps (2..6), custom surfaceParams UBO (7),
+/// and OPBR-6/7 layer maps: coat, coatNormal, fuzz, anisoFilm, transmission (8..12).
+enum uint MATERIAL_BINDING_COUNT = 13;
 /// Per-instance data of the textured PBR pipeline (buffer 1, stride 96):
 /// model matrix, albedo tint and a free `custom` vec4. The stock shader reads
 /// `custom` as x = emission multiplier, y = white flash [0..1],
@@ -489,7 +493,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     result.frameBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &frameBglDesc);
 
     // --- Group 1: Material ---
-    WGPUBindGroupLayoutEntry[8] matEntries;
+    WGPUBindGroupLayoutEntry[MATERIAL_BINDING_COUNT] matEntries;
     matEntries[0].binding = 0;
     matEntries[0].visibility = WGPUShaderStage.fragment;
     matEntries[0].buffer.type = WGPUBufferBindingType.uniform;
@@ -513,8 +517,17 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     matEntries[7].buffer.type = WGPUBufferBindingType.uniform;
     matEntries[7].buffer.minBindingSize = SURFACE_PARAMS_SIZE;
 
+    // OPBR-6 / OPBR-7 per-pixel layer maps: coat (8), coatNormal (9),
+    // fuzz (10), anisoFilm (11), transmission (12).
+    foreach (i; 0 .. 5) {
+        matEntries[8 + i].binding = cast(uint)(8 + i);
+        matEntries[8 + i].visibility = WGPUShaderStage.fragment;
+        matEntries[8 + i].texture.sampleType = WGPUTextureSampleType.float_;
+        matEntries[8 + i].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+    }
+
     WGPUBindGroupLayoutDescriptor matBglDesc;
-    matBglDesc.entryCount = 8;
+    matBglDesc.entryCount = MATERIAL_BINDING_COUNT;
     matBglDesc.entries = matEntries.ptr;
     result.bindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &matBglDesc);
 
