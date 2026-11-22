@@ -17,7 +17,7 @@
         "source/bindings/stb_vorbis/stb_vorbis_import.c",
         "source/bindings/recast/recast_import.c"
     ],
-    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "symgc-cards"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "zstd_engine", "symgc-cards"],
     "libs-linux": ["stdc++", "m"],
     "libs-windows": [
         "user32", "gdi32", "winmm", "imm32", "ole32", "oleaut32",
@@ -117,7 +117,8 @@
                 "libs/linux-x86_64/libwgpu_native.a",
                 "libs/linux-x86_64/libbox3d.a",
                 "libs/linux-x86_64/librecast_shim.a",
-                "libs/linux-x86_64/libstb_vorbis.a"
+                "libs/linux-x86_64/libstb_vorbis.a",
+                "libs/linux-x86_64/libzstd_engine.a"
             ],
             "libs-linux": ["stdc++", "m", "dl", "pthread", "rt"],
             "lflags-linux": [

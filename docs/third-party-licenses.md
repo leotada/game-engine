@@ -96,3 +96,9 @@ under the **zlib license**.
 
 The `TileCache` LZ77 compression helper (`vendor/recastnavigation/RecastDemo/Contrib/fastlz/`)
 is **FastLZ** by Ariya Hidayat, licensed under the **MIT License**.
+
+## zstd
+
+- Source: https://github.com/facebook/zstd (v1.5.7), `lib/common`, `lib/compress`, `lib/decompress` vendored in `vendor/zstd/`.
+- License: BSD-3-Clause (the repo also offers GPLv2; the engine uses the BSD terms). Text in `vendor/zstd/LICENSE`.
+- Used by: `engine.assets.zstd` (chunk and pack compression). Built into `libzstd_engine.a` by `tools/build_sdl3_deps.sh`.
