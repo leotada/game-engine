@@ -19,6 +19,19 @@ blocks : payloads, 16-byte aligned; crc32 is over the decompressed bytes
 
 Codecs: `0` stored, `1` zstd (a block is stored raw when compression does not shrink it).
 
+### zstd backend and levels
+
+Blocks are standard zstd frames (with content size and checksum), produced and read by `engine.assets.zstd`, which is
+backed by the pure-D zipd codec vendored in `vendor/zipd` (no C library, no GC, no threads). Frames interoperate with
+the reference implementation in both directions: `zstd -d` reads what the engine writes, and the engine reads frames
+from `zstd`/libzstd (dictionaries are not supported). The unit tests carry frames written by the zstd CLI and, when the
+CLI is installed, check our frames against `zstd -d`.
+
+The zipd encoder has levels `1..9` (match-search effort); `--level` / `encodeChunk(..., level)` values outside that
+range are clamped (`0` and negatives become 1, libzstd levels `10..19` and above become 9). The default stays 6. The
+encoder uses a 1 MiB window and a hash-chain matcher, so it is slower than libzstd (decoding roughly 5-7x, encoding 2x at
+level 6 with an optimized build) at similar ratios; on scene chunks (tens of KB) the sizes are within a few percent.
+
 | Kind | Content |
 |:---|:---|
 | `header` | schema version, meta, settings, cell bounds, chunk manifest, string table |

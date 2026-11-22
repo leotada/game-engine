@@ -291,7 +291,7 @@ private ubyte[] encodeCustom(const ref SceneFile s) {
     return w.buf;
 }
 
-/// Encode `scene` (and the game's `user` blocks) into a `.gesc` file. `level` is the zstd level (1..19).
+/// Encode `scene` (and the game's `user` blocks) into a `.gesc` file. `level` is the zstd level (1..9; other values are clamped).
 ubyte[] encodeChunk(const ref SceneFile scene, const(GescUserBlock)[] user = null, int level = 6) {
     RawBlock[] blocks;
     blocks ~= RawBlock(GescBlockKind.header, encodeHeader(scene));

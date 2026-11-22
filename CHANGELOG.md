@@ -12,7 +12,9 @@
 - **Chunk streaming from the asset pak**: `WorldStreamer` reads chunk bytes from a mounted GEPK pak (new `@nogc`
   `readMountedAssetNoGc` in `engine.assets.pak`) with disk fallback; the exporter verifies and counts packed
   chunks and gains `--pak-dir=<dir>` (extra directories in the pak, e.g. chunk folders outside `Assets`).
-- `engine.assets.zstd`: `@nogc` one-shot zstd (vendored zstd 1.5.7 in `vendor/zstd`, `libzstd_engine.a`).
+- `engine.assets.zstd`: `@nogc` one-shot zstd. Backed by the pure-D zipd codec vendored in `vendor/zipd` (levels
+  clamped to 1..9, standard frames interoperable with `zstd`/libzstd); the C zstd 1.5.7 (`vendor/zstd`,
+  `libzstd_engine.a`, `bindings.zstd`) was removed along with its build step.
 
 All notable changes to this project are documented in this file.
 

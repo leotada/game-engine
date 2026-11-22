@@ -52,7 +52,7 @@ echo "Output dir: $OUT_DIR"
 # Stage pre-existing engine archives into target directory on host linux-x86_64
 stage_host_libs() {
     if [[ "$TARGET" == "linux-x86_64" ]]; then
-        for lib in libwgpu_native.a libbox3d.a librecast_shim.a libstb_vorbis.a libzstd_engine.a; do
+        for lib in libwgpu_native.a libbox3d.a librecast_shim.a libstb_vorbis.a; do
             if [[ -f "$LIBS_DIR/$lib" && ! -e "$OUT_DIR/$lib" ]]; then
                 ln -sf "$LIBS_DIR/$lib" "$OUT_DIR/$lib"
             fi
@@ -379,33 +379,6 @@ build_stb_vorbis() {
 }
 
 build_stb_vorbis
-
-# Build static libzstd_engine.a from the vendored zstd sources (vendor/zstd: common, compress, decompress)
-build_zstd() {
-    local zdir="$ROOT_DIR/vendor/zstd"
-    if [[ ! -d "$zdir/common" ]]; then
-        return 0
-    fi
-    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" ]]; then
-        echo "--- Skipping zstd auto-build for $TARGET (use target toolchain CMake/MSVC) ---"
-        return 0
-    fi
-    local obj_dir="$BUILD_ROOT/zstd"
-    mkdir -p "$obj_dir"
-    local cc="${CC:-gcc}"
-    local ar="${AR:-ar}"
-    echo "--- Building static libzstd_engine.a for $TARGET ---"
-    for f in "$zdir"/common/*.c "$zdir"/compress/*.c "$zdir"/decompress/*.c; do
-        "$cc" -O2 -fPIC -DZSTD_DISABLE_ASM=1 -DZSTD_LEGACY_SUPPORT=0 -DZSTD_MULTITHREAD=0 -I"$zdir" -c "$f" \
-            -o "$obj_dir/$(basename "$f" .c).o"
-    done
-    "$ar" rcs "$OUT_DIR/libzstd_engine.a" "$obj_dir"/*.o
-    if [[ "$TARGET" == "linux-x86_64" ]]; then
-        ln -sf "$OUT_DIR/libzstd_engine.a" "$LIBS_DIR/libzstd_engine.a"
-    fi
-}
-
-build_zstd
 
 stage_host_libs
 

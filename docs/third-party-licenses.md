@@ -97,8 +97,14 @@ under the **zlib license**.
 The `TileCache` LZ77 compression helper (`vendor/recastnavigation/RecastDemo/Contrib/fastlz/`)
 is **FastLZ** by Ariya Hidayat, licensed under the **MIT License**.
 
-## zstd
+## zipd (zstd codec)
 
-- Source: https://github.com/facebook/zstd (v1.5.7), `lib/common`, `lib/compress`, `lib/decompress` vendored in `vendor/zstd/`.
-- License: BSD-3-Clause (the repo also offers GPLv2; the engine uses the BSD terms). Text in `vendor/zstd/LICENSE`.
-- Used by: `engine.assets.zstd` (chunk and pack compression). Built into `libzstd_engine.a` by `tools/build_sdl3_deps.sh`.
+- Source: the author's `zipd` project (`packages/compressor`), a pure-D, `@safe` implementation of the Zstandard format
+  (RFC 8878). The modules `zstd_*`, `errors`, `xxhash` and `bitreader` are vendored in `vendor/zipd/`, with one local
+  addition (`scratch.d`, malloc-backed buffers) and local `@nogc`/`nothrow` changes: the GC scratch buffers of the
+  upstream encoder/decoder were replaced by `malloc`, and the upstream unit tests were dropped from the copy (the
+  engine tests the codec through `engine.assets.zstd`).
+- License: the upstream `dub.sdl` declares BSL-1.0 while the repository `LICENSE` file is MIT; both are permissive and
+  the project is owned by the engine author. The shipped text is `vendor/zipd/LICENSE`.
+- Used by: `engine.assets.zstd` (chunk and pack compression). Replaces the former C zstd 1.5.7 (BSD-3-Clause), which
+  is no longer vendored or linked.
