@@ -215,7 +215,7 @@ source/
 │   ├── platform/       # SDL3 window wrapper, input state
 │   ├── project/        # project.json, AssetDatabase (128-bit GUIDs + .meta sidecars)
 │   ├── reflect/        # Compile-time reflection, UDAs (@component, @export_), TypeRegistry, serialize
-│   ├── scene/          # Camera, controllers, scene graph, scene_file v2, prefab.d
+│   ├── scene/          # Camera, controllers, scene graph, scene_file v2, prefab.d, streamer.d, GESC chunks (chunk_binary.d, chunk_binary_nogc.d, chunk_components.d)
 │   ├── script/         # ScriptContext, module_entry.d, scripting API
 │   ├── terrain/        # Chunked heightmap terrain: data, generation, splat layers, renderer, Box3D colliders
 │   └── ui/             # Retained-mode UI: tree, flexbox, SDF font atlas, widgets, docking system
@@ -230,6 +230,7 @@ tools/
 ├── build_sdl3_deps.sh  # Build static SDL3, SDL3_image, SDL3_ttf, FreeType libs per target
 ├── export_main.d       # CLI multiplatform game release exporter (`--config=export`)
 ├── lint.d              # GC-safe storage lint
+├── gesc_main.d         # `game-engine-gesc` CLI for `.gesc` chunks (`--config=gesc`; vendor/zipd = pure-D zstd codec)
 ├── web/shell.html      # Emscripten WebGPU HTML shell template
 └── player/             # Standalone player entrypoint (player_main.d)
 └── demo/               # Executable demos
@@ -255,6 +256,8 @@ dub test --config=export             # Run exporter unit tests (incl. ldd static
 dub run --config=outdoor -- --headless-frames=600 --assert-no-gc # OW-3 outdoor scene (terrain, sky, decals)
 dub run --config=ui-gallery          # UI widget & docking testbed
 dub run --config=lint                # Run GC-safe storage lint
+dub build --config=gesc              # Build the `game-engine-gesc` chunk tool (debug or release)
+dub run --config=surface-shadow-check # GPU check: surface-shader displace animates shadows (needs a window/GPU)
 dub test --config=library            # Run all unit tests
 dub build --config=demo              # Debug build (clear-screen demo)
 dub build --config=benchmark         # Debug build (3D benchmark)
@@ -306,4 +309,6 @@ Use `engine.meshopt.pipeline` (`optimizeMesh`) at import or load time. Never cal
 - **Using `format()` for per-frame labels inside the engine** — `format()` allocates on the GC heap. In hot frame paths use `FrameArena.fmt()` which writes into a pre-allocated scratch buffer and is reset at frame end.
 - **Intern-ing unbounded strings** — `StringTable.intern()` is O(1) for repeated strings but stores each unique string permanently. Only intern identifiers with bounded cardinality (material names, asset paths, dialog keys). Per-frame computed labels (e.g., `"npc_42_t1200"`) belong in `FrameArena`, not the interner.
 - **Enabling `FrameGcScheduler` mid-game** — benchmarks proved the frame-budgeted GC scheduler triples total pause under sustained allocation pressure. Use `GC.disable()` + `GC.collect()` only at explicit scene transitions and loading screens, where the heap is cold and slack is real.
+- **Returning a struct constructor call from a union-based SIMD struct** — DMD 2.113 segfaults with `-inline` (release builds) on `return V(v * o.v);` patterns. Build the result in a named local (`V r; r.v = ...; return r;`). Reproducer and details: [docs/dmd-inline-crash.md](docs/dmd-inline-crash.md).
+- **Calling the zstd C library or adding a C compression dependency** — compression goes through `engine.assets.zstd` (pure-D `vendor/zipd`, `@nogc nothrow`, levels 1..9). Keep that API stable; `chunk_binary.d` depends on it.
 - **Using `std.math` real-precision functions or `std.algorithm.sort` inside `engine.meshopt`** — breaks bit-exactness with upstream meshoptimizer. Use `core.stdc.math` and the sorts in `engine.meshopt.internal.sort`.
