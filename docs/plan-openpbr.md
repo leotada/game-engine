@@ -1,6 +1,6 @@
 # Plan: Real-Time OpenPBR Surface v1.1, IBL & Shadows
 
-> **Status:** Phase 1 Done (`PBR-0`–`5`, `OPBR-1`–`5`) · Phase 2 In Progress (`OPBR-6`–`7` Done; `OPBR-8`–`9` Pending) · Priority: Medium · See [roadmap.md](roadmap.md)
+> **Status:** Complete — Phase 1 (`PBR-0`–`5`, `OPBR-1`–`5`) & Phase 2 (`OPBR-6`–`9`) **Done** · See [roadmap.md](roadmap.md)
 
 ## Objective
 
@@ -20,7 +20,11 @@ Because the engine is in active development, we prioritize a clean, idiomatic Op
   - **Material UBO & Bindings (`source/engine/graphics/material.d`, `source/engine/gpu/pipeline.d`, `source/engine/gpu/context.d`):** Expanded `MaterialParams` to **176 bytes** (`11 × vec4f`) with `anisotropyRotation`, `thinFilmThicknessMin`, `transmissionColor`, `transmissionWeight`, `transmissionDepth`, `transmissionDispersion`, `transmissionThickness`, and `MaterialFlags.{coat, coatNormal, fuzz, anisotropy, thinFilm, transmission}`; expanded `@group(1)` to `MATERIAL_BINDING_COUNT = 13` (`@binding(8..12)` for `MaterialLayerMaps`) and `@group(0)` to `FRAME_BINDING_COUNT = 12` (`@binding(11) opaqueSceneColorMap`), requesting `maxSampledTexturesPerShaderStage = 32` via `WGPULimits`.
   - **Opaque HDR Pyramid & Multi-Pass Transmission (`source/engine/gpu/renderer.d`, `source/engine/scene/scene3d_textured.d`):** `Renderer.snapshotOpaque` builds a 5-mip `rgba16Float` HDR pyramid (`OPAQUE_COLOR_MIPS = 5`) using `post_bloom_down.wgsl`; `Scene3DTextured.end()` routes `Material.transmissive` batches to back-to-front Pass 1, captures the opaque snapshot on demand, binds `opaqueSceneColorMap` at `@group(0) @binding(11)` for Pass 1, and restores the 1×1 placeholder outside Pass 1.
   - **WGSL Shaders & glTF Packing (`textured3d_pbr.wgsl`, `common/pbr_brdf.wgsl`, `engine.assets.gltf`):** Per-pixel clearcoat/coat-normal/fuzz/anisotropy/thin-film modulation, screen-space IOR refraction (`refract(-V, N, 1/ior)`), roughness mip selection, Beer-Lambert absorption, chromatic dispersion, coat/fuzz transmittance, and `buildGltfLayerMaps` + `KHR_materials_{transmission,volume,dispersion}`; `source/demo/pbr.d` expanded to 5×5 with procedural layer maps and transmissive spheres.
-- **Pending (`OPBR-8`–`9`, Phase 2):** Subsurface scattering & thin-walled translucency (`subsurface_weight`), and local reflection probes / SSR.
+- **Delivered (`OPBR-8`–`9`, Phase 2 Completed):**
+  - **208-byte `MaterialParams` & 1504-byte `FrameUniforms` (`material.d`, `pipeline.d`, `components.d`, `scene3d_textured.d`):** Expanded `MaterialParams` to **208 bytes** (`13 × vec4f`: `subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceRadiusScale`, `subsurfaceAnisotropy`, `MaterialFlags.{thinWalled, subsurface, ssr}`) and `Material.ssr`; expanded `FrameUniforms` to **1504 bytes** (`ssrParams`, `probeCount`, `GpuReflectionProbeUbo[4]`) and `FRAME_BINDING_COUNT = 13` with `@binding(12) opaqueSceneDepthMap`.
+  - **Subsurface Scattering & Thin-Walled Translucency (`OPBR-8`):** Added `sampleDirShadowBackAndThickness` (`shadows.wgsl`), Henyey-Greenstein thin-walled back-face transmission + Penner RGB wrap subsurface scattering (`pbr_brdf.wgsl`), per-pixel `transmissionMap.b` modulation and back-hemisphere IBL wrapping (`textured3d_pbr.wgsl`), `KHR_materials_diffuse_transmission` parsing/packing (`gltf.d`), and asset/scene/inspector support (`asset_file.d`, `scene_file.d`, `inspector.d`).
+  - **Local Reflection Probes & SSR (`OPBR-9`):** Added `@component ReflectionProbe` (`MAX_REFLECTION_PROBES = 4`), `SceneRenderer` ECS query, 4-pass `Scene3DTextured.end()` (0 opaque → 1 SSR opaque + water → 2 transmissive/alpha → 3 additive), `setSsr` / `setReflectionProbes`, parallax-corrected `evalLocalReflectionProbes`, and 16-step + 3-step binary `evalScreenSpaceReflection` against `opaqueSceneDepthMap` and `opaqueSceneColorMap`; `source/demo/pbr.d` expanded to a 6×5 showcase grid.
+  - **Zero-Lint Hygiene:** Resolved remaining `dub run --config=lint` warnings in `tools/lint.d` and `source/engine/meshopt/cluster.d` so `dub run --config=lint` passes with zero violations.
 
 ## Out of Scope
 
@@ -203,7 +207,7 @@ Consolidated from the original metallic-roughness + IBL + shadow plan (`plan-pbr
 
 **DoD:** `dub build --config=pbr`, `dub run --config=editor -- --headless-frames=600 --assert-no-gc`, and `dub run --config=player -- --headless-frames=600 --assert-no-gc` pass with zero GC allocations in the frame loop.
 
-### Phase 2 — Multi-Pass Slabs, Layer Textures & Local Reflections (`OPBR-6`–`7` Done, `OPBR-8`–`9` Pending)
+### Phase 2 — Multi-Pass Slabs, Layer Textures & Local Reflections (`OPBR-6`–`9`, Done)
 
 #### OPBR-6 — Per-Pixel Layer Texture Maps (Coat, Fuzz, Anisotropy & Thin-Film) — Done
 
@@ -220,17 +224,17 @@ Consolidated from the original metallic-roughness + IBL + shadow plan (`plan-pbr
 
 **DoD:** Rough and smooth glass, water, and transmissive glTF models refract background geometry with physically plausible IOR distortion, blur, and volume tint with zero frame-loop GC allocations.
 
-#### OPBR-8 — Subsurface Scattering & Thin-Walled Translucency (`subsurface_weight`)
+#### OPBR-8 — Subsurface Scattering & Thin-Walled Translucency (`subsurface_weight`) — Done
 
-- [ ] Implement single-pass thin-walled diffuse transmission (foliage, cloth, paper, lampshades) using back-face lighting + shadow map thickness attenuation (`KHR_materials_diffuse_transmission`).
-- [ ] Implement separable Screen-Space / Pre-Integrated Subsurface Scattering (`subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceAnisotropy`) for dense scattering media (skin, wax, marble, jade).
+- [x] Implement single-pass thin-walled diffuse transmission (`MaterialFlags.thinWalled`) with back-face lighting, Henyey-Greenstein phase, and directional shadow thickness estimation (`sampleDirShadowBackAndThickness`, `KHR_materials_diffuse_transmission`).
+- [x] Implement pre-integrated Penner RGB wrap Subsurface Scattering + back-lit volume profile (`subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceRadiusScale`, `subsurfaceAnisotropy`) and showcase skin/wax/jade/foliage/silk in `source/demo/pbr.d` (Row 5).
 
 **DoD:** Back-lit foliage/cloth and close-up skin/wax/jade materials render with diffuse translucency and subsurface color bleeding while keeping the frame loop `@nogc`.
 
-#### OPBR-9 — Local Reflection Probes & Screen-Space Reflections (SSR)
+#### OPBR-9 — Local Reflection Probes & Screen-Space Reflections (SSR) — Done
 
-- [ ] Add localized parallax-corrected cubemap reflection probes (`ReflectionProbe` component) and optional hierarchical depth-buffer SSR in the HDR pipeline.
-- [ ] Blend SSR / local probe specular radiance with the `@group(2)` sky IBL cubemap based on screen-edge fade and roughness.
+- [x] Add `@component ReflectionProbe` (`MAX_REFLECTION_PROBES = 4`), `Scene3DTextured.setReflectionProbes` / `setSsr`, `@group(0) @binding(12) opaqueSceneDepthMap`, and 4-pass `Scene3DTextured.end()` scheduling SSR opaques (`MaterialFlags.ssr`) cleanly alongside water and transmission.
+- [x] Implement parallax-corrected box/sphere probe evaluation (`evalLocalReflectionProbes`) and 16-step + 3-step binary raymarched SSR (`evalScreenSpaceReflection`) in `textured3d_pbr.wgsl`, blending seamlessly into base and coat specular IBL.
 
 **DoD:** Smooth metallic, clearcoated, and dielectric surfaces reflect neighboring scene geometry with seamless fallback to the environment cubemap.
 
