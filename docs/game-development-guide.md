@@ -133,24 +133,31 @@ p.coatWeight = 0.4f;
 auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, albedo, p, null, null, null, null);
 ```
 
-### 3.3 Multi-Light & Automatic Shadows (`LightSet` + `renderShadows`)
+### 3.3 Multi-Light (Clustered Forward) & Automatic Shadows
 
-`LightSet` supports **1 directional**, **32 point**, and **4 spot** lights per frame, with automatic shadow rendering across **1 dir (2048²)**, **4 point cubemaps (512²/face)**, and **2 spot (1024²)** shadow casters:
+Clustered Forward rendering supports **1 directional**, up to **1,024 point**, and up to **256 spot** active lights per frame, with automatic shadow rendering across **1 dir (2048²)**, **4 point cubemaps (512²/face)**, and **2 spot (1024²)** shadow casters:
+
+- Use stack-friendly `LightSet` for compact scenes (up to `32` point / `4` spot inline lights).
+- Use `@nogc` `LightList` (or `scene.addPointLight()` / `scene.addSpotLight()` between `begin` and `end`) to scale up to `1,024` point + `256` spot lights with zero stack bloat and zero GC allocations.
 
 ```d
-LightSet lights;
+LightList lights; // reuse across frames; lights.release() on shutdown
+scope(exit) lights.release();
+
+lights.clear();
 lights.dirEnabled = true;
 lights.dir.direction = Vec3(0.45f, 1.0f, 0.35f).normalized(); // surface -> light
 lights.dir.viewProj = directionalLightVP(lights.dir.direction, Vec3(0, 0, 0), 20.0f);
 lights.dir.castShadows = true;
-lights.points[0] = GpuPointLight(Vec3(-2, 3, 1), Vec3(0.3f, 0.8f, 1.0f), 12.0f, 18.0f, true);
-lights.pointCount = 1;
+lights.addPoint(GpuPointLight(Vec3(-2, 3, 1), Vec3(0.3f, 0.8f, 1.0f), 12.0f, 18.0f, true));
 
 scene.begin(camera);
 scene.drawMatrix(mesh, mat, model, Color4.white());
 scene.renderShadows(frame, lights); // automatic depth pass before color submission
-scene.end(frame);
+scene.end(frame);                   // runs Clustered Forward GPU binning + PBR shading
 ```
+
+> **Details & Benchmarks:** See [Clustered Forward Lighting](graphics.md#clustered-forward-lighting-enginegpuclustered-clustered_cull_cswgsl) and `dub run --config=clustered-bench` (`--lights=1024 --spots=128`, toggled live with `[C]`).
 
 > **Water & Refraction:** Call `app.renderer.snapshotOpaque(frame)` after opaque geometry to capture HDR color and `depth32Float` for refractive/SSR shaders with zero cost on scenes that do not use it (`dub run --config=water`).
 

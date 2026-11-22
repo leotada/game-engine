@@ -37,7 +37,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 - **OpenPBR Surface (#3):** **Complete** (`PBR-0–5`, `OPBR-1–9`) — 208-byte OpenPBR v1.1 `MaterialParams`, `@group(1)` bindings `8..12` for per-pixel layer maps, `@group(0)` bindings `11..12` 5-mip opaque HDR color + depth snapshot for refractive transmission/volume/dispersion & SSR, pre-integrated RGB wrap SSS + thin-walled translucency (`OPBR-8`), local parallax-corrected `ReflectionProbe`s (`OPBR-9`), 3-channel GGX + Charlie BRDF LUT, and full `KHR_materials_*` extension packing (`plan-openpbr.md`).
 - **Hot-Reload before Parallel ECS:** Day-to-day productivity boost; parallelism addresses scaling, but does not unblock gameplay content creation.
 - **Terrain/Water (#7) after Scene Editor (#6):** Reuses picking, asset database, serialization, and gizmos; Box3D heightfield unblocks terrain collision.
-- **Rendering Evolution (GFX Backlog):** Editor v1 ships Forward rendering with shadow caster limits (`MAX_POINT_SHADOW_CASTERS`). Future evolution: **Static Shadow Caching** (cubemap reuse for static lights) and **Clustered Forward Rendering** (WGPU Compute) for light scaling.
+- **Rendering Evolution (GFX Backlog):** Clustered Forward Rendering (WGPU Compute binning across a `16×9×24` frustum grid scaling to **1,024 point** + **256 spot** lights) is **Done** (`--config=clustered-bench`). Remaining future optimization: **Static Shadow Caching** (cubemap reuse for static shadow-casting lights; `MAX_POINT_SHADOW_CASTERS = 4`, `MAX_SPOT_SHADOW_CASTERS = 2`).
 - **GC-Safe (#2) Completed:** `Pod!T[]` engine storage, `World.strings`, `App.frameArena`, `dub run --config=lint`. All new buffers must use `Pod!T` / `Handle!T` / `StringId`.
 
 ## Already Delivered (Do Not Reopen)

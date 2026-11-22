@@ -166,7 +166,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), tangent-extended (`MESH_TANGENT`, stride=48, `vec4f tangent`), or GPU-skinned (`MESH_TANGENT` + `SKINNED`, stride=80, `SkinnedVertex`: `pos + normal + uv + tangent + vec4u joints + vec4f weights`)
 - **Vertex buffer 1** — instances: `TexInstanceData` (4×`float32x4` model + `vec4f` tint + `vec4f` custom, stride=96); vertex shaders transform normals with the $3 \times 3$ adjugate (cofactor transpose, `Mat4.transformNormal`) so non-uniform scaling preserves correct lighting
 - **Bind groups:**
-  - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 13 entries, one layout shared by every scene-space pipeline) — 1504-byte `FrameUniforms` (viewProj, lights, cascades, SSR params, `ReflectionProbeData[4]`, atmosphere/sky) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater)), 5-mip opaque HDR scene pyramid (`opaqueSceneColorMap`) at 11, and resolved opaque scene depth (`opaqueSceneDepthMap`) at 12 (placeholders outside SSR/transmissive passes, updated via `Renderer.snapshotOpaque`)
+  - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 16 entries, one layout shared by every scene-space pipeline) — 1024-byte `FrameUniforms` (viewProj, dirLight, cascades, SSR params, `ReflectionProbeData[4]`, atmosphere/sky, `viewportRect`, `clusterZParams`) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater)), 5-mip opaque HDR scene pyramid (`opaqueSceneColorMap`) at 11, resolved opaque scene depth (`opaqueSceneDepthMap`) at 12, spot-light storage at 13, cluster grid records (`16 × 9 × 24` clusters) at 14, and compacted per-cluster light index pool at 15
   - `@group(1) Material` (`MATERIAL_BINDING_COUNT` = 13 entries) — 208-byte `MaterialParams` UBO (`13 × vec4f`: Base, Specular/IOR/Anisotropy, `anisotropyRotation`, Coat, Fuzz, Thin-Film min/max thickness, Emission, Geometry Opacity, Transmission color/weight/depth/dispersion/thickness, Subsurface weight/color/radius/radiusScale/anisotropy), filtering sampler, albedo + MR/normal/occlusion/emissive maps (`2..6`), surface params UBO (`7`), and optional `MaterialLayerMaps` (`8..12`: `coat`, `coatNormal`, `fuzz`, `anisoFilm`, `transmission`, bound with 1×1 defaults when omitted)
   - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
   - `@group(3) Skin` *(skinned variant only)* — read-only storage buffer of concatenated `mat4x4<f32>` joint palettes (`Scene3DTextured.drawSkinned`)
@@ -381,16 +381,27 @@ OW-3 adds:
 
 Everything stays zero-GC in the frame loop. The reference scene is `dub run --config=outdoor`.
 
-### `FrameUniforms` (1280 bytes)
+### `FrameUniforms` (1024 bytes)
 
-`Scene3DTextured.FrameUniforms` (`shadows.wgsl` `FrameUniforms`) carries everything the outdoor features read:
+`Scene3DTextured.FrameUniforms` (`common/shadows.wgsl` `FrameUniforms`) carries global frame data:
 
 - cascade matrices, splits and texel sizes;
-- `invViewProj`, camera forward/near/far and viewport;
-- fog, moon, sky and sky-sun parameters;
-- `globalWetness`, `rainIntensity` and `cloudCoverage`.
+- `invViewProj`, camera forward/near/far, `viewportSize`, `viewportRect` (active pixel sub-viewport) and `clusterZParams` (logarithmic Z slicing);
+- fog, moon, sky and sky-sun parameters, SSR params, and `ReflectionProbeData[4]`;
+- `globalWetness`, `rainIntensity`, `cloudCoverage`, and `clusteredFlags`.
 
 `FRAME_UNIFORMS_SIZE` in `engine/gpu/pipeline.d` must match.
+
+### Clustered Forward Lighting (`engine.gpu.clustered`, `clustered_cull_cs.wgsl`)
+
+`Scene3DTextured` scales active unshadowed local lights to **1,024 point lights** (`@group(0) @binding(9)`) and **256 spot lights** (`@group(0) @binding(13)`) while retaining deterministic shadow budgets (**1** dir, **4** point cubemaps, **2** spot maps):
+
+- **Frustum Grid (`16 × 9 × 24` = 3,456 clusters):** Screen tiles map via `frame.viewportRect` (preserving Editor dock panel offsets), and depth slices partition `[nearZ, farZ]` logarithmically via `frame.clusterZParams` ($d_k = \text{near} \cdot (\text{far}/\text{near})^{k/24}$).
+- **Compute Culling (`ClusteredLightCuller`):** At the start of `Scene3DTextured.end()`, when `clusteredEnabled` is true and at least one local light is active, the HDR scene pass suspends cleanly (`FrameContext.suspendScenePass` / `resumeScenePass`) to run two compute passes:
+  1. `cs_reset` `(1, 1, 1)` clears the GPU atomic index counter in `ClusterState`.
+  2. `cs_cull` `(16, 9, 24)` dispatches one 64-thread workgroup per cluster; thread 0 builds the view-space cluster AABB, all 64 threads test point spheres (`sphereIntersectsAabb`) and spot cones (exact minimum bounding sphere + behind-apex half-space check), and the cluster appends compacted indices into `clusterLightIndices` (`@binding(15)`) while writing its `{offset, pointCount, spotCount}` `ClusterRecord` (`@binding(14)`).
+- **Shader Evaluation:** `textured3d_pbr.wgsl`, `common/simple_pbr.wgsl` (`terrain_pbr.wgsl`, `decal_pbr.wgsl`), and `water_surface.wgsl` all evaluate only the fragment's cluster list via `clusterIndexAt(worldPos, screenXY)` (`common/shadows.wgsl`), with explicit-LOD shadow comparisons (`textureSampleCompareLevel`) for WGSL uniformity compliance and optional runtime linear fallback (`Scene3DTextured.setClusteredCulling(false)`).
+- **Stress Benchmark (`dub run --config=clustered-bench`):** Verified at `1280×720` with **1,024 dynamic point lights + 128 spot lights**: **6.386 ms p50** (`6.974 ms` p95, `103.5 FPS` avg with screenshot frame) vs **15.707 ms p50** (`52.7 FPS`) unclustered (**2.46× median speedup**), with **0 bytes** GC allocation.
 
 ### Cascaded shadow maps (`engine.scene.cascades`)
 
