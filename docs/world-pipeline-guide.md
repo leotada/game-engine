@@ -204,7 +204,7 @@ flatpak run org.blender.Blender -b $PWD/level01.blend -P $PWD/tools/blender_expo
     --name=level01 --project-root=$PWD
 ```
 
-Options: `--out=assets/world`, `--cell-size=256`, `--load-radius` (default 1.5 × cell), `--unload-radius` (default 2 × cell), `--collection=NAME`, `--dump-json=FILE`, `--from-json=FILE` (pure-Python backend, no Blender), `--build-test-level`.
+Options: `--out=assets/world`, `--cell-size=256`, `--load-radius` (default 1.5 × cell), `--unload-radius` (default 2 × cell), `--collection=NAME`, `--dump-json=FILE`, `--from-json=FILE` (pure-Python backend, no Blender), `--build-test-level`, `--format=json|gesc`, `--gesc-tool=PATH`, `--gesc-level=N`.
 
 ### 5.1 Output
 
@@ -218,6 +218,17 @@ Options: `--out=assets/world`, `--cell-size=256`, `--load-radius` (default 1.5 �
 | `*.meta` | GUIDs derived from the project-relative path, so re-exports and other machines keep asset identities (existing sidecars are kept) |
 
 Each object goes to the cell that contains its origin: `floor(x / cellSize), floor(z / cellSize)` in engine space. Blender Z-up is converted to engine Y-up as `(x, y, z) → (x, z, -y)`, with quaternions and scales converted to match. Object hierarchies are flattened to world transforms. Sun lights always go to the root scene. Point and spot lights are streamed with their cell.
+
+### 5.1.1 Binary chunks (`--format=gesc`)
+
+The default output is JSON only. With `--format=gesc` the exporter still writes every `chunk_<x>_<z>.scene.json` (the editable source) and also encodes each one to `chunk_<x>_<z>.gesc` ([GESC](chunk-format.md): columnar, zstd, CRC-checked). Each `.gesc` is verified right after encoding. The root manifest `scenePath` entries then point at the `.gesc` files, which `WorldStreamer` loads by content; the root scene stays JSON. `export_report.json` lists both `scenePath` (streamed file) and `sourcePath` (JSON source) per chunk.
+
+```bash
+dub build --config=gesc    # once: builds ./game-engine-gesc
+blender -b level01.blend -P tools/blender_export_scene.py -- --name=level01 --format=gesc
+```
+
+The tool is looked up in this order: `--gesc-tool=PATH`, `$GAME_ENGINE_GESC`, `<project-root>/game-engine-gesc`, `<repo>/game-engine-gesc`, then `PATH`. If none exists (or `--gesc-tool` is not executable) the export stops before writing anything with an error that says how to build it. Chunk size is the existing `--cell-size`: the exporter already emits one chunk per cell, so no separate split step is needed. `--gesc-level` sets the zstd level (default 6).
 
 ### 5.2 Custom properties
 

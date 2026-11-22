@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Blender exporter `--format=gesc`** (`tools/blender_export_scene.py`, `docs/world-pipeline-guide.md` 5.1.1): also encodes each
+  chunk to a verified `.gesc` through `game-engine-gesc` (located via `--gesc-tool`, `$GAME_ENGINE_GESC`, project/repo root or
+  `PATH`, with a clear error if missing); `.scene.json` stays the editable default and the manifest points at the `.gesc` files.
 - **GESC binary chunks** (`engine.scene.chunk_binary`, `docs/chunk-format.md`): columnar, zstd-compressed,
   CRC-checked scene chunks with game-defined user blocks; `WorldStreamer` loads GESC or JSON chunks by content
   and calls `GescBlockHandler`s on load/unload. `game-engine-gesc` tool (`encode`, `decode`, `info`, `verify`,
