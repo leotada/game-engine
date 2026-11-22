@@ -634,6 +634,7 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
     streamer.update(world, camera.position, uploadBudgetMs: 2.0f);
     ```
     Deep dive: [plan-open-world-readiness.md](plan-open-world-readiness.md).
+  - **Batched ECS insertion & binary chunks:** `world.spawnBatch(n)` / `world.setBatch(ids, comps)` (and `RawComponentStore.addBatch`) insert many entities/components in one pass. Chunks may be `.gesc` files; `encodeChunkWithComponents(scene, world.types, world.strings)` cooks your registered custom components into binary blocks (mapped by type name, tolerant of added/removed/renamed fields, `@entityRef uint` fields remapped), and `applyChunk` loads them. Details: [chunk-format.md](chunk-format.md), [world-pipeline-guide.md §5.3](world-pipeline-guide.md).
 - **Asset & Tunable Hot-Reload (`OW-8`, `engine.hotreload`):** in the editor (always) and in the player (`--hot-reload`), edits to models/images/`.meta`, `*.prefab.json` (live instances rebuilt, per-instance overrides kept), the open `*.scene.json`, and `*.tune.json` apply within ~0.2 s. Failed loads keep the previous version. In your own loop:
   ```d
   TunableRegistry tunables;

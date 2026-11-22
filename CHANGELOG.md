@@ -21,6 +21,14 @@
 - `engine.assets.zstd`: `@nogc` one-shot zstd. Backed by the pure-D zipd codec vendored in `vendor/zipd` (levels
   clamped to 1..9, standard frames interoperable with `zstd`/libzstd); the C zstd 1.5.7 (`vendor/zstd`,
   `libzstd_engine.a`, `bindings.zstd`) was removed along with its build step.
+- **Batched ECS insertion** (`engine.ecs.scene_world`, `engine.ecs.store`): `SceneWorld.spawnBatch`,
+  `rawAddBatch` / `setBatch`, `RawComponentStore.addBatch` / `reserve`, `ComponentStore.addBatch`; `loadSceneAdditive`
+  uses them for the Transform and Name columns.
+- **GESC v2 binary component blocks** (`engine.scene.chunk_components`, `docs/chunk-format.md`): `types` + per-type
+  `component` blocks mapped by type name, memcpy when the layout matches and field-by-field (with `@formerlyNamed`
+  and numeric conversion) when it differs, `StringId` and `@entityRef` remapping; `applyChunk` separates decode from
+  apply. Chunks without the blocks stay version 1 and still load; JSON remains the fallback. Adds
+  `TypeRegistry.registerRuntime` and `@entityRef`. Decode + apply of the 55 k-entity map: ~540 ms to ~105 ms (debug).
 
 All notable changes to this project are documented in this file.
 
