@@ -5,8 +5,8 @@
     "copyright": "Copyright © 2022-2026, Leonardo Tada",
     "license": "MIT",
 
-    "sourcePaths": ["source/engine", "source/bindings"],
-    "importPaths": ["source", "source/bindings/box3d", "source/bindings/recast"],
+    "sourcePaths": ["source/engine", "source/bindings", "vendor/zipd"],
+    "importPaths": ["source", "vendor/zipd", "source/bindings/box3d", "source/bindings/recast"],
     "stringImportPaths": ["assets/shaders"],
 
     "dflags-dmd": ["-preview=dip1000", "-defaultlib=libphobos2.so", "-P-std=c17", "-P-I$PACKAGE_DIR/vendor/box3d/include"],
@@ -17,7 +17,7 @@
         "source/bindings/stb_vorbis/stb_vorbis_import.c",
         "source/bindings/recast/recast_import.c"
     ],
-    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "zstd_engine", "symgc-cards"],
+    "libs": ["SDL3", "wgpu_native", "box3d", "recast_shim", "stb_vorbis", "symgc-cards"],
     "libs-linux": ["stdc++", "m"],
     "libs-windows": [
         "user32", "gdi32", "winmm", "imm32", "ole32", "oleaut32",
@@ -117,8 +117,7 @@
                 "libs/linux-x86_64/libwgpu_native.a",
                 "libs/linux-x86_64/libbox3d.a",
                 "libs/linux-x86_64/librecast_shim.a",
-                "libs/linux-x86_64/libstb_vorbis.a",
-                "libs/linux-x86_64/libzstd_engine.a"
+                "libs/linux-x86_64/libstb_vorbis.a"
             ],
             "libs-linux": ["stdc++", "m", "dl", "pthread", "rt"],
             "lflags-linux": [
@@ -323,15 +322,29 @@
             "targetName": "game-engine-gesc",
             "mainSourceFile": "tools/gesc_main.d",
             "sourcePaths": [],
-            "importPaths": ["source", "source/bindings/zstd"],
+            "importPaths": ["source", "vendor/zipd"],
             "sourceFiles": [
                 "tools/gesc_main.d",
                 "source/engine/scene/scene_file.d",
                 "source/engine/scene/chunk_binary.d",
                 "source/engine/assets/zstd.d",
-                "source/bindings/zstd/package.d"
+                "vendor/zipd/zipd/compressor/errors.d",
+                "vendor/zipd/zipd/compressor/scratch.d",
+                "vendor/zipd/zipd/compressor/xxhash.d",
+                "vendor/zipd/zipd/compressor/bitreader.d",
+                "vendor/zipd/zipd/compressor/zstd_tables.d",
+                "vendor/zipd/zipd/compressor/zstd_bitstream.d",
+                "vendor/zipd/zipd/compressor/zstd_fse.d",
+                "vendor/zipd/zipd/compressor/zstd_huffman.d",
+                "vendor/zipd/zipd/compressor/zstd_sequences.d",
+                "vendor/zipd/zipd/compressor/zstd_frame.d",
+                "vendor/zipd/zipd/compressor/zstd_dec.d",
+                "vendor/zipd/zipd/compressor/zstd_lz.d",
+                "vendor/zipd/zipd/compressor/zstd_fse_enc.d",
+                "vendor/zipd/zipd/compressor/zstd_huffman_enc.d",
+                "vendor/zipd/zipd/compressor/zstd_enc.d"
             ],
-            "libs": ["zstd_engine"],
+            "libs": [],
             "versions": ["NoSDL", "NoWGPU"]
         },
         {
