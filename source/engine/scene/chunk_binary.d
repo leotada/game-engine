@@ -65,6 +65,15 @@ struct GescChunk {
     GescUserBlock[] user;
 }
 
+/// A game's handler for one named user block: called when a chunk that carries it becomes active, and when
+/// the chunk is unloaded. `ctx` is passed back as is; handlers must tolerate an unload for a chunk they never saw.
+struct GescBlockHandler {
+    string name;
+    void function(void* ctx, int cellX, int cellZ, const(ubyte)[] data) onLoad;
+    void function(void* ctx, int cellX, int cellZ) onUnload;
+    void* ctx;
+}
+
 /// One row of the block table, for tools (`--info`) and tests.
 struct GescBlockInfo {
     GescBlockKind kind;
@@ -600,6 +609,24 @@ bool decodeChunk(const(ubyte)[] bytes, out GescChunk chunk, out string err) {
     }
     chunk.scene = s;
     return true;
+}
+
+/// True when `bytes` starts with the GESC magic.
+bool isGesc(const(ubyte)[] bytes) pure nothrow @nogc {
+    return bytes.length >= 4 && bytes[0 .. 4] == GESC_MAGIC[];
+}
+
+/// Parse a chunk file of either format (GESC or `*.scene.json`). Throws on malformed data.
+GescChunk parseChunkBytes(const(ubyte)[] bytes) {
+    import std.exception : enforce;
+    GescChunk c;
+    if (isGesc(bytes)) {
+        string err;
+        enforce(decodeChunk(bytes, c, err), "GESC: " ~ err);
+    } else {
+        c.scene = parseSceneJson(cast(string) bytes.idup);
+    }
+    return c;
 }
 
 // ---------------------------------------------------------------------------

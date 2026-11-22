@@ -26,6 +26,7 @@ import engine.physics.body : CookedMesh;
 import engine.project.asset_ref : AssetGuid;
 import engine.scene.scene_file :
     ChunkManifest, parseSceneJson, SceneFile;
+import engine.scene.chunk_binary : GescBlockHandler, GescChunk, parseChunkBytes;
 
 @safe:
 
@@ -167,6 +168,9 @@ struct WorldStreamer {
     private Pod!StreamedNavTileEntry[] _navTileCache;
     private NavMesh*[] _navMeshes;
 
+    private GescBlockHandler[] _blockHandlers;
+    private GescChunk[uint] _decoded;     /// chunks parsed in the asset step, consumed when entities spawn
+
     private DecodedChunkJob[] _pendingDecode;
     private DecodedChunkJob[] _completedDecode;
     private Pod!UploadQueueEntry[] _uploadQueue;
@@ -184,6 +188,11 @@ struct WorldStreamer {
     ~this() @trusted {
         stopWorker();
         destroyAll();
+    }
+
+    /// Register a handler for a named user block of GESC chunks (packed instance arrays and the like).
+    void addBlockHandler(GescBlockHandler h) {
+        _blockHandlers ~= h;
     }
 
     /// Initialize cells and radii from a `SceneFile` v2 `ChunkManifest`.
@@ -414,6 +423,10 @@ struct WorldStreamer {
             }
             cell.entityOffset = 0;
             cell.entityCount = 0;
+            foreach (ref h; _blockHandlers)
+                if (h.onUnload !is null)
+                    h.onUnload(h.ctx, cell.coord.x, cell.coord.z);
+            _decoded.remove(cast(uint) i);
 
             // Release ref-counted assets owned by this cell.
             immutable assetEnd = cell.assetOffset + cell.assetCount;
@@ -721,9 +734,9 @@ struct WorldStreamer {
             }
 
             if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
-                auto jsonText = cast(string) job.rawSceneBytes[0 .. job.rawSceneLen];
                 try {
-                    auto sf = parseSceneJson(jsonText);
+                    _decoded[cellIdx] = parseChunkBytes(job.rawSceneBytes[0 .. job.rawSceneLen]);
+                    auto sf = &_decoded[cellIdx].scene;
                     foreach (ref link; sf.assetLinks) {
                         auto guid = AssetGuid.fromString(link.guid);
                         string path = (link.path >= 0 && link.path < cast(int) sf.strings.length)
@@ -772,17 +785,26 @@ struct WorldStreamer {
         if (jobIdx < _uploadJobs.length) {
             const job = _uploadJobs[jobIdx];
             if (job.hasSceneData && job.rawSceneBytes !is null && job.rawSceneLen > 0) {
-                auto jsonText = cast(string) job.rawSceneBytes[0 .. job.rawSceneLen];
                 try {
-                    auto sf = parseSceneJson(jsonText);
+                    GescChunk local;
+                    auto held = cellIdx in _decoded;
+                    if (held is null) {
+                        local = parseChunkBytes(job.rawSceneBytes[0 .. job.rawSceneLen]);
+                        held = &local;
+                    }
                     SceneLoadOptions opts;
                     opts.validate = false;
                     opts.checkAssetFiles = false;
-                    auto res = loadSceneAdditive(world, sf, Vec3(0, 0, 0), opts);
+                    auto res = loadSceneAdditive(world, held.scene, Vec3(0, 0, 0), opts);
                     foreach (eid; res.spawnedEntities) {
                         _cellEntities ~= eid;
                         entCount++;
                     }
+                    foreach (ref ub; held.user)
+                        foreach (ref h; _blockHandlers)
+                            if (h.name == ub.name && h.onLoad !is null)
+                                h.onLoad(h.ctx, cell.coord.x, cell.coord.z, ub.data);
+                    _decoded.remove(cellIdx);
                 } catch (Exception ex) {
                     warn("WorldStreamer: failed to spawn chunk entities: ", ex.msg);
                 }
@@ -1060,4 +1082,97 @@ private void freeDecodedBuffers(ref DecodedChunkJob job) nothrow @nogc @trusted 
     assert(world.entityCount() == 0);
     assert(world.capacity() <= 64, "EntityId recycling must keep capacity bounded");
     assert(peakCapacity <= 64);
+}
+
+version (unittest) {
+    private struct BlockProbe {
+        uint loads, unloads, bytes;
+        int lastX = -99, lastZ = -99;
+    }
+
+    private void probeLoad(void* ctx, int cx, int cz, const(ubyte)[] data) @trusted nothrow @nogc {
+        auto p = cast(BlockProbe*) ctx;
+        ++p.loads;
+        p.bytes += cast(uint) data.length;
+        p.lastX = cx;
+        p.lastZ = cz;
+    }
+
+    private void probeUnload(void* ctx, int cx, int cz) @trusted nothrow @nogc {
+        ++(cast(BlockProbe*) ctx).unloads;
+    }
+}
+
+@("streamer.gescChunksWithUserBlocks") @safe unittest {
+    import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+    import std.format : format;
+    import engine.editor.components : Visual;
+    import engine.scene.chunk_binary : encodeChunk, GescBlockHandler, GescUserBlock;
+    import engine.scene.graph : Transform;
+    import engine.scene.scene_file : ChunkManifest, SceneCellBounds, SceneChunkDescriptor, SceneEntityData;
+
+    immutable tmpDir = "build/test_streamer_gesc";
+    mkdirRecurse(tmpDir);
+    scope (exit) {
+        if (exists(tmpDir)) rmdirRecurse(tmpDir);
+    }
+
+    // 3 x 3 cells of 256 m: even chunks are GESC (with a 100-byte "plants" user block), odd ones plain JSON.
+    ChunkManifest manifest;
+    manifest.cellSize = 256.0f;
+    manifest.loadRadius = 300.0f;
+    manifest.unloadRadius = 420.0f;
+    foreach (cz; 0 .. 3)
+        foreach (cx; 0 .. 3) {
+            SceneFile cf;
+            cf.schemaVersion = 2;
+            cf.meta.name = format("chunk_%d_%d", cx, cz);
+            foreach (k; 0 .. 4) {
+                SceneEntityData e;
+                e.id = cast(uint)(k + 1);
+                e.transform.pos = [cx * 256.0f + k, 0.0f, cz * 256.0f];
+                e.hasVisual = true;
+                e.visual.hasKind = true;
+                e.visual.kind = "cube";
+                cf.entities ~= e;
+            }
+            string path;
+            if ((cx + cz) % 2 == 0) {
+                path = format("%s/chunk_%d_%d.gesc", tmpDir, cx, cz);
+                write(path, encodeChunk(cf, [GescUserBlock("test.plants", new ubyte[100])]));
+            } else {
+                import engine.scene.scene_file : saveSceneFile;
+                path = format("%s/chunk_%d_%d.scene.json", tmpDir, cx, cz);
+                saveSceneFile(path, cf);
+            }
+            SceneChunkDescriptor desc;
+            desc.coordX = cx;
+            desc.coordZ = cz;
+            desc.bounds = SceneCellBounds([cx * 256.0f, -10.0f, cz * 256.0f], [(cx + 1) * 256.0f, 200.0f, (cz + 1) * 256.0f]);
+            desc.scenePath = path;
+            manifest.chunks ~= desc;
+        }
+
+    SceneWorld world;
+    world.ensureRegistered!Transform();
+    world.ensureRegistered!Visual();
+    BlockProbe probe;
+    WorldStreamer streamer;
+    streamer.initFromManifest(manifest);
+    streamer.addBlockHandler(GescBlockHandler("test.plants", &probeLoad, &probeUnload, () @trusted { return cast(void*)&probe; }()));
+
+    // Stand in chunk (0,0): it and its neighbours inside the radius load, GESC and JSON alike.
+    foreach (_; 0 .. 20)
+        streamer.update(world, Vec3(128.0f, 0.0f, 128.0f), 50.0f);
+    immutable st = streamer.stats();
+    assert(st.activeCount >= 1);
+    assert(world.entityCount() == st.activeCount * 4, "every active chunk spawned its 4 entities");
+    assert(probe.loads >= 1 && probe.bytes == probe.loads * 100, "user blocks reached the handler");
+    assert(probe.lastX % 2 == probe.lastZ % 2, "only GESC chunks (even cx+cz) carry the block");
+
+    // Far away: everything unloads and the handler hears about it.
+    foreach (_; 0 .. 5)
+        streamer.update(world, Vec3(-5000.0f, 0.0f, -5000.0f), 50.0f);
+    assert(streamer.stats().activeCount == 0 && world.entityCount() == 0);
+    assert(probe.unloads >= probe.loads);
 }
