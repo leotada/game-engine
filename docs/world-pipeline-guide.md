@@ -372,3 +372,17 @@ Load time = allocates, call outside the frame loop. `@nogc` = safe per frame.
 - [plan-open-world-readiness.md](plan-open-world-readiness.md): `OW-8` status and decisions.
 - [plan-scripting-hot-reload.md](plan-scripting-hot-reload.md): HR-0..HR-3 roadmap.
 - [editor-guide.md](editor-guide.md) · [scripting-guide.md](scripting-guide.md) · [game-development-guide.md](game-development-guide.md).
+
+#### Streaming decode path
+
+`WorldStreamer` splits loading in two. The worker thread (GC-excluded) reads the chunk bytes (pak or disk) and, for
+GESC files, also validates, inflates and decodes them with `readChunkNoGc` into malloc-owned columns; the main thread
+only runs `applyChunkNoGc` (instancing into the `SceneWorld`, `GescBlockHandler`s). Decoded chunks are freed right
+after they spawn, and when a load is cancelled, fails, or the streamer is destroyed. A corrupt `.gesc` is reported
+with a warning and the cell activates empty. `*.scene.json` chunks keep the old path (parse on the main thread), as
+does the JSON text of non-cooked custom components. `WorldStreamer.stats()` reports `workerDecodeUsecs`,
+`mainPrepareUsecs` and `mainApplyUsecs`. Measured on the 144 chunks (55 k entities, debug build) of the Viatura VI map,
+per chunk: main thread 5.2 ms before (GC decode + apply) to 4.2 ms after, worker 1.0 ms. In that map every chunk
+still carries custom JSON components, and parsing them is 3.7 ms of the remaining main-thread time; with binary
+component blocks the apply is about 0.4 ms (`loadSceneAdditive` alone). Re-measure with
+`GESC_BENCH_DIR=<chunk dir> dub test --config=library`.

@@ -5,6 +5,12 @@
 - **GESC soak and export tests** (`engine.scene.gesc_soak_tests`, `engine.scene.world_export_tests`): 100-cycle streaming soak
   for `.gesc` chunks (v1 and v2 binary components) compared against the JSON soak, the same soak from a mounted pak, a
   corrupt-chunk robustness soak, and an export -> GESC -> streamer round trip. `GESC_SOAK_FULL=1` selects the full 9 km2 size.
+- **GC-free GESC decoding on the streamer worker** (`engine.scene.chunk_binary_nogc`, `docs/chunk-format.md`,
+  `docs/world-pipeline-guide.md`): `readChunkNoGc` validates, CRC-checks, inflates and decodes a `.gesc` into a
+  malloc-owned, move-only `GescChunkNoGc` on the GC-excluded worker; the main thread only runs `applyChunkNoGc`.
+  `decodeChunk` is unchanged and equivalent. Chunks are freed on spawn, cancel, failure and streamer destruction
+  (allocation counters in tests). `StreamerStats` gains `workerDecodeUsecs` / `mainPrepareUsecs` / `mainApplyUsecs`.
+  JSON chunks and non-cooked custom-component JSON still parse on the main thread.
 - **Blender exporter `--format=gesc`** (`tools/blender_export_scene.py`, `docs/world-pipeline-guide.md` 5.1.1): also encodes each
   chunk to a verified `.gesc` through `game-engine-gesc` (located via `--gesc-tool`, `$GAME_ENGINE_GESC`, project/repo root or
   `PATH`, with a clear error if missing); `.scene.json` stays the editable default and the manifest points at the `.gesc` files.

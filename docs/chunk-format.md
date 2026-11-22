@@ -98,6 +98,27 @@ component : str typeName | u32 count | u32 stringCount, stringCount x str |
 - `GescBlockHandler { name, onLoad, onUnload, ctx }` + `WorldStreamer.addBlockHandler`: a game gets its own
   `user` blocks when a chunk becomes active and a call when it unloads, with no ECS entity per item.
 
+## GC-free decoding (streamer worker)
+
+`engine.scene.chunk_binary_nogc` is a second decoder with the same acceptance rules and error strings as
+`decodeChunk`, built to run on the `WorldStreamer` worker thread (GC-excluded):
+
+- `readChunkNoGc(bytes, chunk, err)` (`nothrow @nogc`) validates the container, checks every CRC, inflates the zstd
+  blocks and decodes header, entity columns, visual / material / physics / light records, asset links, user blocks
+  and the raw `types` / `component` blocks into a `GescChunkNoGc`. A decode is a handful of `malloc`s and no GC
+  allocation (tested like `zstd.noGcAllocation`).
+- `GescChunkNoGc` owns a chain of malloc blocks: move-only (`@disable this(this)`), freed by `release()` or its
+  destructor. Strings and slices inside are non-owning views valid until then; never append to or keep them.
+  `gescChunkNoGcNew` / `gescChunkNoGcFree` give a heap handle (the streamer's job records copy handles around), and
+  `gescNoGcLiveAllocations()` / `gescNoGcLiveBytes()` expose accounting for leak tests.
+- `applyChunkNoGc(world, chunk, ...)` (main thread) lends the decoded rows to `applyChunk` as a zero-copy view.
+- `toGescChunk` makes a deep GC copy, equivalent to `decodeChunk`'s result (used by the equivalence tests).
+
+Limits: `customJson` blocks are validated structurally on the worker but their JSON text is parsed on the main
+thread at apply time (`std.json` needs the GC), so a JSON syntax error surfaces there, not in `readChunkNoGc`.
+`*.scene.json` chunks have no GC-free path and are still parsed on the main thread. Cook custom components into
+binary blocks (`encodeChunkWithComponents`) to keep the main thread free of JSON.
+
 ## Tool
 
 `dub build --config=gesc` builds `game-engine-gesc`:

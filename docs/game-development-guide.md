@@ -628,7 +628,7 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
     WorldStreamer streamer;
     if (sf.hasChunkManifest) {
         streamer.initFromManifest(sf.chunkManifest);
-        streamer.startWorker(); // background GC-excluded file I/O
+        streamer.startWorker(); // background GC-excluded file I/O + GESC decode (see docs/chunk-format.md)
     }
     // Per frame:
     streamer.update(world, camera.position, uploadBudgetMs: 2.0f);
