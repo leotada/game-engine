@@ -54,6 +54,13 @@ int main(string[] args) {
                     stderr.writefln("%s: %s", pos[1], err);
                     return 1;
                 }
+                if (c.componentBlocks.length) {
+                    // Binary component blocks need engine.scene.chunk_components (not linked into this tool yet):
+                    // writing JSON now would silently drop them.
+                    stderr.writefln("%s: carries %s binary component block(s); decode to JSON is not supported by this tool "
+                        ~ "(keep the .scene.json source, or use gescMaterializeJson from the engine)", pos[1], c.componentBlocks.length);
+                    return 1;
+                }
                 saveSceneFile(pos[2], c.scene);
                 return 0;
             case "info":

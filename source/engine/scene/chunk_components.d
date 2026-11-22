@@ -241,7 +241,12 @@ ubyte[] encodeChunkWithComponents(const ref SceneFile scene, ref TypeRegistry re
             auto acc = &accs[*pa];
             immutable sz = reg.getType(tid).size;
             auto rec = new ubyte[sz];
-            deserializeComponent(reg, tid, c.data, rec, strings);
+            try {
+                deserializeComponent(reg, tid, c.data, rec, strings);
+            } catch (Exception) {
+                keep ~= c;                    // JSON that does not fit the registered type stays JSON
+                continue;
+            }
             foreach (ref const f; reg.getFields(tid)) {
                 if (f.kind != FieldKind.stringId)
                     continue;
@@ -895,4 +900,27 @@ version (unittest) {
         assert(w.has!Lamp(id) == (i % 3 == 0));
     }
     assert(res.unresolvedComponents.length == 2);    // the two "Unknown.Thing" entities (i = 0, 5)
+}
+
+@("chunkComponents.malformedJsonStaysJson") unittest {
+    static struct Door {
+        float angle = 0.5f;
+        Vec3 pos;
+    }
+    SceneWorld writer;
+    writer.ensureRegistered!Door();
+    SceneFile s;
+    s.schemaVersion = sceneSchemaVersionV2;
+    foreach (i; 0 .. 2) {
+        SceneEntityData e;
+        e.id = cast(uint)(i + 1);
+        e.parent = sceneNoParent;
+        e.customComponents ~= SceneComponentData("Door", parseJSON(i == 0 ? `{"angle":2,"pos":[1,2,3]}` : `{"pos":["a","b","c"]}`));
+        s.entities ~= e;
+    }
+    GescChunk c;
+    string err;
+    assert(decodeChunk(encodeChunkWithComponents(s, writer.types, writer.strings), c, err), err);
+    assert(c.componentBlocks.length == 1 && c.scene.entities[0].customComponents.length == 0);
+    assert(c.scene.entities[1].customComponents.length == 1);
 }
