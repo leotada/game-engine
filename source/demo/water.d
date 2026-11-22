@@ -1454,7 +1454,8 @@ void main(string[] args) {
         immutable auto frameStartT = MonoTime.currTime;
         app.pollEvents();
         immutable float realDt = fps.tick();
-        immutable float dt = benchFrames > 0 ? (1.0f / 60.0f) : realDt;
+        // Fixed step for benchmarks and captures so `--capture` is reproducible.
+        immutable float dt = (benchFrames > 0 || capturePath.length > 0) ? (1.0f / 60.0f) : realDt;
         time += dt;
         if (app.input.keyPressed(Key.escape)) break;
 
