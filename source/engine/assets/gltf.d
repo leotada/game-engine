@@ -69,7 +69,9 @@ struct GltfMesh {
 
 /// CPU-side OpenPBR material description extracted from glTF 2.0 + `KHR_materials_*`.
 struct GltfMaterialDesc {
+    string name;
     MaterialParams params;
+    bool doubleSided = false;
     bool hasBaseColorFactor = false;
     string baseColorUri;       // relative to glTF, empty if none
     string metallicRoughnessUri;
@@ -203,6 +205,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
 
     model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
                                      params, mrPtr, nrmPtr, aoPtr, emPtr);
+    model.material.renderState.doubleSided = matDesc.doubleSided;
 
     info("Loaded glTF OpenPBR: ", gltfPath, " (",
          meshCpu.vertices.length, " verts, metalness=", params.baseMetalness,
@@ -240,6 +243,10 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
     auto materials = root["materials"].array;
     if (index >= materials.length) return desc;
     auto mat = materials[index];
+
+    if ("name" in mat && mat["name"].type == JSONType.string)
+        desc.name = mat["name"].str;
+    desc.doubleSided = jsonFlag(mat, "doubleSided");
 
     if ("pbrMetallicRoughness" in mat) {
         auto pbr = mat["pbrMetallicRoughness"];
@@ -1420,4 +1427,21 @@ version (unittest) {
     float maxX = -1;
     foreach (v; g.vertices) if (v.pos[0] > maxX) maxX = v.pos[0];
     assert(maxX == 2.0f);
+}
+
+@("gltf.doubleSidedAndName") @safe unittest {
+    import std.json : parseJSON;
+
+    string json = `{
+      "asset": {"version": "2.0"},
+      "materials": [
+        {"name": "wire_fence", "doubleSided": true, "pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1]}},
+        {"name": "concrete", "pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.5, 0.5, 1]}}
+      ]
+    }`;
+    auto root = parseJSON(json);
+    auto m0 = parseGltfMaterialAt(root, 0);
+    auto m1 = parseGltfMaterialAt(root, 1);
+    assert(m0.name == "wire_fence" && m0.doubleSided == true);
+    assert(m1.name == "concrete" && m1.doubleSided == false);
 }

@@ -22,7 +22,18 @@ struct VertexOutput {
 fn vs_main(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
     let worldPos = model * vec4<f32>(in.position, 1.0);
-    let normalMat = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
+    let c0 = model[0].xyz;
+    let c1 = model[1].xyz;
+    let c2 = model[2].xyz;
+    let n0 = cross(c1, c2);
+    let n1 = cross(c2, c0);
+    let n2 = cross(c0, c1);
+    let det = dot(c0, n0);
+    let normalMat = select(
+        mat3x3<f32>(c0, c1, c2),
+        mat3x3<f32>(n0, n1, n2) * select(1.0, -1.0, det < 0.0),
+        abs(det) > 1e-12
+    );
     var out: VertexOutput;
     out.clipPos = u.viewProj * worldPos;
     out.worldNormal = normalize(normalMat * in.normal);

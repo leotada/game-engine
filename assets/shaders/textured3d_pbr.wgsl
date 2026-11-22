@@ -209,20 +209,46 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 //@@DISPLACE_CALL@@
 #endif
     let worldPos4 = model * vec4<f32>(localPos, 1.0);
-    let normalMat = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
+    let c0 = model[0].xyz;
+    let c1 = model[1].xyz;
+    let c2 = model[2].xyz;
+    let modelMat3 = mat3x3<f32>(c0, c1, c2);
+    // Adjugate (cofactor transpose) preserves normal perpendicularity under
+    // non-uniform scale; det sign keeps outward orientation on reflections.
+    let n0 = cross(c1, c2);
+    let n1 = cross(c2, c0);
+    let n2 = cross(c0, c1);
+    let det = dot(c0, n0);
+    let normalMat = select(
+        modelMat3,
+        mat3x3<f32>(n0, n1, n2) * select(1.0, -1.0, det < 0.0),
+        abs(det) > 1e-12
+    );
     var out: VertexOutput;
     out.clipPos = frame.viewProj * worldPos4;
     out.worldPos = worldPos4.xyz;
     let N = normalize(normalMat * in.normal);
     out.worldNormal = N;
 #ifdef MESH_TANGENT
-    let T = normalize(normalMat * in.tangent.xyz);
+    let rawT = modelMat3 * in.tangent.xyz;
+    let orthoT = rawT - N * dot(N, rawT);
+    var T = vec3<f32>(1.0, 0.0, 0.0);
+    if (dot(orthoT, orthoT) > 1e-8) {
+        T = normalize(orthoT);
+    } else {
+        var fb = modelMat3 * vec3<f32>(1.0, 0.0, 0.0);
+        if (abs(dot(normalize(fb), N)) > 0.9) {
+            fb = modelMat3 * vec3<f32>(0.0, 0.0, 1.0);
+        }
+        T = normalize(fb - N * dot(N, fb));
+    }
+    let handedness = select(in.tangent.w, 1.0, abs(in.tangent.w) < 0.5);
     out.worldTangent = T;
-    out.worldBitangent = cross(N, T) * in.tangent.w;
+    out.worldBitangent = cross(N, T) * handedness;
 #else
-    var t = normalize(normalMat * vec3<f32>(1.0, 0.0, 0.0));
+    var t = normalize(modelMat3 * vec3<f32>(1.0, 0.0, 0.0));
     if (abs(dot(t, N)) > 0.9) {
-        t = normalize(normalMat * vec3<f32>(0.0, 0.0, 1.0));
+        t = normalize(modelMat3 * vec3<f32>(0.0, 0.0, 1.0));
     }
     out.worldTangent = normalize(t - N * dot(N, t));
     out.worldBitangent = cross(N, out.worldTangent);

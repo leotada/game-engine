@@ -86,9 +86,11 @@ struct GltfAsset {
     Pod!SubMeshInfo[] subMeshInfo;
     /// One material per glTF material, plus a trailing default material.
     Material[] materials;
+    /// Interned glTF material names (one per glTF material, in `names`).
+    Pod!StringId[] materialNames;
     Texture[] textures;
     Pod!GltfNode[] nodes;
-    /// Node names (`GltfNode.name`).
+    /// Node and material names (`GltfNode.name`, `GltfAsset.materialNames`).
     StringTable names;
     /// Asset-space bounds of every sub-mesh at bind pose.
     Aabb bounds;
@@ -98,6 +100,16 @@ struct GltfAsset {
     /// Node index by name, or -1. Linear scan (≤ 256 nodes), `@nogc`.
     int findNode(scope const(char)[] name) const nothrow @nogc {
         return findNodeIn(nodes, names, name);
+    }
+
+    /// glTF material index by name, or -1 (`@nogc`).
+    int findMaterial(scope const(char)[] name) const nothrow @nogc {
+        return findMaterialIn(materialNames, names, name);
+    }
+
+    /// Name of glTF material `index` (empty when unnamed or out of range).
+    const(char)[] materialName(size_t index) const nothrow @nogc {
+        return index < materialNames.length ? names.get(materialNames[index]) : "";
     }
 
     /// Material used by sub-mesh `i` when no override applies.
@@ -117,7 +129,9 @@ struct GltfAsset {
         foreach (ref m; materials) m.destroy();
         foreach (ref t; textures) t.destroy();
         subMeshes = null;
+        subMeshInfo = null;
         materials = null;
+        materialNames = null;
         textures = null;
         nodes = null;
     }
@@ -231,6 +245,14 @@ static assert(isPod!ModelInstance);
 int findNodeIn(const(GltfNode)[] nodes, ref const StringTable names, scope const(char)[] name) nothrow @nogc {
     foreach (i, ref n; nodes)
         if (names.get(n.name) == name) return cast(int) i;
+    return -1;
+}
+
+/// Material index by name in a material-name table, or -1.
+int findMaterialIn(const(StringId)[] matNames, ref const StringTable names, scope const(char)[] name) nothrow @nogc {
+    if (name.length == 0) return -1;
+    foreach (i, id; matNames)
+        if (names.get(id) == name) return cast(int) i;
     return -1;
 }
 
@@ -440,8 +462,11 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
     }
 
     asset.materials = new Material[matCount + 1];
+    asset.materialNames = new Pod!StringId[matCount];
     foreach (mi; 0 .. matCount + 1) {
         GltfMaterialDesc md = mi < matCount ? scene.materials[mi] : GltfMaterialDesc.init;
+        if (mi < matCount)
+            asset.materialNames[mi] = asset.names.intern(md.name);
         MaterialParams params = md.params;
         params.flags = MaterialFlags.none;
         Texture* albedo = imageTexture(md.baseColorImage, false);
@@ -466,6 +491,7 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
             if (params.emissionLuminance == 0.0f) params.emissionLuminance = 1.0f;
         }
         auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em);
+        m.renderState.doubleSided = md.doubleSided;
         move(m, asset.materials[mi]);
     }
 
@@ -612,4 +638,17 @@ version (unittest) {
 
     auto missing = detachSubMesh(t.nodes, t.info, t.names, inst, "wheel_rr", Mat4.identity());
     assert(!missing.found);
+}
+
+@("model.materialNames") @safe unittest {
+    auto doc = parseGltfDocumentBytes(makeTestVehicleGlb(), "/nonexistent-dir");
+    auto scene = parseGltfScene(doc);
+    StringTable names;
+    auto matNames = new StringId[scene.materials.length];
+    foreach (i, ref m; scene.materials)
+        matNames[i] = names.intern(m.name);
+    assert(findMaterialIn(matNames, names, "paint") == 0);
+    assert(findMaterialIn(matNames, names, "glass") == 1);
+    assert(findMaterialIn(matNames, names, "missing") == -1);
+    assert(findMaterialIn(matNames, names, "") == -1);
 }

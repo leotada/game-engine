@@ -185,6 +185,29 @@ pure nothrow @nogc:
     bool decompose(out Vec3 translation, out Quat rotation, out Vec3 scale) const {
         return decomposeAffine(this, translation, rotation, scale);
     }
+
+    /// Transform a surface normal by the adjugate (cofactor transpose) of the upper 3×3,
+    /// preserving perpendicularity under non-uniform scaling, then normalize.
+    Vec3 transformNormal(Vec3 n) const {
+        return transformNormalAdjugate(this, n);
+    }
+}
+
+/// Transform a surface normal by the adjugate (cofactor transpose) of `model`'s upper 3×3
+/// and normalize. Matches the vertex-shader normal transform in `textured3d_pbr.wgsl`,
+/// `colored3d.wgsl` and `cube3d.wgsl`.
+Vec3 transformNormalAdjugate(const Mat4 model, Vec3 n) {
+    immutable c0 = Vec3(model.m[0], model.m[1], model.m[2]);
+    immutable c1 = Vec3(model.m[4], model.m[5], model.m[6]);
+    immutable c2 = Vec3(model.m[8], model.m[9], model.m[10]);
+    immutable n0 = c1.cross(c2);
+    immutable n1 = c2.cross(c0);
+    immutable n2 = c0.cross(c1);
+    immutable det = c0.dot(n0);
+    if (det > -1e-12f && det < 1e-12f)
+        return (c0 * n.x + c1 * n.y + c2 * n.z).normalized();
+    immutable s = det < 0.0f ? -1.0f : 1.0f;
+    return ((n0 * n.x + n1 * n.y + n2 * n.z) * s).normalized();
 }
 
 /// Decompose an affine 4×4 matrix (column-major T * R * S) into `translation`, `rotation`, and `scale`.
@@ -242,4 +265,34 @@ unittest {
     Mat4 singular = Mat4.trs(pos, rot, Vec3(0.0f, 1.0f, 1.0f));
     assert(!singular.decompose(outPos, outRot, outScale));
     assert(outRot.w == 1.0f && outRot.x == 0.0f);
+}
+
+@("mat.transformNormalNonUniformScale") @safe unittest {
+    import std.math : abs;
+
+    immutable Vec3[4] samples = [
+        Vec3(1.0f, 0.0f, 0.0f),
+        Vec3(0.0f, 1.0f, 0.0f),
+        Vec3(1.0f, 1.0f, 0.0f).normalized(),
+        Vec3(0.3f, -0.7f, 0.65f).normalized(),
+    ];
+    immutable scl = Vec3(1.0f, 3.0f, 1.0f);
+    immutable scaleMat = Mat4.scaling(scl.x, scl.y, scl.z);
+    immutable rot = Quat.fromEulerYXZ(Vec3(25.0f, -60.0f, 15.0f));
+    immutable trsMat = Mat4.trs(Vec3(4.0f, -2.0f, 7.0f), rot, scl);
+
+    foreach (p; samples) {
+        // Analytical normal on ellipsoid (x/1)^2 + (y/3)^2 + (z/1)^2 = 1 at S * p is proportional to (p.x, p.y / 3, p.z).
+        immutable expectedLocal = Vec3(p.x / scl.x, p.y / scl.y, p.z / scl.z).normalized();
+        immutable nScale = scaleMat.transformNormal(p);
+        assert(abs(nScale.x - expectedLocal.x) < 1e-5f);
+        assert(abs(nScale.y - expectedLocal.y) < 1e-5f);
+        assert(abs(nScale.z - expectedLocal.z) < 1e-5f);
+
+        immutable expectedWorld = rot.rotate(expectedLocal);
+        immutable nTrs = trsMat.transformNormal(p);
+        assert(abs(nTrs.x - expectedWorld.x) < 1e-5f);
+        assert(abs(nTrs.y - expectedWorld.y) < 1e-5f);
+        assert(abs(nTrs.z - expectedWorld.z) < 1e-5f);
+    }
 }
