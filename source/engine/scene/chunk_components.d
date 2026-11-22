@@ -30,6 +30,8 @@ import std.json : JSONValue;
 import engine.core.strings : StringId, StringTable;
 import engine.ecs.scene_world : SceneWorld;
 import engine.ecs.store : EntityId;
+import engine.editor.scene_load : SceneLoadOptions, SceneLoadResult, loadSceneAdditive;
+import engine.math.vec : Vec3;
 import engine.reflect.descriptor;
 import engine.reflect.serialize : deserializeComponent, serializeComponent;
 import engine.scene.chunk_binary;
@@ -529,6 +531,19 @@ bool applyGescComponents(ref SceneWorld world, const ref GescChunk chunk, scope 
     return true;
 }
 
+/// Apply a decoded chunk to `world`: spawn its entities (batched), then insert its binary components and let the
+/// JSON fallback components (`customJson`) resolve through the registry as before. This is the "apply" half of
+/// loading a chunk; the "decode" half is `decodeChunk` / `parseChunkBytes`, which needs only buffers.
+/// Throws when the chunk is malformed (a binary block that does not match its schema).
+SceneLoadResult applyChunk(ref SceneWorld world, ref GescChunk chunk, Vec3 rootOffset, SceneLoadOptions opts,
+        out GescApplyResult comps) {
+    import std.exception : enforce;
+    auto res = loadSceneAdditive(world, chunk.scene, rootOffset, opts);
+    string err;
+    enforce(applyGescComponents(world, chunk, res.spawnedEntities, res.fileIdToEntity, comps, err), "GESC: " ~ err);
+    return res;
+}
+
 /// For tools and the editor: turn the binary component blocks of `chunk` back into `customComponents` JSON on
 /// its scene entities, using the schemas stored in the file itself (no registry needed). Entity-ref fields stay
 /// chunk-local ids. Fields that are structs or fixed arrays are not representable in JSON and are omitted.
@@ -843,4 +858,41 @@ version (unittest) {
         }
     }
     assert(sawTypes && sawComp && info[$ - 1].kind == GescBlockKind.user);
+}
+
+@("chunkComponents.applyChunkMixesBinaryAndJson") unittest {
+    import engine.scene.graph : Transform;
+    static struct Door {
+        float angle = 0.5f;
+        uint kind = 1;
+    }
+    static struct Lamp {
+        float power = 1;
+    }
+    auto scene = componentScene(10);                 // "Door" and "Unknown.Thing"
+    foreach (i, ref e; scene.entities)
+        if (i % 3 == 0)
+            e.customComponents ~= SceneComponentData("Lamp", parseJSON(`{"power":4}`));
+    SceneWorld writer;
+    writer.ensureRegistered!Door();                  // only Door is cooked; Lamp stays JSON
+    auto bytes = encodeChunkWithComponents(scene, writer.types, writer.strings);
+    GescChunk c;
+    string err;
+    assert(decodeChunk(bytes, c, err), err);
+
+    SceneWorld w;
+    w.ensureRegistered!Door();
+    w.ensureRegistered!Lamp();
+    SceneLoadOptions opts;
+    opts.validate = false;
+    opts.checkAssetFiles = false;
+    GescApplyResult comps;
+    auto res = applyChunk(w, c, Vec3(0, 0, 0), opts, comps);
+    assert(res.spawnedEntities.length == 10 && comps.componentsApplied == 5);
+    foreach (i, id; res.spawnedEntities) {
+        assert(w.has!Transform(id));
+        assert(w.has!Door(id) == (i % 2 == 0));
+        assert(w.has!Lamp(id) == (i % 3 == 0));
+    }
+    assert(res.unresolvedComponents.length == 2);    // the two "Unknown.Thing" entities (i = 0, 5)
 }

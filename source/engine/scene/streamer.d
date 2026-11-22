@@ -15,7 +15,7 @@ import engine.core.pod : isPod, Pod;
 import engine.core.strings : StringId, StringTable;
 import engine.ecs.scene_world : SceneWorld;
 import engine.ecs.store : EntityId;
-import engine.editor.scene_load : loadSceneAdditive, SceneLoadOptions;
+import engine.editor.scene_load : SceneLoadOptions;
 import engine.graphics.model : GltfAsset;
 import engine.graphics.texture : Texture;
 import engine.math.bounds : Aabb;
@@ -27,6 +27,7 @@ import engine.project.asset_ref : AssetGuid;
 import engine.scene.scene_file :
     ChunkManifest, parseSceneJson, SceneFile;
 import engine.scene.chunk_binary : GescBlockHandler, GescChunk, parseChunkBytes;
+import engine.scene.chunk_components : GescApplyResult, applyChunk;
 
 @safe:
 
@@ -795,7 +796,10 @@ struct WorldStreamer {
                     SceneLoadOptions opts;
                     opts.validate = false;
                     opts.checkAssetFiles = false;
-                    auto res = loadSceneAdditive(world, held.scene, Vec3(0, 0, 0), opts);
+                    GescApplyResult comps;
+                    auto res = applyChunk(world, *held, Vec3(0, 0, 0), opts, comps);
+                    foreach (name; comps.unresolvedTypes)
+                        warn("WorldStreamer: chunk component type not registered: ", name);
                     foreach (eid; res.spawnedEntities) {
                         _cellEntities ~= eid;
                         entCount++;
