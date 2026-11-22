@@ -111,7 +111,7 @@ scene.end(frame);
 `Scene3DTextured` batches `(TexMesh, Material)` pairs using single-pass **OpenPBR Surface v1.1** shading, multi-light PCF shadows, and split-sum IBL.
 
 - **Key `MaterialParams` fields:** `baseColor`, `baseWeight`, `baseMetalness`, `baseDiffuseRoughness`, `specularWeight`, `specularRoughness`, `specularColor` ($F_{82}$ edge tint on metals), `specularIor`, `specularAnisotropy`, `coatWeight`, `coatRoughness`, `coatIor`, `coatColor`, `coatDarkening`, `fuzzWeight`, `fuzzColor`, `fuzzRoughness`, `thinFilmWeight`, `thinFilmThickness`, `thinFilmIor`, `emissionColor`, `emissionLuminance`, `geometryOpacity`, and `flags` (`MaterialFlags.metallicRoughness`, `normal`, `occlusion`, `emissive`, `unlit`).
-- **Key `Material` options:** `mat.renderState = RenderState(BlendMode.alpha /* or additive/opaque */, depthWrite: true, doubleSided: false)`, `mat.updateParams(app.gpu, params)`, custom surface WGSL shaders via `scene.createSurfaceShader(wgsl)` (`mat.surfaceShader = id; mat.updateSurfaceParams(app.gpu, float16);`), and per-instance `custom` vec4 via `scene.drawMatrix(mesh, mat, model, tint, custom)`.
+- **Key `Material` options:** `mat.renderState = RenderState(BlendMode.alpha /* or additive/opaque */, depthWrite: true, doubleSided: false)`, `mat.updateParams(app.gpu, params)`, custom surface WGSL shaders via `scene.createSurfaceShader(wgsl)` (`mat.surfaceShader = id; mat.updateSurfaceParams(app.gpu, float16);`), and per-instance `custom` vec4 via `scene.drawMatrix(mesh, mat, model, tint, custom)`. Non-uniform scales on `model` transform normals accurately via the $3 \times 3$ adjugate in the vertex shader (`Mat4.transformNormal`).
 
 ```d
 auto scene = Scene3DTextured.create(app.gpu);
@@ -474,7 +474,7 @@ Available easing curves (`Ease`): `linear`, `inQuad`, `outQuad`, `inOutQuad`, `i
 ## 10. Assets & Mesh Optimization (`engine.assets`, `engine.meshopt`)
 
 - **Images (`SDL3_image`):** `Texture.fromImageFile(gpu, path)`, `Texture.fromImageBytes(gpu, bytes)`, and `Texture.fromSvgBytes(gpu, svgBytes, w, h)` decode **PNG, JPG, QOI, SVG, BMP, TGA, GIF** (plus **WEBP/AVIF** when enabled on host). Raw helpers: `decodeImageFile`, `decodeSvgBytesSized`, `saveRgbaPng`, `saveRgbaJpg`, `loadBmpTexture`, `Texture.fromTgaFile`.
-- **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; supports `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}` and `EXT_meshopt_compression`). Skins and animations use [animation-guide.md](animation-guide.md). For whole models (`.gltf`/`.glb`, every mesh, primitive, material and node) use `loadGltfAsset` — see §3.5.
+- **glTF 2.0:** `loadGltfMesh(app.gpu, path)` and `loadGltfPbr(app.gpu, path, scene.materialLayout(), sampler)` (returns `GltfModel` with `.mesh`, `.material`, `.destroy()`; imports `doubleSided`, `KHR_materials_{ior,specular,clearcoat,sheen,iridescence,emissive_strength,anisotropy}`, and `EXT_meshopt_compression`). For whole rigid models (all meshes, primitives, material names via `findMaterial`, and node hierarchy) use `loadGltfAsset` — see §3.5; for GPU-skinned multi-mesh characters use `loadGltfSkinnedCharacter` and `Scene3DTextured.drawSkinned` — see [animation-guide.md](animation-guide.md).
 - **LOD chains from `.meta`:** add `"lod": {"enabled": true}` (optional `maxLods`, `ratio`, `maxError`) under `settings` in a glTF's `.meta` to build LODs at import in every loader; the editor and player then switch LODs automatically.
 - **Mesh optimization (`engine.meshopt.pipeline`):** `loadGltfMesh` / `loadGltfPbr` automatically optimize imported geometry via `.meta` `MeshOptSettings`. For procedural or custom meshes at load time (never inside the frame loop), call `optimizeMesh(verts, indices, settings)` (`reindex`, `vertexCache`, `overdrawThreshold`, `vertexFetch`, `shadowIndices`).
 
@@ -505,7 +505,7 @@ Supports boxes, spheres, capsules, cylinders, convex hulls, static meshes/height
 
 ### 11.2 Skeletal Animation (`engine.animation`)
 
-Pure-D runtime port of `ozz-animation` (`@nogc` evaluation jobs + `AnimAssets` / `PosePool` ECS integration + `SkinnedRenderer` GPU palette up to 1024 joints):
+Pure-D runtime port of `ozz-animation` (`@nogc` evaluation jobs + `AnimAssets` / `PosePool` ECS integration + instanced OpenPBR & shadow-casting GPU skinning via `Scene3DTextured.drawSkinned` / `SkinnedCharacterAsset`, up to 1024 joints per skeleton):
 
 ```d
 import engine.animation;

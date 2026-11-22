@@ -181,12 +181,41 @@ standalone `tools/ozz/bench.sh`.
 
 ## 7. GPU skinning
 
-`engine.gpu.skinned.SkinnedRenderer` draws a skinned mesh with linear-blend skinning (4 influences).
-The palette (`skinPaletteSystem` output, viewed with `asMat4`) goes to a read-only storage buffer
-every frame via `updatePalette`. Limit: 1024 joints (the ozz skeleton limit, 64 KiB). Vertex format:
-`SkinnedVertex` (position, normal, 4 x uint32 joints, 4 x float weights, 56 bytes). Normals assume
-(near-)uniform scale. `buildBoneMesh` generates a tapered prism per bone for any skeleton, which the
-viewer uses; real meshes come from `loadGltfSkin`.
+### OpenPBR skinning in `Scene3DTextured` (recommended)
+
+`Scene3DTextured.drawSkinned` renders skeletal meshes through the full **OpenPBR Surface v1.1** pipeline (`textured3d_pbr.wgsl` with `SKINNED` + `MESH_TANGENT`) and casts shadows into directional/CSM, point cubemap, and spot shadow maps (`shadow_depth.wgsl` with `SKINNED`):
+
+- **Vertex format (`engine.graphics.types.SkinnedVertex`, 80 bytes):** `position` (`float[3]`), `normal` (`float[3]`), `uv` (`float[2]`), `tangent` (`float[4]`), `joints` (`uint[4]`), `weights` (`float[4]`). Upload via `SkinnedMesh.fromData(gpu, verts, indices)` (`engine.gpu.skinned`).
+- **Instanced batching:** Draws sharing `(SkinnedMesh*, Material*)` batch into one draw call per color/shadow pass; per-character palettes (`asMat4(pose.palette)`) are concatenated into a single GPU storage buffer (`@group(3) @binding(0)` in PBR, `@group(1) @binding(0)` in shadow passes) with a 16-bit base offset packed per instance.
+- **Pose-aware culling:** Pass `poseBoundingSphere(pose.model)` (`engine.animation.ecs.systems`) to `drawSkinned` so frustum, distance, and shadow-caster culling track the live pose (e.g. a fallen ragdoll or root-motion character) instead of bind-pose bounds.
+- **Multi-mesh / multi-primitive glTF/GLB characters (`engine.graphics.skinned_model`):**
+  ```d
+  import engine.animation, engine.animation.ecs, engine.graphics.skinned_model;
+
+  SkinnedCharacterAsset hero;
+  string err;
+  loadGltfSkinnedCharacter(app.gpu, "assets/models/officer.glb",
+                           *animAssets.skeletons.get(sk),
+                           scene.materialLayout(), sampler, hero, err);
+
+  // Swap a material by glTF material name (e.g. uniform variant):
+  Material*[8] overrides;
+  setCharacterMaterialOverride(hero, "farda", altUniformMat, overrides[0 .. hero.subMeshes.length]);
+
+  // Per frame (zero GC):
+  immutable poseSphere = poseBoundingSphere(pose.model);
+  drawSkinnedCharacter(scene, hero, charWorld, asMat4(pose.palette),
+                       poseSphere, overrides[0 .. hero.subMeshes.length]);
+  ```
+  CPU-only loading (no GPU) uses `loadGltfSkinnedCharacterCpu` / `loadGltfSkinnedCharacterCpuFromBytes` (`engine.animation.gltf_skin`), which reads all meshes and primitives carrying `JOINTS_0`/`WEIGHTS_0`, material names and `doubleSided` flags, interleaved `byteStride` accessors, normalized weights, and auto-generates smooth tangents when `TANGENT` is absent.
+- **Attaching rigid props / cameras to a joint:**
+  - Direct matrix helper (`@nogc`): `Mat4 handWorld = jointWorldMatrix(pose, handJointIdx, charWorld, localGripOffset);`
+  - Or ECS component: `BoneSocket(charEntity, handJointIdx, offset, rot, scale)` updated by `boneSocketSystem(world, pool)`.
+- **Benchmark (`dub run --config=anim-viewer -- --pbr --crowd=40 --bench=120`, DMD debug):** 40 animated characters + ground plane, 3-cascade directional + point + spot shadows: `drawCalls=2`, `shadowDrawCalls=19`, `instancesVisible=41`, `avgFrameMs=8.037` (`avgAnimMs=6.760`), `gcDelta=0`.
+
+### Legacy fallback (`SkinnedRenderer`)
+
+`engine.gpu.skinned.SkinnedRenderer` (`assets/shaders/skinned.wgsl`) remains available as a lightweight single-directional-diffuse fallback (used by default `dub run --config=anim-viewer`). It accepts the same 80-byte `SkinnedVertex` and up to `maxJoints` (1024) palette entries via `updatePalette`. `buildBoneMesh` (`engine.animation.bone_mesh`) generates a tapered prism per bone for any skeleton.
 
 ## 8. Known gaps
 

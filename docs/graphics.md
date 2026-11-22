@@ -163,18 +163,19 @@ Pipeline for batched, sorted 2D sprites (`engine/graphics/sprite.d`):
 
 Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shading model, PCF shadows, and IBL:
 
-- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), or tangent-extended vertex layout (`MESH_TANGENT`, stride=48, `vec4f tangent`) for anisotropic GGX and tangent-space normal mapping
-- **Vertex buffer 1** — instances: 4×`float32x4` model + tint `float32x4` (stride=80)
+- **Vertex buffer 0** — geometry: `float32x3 position + float32x3 normal + float32x2 uv` (stride=32), tangent-extended (`MESH_TANGENT`, stride=48, `vec4f tangent`), or GPU-skinned (`MESH_TANGENT` + `SKINNED`, stride=80, `SkinnedVertex`: `pos + normal + uv + tangent + vec4u joints + vec4f weights`)
+- **Vertex buffer 1** — instances: `TexInstanceData` (4×`float32x4` model + `vec4f` tint + `vec4f` custom, stride=96); vertex shaders transform normals with the $3 \times 3$ adjugate (cofactor transpose, `Mat4.transformNormal`) so non-uniform scaling preserves correct lighting
 - **Bind groups:**
   - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 11 entries, one layout shared by every scene-space pipeline) — `FrameUniforms` (viewProj, lights, shadow biases, cameraPos) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater))
-  - `@group(1) Material` — 144-byte `MaterialParams` UBO (`9 × vec4f`: Base, Specular/Anisotropy/IOR, Coat, Fuzz, Thin-Film, Emission, Geometry Opacity), filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
+  - `@group(1) Material` — 144-byte `MaterialParams` UBO (`9 × vec4f`: Base, Specular/IOR/Anisotropy, Coat, Fuzz, Thin-Film, Emission, Geometry Opacity), filtering sampler, albedo + optional MR/normal/occlusion/emissive maps (bound with 1×1 defaults when omitted)
   - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
+  - `@group(3) Skin` *(skinned variant only)* — read-only storage buffer of concatenated `mat4x4<f32>` joint palettes (`Scene3DTextured.drawSkinned`)
 - **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Layered single-pass slabs:
   - **Base & Specular:** Qualitative Fujii Oren-Nayar diffuse (`baseDiffuseRoughness`), IOR-derived dielectric $F_0$ modulated by `coatIor` (`dielectricF0UnderCoat`), multi-scattering energy-compensated anisotropic GGX, and $F_{82}$-tint conductor Fresnel (`specularColor`)
   - **Thin-Film Iridescence:** Physical Airy thin-film reflectance modulating dielectric/conductor Fresnel (`thinFilmWeight`, `thinFilmThickness`, `thinFilmIor`)
   - **Coat Slab:** Dielectric clearcoat GGX with optical absorption tint (`coatColor`), coat-induced base roughening (`coatRoughenBase`), and internal reflection darkening (`coatDarkening`)
   - **Fuzz / Sheen Slab:** Charlie microcylinder NDF + Ashikhmin visibility (`fuzzWeight`, `fuzzColor`, `fuzzRoughness`) energy-conserved over coat and base
-  - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`
+  - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `doubleSided`, material `name`, and `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, and `KHR_materials_anisotropy`
 - **Usage** — `Scene3DTextured.setLighting` / `setEnvironment`; `Material.create(gpu, scene.materialLayout, sampler, albedo, params)`
 - **Color target** — `Renderer.sceneFormat()` = `rgba16float` (offscreen, not swapchain); tone mapping in `resolvePost`
 
@@ -357,11 +358,12 @@ renderer.render(app.gpu, world, frame, camera, lightSettings, viewportHeight);
 ### Multi-node glTF / GLB assets (`engine.graphics.model`)
 
 - `parseGltfDocument` reads `.gltf` and `.glb` (binary chunk), `data:` base64 buffers, and images from a URI, a `bufferView` or a data URI. `parseGltfScene` returns every mesh, primitive, material and the node tree **without baking node transforms**. The legacy `parseGltfMesh` / `loadGltfMesh` / `loadGltfPbr` keep their first-primitive, baked-transform behavior.
-- `GltfAsset` (move-only, shared): one `TexMesh` per primitive, materials (plus a trailing default), textures, a parents-first `GltfNode` table (≤ `MAX_MODEL_NODES = 256`) and node names in a `StringTable`. Load with `loadGltfAsset(gpu, path, scene.materialLayout(), sampler, GltfLoadOptions)`.
+- `GltfAsset` (move-only, shared): one `TexMesh` per primitive, materials (plus a trailing default, carrying `doubleSided` from glTF and lookup by name via `findMaterial` / `materialName`), textures, a parents-first `GltfNode` table (≤ `MAX_MODEL_NODES = 256`) and node names in a `StringTable`. Load with `loadGltfAsset(gpu, path, scene.materialLayout(), sampler, GltfLoadOptions)`.
 - `ModelInstance` (POD, `isPod`): a 256-bit hidden-node mask (hiding a node hides its subtree), up to 8 `MaterialHandle` overrides per sub-mesh and 8 local transform overrides.
 - `MaterialPool` (`engine.graphics.material_pool`): fixed-capacity generational pool; `add` moves a `Material` in and returns a `MaterialHandle`, `get` returns null for stale handles (the asset material is used instead).
 - `drawModel(scene, asset, inst, world, pool)` computes node worlds on the stack and submits each visible sub-mesh through `drawMatrix` (culling + auto LOD apply).
 - `detachSubMesh(asset, inst, "door_fl", world)` hides the node in the instance and returns a `DetachedPart` (world matrix, sub-mesh range, local bounds) to spawn an independent rigid body; draw it with `drawSubMesh`.
+- For GPU-skinned characters (`SkinnedCharacterAsset`, `loadGltfSkinnedCharacter`, `drawSkinnedCharacter`, `Scene3DTextured.drawSkinned`), see [animation-guide.md §7](animation-guide.md#7-gpu-skinning).
 
 ## Outdoor Rendering (OW-3)
 

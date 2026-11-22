@@ -8,12 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Normal transformation under non-uniform scale (`2026-11-22`)**: `textured3d_pbr.wgsl`, `colored3d.wgsl`, and `cube3d.wgsl` now transform normals using the $3 \times 3$ adjugate (cofactor transpose) of the model matrix (and re-orthogonalize tangents against the corrected normal) so scaled objects shade accurately; added `Mat4.transformNormal` / `transformNormalAdjugate` (`engine.math.mat`).
+- **glTF 2.0 `doubleSided` and material names (`2026-11-22`)**: `parseGltfMaterialAt` (`engine.assets.gltf`) now parses `materials[i].doubleSided` and `name`, propagating `doubleSided` to `Material.renderState.doubleSided` in `loadGltfPbr` and `loadGltfAsset`; `GltfAsset` exposes `findMaterial(name)` and `materialName(index)`.
 - **Script hot-reload skipped components on high entity IDs (`2026-11-21`)**: `HotReloadManager.snapshotScriptData` scanned IDs `0 .. entityCount() + 1000`, so components on recycled or late entities were lost on reload. It now walks the component's dense store.
 - **Fullscreen toggle crashed with a wgpu scissor validation error (`2026-11-20`)**:
   - `Window.setFullscreen` refreshed the window size itself, so the next `App.handleResize()` saw no change and never reconfigured the swapchain. The UI then drew at the new size onto the old-size target (`Scissor Rect ... is not contained in the render target`) and wgpu aborted.
   - `Window.setFullscreen` no longer touches `width()/height()`; the new `App.setFullscreen(bool)` toggles it and reconfigures the swapchain and post targets immediately. Games should call the `App` method.
 
 ### Added
+
+- **Instanced OpenPBR GPU skinning, shadow casting & multi-mesh character glTF import (`2026-11-22`)**:
+  - `SkinnedVertex` (`engine.graphics.types`, 80 bytes) now includes `uv` and `tangent` alongside `position`, `normal`, `joints`, and `weights`; added `SkinnedMesh` (`engine.gpu.skinned`).
+  - `Scene3DTextured.drawSkinned` renders skinned meshes through the full OpenPBR pipeline (`textured3d_pbr.wgsl` `SKINNED` + `MESH_TANGENT`, IBL, CSM, point/spot lights, fog, rain wetness, bloom) and shadow passes (`shadow_depth.wgsl` `SKINNED`), batching multiple characters per `(SkinnedMesh, Material)` using a concatenated `@group(3)` palette storage buffer and culling via the live `poseBoundingSphere`.
+  - `loadGltfSkinnedCharacterCpu` (`engine.animation.gltf_skin`) and `loadGltfSkinnedCharacter` / `SkinnedCharacterAsset` / `drawSkinnedCharacter` / `setCharacterMaterialOverride` (`engine.graphics.skinned_model`) import all skinned meshes and primitives from `.gltf`/`.glb` files with material names, `doubleSided`, `byteStride`, normalized weights, and auto-generated tangents.
+  - Added `poseBoundingSphere` and `jointWorldMatrix` (`engine.animation.ecs.systems`), plus `--pbr`, `--crowd=N`, and `--bench=FRAMES` modes in `anim-viewer` (`40` animated characters + ground in `2` color draw calls with `0` GC allocations).
 
 - **Water demo is game code only (WP-10, `2026-11-22`)**: the water demo uses the engine `OrbitCamera` and automatic `renderShadows` instead of its own camera and shadow passes; `--no-hud` also hides the F1 hint. `OrbitCamera` gains `minPitch` / `maxPitch`, `wheelZoomSpeed` and `dragToRotate`. The water engine port (`plan-water-engine-port.md`) is complete.
 
