@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Wet material presets (WP-8, `2026-11-22`)**: `engine.graphics.material_presets` — `dryStoneParams`, `wetSurfaceParams`, `mossSurfaceParams`, `submergedSurfaceParams` (OpenPBR water coat / moss fuzz, with a non-OpenPBR fallback). The water demo uses them instead of its own builders.
+
 - **Water gameplay queries and buoyancy (WP-7, `2026-11-22`)**: `engine.water.query` (`waterSurfaceAt` / `waterSurfaceHeight` → height, normal and river current; `WaterRenderer.surfaceAt`; `WaterQuery`) and `engine.water.buoyancy` (`applyBuoyancy` with spherical `BuoyancyProbe`s, `sphereProbes`, `BuoyancySettings`). Physics: `applyForce` (at a world point), `getMass`, `getRotation`. The water demo's buoys are now Box3D bodies.
 
 - **Generic underwater caustics (WP-5, `2026-11-22`)**: `assets/shaders/common/caustics.wgsl` (`waterCausticsAt`) lights every PBR mesh, terrain and decal fragment below a water body's level with animated sun caustics (strength `WaterBody.causticsStrength`, river flow and channel fade from the shared water data). **Removed:** `caustics_bed.wgsl` / `causticsBedShaderSource`, `evalCausticsRgb` / `voronoiCausticLayer` (`common/water_env.wgsl`) and the water surface's screen-space prop caustics. The water demo's seabed is now a PBR mesh.

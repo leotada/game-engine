@@ -302,6 +302,7 @@ WaveSample s = sampleWaves(waves, gx, gz, time); // displaced surface point + no
 - Enable the engine sky (`scene.setSkyEnabled(true)`); the water reflects it.
 - Submerged meshes, terrain and decals get sun caustics automatically (`WaterBody.causticsStrength`).
 - Gameplay: `water.surfaceAt(x, z, time, p)` gives height, normal and river current; `applyBuoyancy(physics, body, sphereProbes(r)[], surfaceFn)` keeps Box3D bodies afloat.
+- Stone near water: `wetSurfaceParams(dryStoneParams())`, `mossSurfaceParams`, `submergedSurfaceParams` (`engine.graphics.material_presets`).
 - The editor component is still being ported; see the guide.
 
 Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water` (`--river`).

@@ -508,7 +508,9 @@ current API are in [water-guide.md](water-guide.md).
 - **PBR wetline:** materials with `MaterialFlags.waterWetCaustics` get
   wave-contact wet marks only inside a body whose wetline is enabled. Waves,
   time, contact chop and the recent peak scale come from the shared data.
-  Outside every body the material is shaded normally.
+  Outside every body the material is shaded normally. Wet, mossy and
+  submerged stone presets: `engine.graphics.material_presets`
+  ([water-guide.md](water-guide.md#wet-material-presets-enginegraphicsmaterial_presets)).
 - **Sky reflection:** the water surface reflects and fogs toward the engine sky
   (`frameSky`, `common/sky_frame.wgsl`); enable it with
   `scene.setSkyEnabled(true)`. The old demo sky dome is gone.

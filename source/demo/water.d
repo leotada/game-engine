@@ -24,6 +24,8 @@ import engine.gpu.shader : createShaderModule, ValidateUniformLayout;
 import engine.gpu.shadow;
 import engine.gpu.text;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
+import engine.graphics.material_presets : dryStoneParams, mossSurfaceParams,
+    submergedSurfaceParams, wetSurfaceParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, InstanceData, TexTanVert, TexVert;
@@ -466,71 +468,6 @@ private struct OrbitState {
     }
 }
 
-private MaterialParams buildDryRockParams() {
-    MaterialParams p;
-    // Albedo is baked directly in true linear reflectance in rock_*_albedo.bmp.
-    p.baseColor = [1.0f, 0.98f, 0.95f];
-    p.baseDiffuseRoughness = 0.85f;
-    p.specularRoughness = 0.95f;
-    p.specularIor = 1.52f;
-    p.flags = MaterialFlags.normal | MaterialFlags.metallicRoughness | MaterialFlags.occlusion;
-    return p;
-}
-
-private MaterialParams buildWetRockParams(bool useOpenPbr) {
-    MaterialParams p = buildDryRockParams();
-    if (useOpenPbr) {
-        p.baseColor = [0.95f, 0.96f, 0.98f];
-        p.baseDiffuseRoughness = 0.65f;
-        p.specularRoughness = 0.52f;
-        p.coatWeight = 0.90f;
-        p.coatRoughness = 0.065f;
-        p.coatIor = 1.333f;
-        p.coatColor = [0.90f, 0.94f, 0.97f];
-        p.coatDarkening = 0.72f;
-    }
-    return p;
-}
-
-private MaterialParams buildMossRockParams(bool useOpenPbr) {
-    MaterialParams p = buildDryRockParams();
-    p.baseColor = [1.0f, 1.0f, 1.0f];
-    if (useOpenPbr) {
-        p.baseDiffuseRoughness = 0.82f;
-        p.specularRoughness = 0.90f;
-        p.coatWeight = 0.12f;
-        p.coatRoughness = 0.24f;
-        p.coatIor = 1.333f;
-        p.coatDarkening = 0.45f;
-        p.fuzzWeight = 0.28f;
-        p.fuzzColor = [0.20f, 0.28f, 0.11f];
-        p.fuzzRoughness = 0.78f;
-    } else {
-        p.baseDiffuseRoughness = 0.0f;
-        p.specularRoughness = 0.85f;
-    }
-    return p;
-}
-
-private MaterialParams buildSubmergedRockParams(bool useOpenPbr) {
-    MaterialParams p = buildDryRockParams();
-    if (useOpenPbr) {
-        p.baseColor = [0.88f, 0.96f, 0.94f];
-        p.baseDiffuseRoughness = 0.55f;
-        p.specularRoughness = 0.42f;
-        p.coatWeight = 0.95f;
-        p.coatRoughness = 0.05f;
-        p.coatIor = 1.333f;
-        p.coatColor = [0.76f, 0.92f, 0.90f];
-        p.coatDarkening = 0.72f;
-    } else {
-        p.baseColor = [0.88f, 0.86f, 0.82f];
-        p.baseDiffuseRoughness = 0.0f;
-        p.specularRoughness = 0.85f;
-    }
-    return p;
-}
-
 private struct RockTextureSet {
     Texture albedo, normal, mr, ao;
     Texture mossAlbedo, mossMr;
@@ -784,22 +721,22 @@ void main(string[] args) {
     RockMaterialGroup[3] rockMats;
     foreach (i; 0 .. 3) {
         rockMats[i].dry = makePbrMat(
-            rockTexSets[i].albedo, buildDryRockParams(),
+            rockTexSets[i].albedo, dryStoneParams(),
             &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
         rockMats[i].wet = makePbrMat(
-            rockTexSets[i].albedo, buildWetRockParams(useOpenPbr),
+            rockTexSets[i].albedo, wetSurfaceParams(dryStoneParams(), useOpenPbr),
             &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
         if (rockTexSets[i].hasMoss) {
             rockMats[i].moss = makePbrMat(
-                rockTexSets[i].mossAlbedo, buildMossRockParams(useOpenPbr),
+                rockTexSets[i].mossAlbedo, mossSurfaceParams(dryStoneParams(), useOpenPbr),
                 &rockTexSets[i].mossMr, &rockTexSets[i].normal, &rockTexSets[i].ao);
         } else {
             rockMats[i].moss = makePbrMat(
-                rockTexSets[i].albedo, buildMossRockParams(useOpenPbr),
+                rockTexSets[i].albedo, mossSurfaceParams(dryStoneParams(), useOpenPbr),
                 &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
         }
         rockMats[i].submerged = makePbrMat(
-            rockTexSets[i].albedo, buildSubmergedRockParams(useOpenPbr),
+            rockTexSets[i].albedo, submergedSurfaceParams(dryStoneParams(), useOpenPbr),
             &rockTexSets[i].mr, &rockTexSets[i].normal, &rockTexSets[i].ao);
     }
     scope(exit) {
@@ -995,10 +932,10 @@ void main(string[] args) {
             void applyWaterFx(ref MaterialParams p) {
                 p.flags |= waterFlagBits;
             }
-            auto dryP  = buildDryRockParams();
-            auto wetP  = buildWetRockParams(useOpenPbr);
-            auto mossP = buildMossRockParams(useOpenPbr);
-            auto subP  = buildSubmergedRockParams(useOpenPbr);
+            auto dryP  = dryStoneParams();
+            auto wetP  = wetSurfaceParams(dryStoneParams(), useOpenPbr);
+            auto mossP = mossSurfaceParams(dryStoneParams(), useOpenPbr);
+            auto subP  = submergedSurfaceParams(dryStoneParams(), useOpenPbr);
             applyWaterFx(dryP);
             applyWaterFx(wetP);
             applyWaterFx(mossP);

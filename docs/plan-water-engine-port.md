@@ -194,7 +194,15 @@ Benchmark unchanged (Ocean 5.32 ms, River 3.49 ms, GC 0).
 - `applyBuoyancy(bodyId, ref const BuoyancyProbe[], ...)`: per-probe submerged depth → `applyForceToCenter` / force at point, plus linear and angular drag.
 - Demo buoys become dynamic physics bodies.
 
-### WP-8 — Wet material presets
+### WP-8 — Wet material presets ✅ (2026-11-22)
+
+Done: `engine/graphics/material_presets.d` (re-exported by
+`engine.graphics`): `dryStoneParams`, `wetSurfaceParams`,
+`mossSurfaceParams`, `submergedSurfaceParams`. Deviation: the variants take
+a dry `MaterialParams` (not textures) plus an `openPbr` switch, so they apply
+to any dry material; textures stay with `Material.create`. Demo captures are
+pixel-identical.
+
 - `engine/graphics/material_presets.d` (or `water/materials.d`): `wetRock`, `mossRock`, `submergedRock`, `dryRock` builders taking base textures.
 
 ### WP-9 — ECS + scene file + Inspector

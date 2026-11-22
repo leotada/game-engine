@@ -2,8 +2,8 @@
 
 > **Status:** being ported from `source/demo/water.d` into `engine.water` — see
 > [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation,
-> obstacles, caustics, gameplay queries and buoyancy are in the engine; wet
-> material presets and the editor component follow.
+> obstacles, caustics, gameplay queries, buoyancy and wet material presets
+> are in the engine; the editor component follows.
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
 
@@ -180,6 +180,29 @@ the body's waves at the fragment (`waterWaveY`, scaled by `contactChop`).
 Surfaces the water reached in the last ~5 s stay wet and dry out over time.
 Surfaces above the highest possible wave stay dry and matte. Outside every
 body the flag has no effect.
+
+### Wet material presets (`engine.graphics.material_presets`)
+
+Ready-made `MaterialParams` for stone around water, re-exported by
+`engine.graphics`:
+
+| Function | Look |
+|:---|:---|
+| `dryStoneParams()` | Rough stone; expects albedo, normal, metallic-roughness and AO textures |
+| `wetSurfaceParams(dry, openPbr = true)` | Water film: darker, glossier, clear coat (IOR 1.333) |
+| `mossSurfaceParams(dry, openPbr = true)` | Damp moss: green fuzz sheen, faint coat (use a moss albedo/MR) |
+| `submergedSurfaceParams(dry, openPbr = true)` | Under water: algae tint, smooth saturated coat |
+
+Variants keep the dry base's texture flags and IOR, so you can start from
+your own dry material. `openPbr = false` drops coat and fuzz. Add
+`MaterialFlags.waterWetCaustics` for wave-contact marks.
+
+```d
+auto dry = dryStoneParams();
+dry.flags |= MaterialFlags.waterWetCaustics;
+auto wetMat = Material.create(gpu, layout, sampler, albedo, wetSurfaceParams(dry),
+                              &mr, &normal, &ao, null);
+```
 
 ## Gameplay queries (`engine.water.query`)
 
