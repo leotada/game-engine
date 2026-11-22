@@ -183,13 +183,15 @@ float wavePhaseWarp(ref const WaveModulation m, float x, float z, float time) pu
          + m.warpAmp1 * cos(x * 0.14f + z * 0.25f - time * 0.22f);
 }
 
-private struct WaveTerms {
+/// Per-component constants derived from a `WaveComponent` (also uploaded to
+/// the GPU by `packWaterBody`).
+package struct WaveTerms {
     float k;
     float omega;
     float warpScale;
 }
 
-private WaveTerms waveTerms(ref const WaveComponent w) pure nothrow @nogc {
+package WaveTerms waveTerms(ref const WaveComponent w) pure nothrow @nogc {
     immutable len = w.wavelength > 0.1f ? w.wavelength : 0.1f;
     immutable k = (2.0f * cast(float) PI) / len;
     immutable c = sqrt(WAVE_GRAVITY / k) * w.speedScale;

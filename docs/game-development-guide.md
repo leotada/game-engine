@@ -280,10 +280,16 @@ decals.spawn(hit.point, hit.normal, Vec2(2, 2), 1.0f, angle, layer);  // skid ma
 
 Deep dives: [terrain-guide.md](terrain-guide.md) · [graphics.md § Outdoor Rendering](graphics.md#outdoor-rendering-ow-3) · demo: `dub run --config=outdoor` (`--tod=18.5 --rain --debug-cascades --decals=500 --view=1`).
 
-### 3.8 Water Waves (`engine.water`)
+### 3.8 Water (`engine.water`)
 
 ```d
 import engine.water;
+
+auto water = WaterRenderer.create(app.gpu, scene);
+water.attach(scene, app.renderer);
+immutable id = water.addBody(WaterBody.ocean());   // or WaterBody.river(); up to 4 bodies
+// per frame, before beginFrame:
+water.update(camera, time);
 
 WaveSet waves = WaveSet.ocean();          // or WaveSet.river() / custom WaveComponents
 waves.amplitudeScale = 1.0f;
@@ -292,9 +298,11 @@ WaveSample s = sampleWaves(waves, gx, gz, time); // displaced surface point + no
 ```
 
 - Up to 8 Gerstner components, plus optional wave-group modulation and a river channel taper.
-- Water rendering, simulation and buoyancy are being ported from the water demo; see the guide for what is available.
+- `WaterBody` (POD): position, level, `WaterStyle` ocean/river, `WaveSet`, `WaterOptics`, `WaterFeature` bits (refraction, SSR, transparency, simulation, OpenPBR, wet marks); `setObstacles` for rocks and piers.
+- Enable the engine sky (`scene.setSkyEnabled(true)`); the water reflects it.
+- Caustics, buoyancy and the editor component are still being ported; see the guide.
 
-Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water --compiler=ldc2` (`--river`).
+Deep dive: [water-guide.md](water-guide.md) · demo: `dub run --config=water` (`--river`).
 
 ## 4. Post-Processing (`app.post()` & Custom Passes)
 

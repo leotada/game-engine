@@ -103,13 +103,44 @@ by WP-3). Demo captures match the WP-0 reference (< 0.1 differing pixel).
 - `textured3d_pbr.wgsl` (`evalExactWaveY`, `evalRecentWaterWetness`) and `water_surface.wgsl` read the buffer; hard-coded tables removed.
 - Remove `MaterialFlags.waterRiverMode` (river-ness becomes data); keep `waterWetCaustics` as the per-material opt-in.
 
-### WP-3 — `WaterRenderer` + `WaterBody`
+### WP-3 — `WaterRenderer` + `WaterBody` ✅ (2026-11-22, together with WP-4)
+
+Done. Deviations:
+- WP-3 and WP-4 shipped together: the surface shader samples the simulation
+  texture, so splitting them would have needed a throwaway dummy path.
+- Registered as a **transparent** hook (after the sky), not post-opaque, so
+  the opaque snapshot contains the sky.
+- `WaterBody` is square (`centerX/Z` + `halfExtent`) instead of arbitrary XZ
+  bounds; `WaterStyle` ocean/river (like HDRP surface types) selects the
+  surface algorithms, `WaterOptics` holds the colors. The grid is a unit
+  `[-1, 1]` mesh scaled in the vertex shader. The camera basis was unused by
+  the shaders and was dropped from the UBO (`WaterSurfaceUniforms`, 432 B).
+- The simulation is submitted in its own command buffer inside `update`
+  (before `beginFrame`), not in the frame encoder; disabled bodies still
+  allocate their two 256² textures (2 MB per body; revisit if it matters).
+- River bed fallback depth is flat (`bedDepth`) plus obstacle shoaling; the
+  demo's bank profile is gone (only used when refraction is off).
+- DMD crash root cause found: CTFE-built shader `enum`s used inside a
+  function. Fixed with module-level `immutable string`s; the demo builds
+  with DMD again.
+- Performance work (WP-2 had regressed the river by +1.1 ms): wave `k`,
+  `omega` and warp scale precomputed on the CPU; the PBR wetline loads the
+  body's waves once per fragment (`WaterPoint`); `evalSky` split into base +
+  sun so the water evaluates clouds once.
+
+| LDC release 1280×720 | WP-0 (re-measured) | WP-3 |
+|:---|---:|---:|
+| Ocean | 5.49 ms | 5.71 ms (+4.0%) |
+| River | 3.26 ms | 3.62 ms (+11%, open item for WP-10) |
+| No-Water | 1.99 ms | 2.05 ms |
+
+Original scope:
 - `WaterBody` (POD): XZ bounds, water level, grid resolution, absorption/scatter colors, flags (refraction, SSR, transparent, horizon skirt, simulation).
 - `WaterRenderer`: owns layouts, pipelines, UBO, grid mesh (`TexMesh` or an internal stride-32 mesh), cached surface bind groups; registers a post-opaque hook; draws N bodies with one opaque snapshot per frame.
 - Water UBO packing moves here; camera basis comes from the `Camera`.
 - `nothrow @nogc` frame path, no GC allocation per frame.
 
-### WP-4 — `WaterSimulation` + obstacles
+### WP-4 — `WaterSimulation` + obstacles ✅ (merged into WP-3)
 - 256×256 ping-pong JONSWAP + advected foam, encoded in the frame encoder.
 - `WaterRenderer.setObstacles(scope const(WaterObstacle)[])` (x, z, radius, strength; max 16).
 - Disabled bodies pay nothing (no textures allocated).

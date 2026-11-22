@@ -512,8 +512,13 @@ current API are in [water-guide.md](water-guide.md).
 - **Sky reflection:** the water surface reflects and fogs toward the engine sky
   (`frameSky`, `common/sky_frame.wgsl`); enable it with
   `scene.setSkyEnabled(true)`. The old demo sky dome is gone.
-- **Still demo-only:** the surface pipeline, the compute wave/foam simulation
-  and the caustics bed (`source/demo/water.d`).
+- **Surface rendering:** `WaterRenderer` (`engine.water.renderer`) draws up to
+  4 `WaterBody` values in a transparent hook after the sky (one opaque
+  snapshot shared by all bodies), steps a 256² compute wave/foam simulation
+  per body and handles up to 16 obstacles per body. The surface shader takes
+  per-body uniforms (center, size, level, style, optics), so it no longer
+  assumes water at the origin or at Y = 0.
+- **Still demo-only:** the caustics bed (`caustics_bed.wgsl`, until WP-5).
 
 ## SceneGraph
 
@@ -589,8 +594,7 @@ dub run --config=showcase
 dub run --config=pbr
 
 # OpenPBR Ocean & River water showcase (Gerstner waves + wet rocks + Fresnel blend)
-# LDC only for now: DMD 2.113 crashes on the demo's pipeline setup (fixed in WP-3)
-dub run --config=water --compiler=ldc2 -- --river
+dub run --config=water -- --river
 
 # Outdoor (OW-3): 3 km terrain, CSM, fog, sky, day/night + rain, dynamic IBL, 500 decals
 dub run --config=outdoor -- --headless-frames=600 --assert-no-gc

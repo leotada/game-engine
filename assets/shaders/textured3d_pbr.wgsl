@@ -128,9 +128,8 @@ struct SurfaceOut {
 /// Wave height above body `bi`'s level at `worldPos` (one horizontal pullback)
 /// with the contact chop applied: water runs up a little higher where it
 /// hits props than on the open surface.
-fn evalContactWaveY(bi: u32, worldPos: vec3<f32>, time: f32, waveScale: f32) -> f32 {
-    let chop = waterData.bodies[bi].surface.w;
-    return waterWaveY(bi, worldPos.xz, time, waveScale * chop);
+fn evalContactWaveY(p: WaterPoint, chop: f32, time: f32, waveScale: f32) -> f32 {
+    return waterPointY(p, time, waveScale * chop);
 }
 
 /// Evaluates water wetness [filmWet, poreWet] using fixed world-time snapshots (d(tau)/dt = 0):
@@ -140,7 +139,9 @@ fn evalContactWaveY(bi: u32, worldPos: vec3<f32>, time: f32, waveScale: f32) -> 
 /// `worldPos.y` is relative to the body's water level.
 fn evalRecentWaterWetness(bi: u32, worldPos: vec3<f32>, time: f32, curScale: f32, recentPeakScale: f32,
                           wetNoise: f32) -> vec2<f32> {
-    let yNow = evalContactWaveY(bi, worldPos, time, curScale);
+    let wp = waterPointAt(bi, worldPos.xz);
+    let chop = waterData.bodies[bi].surface.w;
+    let yNow = evalContactWaveY(wp, chop, time, curScale);
     let nowMask = 1.0 - smoothstep(yNow - 0.015, yNow + 0.012 + wetNoise * 0.5, worldPos.y);
     var filmWet = nowMask;
     var poreWet = nowMask;
@@ -154,7 +155,7 @@ fn evalRecentWaterWetness(bi: u32, worldPos: vec3<f32>, time: f32, curScale: f32
             let tau = (baseStep - f32(s)) * dtStep;
             let age = max(time - tau, 0.0);
             let pastScale = mix(curScale, recentPeakScale, clamp(age / 1.5, 0.0, 1.0));
-            let yPast = evalContactWaveY(bi, worldPos, tau, pastScale);
+            let yPast = evalContactWaveY(wp, chop, tau, pastScale);
             let hitMask = 1.0 - smoothstep(yPast - 0.015, yPast + 0.015 + wetNoise, worldPos.y);
 
             let fd = clamp(1.0 - age / 3.4, 0.0, 1.0);

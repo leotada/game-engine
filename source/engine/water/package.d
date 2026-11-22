@@ -4,3 +4,6 @@
 module engine.water;
 
 public import engine.water.waves;
+public import engine.water.gpu_data;
+public import engine.water.water_body;
+public import engine.water.renderer;

@@ -9,7 +9,7 @@
 struct WaveComp {
     /// dirX, dirZ, wavelength, amplitude.
     a: vec4<f32>,
-    /// steepness, speedScale, 0, 0.
+    /// steepness, k (2π/wavelength), omega (k·phase speed), phase-warp scale.
     b: vec4<f32>,
 };
 
@@ -82,66 +82,90 @@ fn waterEnvelope(bi: u32, xz: vec2<f32>, t: f32) -> f32 {
 }
 
 /// Phase warp (`wavePhaseWarp` in D).
+/// Note: read single fields (`waterData.bodies[bi].x`), never copy a whole
+/// body into a local: that loads all 368 bytes per call.
 fn waterPhaseWarp(bi: u32, xz: vec2<f32>, t: f32) -> f32 {
-    let b = waterData.bodies[bi];
-    return b.modulation.w * sin(xz.x * 0.21 - xz.y * 0.17 + t * 0.29)
-         + b.channelA.x * cos(xz.x * 0.14 + xz.y * 0.25 - t * 0.22);
+    return waterData.bodies[bi].modulation.w * sin(xz.x * 0.21 - xz.y * 0.17 + t * 0.29)
+         + waterData.bodies[bi].channelA.x * cos(xz.x * 0.14 + xz.y * 0.25 - t * 0.22);
 }
 
 /// Channel taper (`WaveChannel.scaleAt` in D).
 fn waterChannelScale(bi: u32, xz: vec2<f32>) -> f32 {
-    let b = waterData.bodies[bi];
-    let halfWidth = b.channelA.y;
+    let ca = waterData.bodies[bi].channelA;
+    let halfWidth = ca.y;
     if (halfWidth <= 0.0) {
         return 1.0;
     }
-    let o = b.channelB.xy;
-    let dir = b.channelB.zw;
-    let d = abs((xz.x - o.x) * dir.y - (xz.y - o.y) * dir.x);
+    let cb = waterData.bodies[bi].channelB;
+    let d = abs((xz.x - cb.x) * cb.w - (xz.y - cb.y) * cb.z);
     if (d <= halfWidth) {
         return 1.0;
     }
-    let t = (d - halfWidth) / max(b.channelA.z, 1e-4);
-    return select(1.0 - t * (1.0 - b.channelA.w), b.channelA.w, t >= 1.0);
+    let t = (d - halfWidth) / max(ca.z, 1e-4);
+    return select(1.0 - t * (1.0 - ca.w), ca.w, t >= 1.0);
 }
 
-/// Wavenumber of component `i`.
-fn waterWaveK(w: WaveComp) -> f32 {
-    return WATER_TWO_PI / max(w.a.z, 0.1);
+
+/// One body's wave data loaded once for a fixed point, for code that
+/// evaluates the same point at many times (the wetline history samples 25
+/// times per fragment): the buffer is read once instead of per sample.
+struct WaterPoint {
+    waves: array<WaveComp, 8>,
+    modulation: vec4<f32>,   // groupBase, groupAmp0, groupAmp1, warpAmp0
+    xz: vec2<f32>,
+    channel: f32,            // channel taper at xz (time independent)
+    warpAmp1: f32,
+    n: u32,
+};
+
+fn waterPointAt(bi: u32, xz: vec2<f32>) -> WaterPoint {
+    var p: WaterPoint;
+    p.waves = waterData.bodies[bi].waves;
+    p.modulation = waterData.bodies[bi].modulation;
+    p.xz = xz;
+    p.channel = waterChannelScale(bi, xz);
+    p.warpAmp1 = waterData.bodies[bi].channelA.x;
+    p.n = waterWaveCount(bi);
+    return p;
 }
 
-/// Angular frequency of component `i` for wavenumber `k`.
-fn waterWaveOmega(w: WaveComp, k: f32) -> f32 {
-    return k * sqrt(9.81 / k) * w.b.y;
-}
-
-/// Wave height above the body level at world `xz` (one horizontal pullback,
-/// envelope and warp evaluated at `xz`). `ampScale` replaces the body's
-/// amplitude scale (wetline history uses past scales). Matches
+/// Wave height above the body level at the point at time `t` (one
+/// horizontal pullback, envelope and warp evaluated at the point).
+/// `ampScale` replaces the body's amplitude scale. Matches
 /// `waveHeightAt(set, x, z, t, 1)` in D.
-fn waterWaveY(bi: u32, xz: vec2<f32>, t: f32, ampScale: f32) -> f32 {
-    let scale = ampScale * waterChannelScale(bi, xz) * waterEnvelope(bi, xz, t);
-    let warp = waterPhaseWarp(bi, xz, t);
-    let n = waterWaveCount(bi);
+fn waterPointY(p: WaterPoint, t: f32, ampScale: f32) -> f32 {
+    let xz = p.xz;
+    let m = p.modulation;
+    let env = m.x
+            + m.y * sin(t * 0.62 - xz.x * 0.13 + xz.y * 0.16)
+            + m.z * cos(t * 0.41 + xz.x * 0.19 + xz.y * 0.11);
+    let warp = m.w * sin(xz.x * 0.21 - xz.y * 0.17 + t * 0.29)
+             + p.warpAmp1 * cos(xz.x * 0.14 + xz.y * 0.25 - t * 0.22);
+    let scale = ampScale * p.channel * env;
 
     var disp = vec2<f32>(0.0);
-    for (var i = 0u; i < n; i++) {
-        let w = waterData.bodies[bi].waves[i];
-        let k = waterWaveK(w);
+    for (var i = 0u; i < 8u; i++) {
+        if (i >= p.n) { break; }
+        let w = p.waves[i];
         let a = w.a.w * scale;
-        let phase = k * dot(w.a.xy, xz) - waterWaveOmega(w, k) * t + warp * min(k * 0.45, 1.0);
+        let phase = w.b.y * dot(w.a.xy, xz) - w.b.z * t + warp * w.b.w;
         disp += (w.b.x * a) * w.a.xy * cos(phase);
     }
 
-    let p = xz - disp;
+    let q = xz - disp;
     var y = 0.0;
-    for (var i = 0u; i < n; i++) {
-        let w = waterData.bodies[bi].waves[i];
-        let k = waterWaveK(w);
-        let a = w.a.w * scale;
-        y += a * sin(k * dot(w.a.xy, p) - waterWaveOmega(w, k) * t + warp * min(k * 0.45, 1.0));
+    for (var i = 0u; i < 8u; i++) {
+        if (i >= p.n) { break; }
+        let w = p.waves[i];
+        y += w.a.w * scale * sin(w.b.y * dot(w.a.xy, q) - w.b.z * t + warp * w.b.w);
     }
     return y;
+}
+
+/// Wave height above body `bi`'s level at world `xz` and time `t`
+/// (`ampScale` replaces the body's amplitude scale).
+fn waterWaveY(bi: u32, xz: vec2<f32>, t: f32, ampScale: f32) -> f32 {
+    return waterPointY(waterPointAt(bi, xz), t, ampScale);
 }
 
 /// World-space water surface height at `xz` for body `bi` at time `t`.

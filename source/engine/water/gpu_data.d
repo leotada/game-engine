@@ -32,8 +32,8 @@ enum WaterBodyGpuFlags : uint {
 struct GpuWaveComponent {
     /// dirX, dirZ, wavelength, amplitude.
     float[4] a = [1, 0, 4, 0];
-    /// steepness, speedScale, 0, 0.
-    float[4] b = [0, 1, 0, 0];
+    /// steepness, k (2π/wavelength), omega (k·phase speed), phase-warp scale.
+    float[4] b = [0, 1.5707964f, 3.9255f, 0.70685834f];
 }
 
 /// One water body (368 bytes, std430). Field comments give the WGSL meaning.
@@ -120,7 +120,8 @@ GpuWaterBody packWaterBody(ref const WaveSet waves, ref const WaterSurfaceGpuPar
     float ampSum = 0.0f;
     foreach (i, ref w; waves.active) {
         g.waves[i].a = [w.dirX, w.dirZ, w.wavelength, w.amplitude];
-        g.waves[i].b = [w.steepness, w.speedScale, 0, 0];
+        immutable t = waveTerms(w);  // precomputed: keeps sqrt/div out of per-sample shader loops
+        g.waves[i].b = [w.steepness, t.k, t.omega, t.warpScale];
         ampSum += w.amplitude > 0 ? w.amplitude : -w.amplitude;
     }
     immutable envMax = absf(m.groupBase) + absf(m.groupAmp0) + absf(m.groupAmp1);

@@ -17,11 +17,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let time = wu.params0.x;
     let waveScale = wu.params0.y;
     let riverMode = wu.flags0.x;
-    let halfSpan = max(wu.camUp.w, 14.0);
+    let halfSpan = max(wu.area.z, 0.5);
     let span = halfSpan * 2.0;
 
+    // Texel -> world XZ over the body's square (obstacles are in world space).
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / 256.0;
-    let xz = (uv - vec2<f32>(0.5)) * span;
+    let localXZ = (uv - vec2<f32>(0.5)) * span;
+    let xz = wu.area.xy + localXZ;
 
     // 1. Domain-warped directional JONSWAP short-chop wave spectrum (16 modes, wide spread,
     //    spatially localized wave packets so chop never forms rigid parallel grooves).
@@ -60,10 +62,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // 2. Tangential flow velocity deflected around channel obstacles.
-    var flow = select(vec2<f32>(0.24, 0.14), vec2<f32>(1.45, 0.0), riverMode != 0u);
+    // Foam advects slightly faster than the surface current.
+    var flow = wu.flow.xy * 1.08;
+    let flowLen = length(flow);
+    let flowDir = select(vec2<f32>(1.0, 0.0), flow / max(flowLen, 1e-4), flowLen > 1e-4);
     if (riverMode != 0u) {
-        let bankAtten = clamp(1.0 - pow(abs(xz.y) / 6.8, 2.0) * 0.55, 0.35, 1.05);
-        flow.x *= bankAtten;
+        let across = waterChannelAcross(wu.channel, xz);
+        let bankAtten = clamp(1.0 - pow(across / max(wu.flow.z, 0.1), 2.0) * 0.55, 0.35, 1.05);
+        flow *= bankAtten;
     }
 
     var injectFoam = clamp((crestAccum - 0.55) * 0.45, 0.0, 0.65) * clamp(waveScale * 0.7, 0.25, 1.2);
@@ -81,8 +87,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         // Bow collision ring + downstream turbulent shear wake source.
         let bow = 1.0 - smoothstep(r * 0.55, r * 1.15, dist);
-        let shearSide = 1.0 - smoothstep(r * 0.35, r * 1.15, abs(abs(rel.y) - r * 0.62));
-        let behind = select(0.0, (1.0 - smoothstep(0.0, r * 1.6, rel.x)) * step(-r * 0.3, rel.x), riverMode != 0u);
+        let fr = waterFlowFrame(rel, flowDir);
+        let shearSide = 1.0 - smoothstep(r * 0.35, r * 1.15, abs(abs(fr.y) - r * 0.62));
+        let behind = select(0.0, (1.0 - smoothstep(0.0, r * 1.6, fr.x)) * step(-r * 0.3, fr.x), riverMode != 0u);
         let wakeSrc = max(bow * 0.65, shearSide * behind * 0.72) * ob.w;
         injectFoam = max(injectFoam, wakeSrc);
         injectWake = max(injectWake, sin(dist * 7.5 - time * 6.5) * bow * 0.5 * ob.w);

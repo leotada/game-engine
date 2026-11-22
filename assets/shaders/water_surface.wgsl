@@ -4,7 +4,10 @@
 /// - Analytical Beer-Lambert column depth tint & shallow bank/rock clarity
 /// - Backlit wave-crest subsurface scattering (SSS)
 /// - Crisp lacy procedural crest whitecaps + obstacle wakes & opaque foam alpha
-/// - Coherent procedural sky/sun reflection matching sky_dome.wgsl + shadow PCF
+/// - Engine sky reflection (`frameSky`) + shadow PCF
+///
+/// Drawn by `engine.water.renderer.WaterRenderer`, one draw per water body.
+/// The grid mesh spans [-1, 1] in XZ and is scaled by `wu.area`.
 
 #include "common/pbr_brdf.wgsl"
 #include "common/shadows.wgsl"
@@ -47,28 +50,34 @@ fn vs_main(v: VertexInput) -> VertexOutput {
     let waveScale = waterData.bodies[bi].surface.y;
     let riverMode = wu.flags0.x;
     let waveCount = waterWaveCount(bi);
+    let center = wu.area.xy;
+    let halfW = max(wu.area.z, 0.5);
+    let level = wu.area.w;
 
-    let x0 = v.position.x;
-    let z0 = v.position.z;
+    // The grid mesh spans [-1, 1] in XZ; scale it to the body.
+    let x0 = v.position.x * halfW;
+    let z0 = v.position.z * halfW;
 
     // WTR-5: Smooth circular C2 quintic horizon skirt eliminates 45-degree square creases,
     // and per-octave Nyquist vertex damping prevents stretched far triangles from aliasing.
-    var x = x0;
-    var z = z0;
-    var localStep = 0.146;
+    var lx = x0;
+    var lz = z0;
+    // Grid cell size (m): drives the per-octave Nyquist fade.
+    var localStep = 2.0 * halfW / f32(max(wu.flags0.w, 1u));
     var distAtten = 1.0;
     if (riverMode == 0u) {
-        let halfW = max(wu.camUp.w, 14.0);
         let r0 = length(vec2<f32>(x0, z0)) / halfW;
         let tSkirt = clamp((r0 - 0.72) / 0.28, 0.0, 1.0);
         let sSkirt = tSkirt * tSkirt * tSkirt * (tSkirt * (tSkirt * 6.0 - 15.0) + 10.0);
         let dSdT = 30.0 * tSkirt * tSkirt * (1.0 - tSkirt) * (1.0 - tSkirt);
         let skirtScale = mix(1.0, 12.0, sSkirt);
-        x = x0 * skirtScale;
-        z = z0 * skirtScale;
-        localStep = 0.146 * (skirtScale + r0 * (11.0 / 0.28) * dSdT);
-        distAtten = 1.0 - smoothstep(45.0, 145.0, length(vec2<f32>(x, z))) * 0.78;
+        lx = x0 * skirtScale;
+        lz = z0 * skirtScale;
+        localStep = localStep * (skirtScale + r0 * (11.0 / 0.28) * dSdT);
+        distAtten = 1.0 - smoothstep(45.0, 145.0, length(vec2<f32>(lx, lz))) * 0.78;
     }
+    let x = center.x + lx;
+    let z = center.y + lz;
 
     let bankMask = waterChannelScale(bi, vec2<f32>(x, z));
 
@@ -85,7 +94,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
     let waveSet = waterEnvelope(bi, vec2<f32>(x, z), time);
     let phaseWarp = waterPhaseWarp(bi, vec2<f32>(x, z), time);
 
-    var p = vec3<f32>(x, 0.0, z);
+    var p = vec3<f32>(x, level, z);
     var dPdx = vec3<f32>(1.0, 0.0, 0.0);
     var dPdz = vec3<f32>(0.0, 0.0, 1.0);
     var crestAccum = 0.0;
@@ -97,8 +106,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         let wb = wave.b;
         let dirX = wa.x;
         let dirZ = wa.y;
-        let k = (2.0 * PI) / max(wa.z, 0.1);
-        let c = sqrt(9.81 / k) * wb.y;
+        let k = wb.y;
         let nyquistFade = select(
             1.0,
             1.0 - smoothstep(wa.z * 0.14, wa.z * 0.30, localStep),
@@ -107,7 +115,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
         let a = wa.w * waveScale * bankMask * rockChop * distAtten * waveSet * nyquistFade;
         let q = wb.x;
 
-        let phase = k * (dirX * x + dirZ * z) - k * c * time + phaseWarp * min(k * 0.45, 1.0);
+        let phase = k * (dirX * x + dirZ * z) - wb.z * time + phaseWarp * wb.w;
         let sn = sin(phase);
         let cs = cos(phase);
 
@@ -154,14 +162,17 @@ fn vs_main(v: VertexInput) -> VertexOutput {
 /// Evaluates analytical streamline deflection + wakes around boulders and piers.
 fn evalRiverFlowAndWake(xz: vec2<f32>, riverMode: u32, time: f32,
                         obstacles: array<vec4<f32>, 16>, obsCount: u32) -> vec3<f32> {
-    var flow = select(vec2<f32>(0.22, 0.14), vec2<f32>(1.35, 0.0), riverMode != 0u);
+    var flow = wu.flow.xy;
+    let flowLen = length(flow);
+    let flowDir = select(vec2<f32>(1.0, 0.0), flow / max(flowLen, 1e-4), flowLen > 1e-4);
     var wakeMask = 0.0;
     var contactMask = 0.0;
 
     if (riverMode != 0u) {
         // Poiseuille-like channel profile: fastest in center, calmer near banks.
-        let centerFactor = clamp(1.0 - pow(abs(xz.y) / 6.8, 2.0) * 0.55, 0.35, 1.05);
-        flow.x *= centerFactor;
+        let across = waterChannelAcross(wu.channel, xz);
+        let centerFactor = clamp(1.0 - pow(across / max(wu.flow.z, 0.1), 2.0) * 0.55, 0.35, 1.05);
+        flow *= centerFactor;
     }
 
     let cnt = min(obsCount, 16u);
@@ -183,12 +194,13 @@ fn evalRiverFlowAndWake(xz: vec2<f32>, riverMode: u32, time: f32,
         let ring = 1.0 - smoothstep(r * 0.45, r * 0.94, dist + jitter);
         contactMask = max(contactMask, ring * ob.w);
 
-        // Downstream +X turbulent V-wake + oscillating vortex ripples behind river obstacles.
-        if (riverMode != 0u && rel.x > -r * 0.20 && rel.x < r * 4.8) {
-            let downT = clamp((rel.x + r * 0.20) / (r * 4.8), 0.0, 1.0);
+        // Downstream turbulent V-wake + oscillating vortex ripples behind river obstacles.
+        let fr = waterFlowFrame(rel, flowDir);
+        if (riverMode != 0u && fr.x > -r * 0.20 && fr.x < r * 4.8) {
+            let downT = clamp((fr.x + r * 0.20) / (r * 4.8), 0.0, 1.0);
             let wakeHalfW = r * (0.58 + downT * 0.92);
-            let vRipple = 0.72 + 0.28 * sin(rel.x * 5.2 - abs(rel.y) * 4.0 - time * 6.5);
-            let zFit = 1.0 - smoothstep(wakeHalfW * 0.28, wakeHalfW, abs(rel.y));
+            let vRipple = 0.72 + 0.28 * sin(fr.x * 5.2 - abs(fr.y) * 4.0 - time * 6.5);
+            let zFit = 1.0 - smoothstep(wakeHalfW * 0.28, wakeHalfW, abs(fr.y));
             let axialFade = (1.0 - downT) * smoothstep(0.0, 0.14, downT + 0.08);
             wakeMask = max(wakeMask, zFit * axialFade * ob.w * 0.92 * vRipple);
         }
@@ -355,9 +367,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let flowVel = flowWake.xy;
     let obstacleWake = flowWake.z;
 
-    let halfSpan = max(wu.camUp.w, 14.0);
-    let simUv = clamp(in.worldPos.xz / (halfSpan * 2.0) + vec2<f32>(0.5), vec2<f32>(0.002), vec2<f32>(0.998));
-    let inSimBox = smoothstep(halfSpan, halfSpan - 1.5, max(abs(in.worldPos.x), abs(in.worldPos.z)));
+    let center = wu.area.xy;
+    let level = wu.area.w;
+    let localXZ = in.worldPos.xz - center;
+    let halfSpan = max(wu.area.z, 0.5);
+    let simUv = clamp(localXZ / (halfSpan * 2.0) + vec2<f32>(0.5), vec2<f32>(0.002), vec2<f32>(0.998));
+    let inSimBox = smoothstep(halfSpan, halfSpan - 1.5, max(abs(localXZ.x), abs(localXZ.y)));
     let simData = textureSampleLevel(waterSimMap, sceneLinearSampler, simUv, 0.0) * inSimBox;
 
     let pxGradX = dpdx(in.worldPos.xz);
@@ -367,7 +382,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 2. Procedural ocean swells & capillary normals + pixel-filtered JONSWAP compute slopes.
     let simAA = 1.0 - smoothstep(0.22, 0.85, mix(pxIso, pxFootprint, 0.35));
-    let capRes = evalCapillaryOffset(in.worldPos.xz, flowVel, time, riverMode, waveScale, pxGradX, pxGradY);
+    let capRes = evalCapillaryOffset(localXZ, flowVel, time, riverMode, waveScale, pxGradX, pxGradY);
     let slope = capRes.xy + simData.xy * (0.42 * simAA);
     let combinedCrest = max(in.crestFactor, capRes.z * (1.0 - smoothstep(55.0, 110.0, camDist)));
 
@@ -379,7 +394,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let NdotV = max(dot(N, V), 0.001);
 
     // 3. Column depth, screen-space refraction & Beer-Lambert spectral absorption.
-    let bedY = evalRiverBedY(in.worldPos.xz, riverMode, wu.obstacles, wu.counts.x);
+    let bedY = evalWaterBedY(in.worldPos.xz, level, wu.flow.w, wu.obstacles, wu.counts.x);
     var verticalDepth = max(in.worldPos.y - bedY, 0.03);
     var rayDepth = min(verticalDepth / max(abs(V.y), 0.25), 4.5);
 
@@ -428,15 +443,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Absorption coefficients: red absorbs fastest, blue/cyan travels deepest.
-    let sigma = select(
-        vec3<f32>(1.65, 0.56, 0.34), // Ocean: turquoise shallows -> deep Atlantic navy
-        vec3<f32>(1.35, 0.44, 0.52), // River: crisp clear mineral aqua -> alpine emerald
-        riverMode != 0u
-    );
+    let sigma = wu.absorption.rgb;
     let transmittance = exp(-sigma * rayDepth);
 
-    let shallowCol = select(vec3<f32>(0.03, 0.20, 0.26), vec3<f32>(0.05, 0.24, 0.20), riverMode != 0u);
-    let deepCol    = select(vec3<f32>(0.008, 0.052, 0.115), vec3<f32>(0.015, 0.095, 0.090), riverMode != 0u);
+    let shallowCol = wu.shallowColor.rgb;
+    let deepCol    = wu.deepColor.rgb;
     let waterVolumeCol = mix(deepCol, shallowCol, transmittance.g);
 
     // 4. Crisp lacy procedural foam mask (crest whitecaps + geometry contacts + wakes + WTR-6 advected foam).
@@ -449,7 +460,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let baseColor = mix(waterVolumeCol * bodyScatterWeight, foamColor, foamMask);
 
     // 5. OpenPBR v1.1 vs Legacy PBR parameter assignment (supports [4] A/B toggle).
-    var roughness = select(0.08, select(0.075, 0.12, riverMode != 0u), useOpenPbr);
+    var roughness = select(0.08, wu.absorption.w, useOpenPbr);
     let distRoughBoost = clamp(pxFootprint / (pxFootprint + 0.42), 0.0, 1.0) * 0.065;
     roughness = clamp(mix(roughness + distRoughBoost, 0.84, foamMask), 0.025, 0.95);
     let lutBase = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, roughness)).rg;
@@ -461,7 +472,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var coatW = select(0.0, 0.92 * (1.0 - foamMask), useOpenPbr);
     let coatR = 0.022;
-    let coatColor = select(vec3<f32>(0.70, 0.92, 1.00), vec3<f32>(0.76, 0.96, 0.92), riverMode != 0u);
+    let coatColor = wu.coatColor.rgb;
 
     var pbrIn: OpenPbrEvalInput;
     pbrIn.N = N;
@@ -475,7 +486,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.specularRoughness = roughness;
     pbrIn.specularColor = vec3<f32>(1.0);
     pbrIn.specularIor = select(1.50, 1.333, useOpenPbr);
-    pbrIn.specularAnisotropy = select(0.0, select(0.20, 0.45, riverMode != 0u) * (1.0 - foamMask), useOpenPbr);
+    pbrIn.specularAnisotropy = select(0.0, wu.shallowColor.w * (1.0 - foamMask), useOpenPbr);
     pbrIn.coatWeight = coatW;
     pbrIn.coatColor = coatColor;
     pbrIn.coatRoughness = coatR;
@@ -509,8 +520,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let onPropMask = smoothstep(bedY + 0.06, bedY + 0.26, underPos.y)
                            * smoothstep(0.10, 0.48, verticalDepth);
             if (onPropMask > 0.001) {
-                let propC = evalCausticsRgb(underPos, sunL, time, riverMode);
-                let propCaustGain = select(0.18, 0.09, riverMode != 0u);
+                let propC = evalCausticsRgb(underPos - vec3<f32>(0.0, level, 0.0), sunL, time, riverMode);
+                let propCaustGain = wu.coatColor.w;
                 let subAtten = dirShadow * exp(-verticalDepth * 0.85) * onPropMask * propCaustGain;
                 refractedBg += refractedBg * propC * sunRad * subAtten;
             }
@@ -556,7 +567,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let R = reflect(-V, iblNormal);
     let mip = roughness * SPECULAR_MIPS;
     let iblSpec = textureSampleLevel(specularMap, iblSampler, R, mip).rgb;
-    var procSky = frameSky(R);
+    // Sky base (gradient, clouds) once; the sun disc per exact direction.
+    let skyIn = frameSkyInputs();
+    let skyBaseR = evalSkyBase(R, skyIn);
+    var procSky = max(skyBaseR.color + evalSkySun(R, skyIn, skyBaseR), vec3<f32>(0.0)) * skyIn.exposure;
 
     // WTR-4: Screen-Space Reflections raymarch against opaque snapshot color & depth.
     var ssrColor = vec3<f32>(0.0);
@@ -568,7 +582,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         for (var s = 0; s < 16; s++) {
             let tCur = tPrev + stepLen;
             let rayP = in.worldPos + R * tCur;
-            if (rayP.y < 0.02) {
+            if (rayP.y < level + 0.02) {
                 tPrev = tCur;
                 continue;
             }
@@ -636,7 +650,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         coatFresnelMax = Fc_ibl.r;
         let coatLut = textureSample(brdfLut, iblSampler, vec2<f32>(NdotV, coatR)).rg;
         let coatRefl = reflect(-V, N);
-        let coatSky = mix(frameSky(coatRefl), ssrColor, ssrWeight * 0.92);
+        // The sun glitter is very sensitive to direction: reuse the sky base
+        // from R but evaluate the sun along the exact coat reflection.
+        let coatSkyRaw = max(skyBaseR.color + evalSkySun(coatRefl, skyIn, skyBaseR), vec3<f32>(0.0)) * skyIn.exposure;
+        let coatSky = mix(coatSkyRaw, ssrColor, ssrWeight * 0.92);
         let coatIblSpec = textureSampleLevel(specularMap, iblSampler, coatRefl, coatR * SPECULAR_MIPS).rgb;
         let coatEnv = mix(coatSky, coatIblSpec, 0.12);
         let f90Coat = max(1.0 - coatR, f0Coat.x);
@@ -659,9 +676,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 7. Subtle backlit wave-crest Subsurface Scattering (SSS) under high peaking ocean swells.
     let backLit = pow(clamp(dot(V, normalize(-sunL + N * 0.35)), 0.0, 1.0), 6.0);
-    let crestThin = smoothstep(0.14, 0.46, in.worldPos.y + combinedCrest * 0.16)
+    let crestThin = smoothstep(0.14, 0.46, in.worldPos.y - level + combinedCrest * 0.16)
                   * select(1.0, 0.12, riverMode != 0u);
-    let sssTint = select(vec3<f32>(0.02, 0.15, 0.18), vec3<f32>(0.03, 0.16, 0.14), riverMode != 0u);
+    let sssTint = wu.sssTint.rgb;
     let sss = sssTint * sunRad * (0.15 + 0.85 * dirShadow) * backLit * crestThin * (1.0 - foamMask) * 0.28;
 
     let baseFresnelMax = max(F_ibl.r, max(F_ibl.g, F_ibl.b));
@@ -685,17 +702,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         outAlpha = mix(waterAlpha, 0.97, foamMask);
     }
 
-    // Horizon haze kept well out toward the edge (114..144 m) so waves cover the full water expanse.
-    let radialDist = length(in.worldPos.xz);
+    // Horizon haze kept well out toward the skirt edge (68%..86% of its radius)
+    // so waves cover the full water expanse.
+    let radialDist = length(localXZ);
+    let skirtR = halfSpan * 12.0;
     let fogFactor = select(
-        max(smoothstep(78.0, 152.0, camDist), smoothstep(114.0, 144.0, radialDist)),
+        max(smoothstep(78.0, 152.0, camDist), smoothstep(skirtR * 0.68, skirtR * 0.857, radialDist)),
         smoothstep(24.0, 65.0, camDist) * 0.32,
         riverMode != 0u
     );
-    let fogCol = frameSky(normalize(-toCam));
-    color = mix(color, fogCol, fogFactor);
-    if (riverMode == 0u && fogFactor > 0.001) {
-        outAlpha = mix(outAlpha, 1.0, fogFactor);
+    if (fogFactor > 0.001) {
+        color = mix(color, frameSky(normalize(-toCam)), fogFactor);
+        if (riverMode == 0u) {
+            outAlpha = mix(outAlpha, 1.0, fogFactor);
+        }
     }
     // Engine atmospheric fog (no-op while FogSettings density is 0).
     color = applyFog(color, in.worldPos);

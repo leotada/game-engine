@@ -1,14 +1,75 @@
 # Water Guide
 
 > **Status:** being ported from `source/demo/water.d` into `engine.water` — see
-> [plan-water-engine-port.md](plan-water-engine-port.md). This guide documents
-> what is already available from the engine; sections are added per phase.
+> [plan-water-engine-port.md](plan-water-engine-port.md). Rendering, simulation
+> and obstacles are in the engine; caustics, gameplay queries, wet material
+> presets and the editor component follow.
 
 `engine.water` is opt-in (not re-exported by `import engine;`):
 
 ```d
 import engine.water;
 ```
+
+## Quick Start
+
+```d
+import engine.water;
+
+auto water = WaterRenderer.create(app.gpu, scene);
+scope(exit) water.destroy();
+water.attach(scene, app.renderer);       // registers the draw hook; keep all three at stable addresses
+
+WaterBody body = WaterBody.ocean();      // or WaterBody.river()
+body.level = 0.0f;
+immutable id = water.addBody(body);      // up to 4 bodies
+
+// Every frame, before app.beginFrame():
+body.waves.amplitudeScale = storminess;  // tweak any field...
+water.setBody(id, body);                 // ...and push it (no allocation)
+water.setObstacles(id, rocks[]);         // optional: WaterObstacle(x, z, radius, strength)
+water.update(camera, time);              // shared wave data + uniforms + simulation step
+```
+
+`update` also calls `scene.setTime(time)`, so the sky, the wetline and the
+water all animate with the same clock. Turn on the engine sky
+(`scene.setSkyEnabled(true)`) so the water has something to reflect.
+
+## Water Bodies (`engine.water.water_body`)
+
+`WaterBody` is a POD value (safe for ECS storage and scene files):
+
+| Field | Meaning |
+|:---|:---|
+| `centerX`, `centerZ`, `halfExtent` | Square surface grid (m). Ocean bodies stretch the outer ring to 12× `halfExtent` (horizon skirt) |
+| `level` | Rest water height (world Y) |
+| `gridResolution` | Cells per side (2..254); change it with `setGridResolution` (rebuilds the mesh) |
+| `style` | `WaterStyle.ocean` (skirt, swells, whitecaps, horizon haze) or `.river` (current along the channel, wakes, shore foam) |
+| `waves` | `WaveSet` (see below); `waves.channel` also defines the river's center line |
+| `optics` | `WaterOptics`: absorption, shallow/deep color, coat color, SSS tint, roughness, anisotropy (`.ocean()` / `.river()`) |
+| `features` | `WaterFeature` bits: `refraction`, `ssr`, `transparent`, `simulation`, `openPbr`, `wetline` (default: all) |
+| `flow`, `flowProfileWidth` | Surface current (m/s) and, for rivers, the half width of the current profile |
+| `bedDepth` | Fallback water depth when refraction is off (no depth buffer) |
+| `contactChop`, `recentPeakScale`, `causticsStrength`, `wetMargin` | Wet marks and caustics on props (see below) |
+
+Presets: `WaterBody.ocean()` (14 m grid + skirt, navy optics) and
+`WaterBody.river()` (channel along +X, ±4.5 m, 1.35 m/s current, clear
+mineral optics, contact chop 1.38).
+
+## Renderer (`engine.water.renderer`)
+
+- **Draw order:** a `Scene3DTextured.addTransparentHook` after the sky. It
+  takes one `Renderer.snapshotOpaque` (only when a body uses refraction or
+  SSR), then draws every body with one pipeline. The surface writes depth.
+- **Simulation:** with `WaterFeature.simulation`, each body has a 256²
+  `rgba16float` ping-pong texture (short-wave slopes, advected foam, wakes)
+  stepped by one compute dispatch per frame inside `update`.
+- **Obstacles:** up to `MAX_WATER_OBSTACLES` (16) per body deflect the current,
+  raise chop near them, and spawn contact rings and downstream wakes.
+- **Cost:** about 3.7 ms for a full-screen ocean at 1280×720 with every
+  feature on (GPU-bound; see the plan's benchmark table).
+- **Not for the frame loop:** `addBody`, `setGridResolution` and `create`
+  allocate. `setBody`, `setObstacles`, `update` and the draw are `@nogc`.
 
 ## Wave Model (`engine.water.waves`)
 
@@ -98,7 +159,7 @@ scene.setTime(time);               // waves animate with the frame time
 scene.setWaterData(data);          // zero bodies = no water anywhere
 ```
 
-`WaterRenderer` (WP-3) fills this for you; call it directly only for custom
+`WaterRenderer` fills this for you; call it directly only for custom
 water rendering.
 
 | `WaterSurfaceGpuParams` field | Meaning |
@@ -130,8 +191,11 @@ both the visible sky and the reflection. See the sky section of
 
 ## Demo
 
-`dub run --config=water` (ocean) or `-- --river`. The demo currently builds
-with LDC only (`--compiler=ldc2`); DMD 2.113 crashes compiling its legacy
-pipeline setup (tracked in the port plan, fixed in WP-3).
+`dub run --config=water` (ocean) or `-- --river`. Builds with DMD and LDC.
+
+> **DMD gotcha:** using a CTFE-built shader `enum` (e.g.
+> `waterSurfaceShaderSource`) directly inside a function makes DMD 2.113's
+> backend overflow its stack. Copy it into a module-level
+> `immutable string` first and pass that to `createShaderModule`.
 `--capture=<file.bmp>` uses a fixed 1/60 s step, so captures are reproducible
 pixel-for-pixel.

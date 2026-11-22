@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`WaterRenderer` + `WaterBody` (WP-3/WP-4 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:
+  - `engine.water.water_body`: POD `WaterBody` (center, half extent, level, grid resolution, `WaterStyle` ocean/river, `WaveSet`, `WaterOptics`, `WaterFeature` bits, current, bed depth, wet-mark and caustics settings) with `ocean()` / `river()` presets; `WaterObstacle`.
+  - `engine.water.renderer`: `WaterRenderer` draws up to 4 bodies after the sky (transparent hook, one shared opaque snapshot), steps a 256² compute wave/foam simulation per body, takes up to 16 obstacles per body and fills the shared water data. `water_surface.wgsl` / `water_sim_cs.wgsl` take per-body uniforms (`WaterSurfaceUniforms`) instead of assuming water at the origin and Y = 0.
+  - `common/sky_eval.wgsl` splits `evalSky` into `evalSkyBase` + `evalSkySun` (same result) so water evaluates clouds once and the sun glitter per exact direction.
+  - Wave constants (`k`, `omega`, warp scale) are precomputed on the CPU, and the PBR wetline loads a body's waves once per fragment (`WaterPoint`): wetline history ~2× cheaper.
+  - The water demo now uses `WaterRenderer` and builds with DMD again. Root cause of the DMD 2.113 crash: a CTFE-built shader `enum` used directly inside a function; use a module-level `immutable string`.
+
 - **Water reflects the engine sky (WP-6, `2026-11-22`)**: new `assets/shaders/common/sky_frame.wgsl` (`frameSkyInputs`, `frameSky`) shared by `sky.wgsl` and `water_surface.wgsl`. **Removed:** `assets/shaders/sky_dome.wgsl`, `skyDomeShaderSource` and `evalWaterSky` (`common/water_env.wgsl`); `WaterUniforms.flags0.w` (low sun) is unused. The water demo now uses `scene.setSkyEnabled(true)`.
 
 - **Shared GPU water data (WP-2 of [plan-water-engine-port.md](docs/plan-water-engine-port.md), `2026-11-22`)**:

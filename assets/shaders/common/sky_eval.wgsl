@@ -64,7 +64,17 @@ fn skyCloudDensity(d: vec3<f32>, coverage: f32, time: f32) -> f32 {
     return smoothstep(lo, hi, n) * smoothstep(0.01, 0.20, d.y);
 }
 
-fn evalSky(dirIn: vec3<f32>, s: SkyInputs) -> vec3<f32> {
+/// Sky radiance without the sun corona/disc (unexposed), plus the cloud
+/// clearance the sun term needs. Split from `evalSky` so reflective surfaces
+/// can evaluate the expensive part once and the direction-sensitive sun disc
+/// along several directions.
+struct SkyBase {
+    color: vec3<f32>,
+    clear: f32,   // 1 - cloud density
+    cov: f32,     // cloud coverage
+};
+
+fn evalSkyBase(dirIn: vec3<f32>, s: SkyInputs) -> SkyBase {
     let d = normalize(dirIn);
     let sunDir = normalize(s.sunDir);
     let e = sunDir.y;
@@ -130,11 +140,21 @@ fn evalSky(dirIn: vec3<f32>, s: SkyInputs) -> vec3<f32> {
         sky = mix(sky, cloudCol, clouds * 0.85);
     }
 
-    // Sun corona and HDR disc, hidden below the horizon and behind clouds.
+    return SkyBase(sky, clearSky, cov);
+}
+
+/// Sun corona and HDR disc along `dirIn` (unexposed), hidden below the
+/// horizon and behind the clouds of `base`.
+fn evalSkySun(dirIn: vec3<f32>, s: SkyInputs, base: SkyBase) -> vec3<f32> {
+    let d = normalize(dirIn);
+    let sunCos = max(dot(d, normalize(s.sunDir)), 0.0);
     let horizonVis = smoothstep(-0.04, 0.04, d.y);
     let halo = pow(sunCos, 64.0) * 1.35 + pow(sunCos, 12.0) * 0.16;
     let disc = smoothstep(0.99935, 0.99978, sunCos) * 20.0;
-    sky += s.sunColor * (halo * (1.0 - cov * 0.6) + disc * clearSky) * horizonVis;
+    return s.sunColor * (halo * (1.0 - base.cov * 0.6) + disc * base.clear) * horizonVis;
+}
 
-    return max(sky, vec3<f32>(0.0)) * s.exposure;
+fn evalSky(dirIn: vec3<f32>, s: SkyInputs) -> vec3<f32> {
+    let base = evalSkyBase(dirIn, s);
+    return max(base.color + evalSkySun(dirIn, s, base), vec3<f32>(0.0)) * s.exposure;
 }

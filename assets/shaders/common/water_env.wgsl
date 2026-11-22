@@ -1,15 +1,32 @@
 /// Water surface uniforms plus riverbed depth, Voronoi caustics and noise helpers
 /// shared by the water surface, caustics and simulation shaders.
 
+/// Per-body water surface uniforms (`engine.water.renderer.WaterSurfaceUniforms`).
 struct WaterUniforms {
-    camForward: vec4<f32>,    // xyz = forward, w = tanHalfFov
-    camRight: vec4<f32>,      // xyz = right,   w = aspect
-    camUp: vec4<f32>,         // xyz = up,      w = waterHalf
-    params0: vec4<f32>,       // x = time, y = waveScale, z = nearPlane, w = farPlane
-    flags0: vec4<u32>,        // x = riverMode, y = useOpenPbr, z = transparent, w = 0
+    params0: vec4<f32>,       // x = time, y = amplitudeScale, z = nearPlane, w = farPlane
+    flags0: vec4<u32>,        // x = style (0 ocean, 1 river), y = useOpenPbr, z = transparent, w = grid resolution
     counts: vec4<u32>,        // x = obstacleCount, y = water body index (common/waves.wgsl), z = enableRefraction, w = enableSsr
+    area: vec4<f32>,          // xy = center XZ, z = halfExtent, w = level
+    flow: vec4<f32>,          // xy = surface current (m/s), z = flow profile half width, w = bedDepth
+    channel: vec4<f32>,       // xy = channel origin, zw = channel direction (river profile / wakes)
+    absorption: vec4<f32>,    // rgb = Beer-Lambert sigma, w = roughness
+    shallowColor: vec4<f32>,  // rgb, w = anisotropy
+    deepColor: vec4<f32>,     // rgb, w = 0
+    coatColor: vec4<f32>,     // rgb, w = causticsStrength
+    sssTint: vec4<f32>,       // rgb, w = 0
     obstacles: array<vec4<f32>, 16>, // x, z, radius, strength
 };
+
+/// Distance across the river channel (0 on the center line).
+fn waterChannelAcross(ch: vec4<f32>, xz: vec2<f32>) -> f32 {
+    let d = xz - ch.xy;
+    return abs(d.y * ch.z - d.x * ch.w);
+}
+
+/// `rel` expressed in the flow frame: x = downstream, y = across.
+fn waterFlowFrame(rel: vec2<f32>, flowDir: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(dot(rel, flowDir), rel.y * flowDir.x - rel.x * flowDir.y);
+}
 
 /// Reconstructs positive camera-space linear Z from hardware [0, 1] NDC depth.
 fn linearizeDepth(ndcZ: f32, nearZ: f32, farZ: f32) -> f32 {
@@ -53,26 +70,18 @@ fn fbm2(pInit: vec2<f32>) -> f32 {
     return sum;
 }
 
-/// Analytical terrain / riverbed height matching `buildTiledBedMesh` (y = -1.15)
-/// and `buildRiverBankMesh` so Beer-Lambert water absorption aligns with geometry.
-fn evalRiverBedY(xz: vec2<f32>, riverMode: u32,
+/// Fallback bed height (`bedDepth` below `level`) used where the depth buffer
+/// gives no answer, with gentle shoaling right under obstacles.
+fn evalWaterBedY(xz: vec2<f32>, level: f32, bedDepth: f32,
                  obstacles: array<vec4<f32>, 16>, obstacleCount: u32) -> f32 {
-    var bedY = -1.15;
-    if (riverMode != 0u) {
-        let az = abs(xz.y);
-        if (az > 4.6) {
-            let tz = clamp((az - 4.6) / 11.4, 0.0, 1.0);
-            let s = tz * tz * (3.0 - 2.0 * tz);
-            bedY = max(bedY, -0.85 + s * 3.10);
-        }
-    }
-    // Gentle localized shoaling right under emergent rocks/piers (keeps real depth everywhere else).
+    let deepY = level - bedDepth;
+    var bedY = deepY;
     let cnt = min(obstacleCount, 16u);
     for (var i = 0u; i < cnt; i++) {
         let ob = obstacles[i];
         let d = length(xz - ob.xy);
         let collar = 1.0 - smoothstep(ob.z * 0.35, ob.z * 1.05, d);
-        bedY = max(bedY, mix(-1.15, -0.48, collar * ob.w));
+        bedY = max(bedY, mix(deepY, level - bedDepth * 0.42, collar * ob.w));
     }
     return bedY;
 }
