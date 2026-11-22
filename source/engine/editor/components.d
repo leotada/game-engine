@@ -96,6 +96,11 @@ struct MaterialOverride {
     float    transmissionDepth = 0.0f;
     float    transmissionDispersion = 0.0f;
     float    transmissionThickness = 0.0f;
+    float    subsurfaceWeight = 0.0f;
+    float[3] subsurfaceColor = [1.0f, 0.4f, 0.25f];
+    float    subsurfaceRadius = 1.0f;
+    float[3] subsurfaceRadiusScale = [1.0f, 0.35f, 0.15f];
+    float    subsurfaceAnisotropy = 0.0f;
     uint     flags = 0;
     /// Non-zero → override contributes to the viewport material.
     uint     active = 1;

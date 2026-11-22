@@ -26,6 +26,9 @@ enum textured3dSurfaceTangentTemplate = preprocessShader(import("textured3d_pbr.
 private enum SURFACE_CODE_MARKER = "//@@SURFACE_CODE@@";
 private enum DISPLACE_CALL_MARKER = "//@@DISPLACE_CALL@@";
 
+private immutable string kTextured3dSurfaceTemplate = textured3dSurfaceTemplate;
+private immutable string kTextured3dSurfaceTangentTemplate = textured3dSurfaceTangentTemplate;
+
 /// Splice game WGSL into the PBR shader. `surfaceWgsl` must define
 /// `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut`; when it also
 /// defines `fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>`
@@ -34,7 +37,7 @@ string composeSurfaceShader(scope const(char)[] surfaceWgsl, bool tangent = fals
     import std.array : replace;
     import std.algorithm.searching : canFind;
 
-    string code = tangent ? textured3dSurfaceTangentTemplate : textured3dSurfaceTemplate;
+    string code = tangent ? kTextured3dSurfaceTangentTemplate : kTextured3dSurfaceTemplate;
     immutable displaceCall = surfaceWgsl.canFind("fn displace(")
         ? "    localPos = displace(localPos, in.normal);" : "";
     code = code.replace(DISPLACE_CALL_MARKER, displaceCall);

@@ -82,6 +82,11 @@ struct AssetMaterialSlot {
     float    transmissionDepth = 0.0f;
     float    transmissionDispersion = 0.0f;
     float    transmissionThickness = 0.0f;
+    float    subsurfaceWeight = 0.0f;
+    float[3] subsurfaceColor = [1.0f, 0.4f, 0.25f];
+    float    subsurfaceRadius = 1.0f;
+    float[3] subsurfaceRadiusScale = [1.0f, 0.35f, 0.15f];
+    float    subsurfaceAnisotropy = 0.0f;
     string   albedo; /// texture path; empty = none
     uint     flags = 0;
 }
@@ -301,6 +306,11 @@ void runAssetFileGoldenTests() {
     glass.materials[0].transmissionDepth = 1.8f;
     glass.materials[0].transmissionDispersion = 0.35f;
     glass.materials[0].transmissionThickness = 0.6f;
+    glass.materials[0].subsurfaceWeight = 0.7f;
+    glass.materials[0].subsurfaceColor = [0.9f, 0.35f, 0.2f];
+    glass.materials[0].subsurfaceRadius = 1.25f;
+    glass.materials[0].subsurfaceRadiusScale = [1.0f, 0.45f, 0.2f];
+    glass.materials[0].subsurfaceAnisotropy = 0.3f;
     immutable glassJson = assetToMinifiedJson(glass);
     auto glassParsed = parseAssetJson(glassJson);
     assert(glassParsed.materials[0].anisotropyRotation == 0.5f);
@@ -310,6 +320,11 @@ void runAssetFileGoldenTests() {
     assert(glassParsed.materials[0].transmissionDepth == 1.8f);
     assert(glassParsed.materials[0].transmissionDispersion == 0.35f);
     assert(glassParsed.materials[0].transmissionThickness == 0.6f);
+    assert(glassParsed.materials[0].subsurfaceWeight == 0.7f);
+    assert(glassParsed.materials[0].subsurfaceColor[0] == 0.9f);
+    assert(glassParsed.materials[0].subsurfaceRadius == 1.25f);
+    assert(glassParsed.materials[0].subsurfaceRadiusScale[1] == 0.45f);
+    assert(glassParsed.materials[0].subsurfaceAnisotropy == 0.3f);
     assert(assetToMinifiedJson(glassParsed) == glassJson);
 }
 
@@ -419,6 +434,8 @@ private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
         "thinFilmWeight", "thinFilmThickness", "thinFilmThicknessMin", "thinFilmIor",
         "transmissionColor", "transmissionWeight", "transmissionDepth",
         "transmissionDispersion", "transmissionThickness",
+        "subsurfaceWeight", "subsurfaceColor", "subsurfaceRadius",
+        "subsurfaceRadiusScale", "subsurfaceAnisotropy",
         "emissionColor", "emissionLuminance", "geometryOpacity",
         "albedo", "flags"
     ], "materials[]");
@@ -459,6 +476,11 @@ private AssetMaterialSlot parseMaterialSlot(ref JSONValue v) {
     if ("transmissionDepth" in v) m.transmissionDepth = jsonFloat(v["transmissionDepth"], "materials[].transmissionDepth");
     if ("transmissionDispersion" in v) m.transmissionDispersion = jsonFloat(v["transmissionDispersion"], "materials[].transmissionDispersion");
     if ("transmissionThickness" in v) m.transmissionThickness = jsonFloat(v["transmissionThickness"], "materials[].transmissionThickness");
+    if ("subsurfaceWeight" in v) m.subsurfaceWeight = jsonFloat(v["subsurfaceWeight"], "materials[].subsurfaceWeight");
+    if ("subsurfaceColor" in v) m.subsurfaceColor = jsonFloat3(v["subsurfaceColor"], "materials[].subsurfaceColor");
+    if ("subsurfaceRadius" in v) m.subsurfaceRadius = jsonFloat(v["subsurfaceRadius"], "materials[].subsurfaceRadius");
+    if ("subsurfaceRadiusScale" in v) m.subsurfaceRadiusScale = jsonFloat3(v["subsurfaceRadiusScale"], "materials[].subsurfaceRadiusScale");
+    if ("subsurfaceAnisotropy" in v) m.subsurfaceAnisotropy = jsonFloat(v["subsurfaceAnisotropy"], "materials[].subsurfaceAnisotropy");
     if ("emissionColor" in v) m.emissionColor = jsonFloat3(v["emissionColor"], "materials[].emissionColor");
     if ("emissionLuminance" in v) m.emissionLuminance = jsonFloat(v["emissionLuminance"], "materials[].emissionLuminance");
     if ("geometryOpacity" in v) m.geometryOpacity = jsonFloat(v["geometryOpacity"], "materials[].geometryOpacity");
@@ -645,6 +667,11 @@ private void writeMaterial(ref Appender!string app, const ref AssetMaterialSlot 
     if (m.transmissionDepth != 0.0f) { app.put(`,"transmissionDepth":`); writeFloat(app, m.transmissionDepth); }
     if (m.transmissionDispersion != 0.0f) { app.put(`,"transmissionDispersion":`); writeFloat(app, m.transmissionDispersion); }
     if (m.transmissionThickness != 0.0f) { app.put(`,"transmissionThickness":`); writeFloat(app, m.transmissionThickness); }
+    if (m.subsurfaceWeight != 0.0f) { app.put(`,"subsurfaceWeight":`); writeFloat(app, m.subsurfaceWeight); }
+    if (m.subsurfaceColor != [1.0f, 0.4f, 0.25f]) { app.put(`,"subsurfaceColor":`); writeFloat3(app, m.subsurfaceColor); }
+    if (m.subsurfaceRadius != 1.0f) { app.put(`,"subsurfaceRadius":`); writeFloat(app, m.subsurfaceRadius); }
+    if (m.subsurfaceRadiusScale != [1.0f, 0.35f, 0.15f]) { app.put(`,"subsurfaceRadiusScale":`); writeFloat3(app, m.subsurfaceRadiusScale); }
+    if (m.subsurfaceAnisotropy != 0.0f) { app.put(`,"subsurfaceAnisotropy":`); writeFloat(app, m.subsurfaceAnisotropy); }
     if (m.emissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"emissionColor":`); writeFloat3(app, m.emissionColor); }
     if (m.emissionLuminance != 0.0f) { app.put(`,"emissionLuminance":`); writeFloat(app, m.emissionLuminance); }
     if (m.geometryOpacity != 1.0f) { app.put(`,"geometryOpacity":`); writeFloat(app, m.geometryOpacity); }

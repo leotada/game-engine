@@ -178,6 +178,33 @@ fn sampleDirShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f
     return mix(s, 1.0, fade);
 }
 
+/// Evaluate directional back-face shadow visibility and estimate world-space
+/// shadow-map thickness in meters (`vec2(backShadow, worldThicknessMeters)`).
+fn sampleDirShadowBackAndThickness(worldPos: vec3<f32>, N: vec3<f32>, L: vec3<f32>) -> vec2<f32> {
+    let backShadow = sampleDirShadowPCF(worldPos + L * 0.04, L, L);
+    let count = i32(frame.cascadeParams.x);
+    var layer: i32 = 0;
+    var lightVP = frame.dirLight.viewProj;
+    var invDepthRange: f32 = 1.0 / 32.0;
+    if (count > 0) {
+        layer = dirCascadeIndex(worldPos);
+        lightVP = frame.cascadeViewProj[layer];
+        invDepthRange = max(frame.cascadeTexel[layer].y, 1e-4);
+    }
+    let clip = lightVP * vec4<f32>(worldPos, 1.0);
+    let ndc = clip.xyz / max(abs(clip.w), 1e-4);
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || ndc.z <= 0.0 || ndc.z >= 1.0) {
+        return vec2<f32>(backShadow, 0.05);
+    }
+    let dims = vec2<i32>(textureDimensions(dirShadowMap));
+    let coord = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - vec2<i32>(1));
+    let blockerZ = textureLoad(dirShadowMap, coord, layer, 0);
+    let dz = max(ndc.z - blockerZ, 0.0);
+    let thicknessMeters = clamp(dz / invDepthRange, 0.0, 10.0);
+    return vec2<f32>(backShadow, thicknessMeters);
+}
+
 /// Debug tint per cascade (identity unless `frame.debugFlags & 1`).
 fn cascadeDebugTint(worldPos: vec3<f32>) -> vec3<f32> {
     if ((frame.debugFlags & 1u) == 0u || frame.cascadeParams.x < 0.5) {

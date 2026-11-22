@@ -30,6 +30,15 @@ struct OpenPbrEvalInput {
     directionalAlbedo: f32,
     fuzzAlbedo: f32,
     transmissionWeight: f32,
+    subsurfaceWeight: f32,
+    subsurfaceColor: vec3<f32>,
+    subsurfaceRadius: f32,
+    subsurfaceRadiusScale: vec3<f32>,
+    subsurfaceAnisotropy: f32,
+    thinWalled: bool,
+    thickness: f32,
+    frontShadow: f32,
+    backShadow: f32,
 };
 
 fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
@@ -170,15 +179,26 @@ fn applyCoatDarkening(albedo: vec3<f32>, coatIor: f32, coatWeight: f32, coatDark
     return mix(albedo, internalDark, factor);
 }
 
+/// Normalized Henyey-Greenstein phase function ($g = 0 \to 1$).
+fn evalHenyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
+    let gc = clamp(g, -0.9, 0.9);
+    let g2 = gc * gc;
+    let denom = max(1.0 + g2 - 2.0 * gc * cosTheta, 1e-4);
+    return (1.0 - g2) / pow(denom, 1.5);
+}
+
 fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
     let N = in.N;
     let V = in.V;
-    let NdotL = max(dot(N, L), 0.0);
-    if (NdotL <= 0.0) {
+    let rawNdotL = dot(N, L);
+    let NdotL = max(rawNdotL, 0.0);
+    let sssW = clamp(in.subsurfaceWeight, 0.0, 1.0);
+    if (NdotL <= 0.0 && sssW <= 0.001) {
         return vec3<f32>(0.0);
     }
 
-    let H = normalize(V + L);
+    let halfVec = V + L;
+    let H = select(N, normalize(halfVec), dot(halfVec, halfVec) > 1e-6);
     let NdotV = max(dot(N, V), 0.001);
     let NdotH = max(dot(N, H), 0.0);
     let HdotV = max(dot(H, V), 0.0);
@@ -199,42 +219,69 @@ fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) ->
         F_base = mix(F_base, fFilm, clamp(in.thinFilmWeight, 0.0, 1.0));
     }
 
-    var specTerm: vec3<f32>;
-    if (abs(in.specularAnisotropy) > 0.001) {
-        let a = clamp(in.specularAnisotropy, -0.99, 0.99);
-        let k = 1.0 - abs(a);
-        let s = sqrt(2.0 / (1.0 + k * k));
-        let alpha = in.specularRoughness * in.specularRoughness;
-        let alphaLong = max(alpha * s, 0.0016);
-        let alphaShort = max(alpha * k * s, 0.0016);
-        let ax = select(alphaShort, alphaLong, a >= 0.0);
-        let ay = select(alphaLong, alphaShort, a >= 0.0);
+    var baseSpecular = vec3<f32>(0.0);
+    var baseDiffuse = vec3<f32>(0.0);
+    let baseAlbedo = applyCoatDarkening(in.baseColor, in.coatIor, in.coatWeight, in.coatDarkening);
+    let kD = (vec3<f32>(1.0) - F_base) * (1.0 - in.metalness) * (1.0 - clamp(in.transmissionWeight, 0.0, 1.0));
 
-        let TdotH = dot(in.T, H);
-        let BdotH = dot(in.B, H);
-        let TdotV = dot(in.T, V);
-        let BdotV = dot(in.B, V);
-        let TdotL = dot(in.T, L);
-        let BdotL = dot(in.B, L);
+    if (NdotL > 0.0) {
+        var specTerm: vec3<f32>;
+        if (abs(in.specularAnisotropy) > 0.001) {
+            let a = clamp(in.specularAnisotropy, -0.99, 0.99);
+            let k = 1.0 - abs(a);
+            let s = sqrt(2.0 / (1.0 + k * k));
+            let alpha = in.specularRoughness * in.specularRoughness;
+            let alphaLong = max(alpha * s, 0.0016);
+            let alphaShort = max(alpha * k * s, 0.0016);
+            let ax = select(alphaShort, alphaLong, a >= 0.0);
+            let ay = select(alphaLong, alphaShort, a >= 0.0);
 
-        let D = distributionGGXAniso(NdotH, TdotH, BdotH, ax, ay);
-        let Vis = visibilitySmithGGXAniso(NdotV, TdotV, BdotV, NdotL, TdotL, BdotL, ax, ay);
-        specTerm = D * Vis * F_base;
-    } else {
-        let D = distributionGGX(NdotH, in.specularRoughness);
-        let G = geometrySmith(NdotV, NdotL, in.specularRoughness);
-        specTerm = (D * G * F_base) / max(4.0 * NdotV * NdotL, 0.001);
+            let TdotH = dot(in.T, H);
+            let BdotH = dot(in.B, H);
+            let TdotV = dot(in.T, V);
+            let BdotV = dot(in.B, V);
+            let TdotL = dot(in.T, L);
+            let BdotL = dot(in.B, L);
+
+            let D = distributionGGXAniso(NdotH, TdotH, BdotH, ax, ay);
+            let Vis = visibilitySmithGGXAniso(NdotV, TdotV, BdotV, NdotL, TdotL, BdotL, ax, ay);
+            specTerm = D * Vis * F_base;
+        } else {
+            let D = distributionGGX(NdotH, in.specularRoughness);
+            let G = geometrySmith(NdotV, NdotL, in.specularRoughness);
+            specTerm = (D * G * F_base) / max(4.0 * NdotV * NdotL, 0.001);
+        }
+
+        // Multi-scattering GGX compensation via LUT directional albedo
+        let E_o = clamp(in.directionalAlbedo, 0.05, 1.0);
+        let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
+        baseSpecular = min(specTerm * msScale, vec3<f32>(16.0));
+        baseDiffuse = kD * evalDiffuseFujiiOrenNayar(NdotL, NdotV, LdotV, in.diffuseRoughness, baseAlbedo) * (1.0 - sssW);
     }
 
-    // Multi-scattering GGX compensation via LUT directional albedo
-    let E_o = clamp(in.directionalAlbedo, 0.05, 1.0);
-    let msScale = vec3<f32>(1.0) + f0Base * ((1.0 - E_o) / E_o);
-    let baseSpecular = min(specTerm * msScale, vec3<f32>(16.0));
+    var slab = (baseDiffuse + baseSpecular) * radiance * NdotL * in.frontShadow;
 
-    let kD = (vec3<f32>(1.0) - F_base) * (1.0 - in.metalness) * (1.0 - clamp(in.transmissionWeight, 0.0, 1.0));
-    let baseAlbedo = applyCoatDarkening(in.baseColor, in.coatIor, in.coatWeight, in.coatDarkening);
-    let baseDiffuse = kD * evalDiffuseFujiiOrenNayar(NdotL, NdotV, LdotV, in.diffuseRoughness, baseAlbedo);
-    var slab = (baseDiffuse + baseSpecular) * radiance * NdotL;
+    // 1b. OPBR-8: Subsurface Scattering & Thin-Walled Translucency
+    if (sssW > 0.001) {
+        let sigmaT = max(vec3<f32>(in.subsurfaceRadius) * in.subsurfaceRadiusScale, vec3<f32>(1e-3));
+        let attenT = exp(-vec3<f32>(in.thickness) / sigmaT);
+        let hg = evalHenyeyGreenstein(dot(-L, V), in.subsurfaceAnisotropy);
+        let nonMetal = (1.0 - in.metalness) * (1.0 - clamp(in.transmissionWeight, 0.0, 1.0));
+        if (in.thinWalled) {
+            let NdotL_back = max(-rawNdotL, 0.0);
+            let thinTrans = (in.subsurfaceColor / PI) * hg * attenT * NdotL_back * in.backShadow;
+            slab += thinTrans * (vec3<f32>(1.0) - fDielectric) * nonMetal * sssW * radiance;
+        } else {
+            let w_rgb = clamp(vec3<f32>(0.25) + 0.55 * sigmaT, vec3<f32>(0.05), vec3<f32>(0.85));
+            let wrapNum = max(vec3<f32>(rawNdotL) + w_rgb, vec3<f32>(0.0));
+            let wrapTerm = pow(wrapNum / (vec3<f32>(1.0) + w_rgb), vec3<f32>(2.0)) * (vec3<f32>(1.0) + w_rgb) * 0.5;
+            let termTint = mix(vec3<f32>(1.0), in.subsurfaceColor, clamp(1.0 - NdotL, 0.0, 1.0));
+            let wrapShadow = mix(in.backShadow, in.frontShadow, clamp(rawNdotL * 0.5 + 0.5, 0.0, 1.0));
+            let wrapLit = (baseAlbedo / PI) * wrapTerm * termTint * wrapShadow;
+            let backVol = (in.subsurfaceColor / PI) * hg * attenT * max(-rawNdotL + 0.25, 0.0) * in.backShadow;
+            slab += (wrapLit + backVol * 0.5) * (vec3<f32>(1.0) - fDielectric) * nonMetal * sssW * radiance;
+        }
+    }
 
     // 2. Coat slab (dielectric GGX on optional separate coatN + Beer-Lambert absorption tint)
     if (in.coatWeight > 0.001) {
@@ -246,10 +293,11 @@ fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) ->
         let f0Coat = vec3<f32>(dielectricF0Scalar(in.coatIor));
         let Fc = fresnelSchlick(HdotV, f0Coat) * coatW;
         var coatSpec = vec3<f32>(0.0);
-        if (NdotL_c > 0.0) {
+        if (NdotL_c > 0.0 && NdotL > 0.0) {
             let Dc = distributionGGX(NdotH_c, coatR);
             let Gc = geometrySmith(NdotV_c, NdotL_c, coatR);
-            coatSpec = min((Dc * Gc * Fc) / max(4.0 * NdotV_c * NdotL_c, 0.001), vec3<f32>(16.0)) * radiance * NdotL_c;
+            coatSpec = min((Dc * Gc * Fc) / max(4.0 * NdotV_c * NdotL_c, 0.001), vec3<f32>(16.0))
+                     * radiance * NdotL_c * in.frontShadow;
         }
         let pathLen = 0.5 / max(NdotV_c, 0.05) + 0.5 / max(max(NdotL_c, NdotL), 0.05);
         let coatTrans = mix(vec3<f32>(1.0), pow(max(in.coatColor, vec3<f32>(0.001)), vec3<f32>(pathLen)), coatW);
@@ -260,9 +308,12 @@ fn evalOpenPbrDirect(in: OpenPbrEvalInput, L: vec3<f32>, radiance: vec3<f32>) ->
     if (in.fuzzWeight > 0.001) {
         let fuzzW = clamp(in.fuzzWeight, 0.0, 1.0);
         let fuzzR = clamp(in.fuzzRoughness, 0.04, 1.0);
-        let Df = distributionCharlie(NdotH, fuzzR);
-        let Vf = visibilityAshikhmin(NdotV, NdotL);
-        let fuzzSpec = min(in.fuzzColor * Df * Vf, vec3<f32>(8.0)) * fuzzW * radiance * NdotL;
+        var fuzzSpec = vec3<f32>(0.0);
+        if (NdotL > 0.0) {
+            let Df = distributionCharlie(NdotH, fuzzR);
+            let Vf = visibilityAshikhmin(NdotV, NdotL);
+            fuzzSpec = min(in.fuzzColor * Df * Vf, vec3<f32>(8.0)) * fuzzW * radiance * NdotL * in.frontShadow;
+        }
         let fuzzTrans = clamp(1.0 - fuzzW * in.fuzzAlbedo, 0.0, 1.0);
         slab = slab * fuzzTrans + fuzzSpec;
     }
@@ -304,6 +355,15 @@ fn evalBRDF(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, albedo: vec3<f32>,
     inp.directionalAlbedo = 1.0;
     inp.fuzzAlbedo = 0.0;
     inp.transmissionWeight = 0.0;
+    inp.subsurfaceWeight = 0.0;
+    inp.subsurfaceColor = vec3<f32>(1.0, 0.4, 0.25);
+    inp.subsurfaceRadius = 1.0;
+    inp.subsurfaceRadiusScale = vec3<f32>(1.0, 0.35, 0.15);
+    inp.subsurfaceAnisotropy = 0.0;
+    inp.thinWalled = false;
+    inp.thickness = 0.0;
+    inp.frontShadow = 1.0;
+    inp.backShadow = 1.0;
     return evalOpenPbrDirect(inp, L, radiance);
 }
 

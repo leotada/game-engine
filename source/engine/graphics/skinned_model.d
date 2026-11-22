@@ -141,7 +141,7 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
             if (mi < matCount)
                 asset.materialNames[mi] = asset.names.intern(md.name);
             MaterialParams params = md.params;
-            params.flags = MaterialFlags.none;
+            params.flags = md.params.flags & MaterialFlags.thinWalled;
             Texture* albedo = imageTexture(md.baseColorImage, false);
             if (albedo is null) {
                 auto solidSlot = &asset.textures[imageCount * 2 + mi];

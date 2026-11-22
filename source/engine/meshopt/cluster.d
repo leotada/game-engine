@@ -1709,82 +1709,81 @@ ubyte[] m9GoldenPayload(string name, const(float)[] pos, const(uint)[] idx, size
     return o;
 }
 
-struct M9Mesh {
-    string name;
-    float[] pos;
-    uint[] idx;
-    size_t strideFloats;
-}
-
-/// Corpus used by the M9 golden file.
-M9Mesh[] m9Corpus() {
-    import engine.meshopt.corpus : ProcMesh, makeGrid, makeSeam, makeSoup, makeSphere, makeTorus;
-    import std.conv : to;
-    import std.file : readText;
-    import std.string : split, splitLines, strip;
-
-    M9Mesh[] meshes;
-    void one(string meshName, ProcMesh m) {
-        meshes ~= M9Mesh(meshName, m.positions, m.indices, 3);
-    }
-
-    one("grid2x3", makeGrid(2, 3));
-    one("sphere8x4", makeSphere(8, 4));
-    one("torus8x4", makeTorus(8, 4, 2, 0.4f));
-    one("seam", makeSeam());
-    one("soup", makeSoup());
-    one("grid16", makeGrid(16, 16));
-
-    float[] stridePos = [
-        0, 0, 0, 9,
-        1, 0, 0, 9,
-        0, 1, 0, 9,
-        1, 1, 1, 9,
-    ];
-    uint[] strideIdx = [0, 1, 2, 1, 2, 3];
-    meshes ~= M9Mesh("stride4", stridePos, strideIdx, 4);
-
-    float[] negPos = [0, 0, 0, 0, -0.0f, 0, 1, 0, 0];
-    uint[] negIdx = [0, 1, 2];
-    meshes ~= M9Mesh("negzero", negPos, negIdx, 3);
-
-    float[] piratePos;
-    uint[] pirateIdx;
-    foreach (raw; readText("assets/models/meshopt/pirate.obj").splitLines) {
-        string line = raw.strip;
-        if (line.length < 3 || line[0] == '#')
-            continue;
-        if (line.length >= 2 && line[0] == 'v' && line[1] == ' ') {
-            auto parts = line.split;
-            piratePos ~= to!float(parts[1]);
-            piratePos ~= to!float(parts[2]);
-            piratePos ~= to!float(parts[3]);
-        } else if (line.length >= 2 && line[0] == 'f' && line[1] == ' ') {
-            auto parts = line.split;
-            uint[] face;
-            foreach (k; 1 .. parts.length) {
-                auto slash = parts[k].split("/");
-                int id = to!int(slash[0]);
-                size_t nverts = piratePos.length / 3;
-                uint u = id < 0 ? cast(uint)(nverts + id) : cast(uint)(id - 1);
-                face ~= u;
-            }
-            if (face.length >= 3) {
-                foreach (k; 1 .. face.length - 1) {
-                    pirateIdx ~= face[0];
-                    pirateIdx ~= face[k];
-                    pirateIdx ~= face[k + 1];
-                }
-            }
-        }
-    }
-    meshes ~= M9Mesh("pirate", piratePos, pirateIdx, 3);
-    return meshes;
-}
-
 @("m9.golden") @trusted unittest {
     import engine.meshopt.quantize : goldenParamsHash;
     import std.file : read;
+
+    struct M9Mesh {
+        string name;
+        float[] pos;
+        uint[] idx;
+        size_t strideFloats;
+    }
+
+    M9Mesh[] m9Corpus() {
+        import engine.meshopt.corpus : ProcMesh, makeGrid, makeSeam, makeSoup, makeSphere, makeTorus;
+        import std.conv : to;
+        import std.file : readText;
+        import std.string : split, splitLines, strip;
+
+        M9Mesh[] meshes;
+        void one(string meshName, ProcMesh m) {
+            meshes ~= M9Mesh(meshName, m.positions, m.indices, 3);
+        }
+
+        one("grid2x3", makeGrid(2, 3));
+        one("sphere8x4", makeSphere(8, 4));
+        one("torus8x4", makeTorus(8, 4, 2, 0.4f));
+        one("seam", makeSeam());
+        one("soup", makeSoup());
+        one("grid16", makeGrid(16, 16));
+
+        float[] stridePos = [
+            0, 0, 0, 9,
+            1, 0, 0, 9,
+            0, 1, 0, 9,
+            1, 1, 1, 9,
+        ];
+        uint[] strideIdx = [0, 1, 2, 1, 2, 3];
+        meshes ~= M9Mesh("stride4", stridePos, strideIdx, 4);
+
+        float[] negPos = [0, 0, 0, 0, -0.0f, 0, 1, 0, 0];
+        uint[] negIdx = [0, 1, 2];
+        meshes ~= M9Mesh("negzero", negPos, negIdx, 3);
+
+        float[] piratePos;
+        uint[] pirateIdx;
+        foreach (raw; readText("assets/models/meshopt/pirate.obj").splitLines) {
+            string line = raw.strip;
+            if (line.length < 3 || line[0] == '#')
+                continue;
+            if (line.length >= 2 && line[0] == 'v' && line[1] == ' ') {
+                auto parts = line.split;
+                piratePos ~= to!float(parts[1]);
+                piratePos ~= to!float(parts[2]);
+                piratePos ~= to!float(parts[3]);
+            } else if (line.length >= 2 && line[0] == 'f' && line[1] == ' ') {
+                auto parts = line.split;
+                uint[] face;
+                foreach (k; 1 .. parts.length) {
+                    auto slash = parts[k].split("/");
+                    int id = to!int(slash[0]);
+                    size_t nverts = piratePos.length / 3;
+                    uint u = id < 0 ? cast(uint)(nverts + id) : cast(uint)(id - 1);
+                    face ~= u;
+                }
+                if (face.length >= 3) {
+                    foreach (k; 1 .. face.length - 1) {
+                        pirateIdx ~= face[0];
+                        pirateIdx ~= face[k];
+                        pirateIdx ~= face[k + 1];
+                    }
+                }
+            }
+        }
+        meshes ~= M9Mesh("pirate", piratePos, pirateIdx, 3);
+        return meshes;
+    }
 
     ubyte[] file = cast(ubyte[]) read("tests/meshopt/golden/m9/corpus.bin");
     assert(file.length >= 48, "m9 golden too small");

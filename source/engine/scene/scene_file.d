@@ -110,6 +110,11 @@ struct SceneMaterialData {
     float    transmissionDepth = 0.0f;
     float    transmissionDispersion = 0.0f;
     float    transmissionThickness = 0.0f;
+    float    subsurfaceWeight = 0.0f;
+    float[3] subsurfaceColor = [1.0f, 0.4f, 0.25f];
+    float    subsurfaceRadius = 1.0f;
+    float[3] subsurfaceRadiusScale = [1.0f, 0.35f, 0.15f];
+    float    subsurfaceAnisotropy = 0.0f;
     uint     flags = 0;
 }
 
@@ -917,6 +922,8 @@ private SceneMaterialData parseMaterial(ref JSONValue v) {
         "thinFilmWeight", "thinFilmThickness", "thinFilmThicknessMin", "thinFilmIor",
         "transmissionColor", "transmissionWeight", "transmissionDepth",
         "transmissionDispersion", "transmissionThickness",
+        "subsurfaceWeight", "subsurfaceColor", "subsurfaceRadius",
+        "subsurfaceRadiusScale", "subsurfaceAnisotropy",
         "emissionColor", "emissionLuminance", "geometryOpacity",
         "flags"
     ], "material");
@@ -949,6 +956,11 @@ private SceneMaterialData parseMaterial(ref JSONValue v) {
     if ("transmissionDepth" in v) m.transmissionDepth = jsonFloat(v["transmissionDepth"], "material.transmissionDepth");
     if ("transmissionDispersion" in v) m.transmissionDispersion = jsonFloat(v["transmissionDispersion"], "material.transmissionDispersion");
     if ("transmissionThickness" in v) m.transmissionThickness = jsonFloat(v["transmissionThickness"], "material.transmissionThickness");
+    if ("subsurfaceWeight" in v) m.subsurfaceWeight = jsonFloat(v["subsurfaceWeight"], "material.subsurfaceWeight");
+    if ("subsurfaceColor" in v) m.subsurfaceColor = jsonFloat3(v["subsurfaceColor"], "material.subsurfaceColor");
+    if ("subsurfaceRadius" in v) m.subsurfaceRadius = jsonFloat(v["subsurfaceRadius"], "material.subsurfaceRadius");
+    if ("subsurfaceRadiusScale" in v) m.subsurfaceRadiusScale = jsonFloat3(v["subsurfaceRadiusScale"], "material.subsurfaceRadiusScale");
+    if ("subsurfaceAnisotropy" in v) m.subsurfaceAnisotropy = jsonFloat(v["subsurfaceAnisotropy"], "material.subsurfaceAnisotropy");
     if ("emissionColor" in v) m.emissionColor = jsonFloat3(v["emissionColor"], "material.emissionColor");
     if ("emissionLuminance" in v) m.emissionLuminance = jsonFloat(v["emissionLuminance"], "material.emissionLuminance");
     if ("geometryOpacity" in v) m.geometryOpacity = jsonFloat(v["geometryOpacity"], "material.geometryOpacity");
@@ -1172,6 +1184,11 @@ private void writeEntity(ref Appender!string app, const ref SceneEntityData e) {
         if (m.transmissionDepth != 0.0f) { app.put(`,"transmissionDepth":`); writeFloat(app, m.transmissionDepth); }
         if (m.transmissionDispersion != 0.0f) { app.put(`,"transmissionDispersion":`); writeFloat(app, m.transmissionDispersion); }
         if (m.transmissionThickness != 0.0f) { app.put(`,"transmissionThickness":`); writeFloat(app, m.transmissionThickness); }
+        if (m.subsurfaceWeight != 0.0f) { app.put(`,"subsurfaceWeight":`); writeFloat(app, m.subsurfaceWeight); }
+        if (m.subsurfaceColor != [1.0f, 0.4f, 0.25f]) { app.put(`,"subsurfaceColor":`); writeFloat3(app, m.subsurfaceColor); }
+        if (m.subsurfaceRadius != 1.0f) { app.put(`,"subsurfaceRadius":`); writeFloat(app, m.subsurfaceRadius); }
+        if (m.subsurfaceRadiusScale != [1.0f, 0.35f, 0.15f]) { app.put(`,"subsurfaceRadiusScale":`); writeFloat3(app, m.subsurfaceRadiusScale); }
+        if (m.subsurfaceAnisotropy != 0.0f) { app.put(`,"subsurfaceAnisotropy":`); writeFloat(app, m.subsurfaceAnisotropy); }
         if (m.emissionColor != [1.0f, 1.0f, 1.0f]) { app.put(`,"emissionColor":`); writeFloat3(app, m.emissionColor); }
         if (m.emissionLuminance != 0.0f) { app.put(`,"emissionLuminance":`); writeFloat(app, m.emissionLuminance); }
         if (m.geometryOpacity != 1.0f) { app.put(`,"geometryOpacity":`); writeFloat(app, m.geometryOpacity); }
@@ -1476,5 +1493,30 @@ private float[4] jsonFloat4(ref JSONValue v, string ctx) {
     assert(parsed.hasChunkManifest && parsed.chunkManifest.chunks.length == 1);
     assert(parsed.chunkManifest.chunks[0].navmeshPath == "assets/nav/chunk_0_0.navmesh");
     assert(parsed.entities[0].visual.hasAssetGuid);
+    assert(sceneToMinifiedJson(parsed) == json);
+}
+
+@("sceneFile.opbr8MaterialRoundTrip") unittest {
+    SceneFile s;
+    s.meta = SceneMeta("sss", "meters");
+    SceneEntityData e;
+    e.id = 1;
+    e.hasMaterial = true;
+    e.material.subsurfaceWeight = 0.85f;
+    e.material.subsurfaceColor = [0.95f, 0.45f, 0.3f];
+    e.material.subsurfaceRadius = 0.6f;
+    e.material.subsurfaceRadiusScale = [1.0f, 0.4f, 0.2f];
+    e.material.subsurfaceAnisotropy = 0.25f;
+    e.material.transmissionThickness = 0.4f;
+    s.entities ~= e;
+
+    immutable json = sceneToMinifiedJson(s);
+    auto parsed = parseSceneJson(json);
+    assert(parsed.entities.length == 1 && parsed.entities[0].hasMaterial);
+    assert(parsed.entities[0].material.subsurfaceWeight == 0.85f);
+    assert(parsed.entities[0].material.subsurfaceColor[0] == 0.95f);
+    assert(parsed.entities[0].material.subsurfaceRadius == 0.6f);
+    assert(parsed.entities[0].material.subsurfaceRadiusScale[2] == 0.2f);
+    assert(parsed.entities[0].material.subsurfaceAnisotropy == 0.25f);
     assert(sceneToMinifiedJson(parsed) == json);
 }

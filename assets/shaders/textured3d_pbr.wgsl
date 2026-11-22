@@ -45,7 +45,13 @@ struct MaterialParams {
     transmissionDepth: f32,
     transmissionDispersion: f32,
     transmissionThickness: f32,
-    _pad0: f32,
+    subsurfaceWeight: f32,
+
+    subsurfaceColor: vec3<f32>,
+    subsurfaceRadius: f32,
+
+    subsurfaceRadiusScale: vec3<f32>,
+    subsurfaceAnisotropy: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
 @group(1) @binding(1) var texSampler: sampler;
@@ -77,6 +83,9 @@ const FLAG_FUZZ_TEX: u32 = 512u;
 const FLAG_ANISO_TEX: u32 = 1024u;
 const FLAG_THIN_FILM_TEX: u32 = 2048u;
 const FLAG_TRANSMISSION_TEX: u32 = 4096u;
+const FLAG_THIN_WALLED: u32 = 8192u;
+const FLAG_SUBSURFACE_TEX: u32 = 16384u;
+const FLAG_SSR: u32 = 32768u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -389,12 +398,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    let sssThin = (mat.flags & FLAG_THIN_WALLED) != 0u;
+    var sssWeight = clamp(mat.subsurfaceWeight, 0.0, 1.0);
     var transWeight = mat.transmissionWeight;
     var transThick = mat.transmissionThickness;
-    if ((mat.flags & FLAG_TRANSMISSION_TEX) != 0u) {
+    if ((mat.flags & (FLAG_TRANSMISSION_TEX | FLAG_SUBSURFACE_TEX)) != 0u) {
         let ts = textureSample(transmissionMap, texSampler, in.uv);
-        transWeight = clamp(transWeight * ts.r, 0.0, 1.0);
+        if ((mat.flags & FLAG_TRANSMISSION_TEX) != 0u) {
+            transWeight = clamp(transWeight * ts.r, 0.0, 1.0);
+        }
         transThick = max(transThick * ts.g, 0.0);
+        if ((mat.flags & FLAG_SUBSURFACE_TEX) != 0u) {
+            sssWeight = clamp(sssWeight * ts.b, 0.0, 1.0);
+        }
     }
     transWeight = clamp(transWeight, 0.0, 1.0);
 
@@ -551,6 +567,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.directionalAlbedo = directionalAlbedo;
     pbrIn.fuzzAlbedo = fuzzE;
     pbrIn.transmissionWeight = transWeight;
+    pbrIn.subsurfaceWeight = sssWeight;
+    pbrIn.subsurfaceColor = mat.subsurfaceColor;
+    pbrIn.subsurfaceRadius = mat.subsurfaceRadius;
+    pbrIn.subsurfaceRadiusScale = mat.subsurfaceRadiusScale;
+    pbrIn.subsurfaceAnisotropy = mat.subsurfaceAnisotropy;
+    pbrIn.thinWalled = sssThin;
+    pbrIn.thickness = max(transThick, 0.05);
+    pbrIn.frontShadow = 1.0;
+    pbrIn.backShadow = 1.0;
 
     var direct = vec3<f32>(0.0);
 
@@ -559,10 +584,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let L = normalize(frame.dirLight.direction);
         let radiance = frame.dirLight.color * frame.dirLight.intensity;
         var shadow = 1.0;
+        var backShadow = 1.0;
+        var sssThick = max(transThick, 0.05);
         if (frame.dirLight.castShadows != 0u) {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
+            if (sssWeight > 0.001) {
+                let bt = sampleDirShadowBackAndThickness(in.worldPos, N, L);
+                backShadow = bt.x;
+                sssThick = max(bt.y, transThick);
+            }
         }
-        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
+        pbrIn.frontShadow = shadow;
+        pbrIn.backShadow = backShadow;
+        pbrIn.thickness = sssThick;
+        direct += evalOpenPbrDirect(pbrIn, L, radiance);
         // Sun caustics below the level of a water body (zero elsewhere).
         direct += radiance * waterCausticsAt(in.worldPos, N, L, shadow) * baseColor;
     }
@@ -580,7 +615,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let atten = lightAttenuation(dist, pl.range, pl.attenuation);
         let radiance = pl.color * pl.intensity * atten;
         let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
-        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
+        pbrIn.frontShadow = shadow;
+        pbrIn.backShadow = shadow;
+        pbrIn.thickness = max(transThick, 0.05);
+        direct += evalOpenPbrDirect(pbrIn, L, radiance);
     }
 
     // --- Spot lights ---
@@ -603,7 +641,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
         let radiance = sl.color * sl.intensity * atten;
         let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
-        direct += evalOpenPbrDirect(pbrIn, L, radiance) * shadow;
+        pbrIn.frontShadow = shadow;
+        pbrIn.backShadow = shadow;
+        pbrIn.thickness = max(transThick, 0.05);
+        direct += evalOpenPbrDirect(pbrIn, L, radiance);
     }
 
     // --- IBL ---
@@ -621,7 +662,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let kD_ibl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness) * (1.0 - transWeight);
     let baseAlbedoIbl = applyCoatDarkening(baseColor, coatIor, coatW, coatDark);
     let irradiance = textureSample(irradianceMap, iblSampler, N).rgb * iblScale;
-    let diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
+    var diffuseIbl = kD_ibl * irradiance * baseAlbedoIbl;
+    if (sssWeight > 0.001) {
+        let backIrr = textureSampleLevel(irradianceMap, iblSampler, -N, 0.0).rgb * iblScale;
+        let sigmaIbl = max(vec3<f32>(mat.subsurfaceRadius) * mat.subsurfaceRadiusScale, vec3<f32>(1e-3));
+        let transAtten = exp(-vec3<f32>(max(transThick, 0.05)) / sigmaIbl);
+        let nonMetalIbl = (vec3<f32>(1.0) - F_ibl) * (1.0 - metalness) * (1.0 - transWeight);
+        let backTransIbl = backIrr * mat.subsurfaceColor * transAtten * nonMetalIbl;
+        let wrapDiffuse = nonMetalIbl * mix(irradiance, (irradiance * 0.65 + backIrr * 0.35) * mat.subsurfaceColor, sssWeight) * baseAlbedoIbl;
+        diffuseIbl = mix(diffuseIbl, wrapDiffuse, sssWeight) + backTransIbl * sssWeight * select(0.35, 1.0, sssThin);
+    }
 
     // Anisotropic bent reflection vector for IBL
     var iblNormal = N;

@@ -38,9 +38,15 @@ enum MaterialFlags : uint {
     thinFilm           = 1 << 11,
     /// Per-pixel transmission weight (R) & volume thickness (G) (`transmissionMap`, binding 12).
     transmission       = 1 << 12,
+    /// OpenPBR `geometry_thin_walled`: back-face diffuse transmission for foliage/cloth/paper.
+    thinWalled         = 1 << 13,
+    /// Per-pixel subsurface / diffuse-transmission weight in `transmissionMap.b` (binding 12).
+    subsurface         = 1 << 14,
+    /// Opt-in per-material Screen-Space Reflections (`OPBR-9`).
+    ssr                = 1 << 15,
 }
 
-/// Canonical OpenPBR Surface v1.1 + OPBR-6/7 uniform block matching WGSL `MaterialParams` (176 bytes = 11 × vec4<f32>).
+/// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (208 bytes = 13 × vec4<f32>).
 struct MaterialParams {
     // vec4 [0] (offset 0..16): Base color & weight
     float[3] baseColor = [1.0f, 1.0f, 1.0f];      // openpbr: base_color
@@ -90,11 +96,19 @@ struct MaterialParams {
     float[3] transmissionColor = [1.0f, 1.0f, 1.0f]; // openpbr: transmission_color / volume attenuationColor
     float    transmissionWeight = 0.0f;           // openpbr: transmission_weight [0..1]
 
-    // vec4 [10] (offset 160..176): Volume attenuation depth, dispersion & slab thickness
+    // vec4 [10] (offset 160..176): Volume attenuation depth, dispersion, slab thickness & subsurface weight
     float    transmissionDepth = 0.0f;            // openpbr: transmission_depth (0 = infinite / no Beer-Lambert drop)
     float    transmissionDispersion = 0.0f;       // openpbr: transmission_dispersion (`KHR_materials_dispersion`)
     float    transmissionThickness = 0.0f;        // world-space volume thickness factor (`KHR_materials_volume`)
-    float    _pad0 = 0.0f;
+    float    subsurfaceWeight = 0.0f;             // openpbr: subsurface_weight [0..1]
+
+    // vec4 [11] (offset 176..192): Subsurface scatter color & radius
+    float[3] subsurfaceColor = [1.0f, 0.4f, 0.25f]; // openpbr: subsurface_color (mean free path tint)
+    float    subsurfaceRadius = 1.0f;             // openpbr: subsurface_radius (mean free path scalar)
+
+    // vec4 [12] (offset 192..208): Subsurface RGB radius scale & scattering anisotropy
+    float[3] subsurfaceRadiusScale = [1.0f, 0.35f, 0.15f]; // openpbr: subsurface_radius_scale (RGB MFP)
+    float    subsurfaceAnisotropy = 0.0f;         // openpbr: subsurface_scatter_anisotropy [-1..1]
 }
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);
@@ -154,6 +168,8 @@ struct Material {
     /// True when the material uses refractive transmission (`transmissionWeight > 0`
     /// or `MaterialFlags.transmission`); routed into the post-snapshot back-to-front pass.
     bool transmissive = false;
+    /// True when the material opts into OPBR-9 Screen-Space Reflections (`MaterialFlags.ssr`).
+    bool ssr = false;
     /// Blend mode, depth write and culling. Non-default states get their own
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
@@ -197,6 +213,7 @@ struct Material {
         Material m;
         m.transmissive = params.transmissionWeight > 0.0f
                       || (params.flags & MaterialFlags.transmission) != 0;
+        m.ssr = (params.flags & MaterialFlags.ssr) != 0;
         m.paramsBuf = createUniformBuffer(gpu.getDevice(), MATERIAL_PARAMS_SIZE);
         updateBuffer(gpu.getQueue(), m.paramsBuf, (&params)[0 .. 1]);
 
@@ -257,6 +274,7 @@ struct Material {
         if (paramsBuf is null) return;
         transmissive = params.transmissionWeight > 0.0f
                     || (params.flags & MaterialFlags.transmission) != 0;
+        ssr = (params.flags & MaterialFlags.ssr) != 0;
         updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
     }
 

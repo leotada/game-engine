@@ -212,6 +212,7 @@ bool drawInspector(W)(
         if (sliderFloat(ui, "Coat Rough", mat.coatRoughness, 0, 1)) matChanged = true;
         if (sliderFloat(ui, "Fuzz", mat.fuzzWeight, 0, 1)) matChanged = true;
         if (sliderFloat(ui, "Thin-Film", mat.thinFilmWeight, 0, 1)) matChanged = true;
+        if (sliderFloat(ui, "Subsurface", mat.subsurfaceWeight, 0, 1)) matChanged = true;
         if (sliderFloat(ui, "Emission", mat.emissionLuminance, 0, 10)) matChanged = true;
 
         if (matChanged) {
@@ -278,6 +279,11 @@ MaterialParams materialOverrideToParams(ref const MaterialOverride m) nothrow @n
     p.transmissionDepth = m.transmissionDepth;
     p.transmissionDispersion = m.transmissionDispersion;
     p.transmissionThickness = m.transmissionThickness;
+    p.subsurfaceWeight = m.subsurfaceWeight;
+    p.subsurfaceColor = m.subsurfaceColor;
+    p.subsurfaceRadius = m.subsurfaceRadius;
+    p.subsurfaceRadiusScale = m.subsurfaceRadiusScale;
+    p.subsurfaceAnisotropy = m.subsurfaceAnisotropy;
     p.emissionColor = m.emissionColor;
     p.emissionLuminance = m.emissionLuminance;
     p.geometryOpacity = m.geometryOpacity;
@@ -310,6 +316,11 @@ private bool syncNameBuffer(W)(ref W world, EntityId id, ref InspectorState stat
     m.transmissionDepth = 1.5f;
     m.transmissionDispersion = 0.4f;
     m.transmissionThickness = 0.75f;
+    m.subsurfaceWeight = 0.65f;
+    m.subsurfaceColor = [0.9f, 0.3f, 0.2f];
+    m.subsurfaceRadius = 0.8f;
+    m.subsurfaceRadiusScale = [1.0f, 0.5f, 0.25f];
+    m.subsurfaceAnisotropy = 0.2f;
     m.active = 1;
     auto p = materialOverrideToParams(m);
     assert(p.specularRoughness == 0.3f);
@@ -321,4 +332,9 @@ private bool syncNameBuffer(W)(ref W world, EntityId id, ref InspectorState stat
     assert(p.transmissionDepth == 1.5f);
     assert(p.transmissionDispersion == 0.4f);
     assert(p.transmissionThickness == 0.75f);
+    assert(p.subsurfaceWeight == 0.65f);
+    assert(p.subsurfaceColor[0] == 0.9f);
+    assert(p.subsurfaceRadius == 0.8f);
+    assert(p.subsurfaceRadiusScale[2] == 0.25f);
+    assert(p.subsurfaceAnisotropy == 0.2f);
 }

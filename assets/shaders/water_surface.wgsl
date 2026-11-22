@@ -489,6 +489,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.coatRoughness = coatR;
     pbrIn.coatIor = 1.333;
     pbrIn.coatDarkening = select(0.0, 1.0, useOpenPbr);
+    pbrIn.coatN = N;
     pbrIn.fuzzWeight = fuzzWeight;
     pbrIn.fuzzColor = vec3<f32>(0.92, 0.97, 1.0);
     pbrIn.fuzzRoughness = fuzzRough;
@@ -497,6 +498,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     pbrIn.thinFilmIor = 1.4;
     pbrIn.directionalAlbedo = directionalAlbedo;
     pbrIn.fuzzAlbedo = fuzzE;
+    pbrIn.transmissionWeight = 0.0;
+    pbrIn.subsurfaceWeight = 0.0;
+    pbrIn.thinWalled = false;
+    pbrIn.thickness = 0.0;
+    pbrIn.frontShadow = 1.0;
+    pbrIn.backShadow = 1.0;
 
     var direct = vec3<f32>(0.0);
     var dirShadow = 1.0;

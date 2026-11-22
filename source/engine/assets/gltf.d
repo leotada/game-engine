@@ -96,6 +96,7 @@ struct GltfMaterialDesc {
     string iridescenceThicknessUri;
     string transmissionUri;
     string thicknessUri;
+    string diffuseTransmissionUri;
     int clearcoatImage = -1;
     int clearcoatRoughnessImage = -1;
     int clearcoatNormalImage = -1;
@@ -105,6 +106,7 @@ struct GltfMaterialDesc {
     int iridescenceThicknessImage = -1;
     int transmissionImage = -1;
     int thicknessImage = -1;
+    int diffuseTransmissionImage = -1;
 }
 
 /// Loaded GPU model: mesh + material (caller destroys both).
@@ -160,7 +162,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     model.mesh = uploadImportedMesh(gpu, gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
 
     MaterialParams params = matDesc.params;
-    params.flags = MaterialFlags.none;
+    params.flags = matDesc.params.flags & MaterialFlags.thinWalled;
 
     Texture loadMap(int image, TextureDesc d) {
         return image >= 0 ? loadGltfImage(gpu, doc, image, d) : Texture.init;
@@ -407,6 +409,26 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
         if ("KHR_materials_dispersion" in ext && ext["KHR_materials_dispersion"].type == JSONType.object) {
             auto e = ext["KHR_materials_dispersion"];
             if ("dispersion" in e) desc.params.transmissionDispersion = jsonFloat(e["dispersion"]);
+        }
+        if ("KHR_materials_diffuse_transmission" in ext && ext["KHR_materials_diffuse_transmission"].type == JSONType.object) {
+            auto e = ext["KHR_materials_diffuse_transmission"];
+            if ("diffuseTransmissionFactor" in e)
+                desc.params.subsurfaceWeight = jsonFloat(e["diffuseTransmissionFactor"]);
+            if ("diffuseTransmissionColorFactor" in e) {
+                auto arr = e["diffuseTransmissionColorFactor"].array;
+                if (arr.length >= 3)
+                    desc.params.subsurfaceColor = [jsonFloat(arr[0]), jsonFloat(arr[1]), jsonFloat(arr[2])];
+            }
+            readTexRef(e, "diffuseTransmissionTexture", desc.diffuseTransmissionUri, desc.diffuseTransmissionImage);
+            immutable hasVolThick = ("KHR_materials_volume" in ext
+                && ext["KHR_materials_volume"].type == JSONType.object
+                && "thicknessFactor" in ext["KHR_materials_volume"]
+                && jsonFloat(ext["KHR_materials_volume"]["thicknessFactor"]) > 0.0f);
+            if (!hasVolThick) {
+                desc.params.flags |= MaterialFlags.thinWalled;
+            } else if (desc.params.transmissionDepth > 0.0f) {
+                desc.params.subsurfaceRadius = desc.params.transmissionDepth;
+            }
         }
     }
 
@@ -874,15 +896,20 @@ private enum LayerPackMode : ubyte {
 
 private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
                                  int imgIdxA, int imgIdxB, LayerPackMode mode,
-                                 bool generateMips, out bool okA, out bool okB) @trusted {
+                                 bool generateMips, out bool okA, out bool okB,
+                                 int imgIdxC, out bool okC) @trusted {
     auto a = decodeGltfImagePixels(doc, imgIdxA);
     auto b = (imgIdxB == imgIdxA) ? a : decodeGltfImagePixels(doc, imgIdxB);
+    auto c = (imgIdxC == imgIdxA) ? a : ((imgIdxC == imgIdxB) ? b : decodeGltfImagePixels(doc, imgIdxC));
     okA = a.valid;
     okB = b.valid;
-    if (!okA && !okB) return Texture.init;
+    okC = c.valid;
+    if (!okA && !okB && !okC) return Texture.init;
 
-    immutable uint w = (okA && okB) ? (a.w > b.w ? a.w : b.w) : (okA ? a.w : b.w);
-    immutable uint h = (okA && okB) ? (a.h > b.h ? a.h : b.h) : (okA ? a.h : b.h);
+    uint w = 0, h = 0;
+    if (okA) { if (a.w > w) w = a.w; if (a.h > h) h = a.h; }
+    if (okB) { if (b.w > w) w = b.w; if (b.h > h) h = b.h; }
+    if (okC) { if (c.w > w) w = c.w; if (c.h > h) h = c.h; }
     auto pixels = new ubyte[cast(size_t) w * h * 4];
 
     foreach (y; 0 .. h) {
@@ -890,10 +917,15 @@ private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
             immutable di = (cast(size_t) y * w + x) * 4;
             final switch (mode) {
                 case LayerPackMode.coat:
-                case LayerPackMode.transmission:
                     pixels[di + 0] = okA ? sampleChannelResized(a, x, y, w, h, 0) : 255;
                     pixels[di + 1] = okB ? sampleChannelResized(b, x, y, w, h, 1) : 255;
                     pixels[di + 2] = 255;
+                    pixels[di + 3] = 255;
+                    break;
+                case LayerPackMode.transmission:
+                    pixels[di + 0] = okA ? sampleChannelResized(a, x, y, w, h, 0) : 255;
+                    pixels[di + 1] = okB ? sampleChannelResized(b, x, y, w, h, 1) : 255;
+                    pixels[di + 2] = okC ? sampleChannelResized(c, x, y, w, h, 3) : 255;
                     pixels[di + 3] = 255;
                     break;
                 case LayerPackMode.fuzz:
@@ -912,6 +944,13 @@ private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
         }
     }
     return Texture.fromPixels(gpu, pixels, w, h, TextureDesc(generateMips, false));
+}
+
+private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
+                                 int imgIdxA, int imgIdxB, LayerPackMode mode,
+                                 bool generateMips, out bool okA, out bool okB) @trusted {
+    bool okC;
+    return packLayerTexture(gpu, doc, imgIdxA, imgIdxB, mode, generateMips, okA, okB, -1, okC);
 }
 
 /**
@@ -980,16 +1019,19 @@ MaterialLayerMaps buildGltfLayerMaps(
         }
     }
     if (matDesc.transmissionImage >= 0
-        || (matDesc.thicknessImage >= 0 && params.transmissionWeight > 0.0f)) {
-        bool okA, okB;
+        || (matDesc.thicknessImage >= 0 && (params.transmissionWeight > 0.0f || params.subsurfaceWeight > 0.0f))
+        || matDesc.diffuseTransmissionImage >= 0) {
+        bool okA, okB, okC;
         auto t = packLayerTexture(gpu, doc, matDesc.transmissionImage,
                                   matDesc.thicknessImage, LayerPackMode.transmission,
-                                  generateMips, okA, okB);
+                                  generateMips, okA, okB,
+                                  matDesc.diffuseTransmissionImage, okC);
         if (t.valid) {
             move(t, outTextures[4]);
             outHas[4] = true;
             maps.transmission = &outTextures[4];
-            if (okA) params.flags |= MaterialFlags.transmission;
+            if (okA || (okB && params.transmissionWeight > 0.0f)) params.flags |= MaterialFlags.transmission;
+            if (okC || (okB && params.subsurfaceWeight > 0.0f)) params.flags |= MaterialFlags.subsurface;
         }
     }
     return maps;
@@ -1787,4 +1829,47 @@ version (unittest) {
     assert(abs(desc.params.transmissionDepth - 2.5f) < 1e-4f);
     assert(abs(desc.params.transmissionColor[1] - 0.85f) < 1e-4f);
     assert(abs(desc.params.transmissionDispersion - 0.6f) < 1e-4f);
+}
+
+@("gltf.opbr8DiffuseTransmission") @safe unittest {
+    import std.math : abs;
+
+    string foliageGltf = `{
+      "asset": {"version": "2.0"},
+      "images": [{"uri": "leaf_dt.png"}],
+      "textures": [{"source": 0}],
+      "materials": [{
+        "name": "foliage",
+        "extensions": {
+          "KHR_materials_diffuse_transmission": {
+            "diffuseTransmissionFactor": 0.65,
+            "diffuseTransmissionColorFactor": [0.35, 0.85, 0.2],
+            "diffuseTransmissionTexture": {"index": 0}
+          }
+        }
+      }]
+    }`;
+    auto leaf = parseGltfMaterialJson(foliageGltf);
+    assert(abs(leaf.params.subsurfaceWeight - 0.65f) < 1e-4f);
+    assert(abs(leaf.params.subsurfaceColor[1] - 0.85f) < 1e-4f);
+    assert(leaf.diffuseTransmissionImage == 0 && leaf.diffuseTransmissionUri == "leaf_dt.png");
+    assert((leaf.params.flags & MaterialFlags.thinWalled) != 0);
+
+    string waxGltf = `{
+      "asset": {"version": "2.0"},
+      "materials": [{
+        "name": "wax",
+        "extensions": {
+          "KHR_materials_volume": {"thicknessFactor": 0.5, "attenuationDistance": 0.8},
+          "KHR_materials_diffuse_transmission": {
+            "diffuseTransmissionFactor": 0.9,
+            "diffuseTransmissionColorFactor": [1.0, 0.7, 0.45]
+          }
+        }
+      }]
+    }`;
+    auto wax = parseGltfMaterialJson(waxGltf);
+    assert((wax.params.flags & MaterialFlags.thinWalled) == 0);
+    assert(abs(wax.params.subsurfaceWeight - 0.9f) < 1e-4f);
+    assert(abs(wax.params.subsurfaceRadius - 0.8f) < 1e-4f);
 }

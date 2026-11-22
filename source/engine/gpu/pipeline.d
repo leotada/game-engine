@@ -9,6 +9,8 @@ import engine.water.gpu_data : WATER_DATA_SIZE;
 
 @safe:
 
+private immutable string kTextured3dWgsl = textured3dShaderSource;
+private immutable string kTextured3dTangentWgsl = textured3dTangentShaderSource;
 private immutable string kTextured3dSkinnedWgsl = textured3dSkinnedShaderSource;
 
 struct Pipeline3D {
@@ -393,8 +395,8 @@ enum FRAME_UNIFORMS_SIZE = 1280;
 /// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
 /// 7 shadow maps, point lights (9), shared water data (10), and opaque scene color pyramid (11).
 enum uint FRAME_BINDING_COUNT = 12;
-/// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7 block, 11 × vec4<f32> = 176 bytes).
-enum MATERIAL_PARAMS_SIZE = 176;
+/// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7/8 block, 13 × vec4<f32> = 208 bytes).
+enum MATERIAL_PARAMS_SIZE = 208;
 /// Entries in the material bind group (@group(1)): params UBO, sampler,
 /// albedo/MR/normal/AO/emissive maps (2..6), custom surfaceParams UBO (7),
 /// and OPBR-6/7 layer maps: coat, coatNormal, fuzz, anisoFilm, transmission (8..12).
@@ -440,7 +442,7 @@ enum SURFACE_PARAMS_SIZE = 64;
 Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surfaceFormat) @trusted {
     Pipeline3D result;
 
-    result.shaderModule = createShaderModule(device, textured3dShaderSource);
+    result.shaderModule = createShaderModule(device, kTextured3dWgsl);
     if (result.shaderModule is null) {
         fatal("Failed to create textured 3D shader module");
     }
@@ -577,7 +579,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
         fatal("Failed to create textured 3D render pipeline");
     }
 
-    result.shaderModuleTangent = createShaderModule(device, textured3dTangentShaderSource);
+    result.shaderModuleTangent = createShaderModule(device, kTextured3dTangentWgsl);
     if (result.shaderModuleTangent is null)
         fatal("Failed to create textured 3D tangent shader module");
     result.pipelineTangent = createTexturedDrawPipeline(device, result.shaderModuleTangent, result.pipelineLayout, surfaceFormat, 48, true);
