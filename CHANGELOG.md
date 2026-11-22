@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **DMD release build crash (`dmd -inline` SIGSEGV)**: `SimdFloat4.opBinary` (`engine.animation.math.simd_backend`) builds its result in a local to avoid a DMD 2.113 inliner bug that crashed `dub build --build=release` (gesc, editor, player, games); details and reproducer in `docs/dmd-inline-crash.md`.
 - **Normal transformation under non-uniform scale (`2026-11-22`)**: `textured3d_pbr.wgsl`, `colored3d.wgsl`, and `cube3d.wgsl` now transform normals using the $3 \times 3$ adjugate (cofactor transpose) of the model matrix (and re-orthogonalize tangents against the corrected normal) so scaled objects shade accurately; added `Mat4.transformNormal` / `transformNormalAdjugate` (`engine.math.mat`).
 - **glTF 2.0 `doubleSided` and material names (`2026-11-22`)**: `parseGltfMaterialAt` (`engine.assets.gltf`) now parses `materials[i].doubleSided` and `name`, propagating `doubleSided` to `Material.renderState.doubleSided` in `loadGltfPbr` and `loadGltfAsset`; `GltfAsset` exposes `findMaterial(name)` and `materialName(index)`.
 - **Script hot-reload skipped components on high entity IDs (`2026-11-21`)**: `HotReloadManager.snapshotScriptData` scanned IDs `0 .. entityCount() + 1000`, so components on recycled or late entities were lost on reload. It now walks the component's dense store.

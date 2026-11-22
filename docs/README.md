@@ -18,6 +18,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [editor-guide.md](editor-guide.md) | Visual editor architecture, panels, play mode, and workflow |
 | [world-pipeline-guide.md](world-pipeline-guide.md) | Asset/prefab/scene hot-reload, `*.tune.json` tunables, 3D road splines, `*.splines.json`, and the Blender chunk exporter |
 | [export-guide.md](export-guide.md) | Multiplatform release export (`--target=<id>` specs, CLI flags, static deps, and media formats) |
+| [dmd-inline-crash.md](dmd-inline-crash.md) | DMD 2.113 `-inline` SIGSEGV in the SIMD backend: cause, reproducer, fix |
 | [scripting-guide.md](scripting-guide.md) | D scripting API, reflection attributes, lifecycle, and hot-reload rules |
 | [why-this-is-fast.md](why-this-is-fast.md) | Why the ECS/SoA architecture is fast |
 | [incremental-gc-research.md](incremental-gc-research.md) | Garbage collection research, pause metrics, and benchmarks |

@@ -83,7 +83,12 @@ mixin template SimdBackend(bool useVec) {
 
         SimdFloat4 opBinary(string op)(SimdFloat4 o) const if (op == "+" || op == "-" || op == "*" || op == "/") {
             static if (useVec) {
-                mixin("return SimdFloat4(v " ~ op ~ " o.v);");
+                // Build the result in a named local: returning the constructor call directly makes
+                // DMD 2.113 crash (SIGSEGV) under `-inline` when the inlined value is an argument of
+                // a struct literal (e.g. `Col(a * b, ...)`). See docs/dmd-inline-crash.md.
+                SimdFloat4 r;
+                mixin("r.v = v " ~ op ~ " o.v;");
+                return r;
             } else {
                 mixin("return SimdFloat4(x " ~ op ~ " o.x, y " ~ op ~ " o.y, z " ~ op ~ " o.z, w " ~ op ~ " o.w);");
             }
