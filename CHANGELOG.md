@@ -9,6 +9,9 @@
   CRC-checked scene chunks with game-defined user blocks; `WorldStreamer` loads GESC or JSON chunks by content
   and calls `GescBlockHandler`s on load/unload. `game-engine-gesc` tool (`encode`, `decode`, `info`, `verify`,
   `split`, `bench`).
+- **Chunk streaming from the asset pak**: `WorldStreamer` reads chunk bytes from a mounted GEPK pak (new `@nogc`
+  `readMountedAssetNoGc` in `engine.assets.pak`) with disk fallback; the exporter verifies and counts packed
+  chunks and gains `--pak-dir=<dir>` (extra directories in the pak, e.g. chunk folders outside `Assets`).
 - `engine.assets.zstd`: `@nogc` one-shot zstd (vendored zstd 1.5.7 in `vendor/zstd`, `libzstd_engine.a`).
 
 All notable changes to this project are documented in this file.

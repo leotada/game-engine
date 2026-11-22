@@ -56,6 +56,7 @@ private void printUsage() {
     writeln("  --assets=<dir>       Assets directory relative to --project (default: assets)");
     writeln("  --protect-assets     Pack assets into encrypted GEPK v1 container");
     writeln("  --embed-pak          Embed encrypted assets.pak inside executable (sets ProtectedAssets)");
+    writeln("  --pak-dir=<dir>      Extra project directory (e.g. streamed chunks) packed into the pak; repeatable");
     writeln("  --pak-key=<hex>      64-bit hex encryption key for GEPK asset container");
     writeln("  --version=<id>       Extra D version identifier (repeatable)");
     writeln("  --no-verify          Skip post-build static ELF DT_NEEDED / ldd verification");
@@ -120,6 +121,9 @@ void main(string[] args) {
             opts.sourceDir = arg[9 .. $];
         } else if (arg.length > 9 && arg[0 .. 9] == "--assets=") {
             opts.assetsDir = arg[9 .. $];
+        } else if (arg.length > 10 && arg[0 .. 10] == "--pak-dir=") {
+            opts.protectAssets = true;
+            opts.extraPakDirs ~= arg[10 .. $];
         } else if (arg.length > 10 && arg[0 .. 10] == "--pak-key=") {
             if (!parseHexU64(arg[10 .. $], opts.assetPakKey)) {
                 writeErr("Error: invalid hex pak key '%s'", arg[10 .. $]);

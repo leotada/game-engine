@@ -9,7 +9,7 @@ import std.format : format;
 import std.path : absolutePath, baseName, buildPath, dirName, extension, relativePath;
 import std.process : environment, executeShell;
 import std.string : split, strip, toLower;
-import engine.assets.pak : DEFAULT_ASSET_PAK_KEY, packDirectoryToPak;
+import engine.assets.pak : buildAssetPak, collectDirectoryPakInputs, DEFAULT_ASSET_PAK_KEY, pakContains;
 import engine.core.log : err, info, warn;
 
 @safe:
@@ -58,6 +58,7 @@ struct BuildExportOptions {
     string[] extraVersions;          /// Extra -version= / -d-version= flags.
     bool protectAssets = false;      /// Pack assets into encrypted GEPK container.
     bool embedAssetsPak = false;     /// Embed assets.pak into executable (-J + version=ProtectedAssets).
+    string[] extraPakDirs;           /// Extra directories (relative to projectDir) packed into the pak, e.g. streamed chunk folders outside `assetsDir`.
     ulong assetPakKey = 0;           /// 64-bit encryption key (0 => DEFAULT_ASSET_PAK_KEY).
     bool verifyStatic = true;        /// Run ELF DT_NEEDED / ldd / obfuscation verification on Linux static exports.
 }
@@ -514,6 +515,12 @@ struct ExportPipeline {
         return true;
     }
 
+    /// True for streamed world chunk files (`.gesc` or `.scene.json`).
+    static bool isChunkPakPath(scope const(char)[] path) pure nothrow @nogc @safe {
+        import std.algorithm.searching : endsWith;
+        return path.endsWith(".gesc") || path.endsWith(".scene.json");
+    }
+
     /// Verify that an encrypted GEPK asset pack leaks neither plaintext asset filenames
     /// nor unencrypted GLB/PNG headers.
     static bool verifyPakObfuscation(
@@ -936,7 +943,31 @@ struct ExportPipeline {
         if (opts.protectAssets && exists(srcAssets)) {
             immutable ulong pakKey = opts.assetPakKey != 0 ? opts.assetPakKey : DEFAULT_ASSET_PAK_KEY;
             immutable string prefix = baseName(opts.assetsDir);
-            auto pakBytes = packDirectoryToPak(srcAssets, pakKey, prefix);
+            auto pakInputs = collectDirectoryPakInputs(srcAssets, prefix);
+            foreach (extra; opts.extraPakDirs) {
+                immutable extraSrc = buildPath(projRoot, extra);
+                if (!exists(extraSrc)) {
+                    err("Export: --pak-dir not found: %s", extraSrc);
+                    return false;
+                }
+                pakInputs ~= collectDirectoryPakInputs(extraSrc, extra);
+            }
+            auto pakBytes = buildAssetPak(pakInputs, pakKey);
+            // Streamed world chunks (.gesc / .scene.json) are read through the pak by WorldStreamer.
+            size_t chunkCount = 0;
+            foreach (ref inp; pakInputs) {
+                if (isChunkPakPath(inp.path)) {
+                    if (!pakContains(pakBytes, pakKey, inp.path)) {
+                        err("Export: chunk missing from pak: %s", inp.path);
+                        return false;
+                    }
+                    ++chunkCount;
+                }
+            }
+            if (chunkCount > 0) {
+                info("Export: %d world chunk(s) packed into the asset pak", cast(int) chunkCount);
+                outLog ~= format("%d world chunk(s) packed into the asset pak\n", cast(int) chunkCount);
+            }
 
             string[] sampleNames;
             foreach (entry; dirEntries(srcAssets, SpanMode.depth)) {
@@ -1149,6 +1180,7 @@ struct ExportPipeline {
         dst.extraVersions  = src.extraVersions.dup;
         dst.protectAssets  = src.protectAssets;
         dst.embedAssetsPak = src.embedAssetsPak;
+        dst.extraPakDirs = src.extraPakDirs.dup;
         dst.assetPakKey    = src.assetPakKey;
         dst.verifyStatic   = src.verifyStatic;
         return dst;

@@ -251,6 +251,10 @@ The output is a regular v2 world. Open the root scene in the editor, or run `gam
 
 ---
 
+### 5.4 Shipping chunks in an asset pak
+
+In production exports (`--protect-assets` / `--embed-pak`) chunk files are read from the encrypted `GEPK` pak instead of loose files: `WorldStreamer` asks the mounted pak first (`engine.assets.pak.readMountedAssetNoGc`, `@nogc`, decrypting into a malloc buffer on the worker thread) and falls back to disk otherwise. Chunk `scenePath` values in the manifest are the pak keys, so keep them relative to the project root as exported (for example `Assets/world/chunk_0_0.gesc`). Use `--pak-dir=<dir>` to pack chunk folders outside the assets directory. Details: [export-guide.md](export-guide.md).
+
 ## 6. API Reference
 
 Load time = allocates, call outside the frame loop. `@nogc` = safe per frame.
