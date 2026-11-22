@@ -242,11 +242,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let n1 = cross(c2, c0);
     let n2 = cross(c0, c1);
     let det = dot(c0, n0);
-    let normalMat = select(
-        modelMat3,
-        mat3x3<f32>(n0, n1, n2) * select(1.0, -1.0, det < 0.0),
-        abs(det) > 1e-12
-    );
+    var normalMat = modelMat3;
+    if (abs(det) > 1e-12) {
+        normalMat = mat3x3<f32>(n0, n1, n2) * select(1.0, -1.0, det < 0.0);
+    }
     var out: VertexOutput;
     out.clipPos = frame.viewProj * worldPos4;
     out.worldPos = worldPos4.xyz;

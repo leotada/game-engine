@@ -62,7 +62,7 @@ unittest {
     assert(displaced.canFind("@location(8) tangent"));
 }
 
-enum shadowDepthShaderSource = import("shadow_depth.wgsl");
+enum shadowDepthShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl").code;
 enum shadowDepthSkinnedShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["SKINNED"]).code;
 
 enum gizmoLineShaderSource = import("gizmo_line.wgsl");
