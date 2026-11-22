@@ -266,6 +266,15 @@ The output is a regular v2 world. Open the root scene in the editor, or run `gam
 
 In production exports (`--protect-assets` / `--embed-pak`) chunk files are read from the encrypted `GEPK` pak instead of loose files: `WorldStreamer` asks the mounted pak first (`engine.assets.pak.readMountedAssetNoGc`, `@nogc`, decrypting into a malloc buffer on the worker thread) and falls back to disk otherwise. Chunk `scenePath` values in the manifest are the pak keys, so keep them relative to the project root as exported (for example `Assets/world/chunk_0_0.gesc`). Use `--pak-dir=<dir>` to pack chunk folders outside the assets directory. Details: [export-guide.md](export-guide.md).
 
+### 5.5 Streaming tests for GESC and the pak
+
+- `engine.scene.gesc_soak_tests` repeats the 100-cycle load/unload soak (`streamer.soak100Cycles9Km2`) for `.gesc` chunks: plain v1 files and v2 files with binary component blocks (mixed in one grid). The resulting world digest (entity count, positions, component values) must equal the JSON soak's, with no entity leak and bounded `EntityId` capacity. The same soak runs against a mounted pak (virtual paths absent on disk) and must match the disk run.
+- A corruption soak damages chunks mid-run (truncated, CRC mismatch, bad magic, truncated header): the damaged chunks spawn nothing, the streamer keeps running, undamaged chunks are unaffected and nothing leaks.
+- `worldExport.gescExportRoundTripThroughStreamer` mirrors `--format=gesc`: it encodes the Blender test level's chunks to `.gesc`, rewrites the manifest `scenePath` values, saves and reloads the root scene, and checks the streamed world equals the JSON one.
+- Default soak size is 6 x 6 cells and 20 cycles; set `GESC_SOAK_FULL=1` for 12 x 12 cells (9.4 km2) and 100 cycles.
+
+---
+
 ## 6. API Reference
 
 Load time = allocates, call outside the frame loop. `@nogc` = safe per frame.

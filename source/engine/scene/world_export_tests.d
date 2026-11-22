@@ -125,3 +125,71 @@ private enum rootScenePath = "assets/world/ow8_test_level.scene.json";
     assert(streamer.stats().activeGltfCount == 0);
     assert(world.entityCount() == 0);
 }
+
+@("worldExport.gescExportRoundTripThroughStreamer") @trusted unittest {
+    import std.file : mkdirRecurse, rmdirRecurse, write;
+    import std.format : format;
+    import std.path : baseName;
+    import engine.scene.chunk_binary : decodeChunk, encodeChunk, GescChunk;
+    import engine.scene.scene_file : saveSceneFile;
+
+    if (!exists(rootScenePath)) return;
+    immutable outDir = "build/test_world_export_gesc";
+    mkdirRecurse(outDir);
+    scope (exit) {
+        if (exists(outDir)) rmdirRecurse(outDir);
+    }
+
+    // Export step (what `--format=gesc` does): encode every JSON chunk to `.gesc` and point the manifest at it.
+    auto root = loadSceneFile(rootScenePath);
+    foreach (ref ch; root.chunkManifest.chunks) {
+        auto src = loadSceneFile(ch.scenePath);
+        immutable gescPath = format("%s/%s.gesc", outDir, baseName(ch.scenePath, ".scene.json"));
+        auto bytes = encodeChunk(src);
+        write(gescPath, bytes);
+
+        GescChunk decoded;
+        string err;
+        assert(decodeChunk(bytes, decoded, err), err);
+        assert(decoded.scene.entities.length == src.entities.length);
+        assert(decoded.scene.hasCellBounds == src.hasCellBounds);
+        assert(validateScene(decoded.scene, true).ok, gescPath);
+        ch.scenePath = gescPath;
+    }
+    immutable gescRootPath = outDir ~ "/root.scene.json";
+    saveSceneFile(gescRootPath, root);
+
+    auto reloaded = loadSceneFile(gescRootPath);
+    assert(reloaded.hasChunkManifest && reloaded.chunkManifest.chunks.length == 9);
+    foreach (ref ch; reloaded.chunkManifest.chunks)
+        assert(ch.scenePath.length > 5 && ch.scenePath[$ - 5 .. $] == ".gesc" && exists(ch.scenePath));
+
+    // Stream the JSON original and the GESC export; the loaded worlds must be identical.
+    static size_t[3] streamAll(ref const SceneFile r) @trusted {
+        SceneWorld world;
+        world.ensureRegistered!Transform();
+        world.ensureRegistered!Visual();
+        world.ensureRegistered!PhysicsBody();
+        WorldStreamer streamer;
+        streamer.initFromManifest(r.chunkManifest);
+        foreach (_; 0 .. 32) {
+            streamer.update(world, Vec3(384, 0, 384), 50.0f);
+            if (streamer.stats().activeCount == 9) break;
+        }
+        assert(streamer.stats().activeCount == 9);
+        size_t sx;
+        foreach (i; 0 .. world.capacity())
+            if (world.alive(cast(uint) i))
+                sx += cast(size_t)(world.get!Transform(cast(uint) i).position.x * 4 + 1000);
+        size_t[3] res = [world.entityCount(), streamer.stats().activeGltfCount, sx];
+        foreach (_; 0 .. 8) streamer.update(world, Vec3(-5000, 0, -5000), 50.0f);
+        assert(streamer.stats().activeCount == 0 && streamer.stats().activeGltfCount == 0);
+        assert(world.entityCount() == 0);
+        return res;
+    }
+    auto jsonRoot = loadSceneFile(rootScenePath);
+    immutable fromJson = streamAll(jsonRoot);
+    immutable fromGesc = streamAll(reloaded);
+    assert(fromJson[0] > 0 && fromJson[1] == 7);
+    assert(fromGesc == fromJson, "GESC export streams to the same world as the JSON chunks");
+}
