@@ -478,6 +478,36 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+#ifdef CUSTOM_SURFACE
+/// Depth-only vertex stage for the shadow passes of materials whose surface
+/// shader defines `displace` / `displaceEx`. Runs the same hook as `vs_main`
+/// (same `surfaceParams`, `frame.time`, instance data) so the cast shadow
+/// follows the animated geometry. Bound with a dedicated group 0 holding the
+/// frame uniforms (binding 0) and the light view-projection (binding 20).
+struct ShadowLightUniform {
+    viewProj: mat4x4<f32>,
+};
+@group(0) @binding(20) var<uniform> shadowLight: ShadowLightUniform;
+
+struct ShadowVertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) model0: vec4<f32>,
+    @location(4) model1: vec4<f32>,
+    @location(5) model2: vec4<f32>,
+    @location(6) model3: vec4<f32>,
+    @location(9) custom: vec4<f32>,
+};
+
+@vertex
+fn vs_shadow(in: ShadowVertexInput) -> @builtin(position) vec4<f32> {
+    let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+    let localPos = engineDisplace(in.position, in.normal, in.uv, in.custom, model);
+    return shadowLight.viewProj * model * vec4<f32>(localPos, 1.0);
+}
+#endif
+
 fn evalPointOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, pl: PointLight) -> vec3<f32> {
     let toLight = pl.position - worldPos;
     let dist = length(toLight);

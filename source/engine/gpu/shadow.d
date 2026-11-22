@@ -37,6 +37,7 @@ import bindings.wgpu;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader  : createShaderModule;
+import engine.gpu.pipeline : FRAME_UNIFORMS_SIZE;
 import engine.gpu.shaders : shadowDepthShaderSource, shadowDepthSkinnedShaderSource;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.math.mat    : Mat4;
@@ -342,6 +343,12 @@ struct TexShadowPipeline {
     WGPUPipelineLayout  skinnedPipelineLayout;
     WGPUShaderModule    shaderModule;
     WGPUShaderModule    skinnedShaderModule;
+    /// Group 0 of displaced-surface shadow pipelines: frame uniforms
+    /// (binding 0) + light view-projection with dynamic offset (binding 20).
+    WGPUBindGroupLayout surfaceBindGroupLayout;
+    /// Group 0 = `surfaceBindGroupLayout`, group 1 = the material layout
+    /// (`surfaceParams` at binding 7).
+    WGPUPipelineLayout  surfacePipelineLayout;
 
     @disable this(this);
 
@@ -361,6 +368,8 @@ struct TexShadowPipeline {
         }
         rel(pipe32Back); rel(pipe48Back); rel(pipe32None); rel(pipe48None);
         rel(pipeSkinnedBack); rel(pipeSkinnedNone);
+        if (surfacePipelineLayout !is null)  { wgpuPipelineLayoutRelease(surfacePipelineLayout); surfacePipelineLayout = null; }
+        if (surfaceBindGroupLayout !is null) { wgpuBindGroupLayoutRelease(surfaceBindGroupLayout); surfaceBindGroupLayout = null; }
         if (skinnedPipelineLayout !is null) { wgpuPipelineLayoutRelease(skinnedPipelineLayout); skinnedPipelineLayout = null; }
         if (pipelineLayout !is null)        { wgpuPipelineLayoutRelease(pipelineLayout); pipelineLayout = null; }
         if (bindGroupLayout !is null)       { wgpuBindGroupLayoutRelease(bindGroupLayout); bindGroupLayout = null; }
@@ -369,7 +378,8 @@ struct TexShadowPipeline {
     }
 }
 
-TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout skinBindGroupLayout = null) @trusted {
+TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout skinBindGroupLayout = null,
+                                          WGPUBindGroupLayout materialBindGroupLayout = null) @trusted {
     TexShadowPipeline r;
     r.shaderModule = createShaderModule(device, shadowDepthShaderSource);
     if (r.shaderModule is null) fatal("Tex shadow depth shader compile failed");
@@ -460,7 +470,80 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout
         r.pipeSkinnedBack = buildPipe(r.skinnedPipelineLayout, r.skinnedShaderModule, 80, skinnedAttrs.ptr, 5, false);
         r.pipeSkinnedNone = buildPipe(r.skinnedPipelineLayout, r.skinnedShaderModule, 80, skinnedAttrs.ptr, 5, true);
     }
+
+    if (materialBindGroupLayout !is null) {
+        WGPUBindGroupLayoutEntry[2] se;
+        se[0].binding = 0;
+        se[0].visibility = WGPUShaderStage.vertex;
+        se[0].buffer.type = WGPUBufferBindingType.uniform;
+        se[0].buffer.minBindingSize = FRAME_UNIFORMS_SIZE;
+        se[1].binding = SURFACE_SHADOW_LIGHT_BINDING;
+        se[1].visibility = WGPUShaderStage.vertex;
+        se[1].buffer.type = WGPUBufferBindingType.uniform;
+        se[1].buffer.hasDynamicOffset = WGPU_TRUE;
+        se[1].buffer.minBindingSize = 64;
+        WGPUBindGroupLayoutDescriptor sbd;
+        sbd.entryCount = 2;
+        sbd.entries = se.ptr;
+        r.surfaceBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &sbd);
+        WGPUBindGroupLayout[2] sl = [r.surfaceBindGroupLayout, materialBindGroupLayout];
+        WGPUPipelineLayoutDescriptor spd;
+        spd.bindGroupLayoutCount = 2;
+        spd.bindGroupLayouts = sl.ptr;
+        r.surfacePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &spd);
+    }
     return r;
+}
+
+/// `@binding` of the light view-projection in the `vs_shadow` stage of composed surface shaders.
+enum uint SURFACE_SHADOW_LIGHT_BINDING = 20;
+
+/// Depth-only pipeline running the `vs_shadow` entry point of a composed
+/// surface shader (`composeSurfaceShader`), so `displace` / `displaceEx` also
+/// move the cast shadow. Reads instance data (model matrix at 3..6, `custom`
+/// at location 9 from the same 96-byte instance stride, no extra bandwidth).
+/// Returns null on failure. `vertexStride` is 32 (`TexVert`) or 48 (`TexTanVert`).
+WGPURenderPipeline createSurfaceShadowPipeline(WGPUDevice device, WGPUPipelineLayout surfaceLayout,
+                                               WGPUShaderModule surfaceModule, uint vertexStride,
+                                               bool doubleSided) nothrow @nogc @trusted {
+    if (surfaceLayout is null || surfaceModule is null) return null;
+    WGPUVertexAttribute[3] vertexAttrs = [
+        { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+        { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+        { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+    ];
+    WGPUVertexAttribute[5] instanceAttrs = [
+        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
+        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
+        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
+        { format: WGPUVertexFormat.float32x4, offset: 80, shaderLocation: 9 },
+    ];
+    WGPUVertexBufferLayout[2] bufferLayouts = [
+        { arrayStride: vertexStride, stepMode: WGPUVertexStepMode.vertex,
+          attributeCount: 3, attributes: vertexAttrs.ptr },
+        { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
+          attributeCount: 5, attributes: instanceAttrs.ptr },
+    ];
+    WGPUDepthStencilState depthState;
+    depthState.format            = WGPUTextureFormat.depth32Float;
+    depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+    depthState.depthCompare      = WGPUCompareFunction.less;
+    depthState.depthBias         = 1;
+    depthState.depthBiasSlopeScale = 1.75f;
+    depthState.depthBiasClamp    = 0.0f;
+
+    WGPURenderPipelineDescriptor pd;
+    pd.layout = surfaceLayout;
+    pd.vertex.module_ = surfaceModule;
+    pd.vertex.entryPoint = wgpuStringView("vs_shadow");
+    pd.vertex.bufferCount = 2;
+    pd.vertex.buffers = bufferLayouts.ptr;
+    pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+    pd.primitive.frontFace = WGPUFrontFace.ccw;
+    pd.primitive.cullMode = doubleSided ? WGPUCullMode.none : WGPUCullMode.back;
+    pd.depthStencil = &depthState;
+    return wgpuDeviceCreateRenderPipeline(device, &pd);
 }
 
 // ---------------------------------------------------------------------------

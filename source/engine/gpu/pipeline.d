@@ -752,10 +752,17 @@ struct SurfacePipelines {
     WGPURenderPipeline pipelineTangent;
     WGPUShaderModule shaderModule;
     WGPUShaderModule shaderModuleTangent;
+    /// Vertex hook the snippet defines; anything but `none` gets displaced shadow pipelines.
+    DisplaceKind displace;
+    /// Depth-only `vs_shadow` pipelines, built lazily by the scene on first
+    /// shadow use. Index: `(tangent ? 2 : 0) + (doubleSided ? 1 : 0)`.
+    WGPURenderPipeline[4] shadowPipelines;
 
     bool valid() const nothrow @nogc { return pipeline !is null && pipelineTangent !is null; }
 
     void release() nothrow @nogc @trusted {
+        foreach (ref p; shadowPipelines)
+            if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
         if (pipeline !is null) { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
         if (pipelineTangent !is null) { wgpuRenderPipelineRelease(pipelineTangent); pipelineTangent = null; }
         if (shaderModule !is null) { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }

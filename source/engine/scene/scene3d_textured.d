@@ -21,7 +21,8 @@ import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipeline
 import engine.gpu.renderer : FrameContext, Renderer;
 import engine.gpu.skinned : SkinnedMesh;
 import engine.gpu.sky : SkyRenderer;
-import engine.gpu.shadow :
+import engine.gpu.shaders : DisplaceKind;
+import engine.gpu.shadow : SURFACE_SHADOW_LIGHT_BINDING, createSurfaceShadowPipeline,
     beginShadowPassView, createTexShadowPipeline, endShadowPass,
     pointLightFaceVPs, PointShadowMap, ShadowMap, SpotShadowMap,
     spotLightVPFromCone, TexShadowPipeline;
@@ -370,6 +371,8 @@ struct Scene3DTextured {
     private TexShadowPipeline shadowPipe;
     private WGPUBuffer shadowVpBuf;
     private WGPUBindGroup shadowVpBg;
+    /// Group 0 for displaced-surface shadow pipelines: frame uniforms + light VP.
+    private WGPUBindGroup shadowSurfaceBg;
     private ubyte[MAX_SHADOW_PASS_SLOTS * SHADOW_VP_STRIDE] shadowVpStaging;
     private ShadowMap ownedDirShadow;
     private bool hasOwnedDirShadow = false;
@@ -547,9 +550,15 @@ struct Scene3DTextured {
     /// read `frame.time`, `surfaceParams.p0 .. p3` and the material bindings.
     /// Assign the returned id to `Material.surfaceShader`. Returns 0 (the
     /// stock shader) when compilation fails or the table is full.
-    /// Shadow passes do not run `displace`.
+    ///
+    /// Instead of `displace` the snippet may define
+    /// `fn displaceEx(d: DisplaceIn) -> vec3<f32>` to also receive the
+    /// instance `custom` vec4, the instance translation / scale and the mesh
+    /// UV. Either hook also runs in the shadow passes (cascades, point and
+    /// spot), with the same `surfaceParams` and `frame.time`, so cast shadows
+    /// follow the animated geometry.
     uint createSurfaceShader(scope const(char)[] surfaceWgsl) @trusted {
-        import engine.gpu.shaders : composeSurfaceShader;
+        import engine.gpu.shaders : composeSurfaceShader, surfaceDisplaceKind;
         if (surfaceShaderCount >= MAX_SURFACE_SHADERS) {
             warn("Surface shader table full (MAX_SURFACE_SHADERS=", MAX_SURFACE_SHADERS, ")");
             return 0;
@@ -560,6 +569,7 @@ struct Scene3DTextured {
             err("Custom surface shader failed to compile; using the stock PBR shader");
             return 0;
         }
+        built.displace = surfaceDisplaceKind(surfaceWgsl);
         surfaceShaders[surfaceShaderCount] = built;
         return ++surfaceShaderCount;
     }
@@ -567,11 +577,12 @@ struct Scene3DTextured {
     /// Recompile an existing surface shader in place (hot reload). The old
     /// pipelines stay active when the new source fails.
     bool reloadSurfaceShader(uint id, scope const(char)[] surfaceWgsl) @trusted {
-        import engine.gpu.shaders : composeSurfaceShader;
+        import engine.gpu.shaders : composeSurfaceShader, surfaceDisplaceKind;
         if (id == 0 || id > surfaceShaderCount) return false;
         auto built = createSurfacePipelines(pipeline, device, Renderer.sceneFormat(),
             composeSurfaceShader(surfaceWgsl, false), composeSurfaceShader(surfaceWgsl, true));
         if (!built.valid) return false;
+        built.displace = surfaceDisplaceKind(surfaceWgsl);
         surfaceShaders[id - 1].release();
         surfaceShaders[id - 1] = built;
         releaseVariants(id);
@@ -1372,7 +1383,7 @@ struct Scene3DTextured {
 
     private void ensureShadowResources() @trusted {
         if (shadowPipeReady) return;
-        shadowPipe = createTexShadowPipeline(device, pipeline.skinBindGroupLayout);
+        shadowPipe = createTexShadowPipeline(device, pipeline.skinBindGroupLayout, pipeline.bindGroupLayout);
         shadowVpBuf = createUniformBuffer(device, MAX_SHADOW_PASS_SLOTS * SHADOW_VP_STRIDE);
 
         WGPUBindGroupEntry bge;
@@ -1386,7 +1397,40 @@ struct Scene3DTextured {
         bgd.entries    = &bge;
         shadowVpBg = wgpuDeviceCreateBindGroup(device, &bgd);
         if (shadowVpBg is null) fatal("Failed to create scene shadow VP bind group");
+
+        WGPUBindGroupEntry[2] sbe;
+        sbe[0].binding = 0;
+        sbe[0].buffer  = frameUniformBuf;
+        sbe[0].size    = FRAME_UNIFORMS_SIZE;
+        sbe[1].binding = SURFACE_SHADOW_LIGHT_BINDING;
+        sbe[1].buffer  = shadowVpBuf;
+        sbe[1].size    = 64;
+        WGPUBindGroupDescriptor sbd;
+        sbd.layout     = shadowPipe.surfaceBindGroupLayout;
+        sbd.entryCount = 2;
+        sbd.entries    = sbe.ptr;
+        shadowSurfaceBg = wgpuDeviceCreateBindGroup(device, &sbd);
+        if (shadowSurfaceBg is null) fatal("Failed to create scene shadow surface bind group");
         shadowPipeReady = true;
+    }
+
+    /// Depth-only pipeline running the surface shader's `displace` hook, or
+    /// null when the material has no hook (use the stock shadow pipeline).
+    /// Built on first use and cached in the surface shader entry.
+    private WGPURenderPipeline displacedShadowPipeline(uint shaderId, uint vertexStride,
+                                                       bool doubleSided) nothrow @nogc @trusted {
+        if (shaderId == 0 || shaderId > surfaceShaderCount) return null;
+        auto custom = &surfaceShaders[shaderId - 1];
+        if (custom.displace == DisplaceKind.none) return null;
+        immutable tangent = vertexStride == 48;
+        immutable idx = (tangent ? 2u : 0u) + (doubleSided ? 1u : 0u);
+        if (custom.shadowPipelines[idx] is null) {
+            custom.shadowPipelines[idx] = createSurfaceShadowPipeline(
+                device, shadowPipe.surfacePipelineLayout, tangent ? custom.shaderModuleTangent : custom.shaderModule,
+                tangent ? 48 : 32, doubleSided);
+            if (custom.shadowPipelines[idx] is null) return null;
+        }
+        return custom.shadowPipelines[idx];
     }
 
     private void encodeShadowView(WGPUCommandEncoder encoder, WGPUTextureView targetView,
@@ -1403,6 +1447,7 @@ struct Scene3DTextured {
         immutable lightFrustum = Frustum.fromViewProj(lightVp);
         if (drawBatches) {
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+            bool groupZeroIsSurface = false;
             foreach (bi, ref b; batches[0 .. batchCount]) {
                 if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
                 uint first = 0, count = cast(uint) b.instances.length;
@@ -1422,6 +1467,10 @@ struct Scene3DTextured {
                 }
                 if (count == 0) continue;
                 if (b.skinnedMesh !is null) {
+                    if (groupZeroIsSurface) {
+                        wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+                        groupZeroIsSurface = false;
+                    }
                     auto p = shadowPipe.skinnedPipelineFor(b.material.renderState.doubleSided);
                     wgpuRenderPassEncoderSetPipeline(pass, p);
                     wgpuRenderPassEncoderSetBindGroup(pass, 1, skinPaletteBg, 0, null);
@@ -1434,6 +1483,17 @@ struct Scene3DTextured {
                     continue;
                 }
                 auto p = shadowPipe.pipelineFor(b.mesh.vertexStride, b.material.renderState.doubleSided);
+                auto dp = displacedShadowPipeline(b.material.surfaceShader, b.mesh.vertexStride,
+                                                  b.material.renderState.doubleSided);
+                if (dp !is null) {
+                    p = dp;
+                    wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowSurfaceBg, 1, &dynOffset);
+                    wgpuRenderPassEncoderSetBindGroup(pass, 1, b.material.bindGroup, 0, null);
+                    groupZeroIsSurface = true;
+                } else if (groupZeroIsSurface) {
+                    wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+                    groupZeroIsSurface = false;
+                }
                 wgpuRenderPassEncoderSetPipeline(pass, p);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instBuf, 0, instBytes);
@@ -1445,9 +1505,13 @@ struct Scene3DTextured {
                 frameStats.shadowDrawCalls++;
                 frameStats.shadowInstancesDrawn += count;
             }
+            if (groupZeroIsSurface) {
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+                groupZeroIsSurface = false;
+            }
             if (staticCount > 0) {
                 foreach (sib; staticBufs[0 .. staticCount])
-                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull);
+                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull, dynOffset);
             }
         }
         if (kind != ShadowViewKind.local) {
@@ -1519,14 +1583,28 @@ struct Scene3DTextured {
     /// applies only to the directional view (props beyond the cull distance
     /// are not drawn and should not cast either).
     private void encodeStaticShadow(WGPURenderPassEncoder pass, ref StaticInstanceBuffer sib,
-                                    ref const Frustum lightFrustum, bool dirView) nothrow @nogc @trusted {
+                                    ref const Frustum lightFrustum, bool dirView,
+                                    uint dynOffset) nothrow @nogc @trusted {
         immutable n = collectStaticRuns(sib, lightFrustum, dirView);
+        bool groupZeroIsSurface = false;
+        scope(exit) if (groupZeroIsSurface)
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
         foreach (ref run; staticRuns[0 .. n]) {
             auto g = &sib.groups[run.group];
             auto mesh = sib.meshes[g.mesh];
             auto mat = sib.materials[g.material];
             if (!mat.renderState.depthWrite) continue;
             auto p = shadowPipe.pipelineFor(mesh.vertexStride, mat.renderState.doubleSided);
+            auto dp = displacedShadowPipeline(mat.surfaceShader, mesh.vertexStride, mat.renderState.doubleSided);
+            if (dp !is null) {
+                p = dp;
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowSurfaceBg, 1, &dynOffset);
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, mat.bindGroup, 0, null);
+                groupZeroIsSurface = true;
+            } else if (groupZeroIsSurface) {
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+                groupZeroIsSurface = false;
+            }
             wgpuRenderPassEncoderSetPipeline(pass, p);
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
             wgpuRenderPassEncoderSetVertexBuffer(
@@ -2043,6 +2121,7 @@ struct Scene3DTextured {
         sky.destroy();
         skyEnabled = false;
         if (shadowVpBg !is null) { wgpuBindGroupRelease(shadowVpBg); shadowVpBg = null; }
+        if (shadowSurfaceBg !is null) { wgpuBindGroupRelease(shadowSurfaceBg); shadowSurfaceBg = null; }
         destroyBuffer(shadowVpBuf); shadowVpBuf = null;
         if (shadowPipeReady) { shadowPipe.release(); shadowPipeReady = false; }
         pipeline.release();

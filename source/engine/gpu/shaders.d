@@ -91,7 +91,9 @@ unittest {
 
     static assert(textured3dSurfaceTemplate.canFind(SURFACE_CODE_MARKER));
     static assert(textured3dSurfaceTemplate.canFind(DISPLACE_FN_MARKER));
+    static assert(textured3dSurfaceTemplate.canFind("fn vs_shadow("));
     static assert(!textured3dShaderSource.canFind("surfaceParams"));
+    static assert(!textured3dShaderSource.canFind("vs_shadow"));
 
     enum snippet = "fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }";
     auto plain = composeSurfaceShader(snippet);
