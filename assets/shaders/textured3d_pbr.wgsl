@@ -293,11 +293,29 @@ struct SurfaceOut {
     ao: f32,
 };
 
+/// Per-vertex / per-instance data handed to the optional `displaceEx`
+/// vertex hook. The same struct feeds the main pass and the shadow passes.
+struct DisplaceIn {
+    /// Undisplaced object-space vertex position.
+    localPos: vec3<f32>,
+    localNormal: vec3<f32>,
+    /// Mesh UV: a modeler can paint a bend weight into it (e.g. `uv.y`).
+    uv: vec2<f32>,
+    /// Per-instance `custom` vec4 (`StaticInstanceDesc.custom`).
+    custom: vec4<f32>,
+    /// Translation of the instance model matrix (world-space pivot).
+    instancePos: vec3<f32>,
+    /// Length of the model matrix columns (instance scale per axis).
+    objectScale: vec3<f32>,
+};
+
 // Game code is spliced in here by `composeSurfaceShader`. It must define
 //   fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut
-// and may define
+// and may define EITHER (displaceEx wins when both exist)
 //   fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>
+//   fn displaceEx(d: DisplaceIn) -> vec3<f32>
 //@@SURFACE_CODE@@
+//@@DISPLACE_FN@@
 #endif
 
 /// Wave height above body `bi`'s level at `worldPos` (one horizontal pullback)
@@ -403,7 +421,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 #endif
     var localPos = in.position;
 #ifdef CUSTOM_SURFACE
-//@@DISPLACE_CALL@@
+    localPos = engineDisplace(localPos, in.normal, in.uv, in.custom, model);
 #endif
     let worldPos4 = model * vec4<f32>(localPos, 1.0);
     let c0 = model[0].xyz;

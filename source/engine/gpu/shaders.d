@@ -24,45 +24,99 @@ enum textured3dSurfaceTemplate = preprocessShader(import("textured3d_pbr.wgsl"),
 enum textured3dSurfaceTangentTemplate = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["CUSTOM_SURFACE", "MESH_TANGENT"]).code;
 
 private enum SURFACE_CODE_MARKER = "//@@SURFACE_CODE@@";
-private enum DISPLACE_CALL_MARKER = "//@@DISPLACE_CALL@@";
+private enum DISPLACE_FN_MARKER = "//@@DISPLACE_FN@@";
 
 private immutable string kTextured3dSurfaceTemplate = textured3dSurfaceTemplate;
 private immutable string kTextured3dSurfaceTangentTemplate = textured3dSurfaceTangentTemplate;
 
+/// Which vertex hook a surface snippet defines.
+enum DisplaceKind : ubyte {
+    /// No vertex hook: geometry is static (shadow passes use the stock pipeline).
+    none,
+    /// `fn displace(localPos, localNormal) -> vec3<f32>` (original signature).
+    basic,
+    /// `fn displaceEx(d: DisplaceIn) -> vec3<f32>` (instance + UV data).
+    extended,
+}
+
+/// Detect the vertex hook in a surface snippet. `displaceEx` wins over `displace`.
+DisplaceKind surfaceDisplaceKind(scope const(char)[] surfaceWgsl) pure {
+    import std.algorithm.searching : canFind;
+    if (surfaceWgsl.canFind("fn displaceEx(")) return DisplaceKind.extended;
+    if (surfaceWgsl.canFind("fn displace(")) return DisplaceKind.basic;
+    return DisplaceKind.none;
+}
+
 /// Splice game WGSL into the PBR shader. `surfaceWgsl` must define
-/// `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut`; when it also
-/// defines `fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>`
-/// the vertex stage calls it before the model transform.
+/// `fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut`. It may also
+/// define `fn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32>`
+/// or the richer `fn displaceEx(d: DisplaceIn) -> vec3<f32>`; the vertex stage
+/// and the depth-only shadow stage (`vs_shadow`) call it before the model
+/// transform through the generated `engineDisplace` wrapper.
 string composeSurfaceShader(scope const(char)[] surfaceWgsl, bool tangent = false) {
     import std.array : replace;
-    import std.algorithm.searching : canFind;
 
     string code = tangent ? kTextured3dSurfaceTangentTemplate : kTextured3dSurfaceTemplate;
-    immutable displaceCall = surfaceWgsl.canFind("fn displace(")
-        ? "    localPos = displace(localPos, in.normal);" : "";
-    code = code.replace(DISPLACE_CALL_MARKER, displaceCall);
+    final switch (surfaceDisplaceKind(surfaceWgsl)) {
+        case DisplaceKind.none:
+            enum body_ = "    return localPos;";
+            code = code.replace(DISPLACE_FN_MARKER, displaceWrapper(body_));
+            break;
+        case DisplaceKind.basic:
+            code = code.replace(DISPLACE_FN_MARKER, displaceWrapper("    return displace(localPos, localNormal);"));
+            break;
+        case DisplaceKind.extended:
+            code = code.replace(DISPLACE_FN_MARKER, displaceWrapper(
+                "    var d: DisplaceIn;\n"
+                ~ "    d.localPos = localPos;\n"
+                ~ "    d.localNormal = localNormal;\n"
+                ~ "    d.uv = uv;\n"
+                ~ "    d.custom = custom;\n"
+                ~ "    d.instancePos = model[3].xyz;\n"
+                ~ "    d.objectScale = vec3<f32>(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));\n"
+                ~ "    return displaceEx(d);"));
+            break;
+    }
     return code.replace(SURFACE_CODE_MARKER, surfaceWgsl.idup);
+}
+
+private string displaceWrapper(string body_) pure {
+    return "fn engineDisplace(localPos: vec3<f32>, localNormal: vec3<f32>, uv: vec2<f32>,\n"
+        ~ "                   custom: vec4<f32>, model: mat4x4<f32>) -> vec3<f32> {\n"
+        ~ body_ ~ "\n}";
 }
 
 unittest {
     import std.algorithm.searching : canFind;
 
     static assert(textured3dSurfaceTemplate.canFind(SURFACE_CODE_MARKER));
-    static assert(textured3dSurfaceTemplate.canFind(DISPLACE_CALL_MARKER));
+    static assert(textured3dSurfaceTemplate.canFind(DISPLACE_FN_MARKER));
     static assert(!textured3dShaderSource.canFind("surfaceParams"));
 
     enum snippet = "fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }";
     auto plain = composeSurfaceShader(snippet);
     assert(plain.canFind(snippet));
     assert(!plain.canFind("@@"));
-    assert(!plain.canFind("localPos = displace("));
+    assert(plain.canFind("fn engineDisplace("));
+    assert(plain.canFind("return localPos;"));
+    assert(!plain.canFind("return displace("));
     assert(!plain.canFind("@location(8) tangent"));
+    assert(surfaceDisplaceKind(snippet) == DisplaceKind.none);
 
-    auto displaced = composeSurfaceShader(
-        snippet ~ "\nfn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32> { return localPos; }",
-        true);
-    assert(displaced.canFind("localPos = displace(localPos, in.normal);"));
+    enum basicSrc = snippet ~ "\nfn displace(localPos: vec3<f32>, localNormal: vec3<f32>) -> vec3<f32> { return localPos; }";
+    auto displaced = composeSurfaceShader(basicSrc, true);
+    assert(displaced.canFind("return displace(localPos, localNormal);"));
     assert(displaced.canFind("@location(8) tangent"));
+    assert(surfaceDisplaceKind(basicSrc) == DisplaceKind.basic);
+
+    enum exSrc = snippet ~ "\nfn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos; }";
+    auto ex = composeSurfaceShader(exSrc);
+    assert(ex.canFind("return displaceEx(d);"));
+    assert(ex.canFind("d.instancePos = model[3].xyz;"));
+    assert(!ex.canFind("@@"));
+    assert(surfaceDisplaceKind(exSrc) == DisplaceKind.extended);
+    // Both defined: the extended hook wins.
+    assert(surfaceDisplaceKind(basicSrc ~ exSrc) == DisplaceKind.extended);
 }
 
 enum shadowDepthShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl").code;
