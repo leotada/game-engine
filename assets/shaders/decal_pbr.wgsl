@@ -132,7 +132,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     roughness = mix(roughness, 0.1, wet * 0.85);
 
     let V = normalize(frame.cameraPos - P);
-    var color = shadeSimplePbr(P, N, Ng, V, albedo, metallic, roughness, 1.0);
+    var color = shadeSimplePbr(P, N, Ng, V, in.pos.xy, albedo, metallic, roughness, 1.0);
     color = applyFog(color, P);
     return vec4<f32>(color * alpha, alpha);
 }

@@ -13,8 +13,40 @@
 @group(2) @binding(2) var brdfLut: texture_2d<f32>;
 @group(2) @binding(3) var iblSampler: sampler;
 
-fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, albedo: vec3<f32>,
-                  metallic: f32, roughness: f32, ao: f32) -> vec3<f32> {
+fn evalSimplePoint(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>,
+                   albedo: vec3<f32>, metallic: f32, roughness: f32, pl: PointLight) -> vec3<f32> {
+    let toLight = pl.position - P;
+    let d = length(toLight);
+    if (d >= pl.range || d <= 1e-6) {
+        return vec3<f32>(0.0);
+    }
+    let L = toLight / d;
+    let radiance = pl.color * pl.intensity * lightAttenuation(d, pl.range, pl.attenuation);
+    let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, P, Ng, pl.range);
+    return evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+}
+
+fn evalSimpleSpot(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>,
+                  albedo: vec3<f32>, metallic: f32, roughness: f32, sl: SpotLight) -> vec3<f32> {
+    let toLight = sl.position - P;
+    let d = length(toLight);
+    if (d >= sl.range || d <= 1e-6) {
+        return vec3<f32>(0.0);
+    }
+    let L = toLight / d;
+    let theta = dot(normalize(-sl.direction), L);
+    let cone = clamp((theta - sl.outerConeCos) / max(sl.innerConeCos - sl.outerConeCos, 0.001), 0.0, 1.0);
+    if (cone <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+    let radiance = sl.color * sl.intensity * lightAttenuation(d, sl.range, sl.attenuation) * coneFall;
+    let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, P, Ng, L);
+    return evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
+}
+
+fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, screenXY: vec2<f32>,
+                  albedo: vec3<f32>, metallic: f32, roughness: f32, ao: f32) -> vec3<f32> {
     var direct = vec3<f32>(0.0);
     if (frame.dirEnabled != 0u) {
         let L = normalize(frame.dirLight.direction);
@@ -26,36 +58,33 @@ fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, albed
         direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
         direct += radiance * waterCausticsAt(P, N, L, shadow) * albedo * (1.0 - metallic);
     }
-    let pc = min(frame.pointCount, arrayLength(&pointLights));
-    for (var i = 0u; i < pc; i++) {
-        let pl = pointLights[i];
-        let toLight = pl.position - P;
-        let d = length(toLight);
-        if (d >= pl.range) {
-            continue;
+    if ((frame.pointCount | frame.spotCount) != 0u) {
+        let pMax = arrayLength(&pointLights);
+        let sMax = arrayLength(&spotLights);
+        if ((frame.clusteredFlags & 1u) != 0u) {
+            let rec = clusterGrid[clusterIndexAt(P, screenXY)];
+            for (var k = 0u; k < rec.pointCount; k++) {
+                let idx = clusterLightIndices[rec.offset + k];
+                if (idx < pMax) {
+                    direct += evalSimplePoint(P, N, Ng, V, albedo, metallic, roughness, pointLights[idx]);
+                }
+            }
+            for (var k = 0u; k < rec.spotCount; k++) {
+                let idx = clusterLightIndices[rec.offset + rec.pointCount + k];
+                if (idx < sMax) {
+                    direct += evalSimpleSpot(P, N, Ng, V, albedo, metallic, roughness, spotLights[idx]);
+                }
+            }
+        } else {
+            let pc = min(frame.pointCount, pMax);
+            for (var i = 0u; i < pc; i++) {
+                direct += evalSimplePoint(P, N, Ng, V, albedo, metallic, roughness, pointLights[i]);
+            }
+            let sc = min(frame.spotCount, sMax);
+            for (var i = 0u; i < sc; i++) {
+                direct += evalSimpleSpot(P, N, Ng, V, albedo, metallic, roughness, spotLights[i]);
+            }
         }
-        let L = toLight / d;
-        let radiance = pl.color * pl.intensity * lightAttenuation(d, pl.range, pl.attenuation);
-        let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, P, Ng, pl.range);
-        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
-    }
-    let sc = min(frame.spotCount, 4u);
-    for (var i = 0u; i < sc; i++) {
-        let sl = frame.spots[i];
-        let toLight = sl.position - P;
-        let d = length(toLight);
-        if (d >= sl.range) {
-            continue;
-        }
-        let L = toLight / d;
-        let theta = dot(normalize(-sl.direction), L);
-        let cone = clamp((theta - sl.outerConeCos) / max(sl.innerConeCos - sl.outerConeCos, 0.001), 0.0, 1.0);
-        if (cone <= 0.0) {
-            continue;
-        }
-        let radiance = sl.color * sl.intensity * lightAttenuation(d, sl.range, sl.attenuation) * cone * cone;
-        let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, P, Ng, L);
-        direct += evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
     }
 
     let NdotV = max(dot(N, V), 1e-4);

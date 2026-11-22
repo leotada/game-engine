@@ -1,17 +1,21 @@
-/// POD Light component + multi-light / shadow budget constants (GFX-L).
+/// POD Light component + multi-light / clustered / shadow budget constants.
 ///
-/// UBO slots: **1** directional + **4** spot; storage buffer: **32** point.
+/// Active lights: **1** directional + up to **1024** point + **256** spot
+/// (Clustered Forward GPU culling). `LightSet` keeps compact inline arrays
+/// (`32` point / `4` spot) for stack-allocated callers; use `LightList` or
+/// `Scene3DTextured.addPointLight`/`addSpotLight` to scale above that without stack bloat.
 /// Shadow casters: **1** dir @ 2048² + up to **4** point cubemaps @ 512²/face
 /// + up to **2** spot maps @ 1024². Exceeding light limits is an error
 /// (editor/UI); exceeding `castShadows` budget warns and leaves the light lit
 /// without a shadow map.
 ///
 /// Direction / position come from the entity `Transform` (or are packed into
-/// `LightSet` for `Scene3DTextured.setLights`). IBL is a scene setting, not
+/// `LightSet`/`LightList` for `Scene3DTextured.setLights`). IBL is a scene setting, not
 /// a `Light`.
 module engine.scene.light;
 
 import engine.core.pod : isPod;
+import engine.core.podbuf : PodBuffer;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 public import engine.scene.cascades : CascadeSettings, MAX_CASCADES;
@@ -24,10 +28,15 @@ public import engine.scene.cascades : CascadeSettings, MAX_CASCADES;
 
 /// Max directional lights in the frame UBO.
 enum uint MAX_DIR_LIGHTS = 1;
-/// Max point lights in the frame point-light storage buffer.
-enum uint MAX_POINT_LIGHTS = 32;
-/// Max spot lights in the frame UBO.
-enum uint MAX_SPOT_LIGHTS = 4;
+/// Max active point lights supported by Clustered Forward storage & compute culling.
+enum uint MAX_POINT_LIGHTS = 1024;
+/// Max active spot lights supported by Clustered Forward storage & compute culling.
+enum uint MAX_SPOT_LIGHTS = 256;
+
+/// Stack-friendly inline array capacity of `LightSet`.
+enum uint LIGHTSET_MAX_POINTS = 32;
+/// Stack-friendly inline array capacity of `LightSet`.
+enum uint LIGHTSET_MAX_SPOTS = 4;
 
 /// Max directional shadow maps bound per frame (ortho PCF).
 enum uint MAX_DIR_SHADOW_CASTERS = 1;
@@ -124,13 +133,73 @@ struct GpuSpotLight {
     float angleAttenuation = 0.0f;
 }
 
-/// Per-frame light list for the textured PBR path.
+/// Compact stack-friendly per-frame light list for small scenes and backward-compatible demos.
 struct LightSet {
     GpuDirLight dir;
     bool dirEnabled = true;
-    GpuPointLight[MAX_POINT_LIGHTS] points;
+    GpuPointLight[LIGHTSET_MAX_POINTS] points;
     uint pointCount = 0;
-    GpuSpotLight[MAX_SPOT_LIGHTS] spots;
+    GpuSpotLight[LIGHTSET_MAX_SPOTS] spots;
     uint spotCount = 0;
     float shadowBias = 0.0004f;
+}
+
+/// Move-only, `@nogc` malloc-backed light container (`PodBuffer`) for scaling to
+/// `MAX_POINT_LIGHTS` (1024) and `MAX_SPOT_LIGHTS` (256) without stack bloat or GC.
+struct LightList {
+    GpuDirLight dir;
+    bool dirEnabled = true;
+    PodBuffer!GpuPointLight points;
+    PodBuffer!GpuSpotLight spots;
+    float shadowBias = 0.0004f;
+
+    @disable this(this);
+
+    void clear() nothrow @nogc {
+        dir = GpuDirLight.init;
+        dirEnabled = false;
+        points.clear();
+        spots.clear();
+        shadowBias = 0.0004f;
+    }
+
+    void addPoint(GpuPointLight p) nothrow @nogc {
+        if (points.length < MAX_POINT_LIGHTS)
+            points.put(p);
+    }
+
+    void addSpot(GpuSpotLight s) nothrow @nogc {
+        if (spots.length < MAX_SPOT_LIGHTS)
+            spots.put(s);
+    }
+
+    bool empty() const nothrow @nogc {
+        return !dirEnabled && points.length == 0 && spots.length == 0;
+    }
+
+    void release() nothrow @nogc {
+        points.release();
+        spots.release();
+    }
+}
+
+@("light.lightListNoGc") nothrow @nogc unittest {
+    LightList list;
+    list.clear();
+    assert(list.empty());
+    foreach (i; 0 .. 120) {
+        GpuPointLight p;
+        p.position = Vec3(cast(float) i, 1.0f, 0.0f);
+        p.range = 10.0f;
+        list.addPoint(p);
+    }
+    foreach (i; 0 .. 20) {
+        GpuSpotLight s;
+        s.position = Vec3(0.0f, 4.0f, cast(float) i);
+        list.addSpot(s);
+    }
+    assert(list.points.length == 120);
+    assert(list.spots.length == 20);
+    assert(!list.empty());
+    list.release();
 }

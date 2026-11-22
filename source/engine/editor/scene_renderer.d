@@ -41,7 +41,7 @@ import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
 import engine.scene.graph : Transform;
-import engine.scene.light : LightSet;
+import engine.scene.light : LightList, LightSet;
 import engine.scene.scene3d_textured : Scene3DTextured;
 import engine.ecs.store : EntityId;
 import engine.gpu.renderer : Renderer;
@@ -105,6 +105,7 @@ struct SceneRenderer {
     private EntityId[MAX_WATER_BODIES] waterEntity;
     private int[MAX_WATER_BODIES] waterId = -1;
     private MonoTime waterStart;
+    private LightList packedLights;
 
     @disable this(this);
 
@@ -242,9 +243,13 @@ struct SceneRenderer {
         syncAssets(gpu, world);
         if (waterReady) syncWater(world, camera);
 
-        LightSet lights = packLightsFromWorld(world, lightSettings);
-        if (lightSetIsEmpty(lights))
-            lights = defaultSunLight(lightSettings);
+        packLightsFromWorld(world, lightSettings, packedLights);
+        if (packedLights.empty()) {
+            auto sun = defaultSunLight(lightSettings);
+            packedLights.dirEnabled = true;
+            packedLights.dir = sun.dir;
+            packedLights.shadowBias = sun.shadowBias;
+        }
         scene.setIblIntensity(lightSettings.iblIntensity);
         scene.setFog(lightSettings.fog);
         static if (is(typeof(world.query!(Transform, ReflectionProbe)()))) {
@@ -296,7 +301,7 @@ struct SceneRenderer {
                     break;
             }
         }
-        scene.renderShadows(frame, lights);
+        scene.renderShadows(frame, packedLights);
         scene.end(frame);
     }
 
@@ -368,6 +373,7 @@ struct SceneRenderer {
         defaultMaterial.destroy();
         white.destroy();
         sampler.destroy();
+        packedLights.release();
         scene.destroy();
         ready = false;
     }

@@ -12,6 +12,7 @@ import engine.core.podbuf : PodBuffer;
 import engine.core.pod : Pod;
 import engine.editor.components : MAX_REFLECTION_PROBES, ReflectionProbe;
 import engine.gpu.buffer;
+import engine.gpu.clustered : ClusteredLightCuller, computeClusterZParams;
 import engine.gpu.context : GpuContext;
 import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
@@ -38,7 +39,8 @@ import engine.scene.camera : Camera;
 import engine.scene.atmosphere : FogSettings, packFog;
 import engine.scene.cascades : buildCascades, CascadeSet, MAX_CASCADES;
 import engine.scene.light :
-    DIR_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, LightSet,
+    DIR_SHADOW_RESOLUTION, GpuDirLight, GpuPointLight, GpuSpotLight,
+    LIGHT_SHADOW_NEAR, LightList, LightSet,
     MAX_POINT_LIGHTS, MAX_POINT_SHADOW_CASTERS,
     MAX_SPOT_LIGHTS, MAX_SPOT_SHADOW_CASTERS,
     POINT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION;
@@ -212,7 +214,6 @@ struct FrameUniforms {
     float rainIntensity = 0.0f;
     /// 0..1 sky cloud coverage.
     float cloudCoverage = 0.0f;
-    GpuSpotLightUbo[MAX_SPOT_LIGHTS] spots;
 
     // --- Cascaded shadow maps ---
     float[16][MAX_CASCADES] cascadeViewProj;
@@ -254,10 +255,17 @@ struct FrameUniforms {
     /// x = enabled (0/1), y = maxDistance (m), z = thickness (m), w = intensity.
     float[4] ssrParams = [0.0f, 16.0f, 0.35f, 1.0f];
     uint probeCount = 0;
-    uint _probePad0 = 0;
+    /// Bit 0: clustered forward culling enabled (1 = cluster lookup, 0 = linear fallback).
+    uint clusteredFlags = 1;
     uint _probePad1 = 0;
     uint _probePad2 = 0;
     GpuReflectionProbeUbo[MAX_REFLECTION_PROBES] probes;
+
+    // --- Clustered Forward ---
+    /// Active viewport rectangle in pixels `(vpX, vpY, vpW, vpH)` for tile lookup.
+    float[4] viewportRect = [0.0f, 0.0f, 1920.0f, 1080.0f];
+    /// `(zScale, zBias, nearZ, farZ)` for logarithmic cluster slice lookup.
+    float[4] clusterZParams = [0.0f, 0.0f, 0.1f, 100.0f];
 }
 static assert(FrameUniforms.sizeof == FRAME_UNIFORMS_SIZE);
 
@@ -266,8 +274,11 @@ struct Scene3DTextured {
     private Pipeline3D pipeline;
     private WGPUBuffer frameUniformBuf;
     private WGPUBuffer pointLightsBuf;
+    private WGPUBuffer spotLightsBuf;
     /// Shared water data (frame binding 10, `common/waves.wgsl`).
     private WGPUBuffer waterDataBuf;
+    private ClusteredLightCuller clusterCuller;
+    private bool clusteredEnabled = true;
     private WGPUBindGroup frameBindGroup;
     private WGPUBindGroup iblBindGroup;
     private IblEnvironment ownedIbl;
@@ -283,7 +294,15 @@ struct Scene3DTextured {
     private WGPUSampler defaultShadowSampler;
 
     private FrameUniforms frameData;
-    private GpuPointLightUbo[MAX_POINT_LIGHTS] pointLightsData;
+    private enum uint INITIAL_POINT_LIGHT_CAP = 128;
+    private enum uint INITIAL_SPOT_LIGHT_CAP = 32;
+    private PodBuffer!GpuPointLightUbo pointLightsStaging;
+    private PodBuffer!GpuSpotLightUbo spotLightsStaging;
+    private uint pointLightBufCap = 0;
+    private uint spotLightBufCap = 0;
+    private bool localLightsDirty = false;
+    private WGPUBuffer boundPointLightsBuf;
+    private WGPUBuffer boundSpotLightsBuf;
 
     private enum DEFAULT_MAX_BATCHES = 256;
     /// Initial instance capacity; a batch's buffer doubles when exceeded.
@@ -428,11 +447,22 @@ struct Scene3DTextured {
 
         s.pipeline = createTexturedPipeline3D(device, Renderer.sceneFormat());
         s.frameUniformBuf = createUniformBuffer(device, FRAME_UNIFORMS_SIZE);
-        s.pointLightsBuf = createStorageBuffer(device, MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof);
-        updateBuffer(s.queue, s.pointLightsBuf, s.pointLightsData[]);
+        s.pointLightBufCap = INITIAL_POINT_LIGHT_CAP;
+        s.spotLightBufCap = INITIAL_SPOT_LIGHT_CAP;
+        s.pointLightsBuf = createStorageBuffer(device, s.pointLightBufCap * GpuPointLightUbo.sizeof);
+        s.spotLightsBuf = createStorageBuffer(device, s.spotLightBufCap * GpuSpotLightUbo.sizeof);
+        s.pointLightsStaging.reserve(INITIAL_POINT_LIGHT_CAP);
+        s.spotLightsStaging.reserve(INITIAL_SPOT_LIGHT_CAP);
+        {
+            GpuPointLightUbo[1] zeroP;
+            updateBuffer(s.queue, s.pointLightsBuf, zeroP[]);
+            GpuSpotLightUbo[1] zeroS;
+            updateBuffer(s.queue, s.spotLightsBuf, zeroS[]);
+        }
         s.waterDataBuf = createStorageBuffer(device, WATER_DATA_SIZE);
         GpuWaterData noWater;
         updateBuffer(s.queue, s.waterDataBuf, &noWater, WATER_DATA_SIZE);
+        s.clusterCuller = ClusteredLightCuller.create(device, s.queue);
 
         s.frameData = FrameUniforms.init;
         s.frameData.viewProj = Mat4.identity().m;
@@ -569,53 +599,159 @@ struct Scene3DTextured {
         packFog(fog, frameData.fogColorDensity, frameData.fogHeight, frameData.fogSun);
     }
 
-    /// Update multi-light UBO + bind shadow maps for the next draws.
-    ///
-    /// `dirShadow` may be null (uses a fully-lit placeholder).
-    /// Point/spot lights with `castShadows` consume maps from `pointShadows` /
-    /// `spotShadows` in order; overflow warns and leaves those lights unshadowed.
-    /// A caller-owned `dirShadow` is sampled as one fixed map with
-    /// `lights.dir.viewProj` (cascades apply only to engine-owned maps, see
-    /// `renderShadows(frame, lights)`).
+    /// Enable or disable Clustered Forward GPU compute culling (true by default).
+    void setClusteredCulling(bool enabled) nothrow @nogc {
+        clusteredEnabled = enabled;
+        frameData.clusteredFlags = enabled ? 1u : 0u;
+    }
+
+    bool clusteredCullingEnabled() const nothrow @nogc { return clusteredEnabled; }
+
+    /// Append an extra unshadowed point light for this frame after `setLights`/`renderShadows`
+    /// and before `end`. Zero stack bloat and zero GC allocation.
+    void addPointLight(GpuPointLight pl) nothrow @nogc {
+        if (pointLightsStaging.length >= MAX_POINT_LIGHTS) return;
+        GpuPointLightUbo gpu;
+        gpu.position = [pl.position.x, pl.position.y, pl.position.z];
+        gpu.range = pl.range;
+        gpu.color = [pl.color.x, pl.color.y, pl.color.z];
+        gpu.intensity = pl.intensity;
+        gpu.attenuation = pl.attenuation;
+        gpu.shadowSlot = -1;
+        pointLightsStaging.put(gpu);
+        frameData.pointCount = cast(uint) pointLightsStaging.length;
+        localLightsDirty = true;
+    }
+
+    /// Append an extra unshadowed spot light for this frame after `setLights`/`renderShadows`
+    /// and before `end`. Zero stack bloat and zero GC allocation.
+    void addSpotLight(GpuSpotLight sl) nothrow @nogc {
+        if (spotLightsStaging.length >= MAX_SPOT_LIGHTS) return;
+        spotLightsStaging.put(packSpotLightUbo(sl, -1));
+        frameData.spotCount = cast(uint) spotLightsStaging.length;
+        localLightsDirty = true;
+    }
+
+    private static GpuSpotLightUbo packSpotLightUbo(ref const GpuSpotLight sl, int shadowSlot) pure nothrow @nogc {
+        immutable dir = sl.direction.normalized();
+        immutable innerRad = sl.innerConeDeg * (PI / 180.0f);
+        immutable outerRad = sl.outerConeDeg * (PI / 180.0f);
+        GpuSpotLightUbo u;
+        u.position = [sl.position.x, sl.position.y, sl.position.z];
+        u.range = sl.range;
+        u.direction = [dir.x, dir.y, dir.z];
+        u.intensity = sl.intensity;
+        u.attenuation = sl.attenuation;
+        u.angleAttenuation = sl.angleAttenuation;
+        u.color = [sl.color.x, sl.color.y, sl.color.z];
+        u.innerConeCos = cos(innerRad);
+        u.outerConeCos = cos(outerRad);
+        u.viewProj = sl.viewProj.m;
+        u.shadowSlot = shadowSlot;
+        return u;
+    }
+
+    private void ensureLocalLightStorageUploaded() @trusted {
+        bool rebuiltBuf = false;
+        if (pointLightsStaging.length > pointLightBufCap) {
+            uint newCap = pointLightBufCap > 0 ? pointLightBufCap : INITIAL_POINT_LIGHT_CAP;
+            while (newCap < pointLightsStaging.length && newCap < MAX_POINT_LIGHTS)
+                newCap *= 2;
+            if (newCap > MAX_POINT_LIGHTS) newCap = MAX_POINT_LIGHTS;
+            destroyBuffer(pointLightsBuf);
+            pointLightBufCap = newCap;
+            pointLightsBuf = createStorageBuffer(device, pointLightBufCap * GpuPointLightUbo.sizeof);
+            rebuiltBuf = true;
+        }
+        if (pointLightsStaging.length > 0) {
+            updateBuffer(queue, pointLightsBuf, pointLightsStaging[]);
+        }
+
+        if (spotLightsStaging.length > spotLightBufCap) {
+            uint newCap = spotLightBufCap > 0 ? spotLightBufCap : INITIAL_SPOT_LIGHT_CAP;
+            while (newCap < spotLightsStaging.length && newCap < MAX_SPOT_LIGHTS)
+                newCap *= 2;
+            if (newCap > MAX_SPOT_LIGHTS) newCap = MAX_SPOT_LIGHTS;
+            destroyBuffer(spotLightsBuf);
+            spotLightBufCap = newCap;
+            spotLightsBuf = createStorageBuffer(device, spotLightBufCap * GpuSpotLightUbo.sizeof);
+            rebuiltBuf = true;
+        }
+        if (spotLightsStaging.length > 0) {
+            updateBuffer(queue, spotLightsBuf, spotLightsStaging[]);
+        }
+        localLightsDirty = false;
+        if (rebuiltBuf && frameBindGroup !is null) {
+            rebuildFrameBindGroup(
+                boundShadowSampler,
+                boundShadowViews[0],
+                boundShadowViews[1], boundShadowViews[2],
+                boundShadowViews[3], boundShadowViews[4],
+                boundShadowViews[5], boundShadowViews[6],
+                boundSceneColorView, boundSceneDepthView);
+        }
+    }
+
+    /// Update multi-light UBO + storage + bind shadow maps for the next draws.
     void setLights(ref const LightSet lights,
                    scope ShadowMap* dirShadow,
                    scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                    scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
         cascadesPending = false;
-        setLightsImpl(lights, dirShadow, pointShadows, spotShadows);
+        setLightsSlices(lights.dir, lights.dirEnabled, lights.shadowBias,
+            lights.points[0 .. (lights.pointCount < lights.points.length ? lights.pointCount : lights.points.length)],
+            lights.spots[0 .. (lights.spotCount < lights.spots.length ? lights.spotCount : lights.spots.length)],
+            dirShadow, pointShadows, spotShadows);
     }
 
-    private void setLightsImpl(ref const LightSet lights,
+    /// `LightList` overload supporting up to `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS`.
+    void setLights(ref const LightList lights,
                    scope ShadowMap* dirShadow,
                    scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                    scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
-        frameData.shadowBias = lights.shadowBias;
-        frameData.dirEnabled = lights.dirEnabled ? 1 : 0;
-        debugCascades = lights.dir.debugCascades;
+        cascadesPending = false;
+        setLightsSlices(lights.dir, lights.dirEnabled, lights.shadowBias,
+            lights.points[], lights.spots[],
+            dirShadow, pointShadows, spotShadows);
+    }
+
+    private void setLightsSlices(
+        ref const GpuDirLight dirLight,
+        bool dirEnabled,
+        float shadowBias,
+        scope const(GpuPointLight)[] points,
+        scope const(GpuSpotLight)[] spots,
+        scope ShadowMap* dirShadow,
+        scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
+        scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted
+    {
+        frameData.shadowBias = shadowBias;
+        frameData.dirEnabled = dirEnabled ? 1 : 0;
+        debugCascades = dirLight.debugCascades;
         if (debugCascades) frameData.debugFlags |= 1u;
         else frameData.debugFlags &= ~1u;
 
-        if (lights.dirEnabled) {
-            immutable d = lights.dir.direction.normalized();
+        if (dirEnabled) {
+            immutable d = dirLight.direction.normalized();
             frameData.dirLight.direction = [d.x, d.y, d.z];
             frameData.dirLight.color = [
-                lights.dir.color.x, lights.dir.color.y, lights.dir.color.z
+                dirLight.color.x, dirLight.color.y, dirLight.color.z
             ];
-            frameData.dirLight.intensity = lights.dir.intensity;
-            frameData.dirLight.viewProj = lights.dir.viewProj.m;
-            immutable wantDirShadow = lights.dir.castShadows && dirShadow !is null;
+            frameData.dirLight.intensity = dirLight.intensity;
+            frameData.dirLight.viewProj = dirLight.viewProj.m;
+            immutable wantDirShadow = dirLight.castShadows && dirShadow !is null;
             frameData.dirLight.castShadows = wantDirShadow ? 1 : 0;
-            if (lights.dir.castShadows && dirShadow is null)
+            if (dirLight.castShadows && dirShadow is null)
                 warn("Directional castShadows requested but no ShadowMap provided");
         }
         applyCascadeUniforms(cascadesPending && dirShadow !is null);
 
-        immutable pc = lights.pointCount > MAX_POINT_LIGHTS
-            ? MAX_POINT_LIGHTS : lights.pointCount;
-        if (lights.pointCount > MAX_POINT_LIGHTS)
-            warn("Point light buffer overflow: ", lights.pointCount, " > ", MAX_POINT_LIGHTS);
+        immutable uint pc = points.length > MAX_POINT_LIGHTS
+            ? MAX_POINT_LIGHTS : cast(uint) points.length;
+        if (points.length > MAX_POINT_LIGHTS)
+            warn("Point light buffer overflow: ", points.length, " > ", MAX_POINT_LIGHTS);
         frameData.pointCount = pc;
-        pointLightsData = GpuPointLightUbo.init;
+        pointLightsStaging.clear();
 
         WGPUTextureView[MAX_POINT_SHADOW_CASTERS] boundPoints = [
             defaultShadowCubeView, defaultShadowCubeView,
@@ -623,64 +759,57 @@ struct Scene3DTextured {
         ];
         uint pointShadowUsed = 0;
         foreach (i; 0 .. pc) {
-            immutable pl = lights.points[i];
-            pointLightsData[i].position = [pl.position.x, pl.position.y, pl.position.z];
-            pointLightsData[i].range = pl.range;
-            pointLightsData[i].color = [pl.color.x, pl.color.y, pl.color.z];
-            pointLightsData[i].intensity = pl.intensity;
-            pointLightsData[i].attenuation = pl.attenuation;
-            pointLightsData[i].shadowSlot = -1;
-            if (!pl.castShadows) continue;
-            if (pointShadowUsed >= MAX_POINT_SHADOW_CASTERS
-                || pointShadows[pointShadowUsed] is null) {
-                warn("Point shadow caster budget exceeded (MAX_POINT_SHADOW_CASTERS=",
-                     MAX_POINT_SHADOW_CASTERS, "); light ", i, " stays unshadowed");
-                continue;
+            immutable pl = points[i];
+            GpuPointLightUbo gpu;
+            gpu.position = [pl.position.x, pl.position.y, pl.position.z];
+            gpu.range = pl.range;
+            gpu.color = [pl.color.x, pl.color.y, pl.color.z];
+            gpu.intensity = pl.intensity;
+            gpu.attenuation = pl.attenuation;
+            gpu.shadowSlot = -1;
+            if (pl.castShadows) {
+                if (pointShadowUsed >= MAX_POINT_SHADOW_CASTERS
+                    || pointShadows[pointShadowUsed] is null) {
+                    warn("Point shadow caster budget exceeded (MAX_POINT_SHADOW_CASTERS=",
+                         MAX_POINT_SHADOW_CASTERS, "); light ", i, " stays unshadowed");
+                } else {
+                    gpu.shadowSlot = cast(int) pointShadowUsed;
+                    boundPoints[pointShadowUsed] = pointShadows[pointShadowUsed].cubeView;
+                    pointShadowUsed++;
+                }
             }
-            pointLightsData[i].shadowSlot = cast(int) pointShadowUsed;
-            boundPoints[pointShadowUsed] = pointShadows[pointShadowUsed].cubeView;
-            pointShadowUsed++;
+            pointLightsStaging.put(gpu);
         }
-        updateBuffer(queue, pointLightsBuf, pointLightsData[]);
 
-        immutable sc = lights.spotCount > MAX_SPOT_LIGHTS
-            ? MAX_SPOT_LIGHTS : lights.spotCount;
-        if (lights.spotCount > MAX_SPOT_LIGHTS)
-            warn("Spot light UBO overflow: ", lights.spotCount, " > ", MAX_SPOT_LIGHTS);
+        immutable uint sc = spots.length > MAX_SPOT_LIGHTS
+            ? MAX_SPOT_LIGHTS : cast(uint) spots.length;
+        if (spots.length > MAX_SPOT_LIGHTS)
+            warn("Spot light buffer overflow: ", spots.length, " > ", MAX_SPOT_LIGHTS);
         frameData.spotCount = sc;
-        frameData.spots = GpuSpotLightUbo.init;
+        spotLightsStaging.clear();
 
         WGPUTextureView[MAX_SPOT_SHADOW_CASTERS] boundSpots = [
             defaultShadow2dView, defaultShadow2dView,
         ];
         uint spotShadowUsed = 0;
         foreach (i; 0 .. sc) {
-            immutable sl = lights.spots[i];
-            immutable dir = sl.direction.normalized();
-            immutable innerRad = sl.innerConeDeg * (PI / 180.0f);
-            immutable outerRad = sl.outerConeDeg * (PI / 180.0f);
-            frameData.spots[i].position = [sl.position.x, sl.position.y, sl.position.z];
-            frameData.spots[i].range = sl.range;
-            frameData.spots[i].direction = [dir.x, dir.y, dir.z];
-            frameData.spots[i].intensity = sl.intensity;
-            frameData.spots[i].attenuation = sl.attenuation;
-            frameData.spots[i].angleAttenuation = sl.angleAttenuation;
-            frameData.spots[i].color = [sl.color.x, sl.color.y, sl.color.z];
-            frameData.spots[i].innerConeCos = cos(innerRad);
-            frameData.spots[i].outerConeCos = cos(outerRad);
-            frameData.spots[i].viewProj = sl.viewProj.m;
-            frameData.spots[i].shadowSlot = -1;
-            if (!sl.castShadows) continue;
-            if (spotShadowUsed >= MAX_SPOT_SHADOW_CASTERS
-                || spotShadows[spotShadowUsed] is null) {
-                warn("Spot shadow caster budget exceeded (MAX_SPOT_SHADOW_CASTERS=",
-                     MAX_SPOT_SHADOW_CASTERS, "); light ", i, " stays unshadowed");
-                continue;
+            immutable sl = spots[i];
+            int sSlot = -1;
+            if (sl.castShadows) {
+                if (spotShadowUsed >= MAX_SPOT_SHADOW_CASTERS
+                    || spotShadows[spotShadowUsed] is null) {
+                    warn("Spot shadow caster budget exceeded (MAX_SPOT_SHADOW_CASTERS=",
+                         MAX_SPOT_SHADOW_CASTERS, "); light ", i, " stays unshadowed");
+                } else {
+                    sSlot = cast(int) spotShadowUsed;
+                    boundSpots[spotShadowUsed] = spotShadows[spotShadowUsed].depthView;
+                    spotShadowUsed++;
+                }
             }
-            frameData.spots[i].shadowSlot = cast(int) spotShadowUsed;
-            boundSpots[spotShadowUsed] = spotShadows[spotShadowUsed].depthView;
-            spotShadowUsed++;
+            spotLightsStaging.put(packSpotLightUbo(sl, sSlot));
         }
+
+        ensureLocalLightStorageUploaded();
 
         auto dirView = (dirShadow !is null) ? dirShadow.arrayView : defaultShadowArrayView;
         auto sampler = defaultShadowSampler;
@@ -926,6 +1055,9 @@ struct Scene3DTextured {
         frameData.cameraNear = camera.near;
         frameData.cameraFar = camera.far;
         frameData.viewportSize = [lodScreenHeight * camera.aspect, lodScreenHeight];
+        frameData.viewportRect = [0.0f, 0.0f, frameData.viewportSize[0], frameData.viewportSize[1]];
+        frameData.clusterZParams = computeClusterZParams(camera.near, camera.far);
+        frameData.clusteredFlags = clusteredEnabled ? 1u : 0u;
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
 
         batchCount = 0;
@@ -959,12 +1091,28 @@ struct Scene3DTextured {
     /// `position`, `direction`, `outerConeDeg`, and `range`.
     /// Must be called after `begin` / `draw*` and before `end`.
     void renderShadows(ref FrameContext frame, ref const LightSet lights) @trusted {
-        LightSet resolved = resolveLightsForShadows(lights);
+        immutable pc = lights.pointCount < lights.points.length ? lights.pointCount : cast(uint) lights.points.length;
+        immutable sc = lights.spotCount < lights.spots.length ? lights.spotCount : cast(uint) lights.spots.length;
+        renderShadowsAuto(frame, lights.dir, lights.dirEnabled, lights.shadowBias,
+            lights.points[0 .. pc], lights.spots[0 .. sc]);
+    }
 
+    /// `LightList` overload scaling shadows + clustered active lights up to `MAX_POINT_LIGHTS`/`MAX_SPOT_LIGHTS`.
+    void renderShadows(ref FrameContext frame, ref const LightList lights) @trusted {
+        renderShadowsAuto(frame, lights.dir, lights.dirEnabled, lights.shadowBias,
+            lights.points[], lights.spots[]);
+    }
+
+    private void renderShadowsAuto(ref FrameContext frame,
+                                   ref const GpuDirLight dirLight,
+                                   bool dirEnabled,
+                                   float shadowBias,
+                                   scope const(GpuPointLight)[] points,
+                                   scope const(GpuSpotLight)[] spots) @trusted {
         ShadowMap* dirPtr = null;
         bool cascaded = false;
-        if (resolved.dirEnabled && resolved.dir.castShadows) {
-            immutable cs = resolved.dir.cascades;
+        if (dirEnabled && dirLight.castShadows) {
+            immutable cs = dirLight.cascades;
             cascaded = cs.count > 0;
             immutable uint layers = cascaded ? (cs.count > MAX_CASCADES ? MAX_CASCADES : cs.count) : 1;
             immutable uint res = cascaded && cs.resolution ? cs.resolution : DIR_SHADOW_RESOLUTION;
@@ -978,23 +1126,24 @@ struct Scene3DTextured {
             }
             dirPtr = &ownedDirShadow;
             if (cascaded) {
-                cascadeSet = buildCascades(frameCamera, resolved.dir.direction, cs);
+                cascadeSet = buildCascades(frameCamera, dirLight.direction, cs);
                 cascadeBlend = cs.blendFraction;
             }
         }
 
         PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointPtrs;
         uint pUsed = 0;
-        foreach (i; 0 .. resolved.pointCount < MAX_POINT_LIGHTS ? resolved.pointCount : MAX_POINT_LIGHTS) {
-            if (!resolved.points[i].castShadows) continue;
+        immutable uint pc = points.length > MAX_POINT_LIGHTS ? MAX_POINT_LIGHTS : cast(uint) points.length;
+        foreach (i; 0 .. pc) {
+            if (!points[i].castShadows) continue;
             if (pUsed >= MAX_POINT_SHADOW_CASTERS) break;
             if (!hasOwnedPointShadow[pUsed]) {
-                immutable farP = resolved.points[i].range > LIGHT_SHADOW_NEAR ? resolved.points[i].range : 25.0f;
+                immutable farP = points[i].range > LIGHT_SHADOW_NEAR ? points[i].range : 25.0f;
                 ownedPointShadows[pUsed] = PointShadowMap.createForDevice(
                     device, POINT_SHADOW_RESOLUTION, LIGHT_SHADOW_NEAR, farP);
                 hasOwnedPointShadow[pUsed] = true;
-            } else if (resolved.points[i].range > LIGHT_SHADOW_NEAR) {
-                ownedPointShadows[pUsed].farPlane = resolved.points[i].range;
+            } else if (points[i].range > LIGHT_SHADOW_NEAR) {
+                ownedPointShadows[pUsed].farPlane = points[i].range;
             }
             pointPtrs[pUsed] = &ownedPointShadows[pUsed];
             pUsed++;
@@ -1002,8 +1151,9 @@ struct Scene3DTextured {
 
         SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotPtrs;
         uint sUsed = 0;
-        foreach (i; 0 .. resolved.spotCount < MAX_SPOT_LIGHTS ? resolved.spotCount : MAX_SPOT_LIGHTS) {
-            if (!resolved.spots[i].castShadows) continue;
+        immutable uint sc = spots.length > MAX_SPOT_LIGHTS ? MAX_SPOT_LIGHTS : cast(uint) spots.length;
+        foreach (i; 0 .. sc) {
+            if (!spots[i].castShadows) continue;
             if (sUsed >= MAX_SPOT_SHADOW_CASTERS) break;
             if (!hasOwnedSpotShadow[sUsed]) {
                 ownedSpotShadows[sUsed] = SpotShadowMap.createForDevice(device, SPOT_SHADOW_RESOLUTION);
@@ -1013,7 +1163,8 @@ struct Scene3DTextured {
             sUsed++;
         }
 
-        renderShadowsImpl(frame, resolved, dirPtr, pointPtrs, spotPtrs, cascaded);
+        renderShadowsImpl(frame, dirLight, dirEnabled, shadowBias, points, spots,
+            dirPtr, pointPtrs, spotPtrs, cascaded);
     }
 
     /// Automatic batch shadow rendering using caller-provided shadow maps.
@@ -1023,32 +1174,59 @@ struct Scene3DTextured {
                        scope ShadowMap* dirShadow,
                        scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                        scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows) @trusted {
-        renderShadowsImpl(frame, lights, dirShadow, pointShadows, spotShadows, false);
+        immutable pc = lights.pointCount < lights.points.length ? lights.pointCount : cast(uint) lights.points.length;
+        immutable sc = lights.spotCount < lights.spots.length ? lights.spotCount : cast(uint) lights.spots.length;
+        renderShadowsImpl(frame, lights.dir, lights.dirEnabled, lights.shadowBias,
+            lights.points[0 .. pc], lights.spots[0 .. sc],
+            dirShadow, pointShadows, spotShadows, false);
+    }
+
+    private static Mat4 resolvedSpotVP(ref const GpuSpotLight sl) {
+        if (!sl.castShadows || sl.viewProj.m != Mat4.init.m)
+            return sl.viewProj;
+        immutable farP = sl.range > LIGHT_SHADOW_NEAR ? sl.range : 25.0f;
+        return spotLightVPFromCone(sl.position, sl.direction, sl.outerConeDeg, LIGHT_SHADOW_NEAR, farP);
     }
 
     private void renderShadowsImpl(ref FrameContext frame,
-                       ref const LightSet lights,
+                       ref const GpuDirLight dirLight,
+                       bool dirEnabled,
+                       float shadowBias,
+                       scope const(GpuPointLight)[] points,
+                       scope const(GpuSpotLight)[] spots,
                        scope ShadowMap* dirShadow,
                        scope PointShadowMap*[MAX_POINT_SHADOW_CASTERS] pointShadows,
                        scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows,
                        bool cascaded) @trusted {
         if (!frame.valid || frame.postResolved) return;
-        LightSet resolved = resolveLightsForShadows(lights);
 
         cascadesPending = cascaded && dirShadow !is null;
-        setLightsImpl(resolved, dirShadow, pointShadows, spotShadows);
+        setLightsSlices(dirLight, dirEnabled, shadowBias, points, spots, dirShadow, pointShadows, spotShadows);
+        // Resolve spot projection matrices for shadow-casting spots without copying large arrays.
+        bool fixedSpotVp = false;
+        foreach (i; 0 .. frameData.spotCount) {
+            if (!spots[i].castShadows) continue;
+            immutable vp = resolvedSpotVP(spots[i]);
+            if (vp.m != spotLightsStaging[i].viewProj) {
+                spotLightsStaging[i].viewProj = vp.m;
+                fixedSpotVp = true;
+            }
+        }
+        if (fixedSpotVp && frameData.spotCount > 0) {
+            updateBuffer(queue, spotLightsBuf, spotLightsStaging[]);
+        }
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
         immutable uint cascadeCount = cascadesPending ? cascadeSet.count : 0;
 
-        bool anyCast = (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null);
+        bool anyCast = (dirEnabled && dirLight.castShadows && dirShadow !is null);
         if (!anyCast) {
             foreach (i; 0 .. frameData.pointCount) {
-                if (pointLightsData[i].shadowSlot >= 0) { anyCast = true; break; }
+                if (pointLightsStaging[i].shadowSlot >= 0) { anyCast = true; break; }
             }
         }
         if (!anyCast) {
             foreach (i; 0 .. frameData.spotCount) {
-                if (frameData.spots[i].shadowSlot >= 0) { anyCast = true; break; }
+                if (spotLightsStaging[i].shadowSlot >= 0) { anyCast = true; break; }
             }
         }
         if (!anyCast) return;
@@ -1058,10 +1236,10 @@ struct Scene3DTextured {
         // Fixed directional map: cull casters through the batch partition.
         // Cascades cull per view through the caster lists, like point / spot views.
         Frustum dirFrustum;
-        immutable bool cullDir = resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null
+        immutable bool cullDir = dirEnabled && dirLight.castShadows && dirShadow !is null
             && cascadeCount == 0;
         if (cullDir)
-            dirFrustum = Frustum.fromViewProj(resolved.dir.viewProj);
+            dirFrustum = Frustum.fromViewProj(dirLight.viewProj);
         uint casterBatches = 0;
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
@@ -1080,15 +1258,15 @@ struct Scene3DTextured {
         if (cascadeCount > 0) {
             foreach (c; 0 .. cascadeCount) storeVp(c, cascadeSet.viewProj[c].m);
             maxSlotUsed = cascadeCount;
-        } else if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
-            storeVp(0, resolved.dir.viewProj.m);
+        } else if (dirEnabled && dirLight.castShadows && dirShadow !is null) {
+            storeVp(0, dirLight.viewProj.m);
             maxSlotUsed = 1;
         }
         foreach (i; 0 .. frameData.pointCount) {
-            immutable int slot = pointLightsData[i].shadowSlot;
+            immutable int slot = pointLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
             immutable vps = pointLightFaceVPs(
-                resolved.points[i].position,
+                points[i].position,
                 pointShadows[slot].nearPlane,
                 pointShadows[slot].farPlane);
             foreach (face; 0 .. 6) {
@@ -1098,10 +1276,10 @@ struct Scene3DTextured {
             }
         }
         foreach (i; 0 .. frameData.spotCount) {
-            immutable int slot = frameData.spots[i].shadowSlot;
+            immutable int slot = spotLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
             immutable uSlot = DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot;
-            storeVp(uSlot, resolved.spots[i].viewProj.m);
+            storeVp(uSlot, spotLightsStaging[i].viewProj);
             if (uSlot + 1 > maxSlotUsed) maxSlotUsed = uSlot + 1;
         }
 
@@ -1121,17 +1299,17 @@ struct Scene3DTextured {
                 gatherLocalCasters(slots[0 .. cascadeCount], Vec3(0, 0, 0), 0);
             }
             foreach (i; 0 .. frameData.pointCount) {
-                immutable int slot = pointLightsData[i].shadowSlot;
+                immutable int slot = pointLightsStaging[i].shadowSlot;
                 if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
                 uint[6] slots;
                 foreach (face; 0 .. 6) slots[face] = DIR_SLOTS + cast(uint) slot * 6 + face;
-                gatherLocalCasters(slots[], resolved.points[i].position, pointShadows[slot].farPlane);
+                gatherLocalCasters(slots[], points[i].position, pointShadows[slot].farPlane);
             }
             foreach (i; 0 .. frameData.spotCount) {
-                immutable int slot = frameData.spots[i].shadowSlot;
+                immutable int slot = spotLightsStaging[i].shadowSlot;
                 if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
                 uint[1] slots = [DIR_SLOTS + MAX_POINT_SHADOW_CASTERS * 6 + cast(uint) slot];
-                gatherLocalCasters(slots[], resolved.spots[i].position, resolved.spots[i].range);
+                gatherLocalCasters(slots[], spots[i].position, spots[i].range);
             }
             uploadCasterStaging();
         }
@@ -1144,11 +1322,11 @@ struct Scene3DTextured {
             foreach (c; 0 .. cascadeCount)
                 encodeShadowView(frame.encoder, dirShadow.layerViews[c], c, anyGeometry,
                                  ShadowViewKind.cascade);
-        } else if (resolved.dirEnabled && resolved.dir.castShadows && dirShadow !is null) {
+        } else if (dirEnabled && dirLight.castShadows && dirShadow !is null) {
             encodeShadowView(frame.encoder, dirShadow.depthView, 0, anyGeometry, ShadowViewKind.fixedDir);
         }
         foreach (i; 0 .. frameData.pointCount) {
-            immutable int slot = pointLightsData[i].shadowSlot;
+            immutable int slot = pointLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
             foreach (face; 0 .. 6) {
                 encodeShadowView(
@@ -1159,7 +1337,7 @@ struct Scene3DTextured {
             }
         }
         foreach (i; 0 .. frameData.spotCount) {
-            immutable int slot = frameData.spots[i].shadowSlot;
+            immutable int slot = spotLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
             encodeShadowView(
                 frame.encoder,
@@ -1180,19 +1358,10 @@ struct Scene3DTextured {
 
     private static LightSet resolveLightsForShadows(ref const LightSet lights) {
         LightSet resolved = lights;
-        immutable sc = resolved.spotCount < MAX_SPOT_LIGHTS ? resolved.spotCount : MAX_SPOT_LIGHTS;
+        immutable sc = resolved.spotCount < resolved.spots.length
+            ? resolved.spotCount : cast(uint) resolved.spots.length;
         foreach (i; 0 .. sc) {
-            if (!resolved.spots[i].castShadows) continue;
-            if (resolved.spots[i].viewProj.m == Mat4.init.m) {
-                immutable farP = resolved.spots[i].range > LIGHT_SHADOW_NEAR
-                    ? resolved.spots[i].range : 25.0f;
-                resolved.spots[i].viewProj = spotLightVPFromCone(
-                    resolved.spots[i].position,
-                    resolved.spots[i].direction,
-                    resolved.spots[i].outerConeDeg,
-                    LIGHT_SHADOW_NEAR,
-                    farP);
-            }
+            resolved.spots[i].viewProj = resolvedSpotVP(resolved.spots[i]);
         }
         return resolved;
     }
@@ -1481,6 +1650,25 @@ struct Scene3DTextured {
         import std.algorithm.sorting : sort;
 
         if (!frame.valid) return;
+
+        immutable float[4] vpRect = frame.activeViewportRect();
+        frameData.viewportRect = vpRect;
+        frameData.clusterZParams = computeClusterZParams(frameCamera.near, frameCamera.far);
+        frameData.clusteredFlags = clusteredEnabled ? 1u : 0u;
+        if (localLightsDirty) {
+            ensureLocalLightStorageUploaded();
+        }
+        updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
+
+        if (clusteredEnabled && (frameData.pointCount > 0 || frameData.spotCount > 0)) {
+            frame.suspendScenePass();
+            clusterCuller.encode(
+                frame.encoder, queue,
+                pointLightsBuf, pointLightBufCap * GpuPointLightUbo.sizeof,
+                spotLightsBuf, spotLightBufCap * GpuSpotLightUbo.sizeof,
+                frameCamera, frameData.pointCount, frameData.spotCount);
+            frame.resumeScenePass();
+        }
 
         ensureSkinPalettesUploaded();
         setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);
@@ -1800,6 +1988,11 @@ struct Scene3DTextured {
         destroyBuffer(frameUniformBuf);
         destroyBuffer(pointLightsBuf);
         pointLightsBuf = null;
+        destroyBuffer(spotLightsBuf);
+        spotLightsBuf = null;
+        pointLightsStaging.release();
+        spotLightsStaging.release();
+        clusterCuller.destroy();
         destroyBuffer(waterDataBuf);
         waterDataBuf = null;
         if (ownsIbl) ownedIbl.destroy();
@@ -1976,12 +2169,15 @@ struct Scene3DTextured {
         WGPUTextureView resolvedSceneDepth = sceneDepthView !is null ? sceneDepthView : defaultShadow2dView;
         if (frameBindGroup !is null && shadowSampler is boundShadowSampler
             && views == boundShadowViews && resolvedSceneColor is boundSceneColorView
-            && resolvedSceneDepth is boundSceneDepthView)
+            && resolvedSceneDepth is boundSceneDepthView
+            && pointLightsBuf is boundPointLightsBuf && spotLightsBuf is boundSpotLightsBuf)
             return;
         boundShadowSampler = shadowSampler;
         boundShadowViews = views;
         boundSceneColorView = resolvedSceneColor;
         boundSceneDepthView = resolvedSceneDepth;
+        boundPointLightsBuf = pointLightsBuf;
+        boundSpotLightsBuf = spotLightsBuf;
         if (frameBindGroup !is null) {
             wgpuBindGroupRelease(frameBindGroup);
             frameBindGroup = null;
@@ -2010,7 +2206,7 @@ struct Scene3DTextured {
         entries[9].binding = 9;
         entries[9].buffer = pointLightsBuf;
         entries[9].offset = 0;
-        entries[9].size = MAX_POINT_LIGHTS * GpuPointLightUbo.sizeof;
+        entries[9].size = pointLightBufCap * GpuPointLightUbo.sizeof;
         entries[10].binding = 10;
         entries[10].buffer = waterDataBuf;
         entries[10].offset = 0;
@@ -2019,6 +2215,18 @@ struct Scene3DTextured {
         entries[11].textureView = resolvedSceneColor;
         entries[12].binding = 12;
         entries[12].textureView = resolvedSceneDepth;
+        entries[13].binding = 13;
+        entries[13].buffer = spotLightsBuf;
+        entries[13].offset = 0;
+        entries[13].size = spotLightBufCap * GpuSpotLightUbo.sizeof;
+        entries[14].binding = 14;
+        entries[14].buffer = clusterCuller.gridBuffer();
+        entries[14].offset = 0;
+        entries[14].size = ClusteredLightCuller.gridBufferSize();
+        entries[15].binding = 15;
+        entries[15].buffer = clusterCuller.indicesBuffer();
+        entries[15].offset = 0;
+        entries[15].size = ClusteredLightCuller.indicesBufferSize();
 
         WGPUBindGroupDescriptor desc;
         desc.layout = pipeline.frameBindGroupLayout;

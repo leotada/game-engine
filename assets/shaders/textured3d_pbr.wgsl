@@ -460,6 +460,45 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+fn evalPointOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, pl: PointLight) -> vec3<f32> {
+    let toLight = pl.position - worldPos;
+    let dist = length(toLight);
+    if (dist >= pl.range || dist <= 1e-6) {
+        return vec3<f32>(0.0);
+    }
+    let L = toLight / dist;
+    let atten = lightAttenuation(dist, pl.range, pl.attenuation);
+    let radiance = pl.color * pl.intensity * atten;
+    let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, worldPos, N, pl.range);
+    var pIn = baseIn;
+    pIn.frontShadow = shadow;
+    pIn.backShadow = shadow;
+    return evalOpenPbrDirect(pIn, L, radiance);
+}
+
+fn evalSpotOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, sl: SpotLight) -> vec3<f32> {
+    let toLight = sl.position - worldPos;
+    let dist = length(toLight);
+    if (dist >= sl.range || dist <= 1e-6) {
+        return vec3<f32>(0.0);
+    }
+    let L = toLight / dist;
+    let theta = dot(normalize(-sl.direction), L);
+    let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
+    let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
+    if (cone <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+    let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
+    let radiance = sl.color * sl.intensity * atten;
+    let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, worldPos, N, L);
+    var pIn = baseIn;
+    pIn.frontShadow = shadow;
+    pIn.backShadow = shadow;
+    return evalOpenPbrDirect(pIn, L, radiance);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let albedoSample = textureSample(albedoMap, texSampler, in.uv);
@@ -748,49 +787,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         direct += radiance * waterCausticsAt(in.worldPos, N, L, shadow) * baseColor;
     }
 
-    // --- Point lights ---
-    let pc = min(frame.pointCount, arrayLength(&pointLights));
-    for (var i = 0u; i < pc; i++) {
-        let pl = pointLights[i];
-        let toLight = pl.position - in.worldPos;
-        let dist = length(toLight);
-        if (dist >= pl.range) {
-            continue;
+    // --- Point & Spot lights (Clustered Forward or linear fallback) ---
+    var evalIn = pbrIn;
+    evalIn.thickness = max(transThick, 0.05);
+    if ((frame.pointCount | frame.spotCount) != 0u) {
+        let pMax = arrayLength(&pointLights);
+        let sMax = arrayLength(&spotLights);
+        if ((frame.clusteredFlags & 1u) != 0u) {
+            let rec = clusterGrid[clusterIndexAt(in.worldPos, in.clipPos.xy)];
+            for (var k = 0u; k < rec.pointCount; k++) {
+                let idx = clusterLightIndices[rec.offset + k];
+                if (idx < pMax) {
+                    direct += evalPointOpenPbr(evalIn, in.worldPos, N, pointLights[idx]);
+                }
+            }
+            for (var k = 0u; k < rec.spotCount; k++) {
+                let idx = clusterLightIndices[rec.offset + rec.pointCount + k];
+                if (idx < sMax) {
+                    direct += evalSpotOpenPbr(evalIn, in.worldPos, N, spotLights[idx]);
+                }
+            }
+        } else {
+            let pc = min(frame.pointCount, pMax);
+            for (var i = 0u; i < pc; i++) {
+                direct += evalPointOpenPbr(evalIn, in.worldPos, N, pointLights[i]);
+            }
+            let sc = min(frame.spotCount, sMax);
+            for (var i = 0u; i < sc; i++) {
+                direct += evalSpotOpenPbr(evalIn, in.worldPos, N, spotLights[i]);
+            }
         }
-        let L = toLight / dist;
-        let atten = lightAttenuation(dist, pl.range, pl.attenuation);
-        let radiance = pl.color * pl.intensity * atten;
-        let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
-        pbrIn.frontShadow = shadow;
-        pbrIn.backShadow = shadow;
-        pbrIn.thickness = max(transThick, 0.05);
-        direct += evalOpenPbrDirect(pbrIn, L, radiance);
-    }
-
-    // --- Spot lights ---
-    let sc = min(frame.spotCount, 4u);
-    for (var i = 0u; i < sc; i++) {
-        let sl = frame.spots[i];
-        let toLight = sl.position - in.worldPos;
-        let dist = length(toLight);
-        if (dist >= sl.range) {
-            continue;
-        }
-        let L = toLight / dist;
-        let theta = dot(normalize(-sl.direction), L);
-        let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
-        let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
-        if (cone <= 0.0) {
-            continue;
-        }
-        let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
-        let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
-        let radiance = sl.color * sl.intensity * atten;
-        let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
-        pbrIn.frontShadow = shadow;
-        pbrIn.backShadow = shadow;
-        pbrIn.thickness = max(transThick, 0.05);
-        direct += evalOpenPbrDirect(pbrIn, L, radiance);
     }
 
     // --- IBL ---

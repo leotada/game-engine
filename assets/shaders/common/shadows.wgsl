@@ -1,35 +1,4 @@
-struct DirLight {
-    direction: vec3<f32>,
-    intensity: f32,
-    color: vec3<f32>,
-    castShadows: u32,
-    viewProj: mat4x4<f32>,
-};
-
-struct PointLight {
-    position: vec3<f32>,
-    range: f32,
-    color: vec3<f32>,
-    intensity: f32,
-    shadowSlot: i32,
-    attenuation: f32,
-    _pad1: f32,
-    _pad2: f32,
-};
-
-struct SpotLight {
-    position: vec3<f32>,
-    range: f32,
-    direction: vec3<f32>,
-    intensity: f32,
-    color: vec3<f32>,
-    innerConeCos: f32,
-    outerConeCos: f32,
-    shadowSlot: i32,
-    attenuation: f32,
-    angleAttenuation: f32,
-    viewProj: mat4x4<f32>,
-};
+#include "light_types.wgsl"
 
 struct FrameUniforms {
     viewProj: mat4x4<f32>,
@@ -47,7 +16,6 @@ struct FrameUniforms {
     globalWetness: f32,
     rainIntensity: f32,
     cloudCoverage: f32,
-    spots: array<SpotLight, 4>,
 
     // Cascaded shadow maps.
     cascadeViewProj: array<mat4x4<f32>, 4>,
@@ -78,10 +46,12 @@ struct FrameUniforms {
     skySunColor: vec4<f32>,
     ssrParams: vec4<f32>,
     probeCount: u32,
-    _probePad0: u32,
+    clusteredFlags: u32,
     _probePad1: u32,
     _probePad2: u32,
     probes: array<ReflectionProbeData, 4>,
+    viewportRect: vec4<f32>,
+    clusterZParams: vec4<f32>,
 };
 
 struct ReflectionProbeData {
@@ -102,6 +72,24 @@ struct ReflectionProbeData {
 @group(0) @binding(9) var<storage, read> pointLights: array<PointLight>;
 @group(0) @binding(11) var opaqueSceneColorMap: texture_2d<f32>;
 @group(0) @binding(12) var opaqueSceneDepthMap: texture_depth_2d;
+@group(0) @binding(13) var<storage, read> spotLights: array<SpotLight>;
+@group(0) @binding(14) var<storage, read> clusterGrid: array<ClusterRecord>;
+@group(0) @binding(15) var<storage, read> clusterLightIndices: array<u32>;
+
+/// Resolve the 3D frustum cluster index for world position + framebuffer pixel coordinates.
+fn clusterIndexAt(worldPos: vec3<f32>, screenXY: vec2<f32>) -> u32 {
+    let uv = clamp(
+        (screenXY - frame.viewportRect.xy) / max(frame.viewportRect.zw, vec2<f32>(1.0)),
+        vec2<f32>(0.0),
+        vec2<f32>(0.999999)
+    );
+    let tx = min(u32(uv.x * f32(CLUSTER_GRID_X)), CLUSTER_GRID_X - 1u);
+    let ty = min(u32(uv.y * f32(CLUSTER_GRID_Y)), CLUSTER_GRID_Y - 1u);
+    let viewDepth = max(dot(worldPos - frame.cameraPos, frame.cameraForward), max(frame.clusterZParams.z, 0.001));
+    let sliceF = floor(log(viewDepth) * frame.clusterZParams.x + frame.clusterZParams.y);
+    let tz = u32(clamp(sliceF, 0.0, f32(CLUSTER_GRID_Z - 1u)));
+    return tx + ty * CLUSTER_GRID_X + tz * (CLUSTER_GRID_X * CLUSTER_GRID_Y);
+}
 
 /// 3×3 PCF on one directional shadow layer (explicit LOD: valid in
 /// non-uniform control flow).
@@ -236,7 +224,7 @@ fn cubeRefDepth(fragToLight: vec3<f32>, nearP: f32, farP: f32) -> f32 {
 }
 
 fn sampleCubeCompare(tex: texture_depth_cube, dir: vec3<f32>, refDepth: f32) -> f32 {
-    return textureSampleCompare(tex, shadowSampler, dir, refDepth);
+    return textureSampleCompareLevel(tex, shadowSampler, dir, refDepth);
 }
 
 fn samplePointShadowPCF(slot: i32, lightPos: vec3<f32>, worldPos: vec3<f32>,
@@ -295,7 +283,7 @@ fn sampleSpotMapPCF(tex: texture_depth_2d, lightVP: mat4x4<f32>,
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let offset = vec2<f32>(f32(x), f32(y)) * texel;
-            shadow += textureSampleCompare(tex, shadowSampler, uv + offset, depth - bias);
+            shadow += textureSampleCompareLevel(tex, shadowSampler, uv + offset, depth - bias);
         }
     }
     return mix(1.0, shadow / 9.0,

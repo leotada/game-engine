@@ -385,18 +385,20 @@ PipelineText createPipelineText(WGPUDevice device, WGPUTextureFormat surfaceForm
     return result;
 }
 
-/// Frame uniform size for textured PBR pipeline (multi-light UBO).
-/// Layout must match `shadows.wgsl` FrameUniforms (1504 bytes):
+/// Frame uniform size for textured PBR pipeline.
+/// Layout must match `shadows.wgsl` FrameUniforms (1024 bytes):
 /// viewProj(64) + cameraPos/bias(16) + DirLight(96) + counts/time(16)
-/// + iblIntensity/wetness/rain/clouds(16) + SpotLight[4](512)
-/// + cascades(352) + camera(96) + atmosphere/sky(112)
-/// + ssrParams(16) + probeCount/pad(16) + ReflectionProbeData[4](192).
-/// Point lights live in a separate storage buffer at @binding(9).
-enum FRAME_UNIFORMS_SIZE = 1504;
+/// + iblIntensity/wetness/rain/clouds(16) + cascades(352) + camera(96)
+/// + atmosphere/sky(112) + ssrParams(16) + probeCount/clusteredFlags/pad(16)
+/// + ReflectionProbeData[4](192) + viewportRect(16) + clusterZParams(16).
+/// Point lights (@binding(9)), spot lights (@binding(13)), and cluster
+/// culling tables (@binding(14..15)) live in read-only storage buffers.
+enum FRAME_UNIFORMS_SIZE = 1024;
 /// Entries in the frame bind group (@group(0)): uniforms, shadow sampler,
 /// 7 shadow maps, point lights (9), shared water data (10),
-/// opaque scene color pyramid (11), and opaque scene depth (12).
-enum uint FRAME_BINDING_COUNT = 13;
+/// opaque scene color pyramid (11), opaque scene depth (12),
+/// spot lights (13), cluster grid (14), and cluster light indices (15).
+enum uint FRAME_BINDING_COUNT = 16;
 /// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7/8 block, 13 × vec4<f32> = 208 bytes).
 enum MATERIAL_PARAMS_SIZE = 208;
 /// Entries in the material bind group (@group(1)): params UBO, sampler,
@@ -500,6 +502,21 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     frameEntries[12].visibility = WGPUShaderStage.fragment;
     frameEntries[12].texture.sampleType = WGPUTextureSampleType.depth;
     frameEntries[12].texture.viewDimension = WGPUTextureViewDimension.dim2D;
+
+    frameEntries[13].binding = 13;
+    frameEntries[13].visibility = WGPUShaderStage.fragment;
+    frameEntries[13].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    frameEntries[13].buffer.minBindingSize = 128; // sizeof(SpotLight)
+
+    frameEntries[14].binding = 14;
+    frameEntries[14].visibility = WGPUShaderStage.fragment;
+    frameEntries[14].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    frameEntries[14].buffer.minBindingSize = 16; // sizeof(ClusterRecord)
+
+    frameEntries[15].binding = 15;
+    frameEntries[15].visibility = WGPUShaderStage.fragment;
+    frameEntries[15].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+    frameEntries[15].buffer.minBindingSize = 4; // u32 light index
 
     WGPUBindGroupLayoutDescriptor frameBglDesc;
     frameBglDesc.entryCount = FRAME_BINDING_COUNT;

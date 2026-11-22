@@ -14,7 +14,7 @@ import engine.math.vec : Vec3;
 import engine.scene.atmosphere : FogSettings;
 import engine.scene.graph : Transform;
 import engine.scene.light :
-    GpuDirLight, GpuPointLight, GpuSpotLight, Light, LightSet, LightType,
+    GpuDirLight, GpuPointLight, GpuSpotLight, Light, LightList, LightSet, LightType,
     MAX_DIR_LIGHTS, MAX_DIR_SHADOW_CASTERS, MAX_POINT_LIGHTS,
     MAX_POINT_SHADOW_CASTERS, MAX_SPOT_LIGHTS, MAX_SPOT_SHADOW_CASTERS;
 
@@ -270,7 +270,7 @@ LightSet packLightsFromWorld(W)(
                 break;
             }
             case LightType.point: {
-                if (set.pointCount >= MAX_POINT_LIGHTS) break;
+                if (set.pointCount >= set.points.length) break;
                 GpuPointLight p;
                 p.position = pos;
                 p.color = col;
@@ -283,7 +283,7 @@ LightSet packLightsFromWorld(W)(
                 break;
             }
             case LightType.spot: {
-                if (set.spotCount >= MAX_SPOT_LIGHTS) break;
+                if (set.spotCount >= set.spots.length) break;
                 GpuSpotLight s;
                 s.position = pos;
                 s.direction = ray;
@@ -303,6 +303,77 @@ LightSet packLightsFromWorld(W)(
         }
     }
     return set;
+}
+
+/// Zero-GC overload packing up to `MAX_POINT_LIGHTS` (1024) and `MAX_SPOT_LIGHTS` (256)
+/// from ECS into a reusable `PodBuffer`-backed `LightList`.
+void packLightsFromWorld(W)(
+    ref W world,
+    ref const SceneLightSettings settings,
+    ref LightList dst
+) {
+    dst.clear();
+
+    uint dirShadows = 0, pointShadows = 0, spotShadows = 0;
+
+    foreach (id; world.query!(Light)()) {
+        if (!world.alive(id) || !world.has!Transform(id)) continue;
+        immutable light = world.get!Light(id);
+        immutable t = world.get!Transform(id);
+        immutable pos = worldPosition(world, id);
+        immutable ray = lightRayDirection(t);
+        immutable col = Vec3(light.color[0], light.color[1], light.color[2]);
+
+        final switch (light.type) {
+            case LightType.directional: {
+                if (dst.dirEnabled) break;
+                GpuDirLight d;
+                d.direction = -ray;
+                d.color = col;
+                d.intensity = light.intensity;
+                immutable radius = light.range > 0.1f ? light.range : settings.dirShadowRadius;
+                d.viewProj = directionalLightVP(d.direction, settings.dirShadowCenter, radius);
+                applyCascadeSettings(d, settings);
+                d.castShadows = light.castShadows != 0
+                    && dirShadows < MAX_DIR_SHADOW_CASTERS;
+                if (d.castShadows) dirShadows++;
+                dst.dir = d;
+                dst.dirEnabled = true;
+                break;
+            }
+            case LightType.point: {
+                if (dst.points.length >= MAX_POINT_LIGHTS) break;
+                GpuPointLight p;
+                p.position = pos;
+                p.color = col;
+                p.intensity = light.intensity;
+                p.range = light.range;
+                p.castShadows = light.castShadows != 0
+                    && pointShadows < MAX_POINT_SHADOW_CASTERS;
+                if (p.castShadows) pointShadows++;
+                dst.addPoint(p);
+                break;
+            }
+            case LightType.spot: {
+                if (dst.spots.length >= MAX_SPOT_LIGHTS) break;
+                GpuSpotLight s;
+                s.position = pos;
+                s.direction = ray;
+                s.color = col;
+                s.intensity = light.intensity;
+                s.range = light.range;
+                s.innerConeDeg = light.innerConeDeg;
+                s.outerConeDeg = light.outerConeDeg;
+                s.viewProj = spotLightVPFromCone(
+                    pos, ray, light.outerConeDeg, 0.1f, light.range > 0.1f ? light.range : 25.0f);
+                s.castShadows = light.castShadows != 0
+                    && spotShadows < MAX_SPOT_SHADOW_CASTERS;
+                if (s.castShadows) spotShadows++;
+                dst.addSpot(s);
+                break;
+            }
+        }
+    }
 }
 
 /// Clear `castShadows` on lights that exceed caster budgets (stable entity order).
@@ -368,7 +439,7 @@ size_t formatLightBudgetHint(ref const LightBudgetCounts c, scope char[] buf)
         foreach_reverse (i; 0 .. nd) put(dig[i]);
     }
 
-    putStr("UBO d");
+    putStr("Lts d");
     putU(c.dir); put('/'); putU(MAX_DIR_LIGHTS);
     putStr(" p");
     putU(c.point); put('/'); putU(MAX_POINT_LIGHTS);

@@ -28,8 +28,8 @@ enum int sceneNoString = -1;
 
 /// Light / shadow budgets — must stay in sync with `engine.scene.light`.
 enum uint SCENE_MAX_DIR_LIGHTS = 1;
-enum uint SCENE_MAX_POINT_LIGHTS = 32;
-enum uint SCENE_MAX_SPOT_LIGHTS = 4;
+enum uint SCENE_MAX_POINT_LIGHTS = 1024;
+enum uint SCENE_MAX_SPOT_LIGHTS = 256;
 enum uint SCENE_MAX_DIR_SHADOW_CASTERS = 1;
 enum uint SCENE_MAX_POINT_SHADOW_CASTERS = 4;
 enum uint SCENE_MAX_SPOT_SHADOW_CASTERS = 2;
@@ -1470,9 +1470,9 @@ private float[4] jsonFloat4(ref JSONValue v, string ctx) {
     auto valOk = validateScene(v2, false);
     assert(valOk.ok, "20 point lights per chunk cell must pass v2 validation");
 
-    // 33 point lights in one cell must fail v2 validation.
+    // Exceeding SCENE_MAX_POINT_LIGHTS in one cell must fail v2 validation.
     SceneFile overChunk = v2;
-    foreach (i; 0 .. 14) {
+    foreach (i; 0 .. SCENE_MAX_POINT_LIGHTS - 20 + 1) {
         SceneEntityData l;
         l.id = cast(uint)(100 + i);
         l.transform.pos = [10.0f, 3.0f, 10.0f];

@@ -520,24 +520,80 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // through the opaque snapshot.
     }
 
-    let sc = min(frame.spotCount, 4u);
-    for (var i = 0u; i < sc; i++) {
-        let sl = frame.spots[i];
-        let toLight = sl.position - in.worldPos;
-        let dist = length(toLight);
-        if (dist >= sl.range) {
-            continue;
+    if ((frame.pointCount | frame.spotCount) != 0u) {
+        let pMax = arrayLength(&pointLights);
+        let sMax = arrayLength(&spotLights);
+        if ((frame.clusteredFlags & 1u) != 0u) {
+            let rec = clusterGrid[clusterIndexAt(in.worldPos, in.clipPos.xy)];
+            for (var k = 0u; k < rec.pointCount; k++) {
+                let idx = clusterLightIndices[rec.offset + k];
+                if (idx < pMax) {
+                    let pl = pointLights[idx];
+                    let toLight = pl.position - in.worldPos;
+                    let dist = length(toLight);
+                    if (dist < pl.range && dist > 1e-6) {
+                        let L = toLight / dist;
+                        let atten = lightAttenuation(dist, pl.range, pl.attenuation);
+                        let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
+                        direct += evalOpenPbrDirect(pbrIn, L, pl.color * pl.intensity * atten) * shadow;
+                    }
+                }
+            }
+            for (var k = 0u; k < rec.spotCount; k++) {
+                let idx = clusterLightIndices[rec.offset + rec.pointCount + k];
+                if (idx < sMax) {
+                    let sl = spotLights[idx];
+                    let toLight = sl.position - in.worldPos;
+                    let dist = length(toLight);
+                    if (dist < sl.range && dist > 1e-6) {
+                        let L = toLight / dist;
+                        let theta = dot(normalize(-sl.direction), L);
+                        let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
+                        let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
+                        if (cone > 0.0) {
+                            let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+                            let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
+                            let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
+                            direct += evalOpenPbrDirect(pbrIn, L, sl.color * sl.intensity * atten) * shadow;
+                        }
+                    }
+                }
+            }
+        } else {
+            let pc = min(frame.pointCount, pMax);
+            for (var i = 0u; i < pc; i++) {
+                let pl = pointLights[i];
+                let toLight = pl.position - in.worldPos;
+                let dist = length(toLight);
+                if (dist >= pl.range || dist <= 1e-6) {
+                    continue;
+                }
+                let L = toLight / dist;
+                let atten = lightAttenuation(dist, pl.range, pl.attenuation);
+                let shadow = samplePointShadowPCF(pl.shadowSlot, pl.position, in.worldPos, N, pl.range);
+                direct += evalOpenPbrDirect(pbrIn, L, pl.color * pl.intensity * atten) * shadow;
+            }
+            let sc = min(frame.spotCount, sMax);
+            for (var i = 0u; i < sc; i++) {
+                let sl = spotLights[i];
+                let toLight = sl.position - in.worldPos;
+                let dist = length(toLight);
+                if (dist >= sl.range || dist <= 1e-6) {
+                    continue;
+                }
+                let L = toLight / dist;
+                let theta = dot(normalize(-sl.direction), L);
+                let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
+                let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
+                if (cone <= 0.0) {
+                    continue;
+                }
+                let coneFall = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+                let atten = lightAttenuation(dist, sl.range, sl.attenuation) * coneFall;
+                let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
+                direct += evalOpenPbrDirect(pbrIn, L, sl.color * sl.intensity * atten) * shadow;
+            }
         }
-        let L = toLight / dist;
-        let theta = dot(normalize(-sl.direction), L);
-        let epsilon = max(sl.innerConeCos - sl.outerConeCos, 0.001);
-        let cone = clamp((theta - sl.outerConeCos) / epsilon, 0.0, 1.0);
-        if (cone <= 0.0) {
-            continue;
-        }
-        let atten = rangeAttenuation(dist, sl.range) * cone * cone;
-        let shadow = sampleSpotShadowPCF(sl.shadowSlot, sl.viewProj, in.worldPos, N, L);
-        direct += evalOpenPbrDirect(pbrIn, L, sl.color * sl.intensity * atten) * shadow;
     }
 
     // 6. Coherent sky + solar glitter IBL matching the visible sky_dome.

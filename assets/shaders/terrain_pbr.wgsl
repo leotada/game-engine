@@ -181,7 +181,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         N = normalize(N + V * (0.05 - nv));
     }
 
-    let lit = shadeSimplePbr(P, N, Ng, V, albedo, metallic, roughness, ao);
+    let lit = shadeSimplePbr(P, N, Ng, V, in.pos.xy, albedo, metallic, roughness, ao);
     var color = lit * cascadeDebugTint(P);
     color = applyFog(color, P);
     return vec4<f32>(color, 1.0);
