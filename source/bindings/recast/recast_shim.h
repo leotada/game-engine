@@ -101,6 +101,10 @@ int navBakeGeometry(NavMeshHandle* mesh,
 /// Like `navBakeGeometry`, plus off-mesh connections baked into every tile that contains their
 /// start (they are stored in the tile data, so `.navmesh` save/load keeps them). With a TileCache
 /// the connections are also kept in the cache and survive obstacle-driven tile rebuilds.
+///
+/// Threading (`cfg->threads`): tiles are built on worker threads and inserted serially in
+/// row-major order, so the result is identical for every thread count. The call itself is not
+/// reentrant: do not bake or query the same mesh/cache from another thread while it runs.
 int navBakeGeometryEx(NavMeshHandle* mesh,
                       NavTileCacheHandle* tc,
                       const float* verts3,

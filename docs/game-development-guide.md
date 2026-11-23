@@ -618,6 +618,8 @@ stepNavAgents!(GameWorld, Position)(world, crowd, query, dt);
 drawNavMesh(gizmos, navMesh);
 ```
 
+Bake the whole area in one call (the bake replaces every tile its geometry touches) and do not query the mesh while it bakes. `threads` only changes bake time; the field table and the measured speedup are in [navigation-guide.md § `NavBakeConfig` reference](navigation-guide.md#navbakeconfig-reference).
+
 Off-mesh links (jumps, ladders, drops) are baked in with the same call, and the obstacle cache can be saved with the mesh so a loaded `.navmesh` needs no re-bake:
 
 ```d

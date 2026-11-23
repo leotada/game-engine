@@ -51,25 +51,79 @@ NavMesh loaded = loadNavMeshFile("assets/nav/city_sector.navmesh");
 ```
 
 - Use the 5-argument overload `bakeNavMesh(navMesh, verts, indices, cfg)` when you only need a static `NavMesh` without `NavTileCache`.
+- `bakeNavMesh` returns the number of tiles (direct path) or TileCache layers (TileCache path) that were built; `0` means nothing walkable was produced or the input was invalid.
+- The bake covers every tile touched by the bounds of the input geometry and **replaces** those tiles. Always bake the full geometry of an area in one call: baking two halves separately leaves the tiles on their shared border with only the second half's triangles.
+
+### `NavBakeConfig` reference
+
+| Field | Default (D) | Meaning |
+|:---|:---|:---|
+| `cellSize` | `0.30` | Voxel size in X/Z (m). Smaller = more precise edges, slower bake, more memory. |
+| `cellHeight` | `0.20` | Voxel size in Y (m). Must resolve `agentMaxClimb` (`agentMaxClimb / cellHeight` steps). |
+| `agentHeight` | `2.0` | Minimum ceiling clearance (m). |
+| `agentRadius` | `0.5` | Walkable area is eroded by this radius (m); agents keep this distance from walls. |
+| `agentMaxClimb` | `0.9` | Highest ledge/step an agent can walk up (m). |
+| `agentMaxSlopeDeg` | `45` | Steepest walkable slope (degrees). Ignored for triangles with explicit `triAreas`. |
+| `tileSize` | `48` | Tile width in cells. Tile world size = `tileSize * cellSize`; pass that to `NavMesh.createTiled` / `NavTileCache.create`. |
+| `regionMinSize` | `8` | Regions smaller than `regionMinSize²` cells are removed (kills tiny islands). |
+| `regionMergeSize` | `20` | Regions smaller than `regionMergeSize²` cells are merged into neighbours. |
+| `edgeMaxLen` | `12.0` | Longest contour edge (m) before it is split. |
+| `edgeMaxError` | `1.3` | Contour simplification tolerance (cells). |
+| `vertsPerPoly` | `6` | Max vertices per navmesh polygon (3..6). |
+| `detailSampleDist` | `6.0` | Height-detail sampling distance (× `cellSize`); below `0.9` disables the detail mesh. |
+| `detailSampleMaxError` | `1.0` | Height-detail tolerance (× `cellHeight`). |
+| `maxTiles` | `1024` | Capacity of the `NavMesh` (and, times `maxLayersPerTile`, of the `NavTileCache`). Must cover the whole tile grid. |
+| `maxPolysPerTile` | `4096` | Polygon capacity per tile. |
+| `maxLayersPerTile` | `32` | TileCache layers per tile (stacked floors, bridges). |
+| `maxObstacles` | `512` | Dynamic obstacle capacity of the `NavTileCache`. |
+| `threads` | `1` | Bake worker threads: `1` serial, `0` one per hardware thread, `N` explicit. See below. |
 
 ### Multithreaded bake
 
 Set `cfg.threads` to bake tiles on several threads: `1` (default) is serial, `0` uses one thread per
-hardware thread, any other value is an explicit count. Each tile's Recast pipeline (rasterization,
-regions, contours, poly mesh, and the TileCache layer compression) runs on the workers; inserting the
-tiles into the `NavMesh` / `NavTileCache` (and, on the TileCache path, `buildNavMeshTile`) stays serial
-in row-major tile order. The baked `.navmesh` is byte-identical for every thread count, which
-`engine/nav/tests.d` checks on both paths.
+hardware thread (`std::thread::hardware_concurrency`), any other value is an explicit count (capped at
+the number of tiles).
 
 ```d
+auto cfg = NavBakeConfig.defaults();
 cfg.threads = 0; // all cores
 bakeNavMesh(navMesh, tileCache, verts, indices, cfg);
+saveNavMeshFile(navMesh, tileCache, "assets/nav/city.navmesh");
 ```
 
-Measured on a 120 m x 120 m hilly test terrain (~170 tiles, 16 hardware threads): direct path
-149 ms → 23 ms (8 threads) / 18 ms (`threads = 0`), TileCache path 125 ms → 22 ms (8 threads). Each tile still rasterizes the whole input
-triangle list, so very large meshes gain the most from splitting the geometry per region before baking.
-Peak memory grows by the built tile data held until the serial commit (the same data ends up in the mesh).
+**How it works.** The bake has two phases inside `navBakeGeometryEx` (`source/bindings/recast/recast_shim.cpp`):
+
+1. **Build (parallel).** Workers take tile indices from an atomic counter. For each tile they run the
+   whole Recast pipeline with their own `rcContext` and scratch buffers: rasterization, filtering,
+   compact heightfield, erosion, then either regions → contours → poly mesh → detail mesh →
+   `dtCreateNavMeshData` (direct path) or heightfield layers → `dtBuildTileCacheLayer` compression
+   (TileCache path). The input geometry, `triAreas` and off-mesh links are only read.
+2. **Commit (serial).** The built tiles are inserted in row-major tile order: `removeTile` /
+   `addTile` on the `NavMesh`, or `dtTileCache::addTile` + `buildNavMeshTile` on the TileCache path
+   (that step uses the cache's shared allocator, so it is not parallel).
+
+Because the commit order does not depend on the thread count, the baked `.navmesh` is
+**byte-identical** for every `threads` value. `engine/nav/tests.d` checks this on both paths.
+
+**Measured gain** (120 m × 120 m hilly test terrain, ~170 tiles, 16 hardware threads, release-built shim):
+
+| Path | `threads = 1` | `threads = 8` | `threads = 0` |
+|:---|---:|---:|---:|
+| Direct | 149 ms | 23 ms | 18 ms |
+| TileCache | 125 ms | 22 ms | — |
+
+**Rules and limits.**
+
+- Thread safety covers the tiles of **one** bake call. Do not bake into the same `NavMesh` /
+  `NavTileCache` from two threads at once, and do not query or step a `NavCrowd` on a mesh while it
+  is being baked.
+- Peak memory grows by the built tile data held until the commit phase (the same data then lives in the mesh).
+- Every tile tests every input triangle against its bounds before rasterizing. With millions of
+  triangles and thousands of tiles that `tiles × triangles` term grows; threads divide it, but
+  removing it needs a per-tile spatial index in the shim (not implemented yet).
+- `NavBakeConfig` gained the trailing `threads` field in the C header, so the D bindings and
+  `librecast_shim.a` should match: rebuild the shim with `tools/build_sdl3_deps.sh` after pulling. A
+  stale library does not know the field and silently bakes serially.
 
 ### Restoring dynamic obstacles from a saved `.navmesh`
 
