@@ -59,11 +59,30 @@ userData). Recover with `getBodyEntity` / `getShapeEntity`.
 
 Runtime body and shape helpers: `set/getLinearVelocity`, `set/getAngularVelocity`,
 `applyForceToCenter`, `applyForce` (at a world point), `applyLinearImpulse`, `applyLinearImpulseToCenter`, `applyAngularImpulse`,
-`getMass`, `getMassData` / `setMassData` / `resetMassFromShapes` (mass, local center of mass and inertia tensor; `BodyMassData.diagonal(...)` overrides them, e.g. a vehicle whose inertia comes from its bounding box), `getLocalCenterOfMass`, `getLocalInertiaDiagonal`, `getRotation`, `setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
+`getMass`, `getMassData` / `setMassData` / `resetMassFromShapes` (see "Mass, center of mass and inertia" below), `getLocalCenterOfMass`, `getLocalInertiaDiagonal`, `getRotation`, `setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
 `setBodyType` / `getBodyType`, `isBodyAwake` / `setBodyAwake`, `enableBodySleep` /
 `setBodySleepThreshold`, `setBodyBullet` / `isBodyBullet`, `setBodyFilter` / `setShapeFilter`,
 `setBodySurfaceMaterial` / `setShapeSurfaceMaterial`, `destroyBody`, and
 `writeBodyTransform` / `readBodyTransform`. `world.awakeBodyCount()` reports awake bodies.
+
+## Mass, center of mass and inertia
+
+Box3D computes mass properties from the shapes' densities. Read them with `getMassData(body)` (a `BodyMassData` POD: `mass`, local `center`, and the columns `inertiaX/Y/Z` of the symmetric inertia tensor in kg*m^2) and override them when your own model is better, for example a vehicle whose inertia comes from its bounding box:
+
+```d
+auto car = createBoxBody(world, desc, Vec3(1.0f, 0.5f, 2.0f));
+
+// 1200 kg, center of mass 0.3 m below the body origin, principal moments Ixx, Iyy, Izz:
+setMassData(car, BodyMassData.diagonal(1200.0f, Vec3(0.0f, -0.3f, 0.0f), 600.0f, 900.0f, 300.0f));
+
+immutable m  = getMassData(car);            // mass == 1200, center.y == -0.3
+immutable c  = getLocalCenterOfMass(car);   // local space
+immutable id = getLocalInertiaDiagonal(car);
+
+resetMassFromShapes(car);                   // discard the override
+```
+
+Notes: Box3D drops the override when a shape is added or removed or the body type changes, so apply it after the body is fully built; `getMass` keeps returning the mass of the body. All of these are no-ops (or return zeroed data) for an invalid body.
 
 ## Static meshes & heightfields
 

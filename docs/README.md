@@ -7,10 +7,10 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | Document | Description |
 |:---|:---|
 | [game-development-guide.md](game-development-guide.md) | Concise practical guide to building 2D and 3D games across all engine subsystems |
-| [physics-quickstart.md](physics-quickstart.md) | Box3D gameplay physics API: world, shapes, sensors, queries, joints, character |
+| [physics-quickstart.md](physics-quickstart.md) | Box3D gameplay physics API: world, shapes, mass data, sensors, hit events and impact impulse, queries, joints, character |
 | [animation-guide.md](animation-guide.md) | Skeletal animation (`ozz-animation` port), IK, ECS integration, and GPU skinning |
 | [audio-guide.md](audio-guide.md) | 8-bus audio mixer, real-time `@nogc` DSP (VHF radio/biquads), 3D Doppler spatialization, and OGG Vorbis streaming |
-| [navigation-guide.md](navigation-guide.md) | 3D Recast/Detour NavMesh baking, `.navmesh` persistence, `TileCache` dynamic obstacles, `NavCrowd`, and ECS integration |
+| [navigation-guide.md](navigation-guide.md) | 3D Recast/Detour NavMesh baking, off-mesh links, `.navmesh` persistence (with the restorable `TileCache`), dynamic obstacles, `NavCrowd`, and ECS integration |
 | [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU), open-world and outdoor rendering (CSM, fog, sky, weather, IBL, decals) |
 | [water-guide.md](water-guide.md) | Water: `WaterRenderer` / `WaterBody`, Gerstner waves, shared GPU wave data, caustics, wet marks, gameplay queries, buoyancy, wet material presets, `WaterSurface` scene component |
 | [terrain-guide.md](terrain-guide.md) | Chunked heightmap terrain: splat layers, LOD/geomorphing, shadows, Box3D colliders, procedural generation |

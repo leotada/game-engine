@@ -10,9 +10,9 @@ For design rationale and the future pure-D port roadmap, see [plan-navigation-re
 
 | Module | Purpose |
 |---|---|
-| `engine.nav.types` | POD configs and enums (`NavBakeConfig`, `NavQueryFilter`, `NavCrowdAgentParams`, `NavObstacleShape`, `NavAgentState`, `NavPolyRef`) |
+| `engine.nav.types` | POD configs and enums (`NavBakeConfig`, `NavOffMeshConnection`, `NavQueryFilter`, `NavCrowdAgentParams`, `NavObstacleShape`, `NavAgentState`, `NavPolyRef`) |
 | `engine.nav.mesh` | RAII wrappers: `NavMesh`, `NavTileCache`, `NavQuery`, `NavCrowd` |
-| `engine.nav.bake` | `bakeNavMesh` (tiled Recast/Detour + TileCache), binary `.navmesh` persistence (`saveNavMeshToBytes`, `loadNavMeshFromBytes`, `saveNavMeshFile`, `loadNavMeshFile`) |
+| `engine.nav.bake` | `bakeNavMesh` (tiled Recast/Detour + TileCache + off-mesh links), binary `.navmesh` persistence (`saveNavMeshToBytes`, `loadNavMeshFromBytes`, `saveNavMeshFile`, `loadNavMeshFile`) and the cache-aware variants (`saveNavMeshToBytes(mesh, tc, out)`, `saveNavMeshFile(mesh, tc, path)`, `loadNavMeshAndCacheFromBytes`) |
 | `engine.nav.ecs` | POD `@component` structs (`NavMeshSurface`, `NavAgent`, `NavMoveRequest`, `NavObstacle`, `NavOffMeshLink`, `NavModifierVolume`) and `stepNavAgents` |
 | `engine.nav.debugdraw` | `drawNavMesh` (renders walkable NavMesh polygons as semi-transparent filled triangles + wireframe edges via `GizmoRenderer`) |
 

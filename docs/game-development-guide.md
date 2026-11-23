@@ -135,6 +135,9 @@ p.coatWeight = 0.4f;
 auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, albedo, p, null, null, null, null);
 ```
 
+- **Second scene without its own IBL:** `Scene3DTextured.create(gpu, maxBatches, createIbl: false)` skips the procedural sky and prefilter (~1 s in debug builds) and starts with a flat-grey environment. Use it for an extra scene (for example unlit particle pools) and bind the shared environment right away with `scene.setEnvironment(ibl)` or `scene.setEnvironmentBindGroup(dynamicIbl.bindGroup())`.
+- **What SSR reflects:** the opaque scene only (cars, buildings, terrain as standard opaque materials). Other `MaterialFlags.ssr` materials, transparent surfaces and off-screen objects need a `ReflectionProbe`. Details: [graphics.md](graphics.md).
+
 ### 3.3 Multi-Light (Clustered Forward) & Automatic Shadows
 
 Clustered Forward rendering supports **1 directional**, up to **1,024 point**, and up to **256 spot** active lights per frame, with automatic shadow rendering across **1 dir (2048²)**, **4 point cubemaps (512²/face)**, and **2 spot (1024²)** shadow casters:
@@ -512,7 +515,25 @@ hero.move(phys, wishDir, dt, jumpPressed);
 immutable hit = castRayClosest(phys, origin, dir, 100.0f);
 ```
 
-Supports boxes, spheres, capsules, cylinders, convex hulls, static meshes/heightfields, per-triangle surface materials, sensors, AABB/sphere overlaps, distance/revolute/weld/spherical/wheel/prismatic/filter/breakable joints, collision filters, CCD, and sleep control. Deep dive: [physics-quickstart.md](physics-quickstart.md).
+Supports boxes, spheres, capsules, cylinders, convex hulls, static meshes/heightfields, per-triangle surface materials, sensors, AABB/sphere overlaps, distance/revolute/weld/spherical/wheel/prismatic/filter/breakable joints, collision filters, CCD, and sleep control.
+
+Override the mass properties of a body (for example a vehicle whose inertia comes from its bounding box) and use hit events for impact damage:
+
+```d
+// Mass, local center of mass and inertia tensor (diagonal helper):
+setMassData(car, BodyMassData.diagonal(1200.0f, Vec3(0, -0.3f, 0), 600.0f, 900.0f, 300.0f));
+immutable m = getMassData(car);          // m.mass, m.center, m.inertiaX/Y/Z
+resetMassFromShapes(car);                // back to the shape densities
+
+// Impact damage from a hit event (needs enableHitEvents on the body):
+void onHit(PhysicsHitEvent e, void* ctx) nothrow @nogc @safe {
+    immutable closing = e.approachSpeed;      // m/s along the normal, always >= 0
+    immutable impulse = e.approachImpulse;    // kg*m/s, uses the reduced mass of the two bodies
+    // e.normalImpulse is Box3D's sub-step-accumulated total: it overestimates, do not use it for damage
+}
+```
+
+Deep dive: [physics-quickstart.md](physics-quickstart.md).
 
 ### 11.2 Skeletal Animation (`engine.animation`)
 
@@ -594,6 +615,27 @@ stepNavAgents!(GameWorld, Position)(world, crowd, query, dt);
 // Debug overlay:
 drawNavMesh(gizmos, navMesh);
 ```
+
+Off-mesh links (jumps, ladders, drops) are baked in with the same call, and the obstacle cache can be saved with the mesh so a loaded `.navmesh` needs no re-bake:
+
+```d
+NavOffMeshConnection jump;
+jump.start = Vec3(-3, 0, 0);
+jump.end   = Vec3( 3, 0, 0);
+jump.radius = 1.0f;
+jump.userId = 42;                                            // your own link id
+bakeNavMesh(navMesh, tileCache, verts, indices, cfg, null, [jump]);
+
+saveNavMeshFile(navMesh, tileCache, "assets/nav/city.navmesh");   // mesh + obstacle cache (format v2)
+
+NavMesh mesh2;
+NavTileCache cache2;
+loadNavMeshAndCacheFromBytes(cast(ubyte[]) read("assets/nav/city.navmesh"), mesh2, cache2);
+cache2.addCylinderObstacle(pos, 1.0f, 2.0f, obstacleRef);    // obstacles are not stored: add them again
+cache2.flushUpdates(mesh2);
+```
+
+`findStraightPath` marks the link crossing with `NavStraightPathFlags.offMeshConnection`; the game plays the jump or ladder animation. After pulling a version that changes `recast_shim.cpp`, rebuild `librecast_shim.a` with `tools/build_sdl3_deps.sh`.
 
 Deep dive: [navigation-guide.md](navigation-guide.md).
 
