@@ -1,22 +1,27 @@
 /// Navigation mesh baking and binary `.navmesh` serialization.
 module engine.nav.bake;
 
+import core.stdc.stdlib : free, malloc;
 import std.file : read, write;
 import engine.math.vec : Vec3;
 import engine.nav.types;
 import engine.nav.mesh : NavMesh, NavTileCache;
 import recast = bindings.recast;
+import bindings.recast : NavOffMeshConnectionC;
 
 @safe:
 
 /// Bake triangle soup (`verts`, `indices`) into `mesh` (and optional `tc` for dynamic obstacles).
+/// `links` are off-mesh connections (jumps, ladders, drops); they are stored in the tile data, so
+/// they survive `.navmesh` save/load, and with a `tc` they also survive obstacle tile rebuilds.
 /// Returns the number of tiles built (`<= 0` on failure).
 int bakeNavMesh(ref NavMesh mesh,
                 ref NavTileCache tc,
                 scope const(Vec3)[] verts,
                 scope const(int)[] indices,
                 const ref NavBakeConfig cfg,
-                scope const(ubyte)[] triAreas = null) @trusted nothrow @nogc {
+                scope const(ubyte)[] triAreas = null,
+                scope const(NavOffMeshConnection)[] links = null) @trusted nothrow @nogc {
     if (!mesh.isValid() || verts.length == 0 || indices.length < 3 || (indices.length % 3) != 0) {
         return 0;
     }
@@ -27,7 +32,17 @@ int bakeNavMesh(ref NavMesh mesh,
     auto cCfg = cfg.toC();
     // Vec3 is 3 packed floats (`x, y, z`), validated statically.
     static assert(Vec3.sizeof == 3 * float.sizeof);
-    return recast.navBakeGeometry(
+
+    NavOffMeshConnectionC[] cLinks;
+    if (links.length > 0) {
+        auto mem = cast(NavOffMeshConnectionC*) malloc(links.length * NavOffMeshConnectionC.sizeof);
+        if (mem is null) return 0;
+        cLinks = mem[0 .. links.length];
+        foreach (i, ref l; links) cLinks[i] = l.toC();
+    }
+    scope(exit) if (cLinks.length > 0) free(cLinks.ptr);
+
+    return recast.navBakeGeometryEx(
         mesh.handle,
         tc.handle,
         cast(const(float)*) verts.ptr,
@@ -35,7 +50,9 @@ int bakeNavMesh(ref NavMesh mesh,
         indices.ptr,
         triCount,
         triAreas.length > 0 ? triAreas.ptr : null,
-        &cCfg);
+        &cCfg,
+        cLinks.length > 0 ? cLinks.ptr : null,
+        cast(int) cLinks.length);
 }
 
 /// Bake triangle soup into a `NavMesh` without a `NavTileCache`.
@@ -43,9 +60,10 @@ int bakeNavMesh(ref NavMesh mesh,
                 scope const(Vec3)[] verts,
                 scope const(int)[] indices,
                 const ref NavBakeConfig cfg,
-                scope const(ubyte)[] triAreas = null) nothrow @nogc {
+                scope const(ubyte)[] triAreas = null,
+                scope const(NavOffMeshConnection)[] links = null) nothrow @nogc {
     NavTileCache unused;
-    return bakeNavMesh(mesh, unused, verts, indices, cfg, triAreas);
+    return bakeNavMesh(mesh, unused, verts, indices, cfg, triAreas, links);
 }
 
 /// Serialize all tiles of `mesh` into a GC-owned byte buffer (`.navmesh` format).

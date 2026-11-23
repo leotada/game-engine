@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Navigation off-mesh links** (`engine.nav.types.NavOffMeshConnection`, `bakeNavMesh(..., triAreas, links)`,
+  `navBakeGeometryEx` in the Recast shim, `docs/navigation-guide.md`): bake jump / ladder / drop connections into the
+  navmesh. They are stored in the tile data (kept by `.navmesh` save/load) and in the `NavTileCache` (kept across
+  obstacle tile rebuilds). **Rebuild `librecast_shim.a`** (`tools/build_sdl3_deps.sh`) after pulling.
 - **Physics mass data and calibrated hit impulse** (`engine.physics.body`, `engine.physics.events`, `docs/physics-quickstart.md`):
   `getMassData` / `setMassData` / `resetMassFromShapes` / `getLocalCenterOfMass` / `getLocalInertiaDiagonal` and the
   `BodyMassData` POD (`BodyMassData.diagonal`) expose and override mass, center of mass and inertia through the Box3D

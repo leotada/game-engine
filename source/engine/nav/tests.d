@@ -212,3 +212,90 @@ private struct TestPos {
     assert(agent.crowdIndex >= 0);
     assert(pos.x > -10.0f, "Expected ECS NavAgent to advance toward target");
 }
+
+// --- Off-mesh links -------------------------------------------------------------------------
+
+/// Two 8 x 8 m platforms at y = 0 separated by a 4 m gap along X (no geometry in between).
+private void buildGapPlatforms(out Vec3[] verts, out int[] indices) {
+    verts = [
+        Vec3(-10.0f, 0.0f, -4.0f), Vec3(-10.0f, 0.0f, 4.0f), Vec3(-2.0f, 0.0f, 4.0f), Vec3(-2.0f, 0.0f, -4.0f),
+        Vec3(  2.0f, 0.0f, -4.0f), Vec3(  2.0f, 0.0f, 4.0f), Vec3(10.0f, 0.0f, 4.0f), Vec3(10.0f, 0.0f, -4.0f),
+    ];
+    indices = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+}
+
+/// Path from the left platform to the right one; true when the path reaches the right platform.
+private bool pathCrossesGap(ref NavMesh mesh, out bool usedOffMesh) {
+    usedOffMesh = false;
+    auto query = NavQuery.create(mesh, 1024);
+    auto filter = NavQueryFilter.defaults();
+    immutable ext = Vec3(1.0f, 2.0f, 1.0f);
+    NavPolyRef startPoly = 0, endPoly = 0;
+    Vec3 startPt, endPt;
+    if (!query.findNearestPoly(Vec3(-6.0f, 0.0f, 0.0f), ext, filter, startPoly, startPt)) return false;
+    if (!query.findNearestPoly(Vec3(6.0f, 0.0f, 0.0f), ext, filter, endPoly, endPt)) return false;
+
+    NavPolyRef[64] polys;
+    immutable n = query.findPath(startPoly, endPoly, startPt, endPt, filter, polys);
+    if (n <= 0 || polys[n - 1] != endPoly) return false;
+
+    NavStraightPathPoint[16] straight;
+    immutable sp = query.findStraightPath(startPt, endPt, polys[0 .. n], straight);
+    foreach (i; 0 .. sp)
+        if ((straight[i].flags & NavStraightPathFlags.offMeshConnection) != 0) usedOffMesh = true;
+    return true;
+}
+
+@safe unittest {
+    Vec3[] verts;
+    int[] indices;
+    buildGapPlatforms(verts, indices);
+
+    auto cfg = NavBakeConfig.defaults();
+    cfg.cellSize = 0.3f;
+    cfg.cellHeight = 0.2f;
+    cfg.tileSize = 50; // 15 m tiles: columns [-15, 0] and [0, 15], so the link crosses a tile border
+    cfg.maxTiles = 64;
+    cfg.maxPolysPerTile = 512;
+    immutable float tileWorld = cfg.tileSize * cfg.cellSize;
+    immutable origin = Vec3(-15.0f, -5.0f, -10.0f);
+
+    NavOffMeshConnection link;
+    link.start = Vec3(-3.0f, 0.0f, 0.0f);
+    link.end = Vec3(3.0f, 0.0f, 0.0f);
+    link.radius = 1.0f;
+    link.bidirectional = true;
+    link.userId = 42;
+    const links = [link];
+
+    bool used;
+
+    // Without the link the platforms are disconnected.
+    auto plain = NavMesh.createTiled(origin, tileWorld, tileWorld, cfg.maxTiles, cfg.maxPolysPerTile);
+    assert(bakeNavMesh(plain, verts, indices, cfg) > 0);
+    assert(!pathCrossesGap(plain, used), "gap must block the path without an off-mesh link");
+
+    // With the link (direct bake) the path crosses and reports the off-mesh segment.
+    auto linked = NavMesh.createTiled(origin, tileWorld, tileWorld, cfg.maxTiles, cfg.maxPolysPerTile);
+    assert(bakeNavMesh(linked, verts, indices, cfg, null, links) > 0);
+    assert(pathCrossesGap(linked, used), "off-mesh link must connect the platforms");
+    assert(used, "straight path must flag the off-mesh connection");
+
+    // The link is stored in the tile data, so `.navmesh` save/load keeps it.
+    ubyte[] bytes;
+    assert(saveNavMeshToBytes(linked, bytes));
+    auto reloaded = loadNavMeshFromBytes(bytes);
+    assert(reloaded.isValid());
+    assert(pathCrossesGap(reloaded, used) && used, "off-mesh link must survive .navmesh round trip");
+
+    // With a TileCache the link also survives obstacle-driven tile rebuilds.
+    auto tcMesh = NavMesh.createTiled(origin, tileWorld, tileWorld, cfg.maxTiles, cfg.maxPolysPerTile);
+    auto tc = NavTileCache.create(tcMesh, origin, tileWorld, tileWorld, cfg);
+    assert(tc.isValid());
+    assert(bakeNavMesh(tcMesh, tc, verts, indices, cfg, null, links) > 0);
+    assert(pathCrossesGap(tcMesh, used) && used);
+    NavObstacleRef obs = 0;
+    assert(tc.addCylinderObstacle(Vec3(-8.0f, 0.0f, 3.0f), 0.5f, 2.0f, obs));
+    assert(tc.flushUpdates(tcMesh));
+    assert(pathCrossesGap(tcMesh, used) && used, "off-mesh link must survive a TileCache rebuild");
+}

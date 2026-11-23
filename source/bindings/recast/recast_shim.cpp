@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -74,13 +75,56 @@ struct LinearAllocator final : public dtTileCacheAlloc {
     void free(void* /*ptr*/) override {}
 };
 
+/// Off-mesh connections in the flat arrays `dtNavMeshCreateParams` expects. Detour culls the ones
+/// whose start is not in the tile being built, so the full set can be given to every tile.
+struct OffMeshSet {
+    std::vector<float> verts;       // 6 floats per connection
+    std::vector<float> rads;
+    std::vector<unsigned char> dirs;
+    std::vector<unsigned char> areas;
+    std::vector<unsigned short> flags;
+    std::vector<unsigned int> ids;
+
+    void assign(const NavOffMeshConnectionC* cons, int count) {
+        verts.clear(); rads.clear(); dirs.clear(); areas.clear(); flags.clear(); ids.clear();
+        if (!cons || count <= 0) return;
+        for (int i = 0; i < count; ++i) {
+            const NavOffMeshConnectionC& c = cons[i];
+            verts.insert(verts.end(), c.start, c.start + 3);
+            verts.insert(verts.end(), c.end, c.end + 3);
+            rads.push_back(c.radius);
+            dirs.push_back(c.bidirectional ? DT_OFFMESH_CON_BIDIR : 0);
+            areas.push_back(c.area);
+            flags.push_back(c.flags ? c.flags : POLYFLAGS_WALK);
+            ids.push_back(c.userId);
+        }
+    }
+
+    int count() const { return static_cast<int>(rads.size()); }
+
+    void fill(dtNavMeshCreateParams& params) const {
+        const int n = count();
+        params.offMeshConCount = n;
+        if (n == 0) return;
+        params.offMeshConVerts = verts.data();
+        params.offMeshConRad = rads.data();
+        params.offMeshConDir = dirs.data();
+        params.offMeshConAreas = areas.data();
+        params.offMeshConFlags = flags.data();
+        params.offMeshConUserID = ids.data();
+    }
+};
+
 struct DefaultMeshProcess final : public dtTileCacheMeshProcess {
+    OffMeshSet offMesh;
+
     void process(dtNavMeshCreateParams* params, unsigned char* polyAreas, unsigned short* polyFlags) override {
         for (int i = 0; i < params->polyCount; ++i) {
             if (polyAreas[i] == DT_TILECACHE_WALKABLE_AREA)
                 polyAreas[i] = 0;
             polyFlags[i] = POLYFLAGS_WALK;
         }
+        offMesh.fill(*params);
     }
 };
 
@@ -412,7 +456,8 @@ static int bakeTileDirect(NavMeshHandle* mesh,
                           const float* verts3, int /*vertCount*/,
                           const int* tris3, int triCount,
                           const uint8_t* triAreasOrNull,
-                          const NavBakeConfig& cfg) {
+                          const NavBakeConfig& cfg,
+                          const OffMeshSet& offMesh) {
     rcContext ctx;
     const float borderSize = static_cast<float>(static_cast<int>(ceilf(cfg.agentRadius / cfg.cellSize)) + 3);
     const float borderWorld = borderSize * cfg.cellSize;
@@ -533,6 +578,7 @@ static int bakeTileDirect(NavMeshHandle* mesh,
     params.cs = rcfg.cs;
     params.ch = rcfg.ch;
     params.buildBvTree = true;
+    offMesh.fill(params);
 
     unsigned char* navData = nullptr;
     int navDataSize = 0;
@@ -559,6 +605,19 @@ int navBakeGeometry(NavMeshHandle* mesh,
                     int triCount,
                     const uint8_t* triAreasOrNull,
                     const NavBakeConfig* cfg) {
+    return navBakeGeometryEx(mesh, tc, verts3, vertCount, tris3, triCount, triAreasOrNull, cfg, nullptr, 0);
+}
+
+int navBakeGeometryEx(NavMeshHandle* mesh,
+                      NavTileCacheHandle* tc,
+                      const float* verts3,
+                      int vertCount,
+                      const int* tris3,
+                      int triCount,
+                      const uint8_t* triAreasOrNull,
+                      const NavBakeConfig* cfg,
+                      const NavOffMeshConnectionC* offMeshCons,
+                      int offMeshConCount) {
     if (!mesh || !mesh->nav || !verts3 || !tris3 || vertCount <= 0 || triCount <= 0 || !cfg)
         return 0;
 
@@ -584,6 +643,14 @@ int navBakeGeometry(NavMeshHandle* mesh,
     const int tx1 = static_cast<int>(floorf((bmax[0] - np->orig[0]) / tw));
     const int ty1 = static_cast<int>(floorf((bmax[2] - np->orig[2]) / th));
 
+    OffMeshSet directOffMesh;
+    if (tc && tc->tc) {
+        // The TileCache owns the set: obstacle-driven tile rebuilds call `process` again.
+        tc->proc->offMesh.assign(offMeshCons, offMeshConCount);
+    } else {
+        directOffMesh.assign(offMeshCons, offMeshConCount);
+    }
+
     int totalBuilt = 0;
     for (int ty = ty0; ty <= ty1; ++ty) {
         for (int tx = tx0; tx <= tx1; ++tx) {
@@ -594,7 +661,8 @@ int navBakeGeometry(NavMeshHandle* mesh,
                                                     verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg);
             } else {
                 totalBuilt += bakeTileDirect(mesh, tx, ty, tbmin, tbmax,
-                                             verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg);
+                                             verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg,
+                                             directOffMesh);
             }
         }
     }

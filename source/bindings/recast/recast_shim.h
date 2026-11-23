@@ -38,6 +38,18 @@ typedef struct NavBakeConfig {
     int maxObstacles;
 } NavBakeConfig;
 
+/// Off-mesh link (jump, ladder, teleport). `start`/`end` are world positions that must lie within
+/// `radius` of the walkable surface; `flags` 0 means the default walk flag.
+typedef struct NavOffMeshConnectionC {
+    float start[3];
+    float end[3];
+    float radius;
+    uint8_t bidirectional;
+    uint8_t area;
+    uint16_t flags;
+    uint32_t userId;
+} NavOffMeshConnectionC;
+
 typedef struct NavQueryFilterC {
     uint16_t includeFlags;
     uint16_t excludeFlags;
@@ -83,6 +95,20 @@ int navBakeGeometry(NavMeshHandle* mesh,
                     int triCount,
                     const uint8_t* triAreasOrNull,
                     const NavBakeConfig* cfg);
+
+/// Like `navBakeGeometry`, plus off-mesh connections baked into every tile that contains their
+/// start (they are stored in the tile data, so `.navmesh` save/load keeps them). With a TileCache
+/// the connections are also kept in the cache and survive obstacle-driven tile rebuilds.
+int navBakeGeometryEx(NavMeshHandle* mesh,
+                      NavTileCacheHandle* tc,
+                      const float* verts3,
+                      int vertCount,
+                      const int* tris3,
+                      int triCount,
+                      const uint8_t* triAreasOrNull,
+                      const NavBakeConfig* cfg,
+                      const NavOffMeshConnectionC* offMeshCons,
+                      int offMeshConCount);
 
 /// Dynamic obstacles via TileCache (requires `tc != NULL`).
 NavStatus navAddCylinderObstacle(NavTileCacheHandle* tc, const float* pos3,

@@ -11,6 +11,7 @@ public import recast_import : NavPolyRef,
     NavQueryHandle,
     NavCrowdHandle,
     NavBakeConfig,
+    NavOffMeshConnectionC,
     NavQueryFilterC,
     NavCrowdAgentParamsC;
 
@@ -43,6 +44,17 @@ int navBakeGeometry(NavMeshHandle* mesh,
                     int triCount,
                     const(ubyte)* triAreasOrNull,
                     const(NavBakeConfig)* cfg);
+
+int navBakeGeometryEx(NavMeshHandle* mesh,
+                      NavTileCacheHandle* tc,
+                      const(float)* verts3,
+                      int vertCount,
+                      const(int)* tris3,
+                      int triCount,
+                      const(ubyte)* triAreasOrNull,
+                      const(NavBakeConfig)* cfg,
+                      const(NavOffMeshConnectionC)* offMeshCons,
+                      int offMeshConCount);
 
 NavStatus navAddCylinderObstacle(NavTileCacheHandle* tc, const(float)* pos3,
                                  float radius, float height, NavObstacleRef* outRef);

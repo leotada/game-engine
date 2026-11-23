@@ -52,6 +52,26 @@ NavMesh loaded = loadNavMeshFile("assets/nav/city_sector.navmesh");
 
 - Use the 5-argument overload `bakeNavMesh(navMesh, verts, indices, cfg)` when you only need a static `NavMesh` without `NavTileCache`.
 
+### Off-mesh links (jumps, ladders, drops)
+
+Pass `NavOffMeshConnection[]` as the last argument of `bakeNavMesh` (after the optional per-triangle `triAreas`) to connect surfaces that are not adjacent in the geometry:
+
+```d
+NavOffMeshConnection jump;
+jump.start = Vec3(-3, 0, 0);   // must be within `radius` of walkable ground (after agent-radius erosion)
+jump.end   = Vec3( 3, 0, 0);
+jump.radius = 1.0f;
+jump.bidirectional = true;
+jump.userId = 42;              // your own link id
+bakeNavMesh(navMesh, tileCache, verts, indices, cfg, null, [jump]);
+```
+
+- `findPath` routes through the link, and `findStraightPath` marks the crossing with `NavStraightPathFlags.offMeshConnection`; a crowd agent that follows it reports `NavAgentState.offMesh` so the game can play its jump or ladder animation.
+- The links are stored in the tile data: they survive `saveNavMeshToBytes` / `loadNavMeshFromBytes`, and with a `NavTileCache` they also survive obstacle-driven tile rebuilds (the cache keeps the set).
+- `area` and `flags` feed `NavQueryFilter` (flags 0 = the default walk flag), so a filter can price or forbid a link kind.
+- Covered by unit tests with a link crossing a tile border. An earlier test layout with the link end 0.2 m inside a tile border did not connect; this was not root-caused, so keep endpoints well inside the baked tile when you can.
+- The shim (`source/bindings/recast/recast_shim.cpp`, new `navBakeGeometryEx`) is compiled into `libs/<target>/librecast_shim.a`; rebuild it with `tools/build_sdl3_deps.sh` after pulling this change.
+
 ---
 
 ## 3. Pathfinding Queries (`NavQuery`)

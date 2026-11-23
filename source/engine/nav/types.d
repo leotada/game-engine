@@ -4,7 +4,7 @@ module engine.nav.types;
 import engine.core.pod : isPod;
 import engine.math.vec : Vec3;
 import bindings.recast : NavBakeConfigC = NavBakeConfig,
-    NavQueryFilterC, NavCrowdAgentParamsC,
+    NavOffMeshConnectionC, NavQueryFilterC, NavCrowdAgentParamsC,
     NAV_STATUS_SUCCEDED, NAV_STATUS_FAILED, NAV_STATUS_INPROGRESS;
 
 @safe:
@@ -107,6 +107,31 @@ struct NavQueryFilter {
     }
 }
 
+/// Off-mesh link (jump, ladder, drop, teleport) baked into the navmesh. `start` and `end` must lie
+/// within `radius` of walkable ground. An agent that follows the path onto the link reports
+/// `NavAgentState.offMesh` and the game animates the traversal (see `NavOffMeshLink`).
+struct NavOffMeshConnection {
+    Vec3 start;
+    Vec3 end;
+    float radius = 0.6f;
+    bool bidirectional = true;
+    ubyte area = 0;          /// area id used by `NavQueryFilter.areaCosts`
+    ushort flags = 0;        /// poly flags; 0 = the default walk flag
+    uint userId = 0;         /// returned to the game, e.g. an index into its own link table
+
+    NavOffMeshConnectionC toC() const nothrow @nogc {
+        NavOffMeshConnectionC c;
+        c.start = [start.x, start.y, start.z];
+        c.end = [end.x, end.y, end.z];
+        c.radius = radius;
+        c.bidirectional = bidirectional ? 1 : 0;
+        c.area = area;
+        c.flags = flags;
+        c.userId = userId;
+        return c;
+    }
+}
+
 /// Crowd steering and local avoidance parameters per agent.
 struct NavCrowdAgentParams {
     float radius = 0.5f;
@@ -153,6 +178,7 @@ struct NavRaycastHit {
 }
 
 static assert(isPod!NavBakeConfig);
+static assert(isPod!NavOffMeshConnection);
 static assert(isPod!NavQueryFilter);
 static assert(isPod!NavCrowdAgentParams);
 static assert(isPod!NavStraightPathPoint);
