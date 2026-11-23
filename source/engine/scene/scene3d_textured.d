@@ -9,7 +9,6 @@ import std.math : cos, PI;
 import bindings.wgpu;
 import engine.core.log;
 import engine.core.podbuf : PodBuffer;
-import engine.core.pod : Pod;
 import engine.editor.components : MAX_REFLECTION_PROBES, ReflectionProbe;
 import engine.gpu.buffer;
 import engine.gpu.clustered : ClusteredLightCuller, computeClusterZParams;
@@ -2464,8 +2463,10 @@ package(engine) BoundingSphere estimatePoseSphereFromPalette(BoundingSphere bind
 /**
  * Open-addressed `(mesh, material, lod) → batch index` table with linear
  * probing. `reset` bumps an epoch instead of clearing slots, so starting a
- * frame is O(1). Capacity is a power of two ≥ 2× the batch limit, which keeps
- * probes short and guarantees `insert` finds a free slot.
+ * frame is O(1). Capacity is a power of two ≥ 2× the batch capacity, which
+ * keeps probes short and guarantees `insert` finds a free slot. Slots are
+ * malloc-backed so `reserve` may run inside the frame loop (`@nogc`); it
+ * forgets every entry, so the owner re-inserts the live batches after growing.
  */
 package(engine) struct BatchMap {
     enum uint none = uint.max;
@@ -2477,21 +2478,32 @@ package(engine) struct BatchMap {
         uint epoch;
         uint batch;
     }
-    private Pod!Slot[] slots;
+    private PodBuffer!Slot slots;
     private uint epoch = 1;
 
-    void reserve(size_t maxBatches) {
+    /// Size the table for `maxBatches` entries and forget every entry.
+    void reserve(size_t maxBatches) nothrow @nogc {
         size_t cap = 16;
         while (cap < maxBatches * 2) cap <<= 1;
-        slots = new Slot[cap];
+        slots.resize(cap); // zero epochs: every slot reads as free
+        slots[][] = Slot.init;
+        epoch = 1;
+    }
+
+    /// Batches the table holds before `reserve` must grow it.
+    size_t batchCapacity() const nothrow @nogc { return slots.length / 2; }
+
+    /// Free the slot storage.
+    void release() nothrow @nogc {
+        slots.release();
         epoch = 1;
     }
 
     /// Forget every entry (O(1) except on epoch wrap).
-    void reset() pure nothrow @nogc {
+    void reset() nothrow @nogc {
         epoch++;
         if (epoch == 0) {
-            foreach (ref sl; slots) sl.epoch = 0;
+            foreach (ref sl; slots[]) sl.epoch = 0;
             epoch = 1;
         }
     }
@@ -2558,6 +2570,18 @@ package(engine) struct BatchMap {
     foreach (uint k; 0 .. 16)
         assert(map.find(k * 16, 0, 0) == k);
     assert(!map.insert(999, 0, 0, 99));
+
+    // Growing forgets entries; the owner re-inserts them into the larger table.
+    assert(map.batchCapacity == 8);
+    map.reserve(64);
+    assert(map.batchCapacity == 64);
+    assert(map.find(0, 0, 0) == BatchMap.none);
+    foreach (uint k; 0 .. 64)
+        assert(map.insert(k * 16, 0, 0, k));
+    foreach (uint k; 0 .. 64)
+        assert(map.find(k * 16, 0, 0) == k);
+    map.release();
+    assert(map.find(0, 0, 0) == BatchMap.none);
 }
 
 @safe unittest {
