@@ -129,6 +129,26 @@ struct RenderStats {
     uint staticRangesDrawn;
     /// Color-pass instances per LOD level (index 3 counts LOD3 and coarser).
     uint[4] lodHistogram;
+    /// Draws dropped because the batch table hit `MAX_BATCHES_HARD`
+    /// (always 0 below that ceiling: the table grows instead).
+    uint droppedDraws;
+}
+
+/// Occupancy of the `Scene3DTextured` (mesh, material, lod) batch table, for
+/// perf overlays and headless budget gates (`Scene3DTextured.batchStats`).
+struct BatchStats {
+    /// Batches used by the frame recorded since the last `begin`, including
+    /// batches whose instances were all culled (`RenderStats.batches` counts
+    /// only the drawn ones).
+    uint used;
+    /// Highest `used` since the scene was created.
+    uint peak;
+    /// Current table size; it doubles on demand up to `MAX_BATCHES_HARD`.
+    uint capacity;
+    /// Times the table grew past its initial `create` capacity.
+    uint growths;
+    /// Draws dropped at `MAX_BATCHES_HARD` since the scene was created.
+    ulong droppedDraws;
 }
 
 /// Stable counting sort of `items` by `classes[i] ∈ 0..3` through `scratch`.
@@ -396,7 +416,6 @@ struct Scene3DTextured {
     private enum MAX_VARIANTS = 64;
     private PipelineVariant[MAX_VARIANTS] variants;
     private uint variantCount = 0;
-    private bool warnedBatchOverflow = false;
 
     private enum MAX_SURFACE_SHADERS = 16;
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
@@ -408,6 +427,9 @@ struct Scene3DTextured {
     private PodBuffer!uint sortOrder;
     private PodBuffer!float sortFarthest;
     private uint batchCount = 0;
+    private uint batchPeak = 0;
+    private uint batchGrowths = 0;
+    private ulong droppedDrawsTotal = 0;
 
     // Automatic LOD inputs, captured in `begin`.
     private Vec3 lodCameraPos;
@@ -1060,6 +1082,13 @@ struct Scene3DTextured {
 
     /// Counters of the frame recorded since the last `begin`.
     RenderStats stats() const nothrow @nogc { return frameStats; }
+
+    /// Batch-table occupancy: this frame's batches, the peak since `create`,
+    /// the current capacity, growth count and total dropped draws.
+    BatchStats batchStats() const nothrow @nogc {
+        return BatchStats(batchCount, batchPeak, cast(uint) batches.length,
+                          batchGrowths, droppedDrawsTotal);
+    }
 
     /// Camera frustum of the current frame (valid after `begin`).
     ref const(Frustum) frustum() const return nothrow @nogc { return cameraFrustum; }
@@ -2365,14 +2394,19 @@ struct Scene3DTextured {
         if (found != BatchMap.none) return &batches[found];
         if (batchCount >= batches.length) {
             if (batches.length >= MAX_BATCHES_HARD) {
-                if (!warnedBatchOverflow)
-                    warn("Scene3DTextured: more than ", batches.length,
-                         " (mesh, material, lod) batches; extra draws are dropped");
-                warnedBatchOverflow = true;
+                // Warn on the first drop of every frame that drops; the
+                // per-frame and lifetime counts are in the stats.
+                if (frameStats.droppedDraws == 0)
+                    warn("Scene3DTextured: batch table at its ", batches.length,
+                         " (mesh, material, lod) ceiling; dropping draws this frame",
+                         " (see RenderStats.droppedDraws)");
+                frameStats.droppedDraws++;
+                droppedDrawsTotal++;
                 return null;
             }
             immutable size_t want = batches.length < 8 ? 16 : batches.length * 2;
             reserveBatches(want < MAX_BATCHES_HARD ? want : MAX_BATCHES_HARD);
+            batchGrowths++;
         }
         auto b = &batches[batchCount];
         b.mesh = null;
@@ -2384,6 +2418,7 @@ struct Scene3DTextured {
         b.prepared = false;
         batchMap.insert(meshKey, matKey, lod, batchCount);
         batchCount++;
+        if (batchCount > batchPeak) batchPeak = batchCount;
         return b;
     }
 
@@ -2652,8 +2687,35 @@ package(engine) struct BatchMap {
     assert(sb !is null && sb.skinnedMesh is &skinned && sb.mesh is null);
     assert(s.findOrAddSkinned(skinned, mats[0]) is sb);
     assert(s.batchCount == 41);
+
+    auto st = s.batchStats();
+    assert(st.used == 41 && st.peak == 41 && st.capacity == 64);
+    assert(st.growths == 3 && st.droppedDraws == 0);
+
+    // A new frame (what `begin` does to the table) keeps peak and capacity.
+    s.batchCount = 0;
+    s.batchMap.reset();
+    assert(s.findOrAdd(meshes[0], mats[0], 0) !is null);
+    st = s.batchStats();
+    assert(st.used == 1 && st.peak == 41 && st.capacity == 64);
     s.releaseBatches();
     assert(s.batches.length == 0);
+}
+
+@("scene3dTextured.batchTableHardCeiling") unittest {
+    auto s = new Scene3DTextured;
+    s.reserveBatches(Scene3DTextured.MAX_BATCHES_HARD);
+    foreach (size_t k; 1 .. Scene3DTextured.MAX_BATCHES_HARD + 1)
+        assert(s.findOrAddKey(k, 0, 0) !is null);
+    // Existing keys still resolve at the ceiling; new ones are dropped and counted.
+    assert(s.findOrAddKey(1, 0, 0) is &s.batches[0]);
+    assert(s.findOrAddKey(0, 0, 0) is null);
+    assert(s.findOrAddKey(0, 1, 0) is null);
+    assert(s.stats().droppedDraws == 2);
+    immutable st = s.batchStats();
+    assert(st.used == Scene3DTextured.MAX_BATCHES_HARD && st.capacity == Scene3DTextured.MAX_BATCHES_HARD);
+    assert(st.growths == 0 && st.droppedDraws == 2);
+    s.releaseBatches();
 }
 
 @safe unittest {
