@@ -5,7 +5,7 @@ import core.stdc.math : sqrtf;
 import engine.core.pod : isPod;
 import engine.ecs.store : EntityId;
 import engine.math.vec : Vec3;
-import engine.physics.body : getBodyEntity, getShapeEntity, noPhysicsEntity;
+import engine.physics.body : getBodyEntity, getMass, getShapeEntity, noPhysicsEntity;
 import engine.physics.world : PhysicsWorld;
 
 @safe:
@@ -40,8 +40,27 @@ struct PhysicsHitEvent {
     Vec3 point;
     Vec3 normal;
     float approachSpeed = 0.0f;
+    /// Sum of Box3D's `totalNormalImpulse` over the contact manifold points. Box3D accumulates it
+    /// across solver sub-steps and includes speculative points, so it overestimates the real
+    /// impact impulse and depends on the sub-step count. Use `approachImpulse` for damage.
     float normalImpulse = 0.0f;
     float frictionImpulse = 0.0f;
+    /// Momentum change of a fully inelastic impact along the normal, in kg*m/s:
+    /// `approachSpeed * reducedMass`, where the reduced mass is `mA*mB/(mA+mB)` and a static or
+    /// kinematic body (zero mass) counts as infinite. Independent of sub-stepping; 0 when both
+    /// bodies are massless.
+    float approachImpulse = 0.0f;
+}
+
+/// Reduced mass of two bodies for a normal impact. A non-positive mass is treated as infinite
+/// (static / kinematic), so the result is the other body's mass; 0 when both are non-positive.
+float reducedMass(float massA, float massB) nothrow @nogc pure {
+    immutable bool aFinite = massA > 0.0f;
+    immutable bool bFinite = massB > 0.0f;
+    if (aFinite && bFinite) return massA * massB / (massA + massB);
+    if (aFinite) return massA;
+    if (bFinite) return massB;
+    return 0.0f;
 }
 
 static assert(isPod!PhysicsContactEvent);
@@ -156,6 +175,8 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
         event.entityB = getBodyEntity(event.bodyB);
     }
 
+    event.approachImpulse = raw.approachSpeed * reducedMass(getMass(event.bodyA), getMass(event.bodyB));
+
     if (b3Contact_IsValidD(raw.contactId)) {
         b3ContactData data = b3Contact_GetDataD(raw.contactId);
         foreach (mi; 0 .. data.manifoldCount) {
@@ -176,4 +197,13 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
     static assert(isPod!PhysicsContactEvent);
     static assert(isPod!PhysicsSensorEvent);
     static assert(isPod!PhysicsHitEvent);
+}
+
+@safe nothrow @nogc unittest {
+    import std.math : fabs;
+    assert(fabs(reducedMass(1000.0f, 1000.0f) - 500.0f) < 1e-3f);
+    assert(reducedMass(0.0f, 800.0f) == 800.0f);   // static wall: the dynamic body's mass
+    assert(reducedMass(800.0f, 0.0f) == 800.0f);
+    assert(reducedMass(0.0f, 0.0f) == 0.0f);
+    assert(fabs(reducedMass(1.0f, 1.0e6f) - 1.0f) < 1e-3f);
 }

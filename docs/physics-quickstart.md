@@ -59,7 +59,7 @@ userData). Recover with `getBodyEntity` / `getShapeEntity`.
 
 Runtime body and shape helpers: `set/getLinearVelocity`, `set/getAngularVelocity`,
 `applyForceToCenter`, `applyForce` (at a world point), `applyLinearImpulse`, `applyLinearImpulseToCenter`, `applyAngularImpulse`,
-`getMass`, `getRotation`, `setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
+`getMass`, `getMassData` / `setMassData` / `resetMassFromShapes` (mass, local center of mass and inertia tensor; `BodyMassData.diagonal(...)` overrides them, e.g. a vehicle whose inertia comes from its bounding box), `getLocalCenterOfMass`, `getLocalInertiaDiagonal`, `getRotation`, `setLinearDamping`, `setAngularDamping`, `setBodyRestitution`, `setBodyDensity`,
 `setBodyType` / `getBodyType`, `isBodyAwake` / `setBodyAwake`, `enableBodySleep` /
 `setBodySleepThreshold`, `setBodyBullet` / `isBodyBullet`, `setBodyFilter` / `setShapeFilter`,
 `setBodySurfaceMaterial` / `setShapeSurfaceMaterial`, `destroyBody`, and
@@ -96,7 +96,9 @@ world.step(dt);
 drainPhysicsEvents(world, listener);
 ```
 
-`PhysicsHitEvent` includes `materialIdA`, `materialIdB`, `approachSpeed`, `normalImpulse`, and `frictionImpulse`.
+`PhysicsHitEvent` includes `materialIdA`, `materialIdB`, `approachSpeed`, `approachImpulse`, `normalImpulse`, and `frictionImpulse`.
+
+For impact damage, prefer `approachSpeed` (closing speed along the normal, m/s, always positive) or `approachImpulse` (`approachSpeed` times the reduced mass `mA*mB/(mA+mB)`, kg*m/s; a static body counts as infinite mass). `normalImpulse` is the sum of Box3D's `totalNormalImpulse` over the manifold points, which accumulates across solver sub-steps and includes speculative points, so it overestimates the impact and changes with the sub-step count; use it only to detect that a contact interacted.
 
 ## Queries
 

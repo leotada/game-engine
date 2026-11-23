@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Physics mass data and calibrated hit impulse** (`engine.physics.body`, `engine.physics.events`, `docs/physics-quickstart.md`):
+  `getMassData` / `setMassData` / `resetMassFromShapes` / `getLocalCenterOfMass` / `getLocalInertiaDiagonal` and the
+  `BodyMassData` POD (`BodyMassData.diagonal`) expose and override mass, center of mass and inertia through the Box3D
+  `b3Body_*MassData` bindings. `PhysicsHitEvent.approachImpulse` (= `approachSpeed` x reduced mass, kg*m/s) is a
+  sub-step independent impact measure; `normalImpulse` is documented as Box3D's sub-step-accumulated total.
 - **`Scene3DTextured.create(gpu, maxBatches, createIbl)`**: `createIbl = false` skips the procedural sky + IBL prefilter
   (~1 s in debug builds) and uses `IblEnvironment.createSolid` (flat grey) until the game binds its own environment with
   `setEnvironment` / `setEnvironmentBindGroup`. Default `true` keeps existing behavior. See `docs/graphics.md`.
