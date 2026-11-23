@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **LDC 1.43.0 verified** (`docs/dmd-inline-crash.md` › Installing a newer LDC than the distro ships): release builds of
+  `player` / `gesc`, `dub test --config=library` and `--assert-no-gc` pass. The editor must be linked against the shared
+  druntime (`-link-defaultlib-shared`) because the static druntime of 1.43 has no `rt_loadLibrary` (hot reload).
 - **DMD 2.114.0 support** (`docs/dmd-inline-crash.md` › Status on DMD 2.114.0): the debug build segfaulted (backend
   stack overflow) in `engine.gpu.sky`, `engine.graphics.decals` and `engine.terrain.renderer`. The preprocessed shader
   sources in `engine.gpu.shaders` are now `immutable string` globals instead of `enum`s. **Rebuild

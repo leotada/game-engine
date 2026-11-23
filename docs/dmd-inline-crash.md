@@ -46,6 +46,30 @@ Release builds should use LDC2 (`--compiler=ldc2 --build=release`); DMD is for d
 If another DMD `-inline` crash shows up, bisect per module with
 `dmd -c -of/tmp/x.o -inline -Isource -preview=dip1000 <file>.d`.
 
+### Installing a newer LDC than the distro ships
+
+openSUSE Leap 16.1 only packages LDC 1.40.1. Install the official prebuilt tarball under `~/opt` (no root,
+the system package stays untouched):
+
+```bash
+gh release download v1.43.0 --repo ldc-developers/ldc -p 'ldc2-1.43.0-linux-x86_64.tar.xz' -p 'ldc2-1.43.0.sha256sums.txt'
+grep linux-x86_64 ldc2-1.43.0.sha256sums.txt | sha256sum -c -
+tar -C ~/opt -xf ldc2-1.43.0-linux-x86_64.tar.xz
+dub build --config=player --compiler=$HOME/opt/ldc2-1.43.0-linux-x86_64/bin/ldc2 --build=release
+```
+
+LDC 1.43 (frontend 2.113, LLVM 22) builds `player`, `gesc` and the unit tests unchanged. **The editor needs a
+shared druntime**: the static `libdruntime-ldc.a` of 1.43 no longer contains `rt_loadLibrary`, which
+`engine.hotreload.loader` (`Runtime.loadLibrary`) uses, so linking fails with `undefined reference to
+rt_loadLibrary`. Build the editor with:
+
+```bash
+L=$HOME/opt/ldc2-1.43.0-linux-x86_64
+DFLAGS="-link-defaultlib-shared -L-rpath=$L/lib" dub build --config=editor --compiler=$L/bin/ldc2 --build=release
+```
+
+The `-symgc` configs still need the custom LDC fork (`-gc-card-marking`); stock 1.43 rejects that flag.
+
 ## Status on DMD 2.114.0
 
 - **The `-inline` bug above is not fixed.** The minimal reproducer still segfaults with
