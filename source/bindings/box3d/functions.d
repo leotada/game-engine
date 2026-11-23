@@ -11,6 +11,7 @@ pragma(mangle, "b3CreateWorld") b3WorldId b3CreateWorldD(const(b3WorldDef)* def)
 pragma(mangle, "b3DestroyWorld") void b3DestroyWorldD(b3WorldId worldId);
 pragma(mangle, "b3World_IsValid") bool b3World_IsValidD(b3WorldId id);
 pragma(mangle, "b3World_Step") void b3World_StepD(b3WorldId worldId, float timeStep, int subStepCount);
+pragma(mangle, "b3World_GetProfile") b3Profile b3World_GetProfileD(b3WorldId worldId);
 pragma(mangle, "b3World_SetGravity") void b3World_SetGravityD(b3WorldId worldId, b3Vec3 gravity);
 pragma(mangle, "b3World_GetGravity") b3Vec3 b3World_GetGravityD(b3WorldId worldId);
 pragma(mangle, "b3World_EnableSleeping") void b3World_EnableSleepingD(b3WorldId worldId, bool flag);

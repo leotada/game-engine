@@ -31,6 +31,9 @@ import engine.terrain.terrain : Terrain;
 
 @safe:
 
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler : gpuFrameScope;
+
 struct TerrainRenderSettings {
     /// Skirt depth at LOD0 (meters; scaled by the LOD step).
     float skirtDepth = 1.5f;
@@ -167,6 +170,7 @@ struct TerrainRenderer {
 
     /// Cull and select LODs for `camera`, upload the visible instances.
     void update(ref Terrain terrain, ref const Camera camera) nothrow @nogc @trusted {
+        auto z = profileZone!"terrain.update"();
         immutable f = Frustum.fromViewProj(camera.viewProjection());
         immutable vis = terrain.chunks.update(f, camera.position);
         if (vis > 0)
@@ -185,6 +189,8 @@ struct TerrainRenderer {
         if (terrain is null || scene is null || !frame.valid) return;
         auto ch = &terrain.chunks;
         if (ch.visibleCount == 0) return;
+        auto z = profileZone!"terrain.draw"();
+        auto g = gpuFrameScope!"gpu.terrain"(frame);
         frame.setPipeline(mainPipe);
         frame.setBindGroup(0, scene.frameGroup());
         frame.setBindGroup(1, mainBg);

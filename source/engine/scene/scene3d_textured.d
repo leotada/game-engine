@@ -46,6 +46,8 @@ import engine.scene.light :
     POINT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION;
 import engine.gpu.pipeline : FRAME_BINDING_COUNT;
 import engine.water.gpu_data : GpuWaterData, WATER_DATA_SIZE;
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler : gpuScope, gpuFrameScope;
 
 @safe:
 
@@ -1094,6 +1096,7 @@ struct Scene3DTextured {
     ref const(Frustum) frustum() const return nothrow @nogc { return cameraFrustum; }
 
     void begin(ref const Camera camera) @trusted {
+        auto zBegin = profileZone!"scene.begin"();
         lodCameraPos = camera.position;
         lodFovY = camera.fovY;
         frameCamera = camera;
@@ -1252,6 +1255,8 @@ struct Scene3DTextured {
                        scope SpotShadowMap*[MAX_SPOT_SHADOW_CASTERS] spotShadows,
                        bool cascaded) @trusted {
         if (!frame.valid || frame.postResolved) return;
+        auto zShadows = profileZone!"scene.shadows"();
+        auto zLights = profileZone!"scene.shadows.lights"();
 
         cascadesPending = cascaded && dirShadow !is null;
         setLightsSlices(dirLight, dirEnabled, shadowBias, points, spots, dirShadow, pointShadows, spotShadows);
@@ -1283,6 +1288,8 @@ struct Scene3DTextured {
             }
         }
         if (!anyCast) return;
+        zLights.close();
+        auto zPrepare = profileZone!"scene.shadows.prepare"();
 
         ensureShadowResources();
 
@@ -1301,6 +1308,8 @@ struct Scene3DTextured {
             casterBatches++;
         }
 
+        zPrepare.close();
+        auto zUpload = profileZone!"scene.shadows.upload"();
         // Pack all light VP matrices into aligned 256-byte dynamic-offset slots.
         import core.stdc.string : memcpy;
         void storeVp(uint slot, ref const float[16] m) {
@@ -1340,6 +1349,8 @@ struct Scene3DTextured {
         wgpuQueueWriteBuffer(queue, shadowVpBuf, 0, shadowVpStaging.ptr, maxSlotUsed * SHADOW_VP_STRIDE);
         ensureSkinPalettesUploaded();
 
+        zUpload.close();
+        auto zCasters = profileZone!"scene.shadows.casters"();
         // Cull dynamic casters per point-face / spot view (the directional
         // view uses the batch partition from `prepareBatch`).
         localCulled[] = false;
@@ -1367,17 +1378,23 @@ struct Scene3DTextured {
             uploadCasterStaging();
         }
 
+        zCasters.close();
+        auto zEncode = profileZone!"scene.shadows.encode"();
         frame.suspendScenePass();
         scope(exit) frame.resumeScenePass();
+        auto gShadows = gpuScope!"gpu.shadows"(frame.encoder); // ends before the resume (LIFO)
 
         immutable bool anyGeometry = casterBatches > 0 || staticCount > 0;
         if (cascadeCount > 0) {
+            auto g = gpuScope!"gpu.shadows.cascades"(frame.encoder);
             foreach (c; 0 .. cascadeCount)
                 encodeShadowView(frame.encoder, dirShadow.layerViews[c], c, anyGeometry,
                                  ShadowViewKind.cascade);
         } else if (dirEnabled && dirLight.castShadows && dirShadow !is null) {
+            auto g = gpuScope!"gpu.shadows.directional"(frame.encoder);
             encodeShadowView(frame.encoder, dirShadow.depthView, 0, anyGeometry, ShadowViewKind.fixedDir);
         }
+        auto gPoints = gpuScope!"gpu.shadows.points"(frame.encoder);
         foreach (i; 0 .. frameData.pointCount) {
             immutable int slot = pointLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_POINT_SHADOW_CASTERS || pointShadows[slot] is null) continue;
@@ -1389,6 +1406,8 @@ struct Scene3DTextured {
                     anyGeometry, ShadowViewKind.local);
             }
         }
+        gPoints.close();
+        auto gSpots = gpuScope!"gpu.shadows.spots"(frame.encoder);
         foreach (i; 0 .. frameData.spotCount) {
             immutable int slot = spotLightsStaging[i].shadowSlot;
             if (slot < 0 || slot >= cast(int) MAX_SPOT_SHADOW_CASTERS || spotShadows[slot] is null) continue;
@@ -1770,6 +1789,8 @@ struct Scene3DTextured {
         import std.algorithm.sorting : sort;
 
         if (!frame.valid) return;
+        auto zEnd = profileZone!"scene.end"();
+        auto zUniforms = profileZone!"scene.end.uniforms"();
 
         immutable float[4] vpRect = frame.activeViewportRect();
         frameData.viewportRect = vpRect;
@@ -1779,19 +1800,25 @@ struct Scene3DTextured {
             ensureLocalLightStorageUploaded();
         }
         updateBuffer(queue, frameUniformBuf, (&frameData)[0 .. 1]);
+        zUniforms.close();
 
         if (clusteredEnabled && (frameData.pointCount > 0 || frameData.spotCount > 0)) {
+            auto zCluster = profileZone!"scene.end.clusterCull"();
             frame.suspendScenePass();
+            auto gCluster = gpuScope!"gpu.clusterCull"(frame.encoder);
             clusterCuller.encode(
                 frame.encoder, queue,
                 pointLightsBuf, pointLightBufCap * GpuPointLightUbo.sizeof,
                 spotLightsBuf, spotLightBufCap * GpuSpotLightUbo.sizeof,
                 lightBufGen,
                 frameCamera, frameData.pointCount, frameData.spotCount);
+            gCluster.close();
             frame.resumeScenePass();
         }
 
+        auto zSkin = profileZone!"scene.end.skinUpload"();
         ensureSkinPalettesUploaded();
+        zSkin.close();
         setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);
         frame.setBindGroup(0, frameBindGroup);
         frame.setBindGroup(2, iblBindGroup);
@@ -1806,6 +1833,7 @@ struct Scene3DTextured {
         // Pass 1: SSR-enabled opaque batches (after opaque snapshot) + transparentHooks (water).
         // Pass 2: alpha/transmissive batches back-to-front (re-snapshots if pass 1/water drew).
         // Pass 3: additive.
+        auto zPrepare = profileZone!"scene.end.prepare"();
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0) continue;
             prepareBatch(b, null);
@@ -1813,11 +1841,17 @@ struct Scene3DTextured {
             frameStats.instancesSubmitted += cast(uint) b.instances.length;
             frameStats.instancesVisible += b.colorCount;
         }
+        zPrepare.close();
 
         uint orderCount = 0;
         bool snapshotTaken = false;
         bool sceneDirtySinceSnapshot = false;
-        foreach (pass; 0 .. 4) {
+        // Unrolled so every pass gets its own compile-time zone names.
+        static foreach (pass; 0 .. 4) {{
+            enum string passName = ["opaque", "ssr", "alpha", "additive"][pass];
+            auto zPass = profileZone!("scene.end." ~ passName)();
+            auto gPass = gpuFrameScope!("gpu.scene." ~ passName)(frame);
+            auto zSort = profileZone!("scene.end." ~ passName ~ ".sort")();
             orderCount = 0;
             foreach (i, ref b; batches[0 .. batchCount]) {
                 if (b.colorCount == 0) continue;
@@ -1856,24 +1890,43 @@ struct Scene3DTextured {
                     frame.setBindGroup(2, iblBindGroup);
                 }
             }
-            foreach (idx; sortOrder[0 .. orderCount]) {
-                drawBatch(frame, batches[idx]);
-                sceneDirtySinceSnapshot = true;
+            zSort.close();
+            {
+                auto zDraw = profileZone!("scene.end." ~ passName ~ ".batches")();
+                auto gDraw = gpuFrameScope!("gpu.scene." ~ passName ~ ".batches")(frame);
+                foreach (idx; sortOrder[0 .. orderCount]) {
+                    drawBatch(frame, batches[idx]);
+                    sceneDirtySinceSnapshot = true;
+                }
             }
             if (pass == 0) {
-                foreach (sib; staticBufs[0 .. staticCount]) {
-                    drawStatic(frame, *sib);
-                    sceneDirtySinceSnapshot = true;
+                {
+                    auto zStatic = profileZone!"scene.end.opaque.static"();
+                    auto gStatic = gpuFrameScope!"gpu.scene.opaque.static"(frame);
+                    foreach (sib; staticBufs[0 .. staticCount]) {
+                        drawStatic(frame, *sib);
+                        sceneDirtySinceSnapshot = true;
+                    }
                 }
-                foreach (hook; opaqueHooks[0 .. opaqueHookCount]) {
-                    hook(frame);
-                    sceneDirtySinceSnapshot = true;
+                {
+                    auto zHooks = profileZone!"scene.end.opaque.hooks"();
+                    auto gHooks = gpuFrameScope!"gpu.scene.opaque.hooks"(frame);
+                    foreach (hook; opaqueHooks[0 .. opaqueHookCount]) {
+                        hook(frame);
+                        sceneDirtySinceSnapshot = true;
+                    }
                 }
-                foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) {
-                    hook(frame);
-                    sceneDirtySinceSnapshot = true;
+                {
+                    auto zHooks = profileZone!"scene.end.opaque.postHooks"();
+                    auto gHooks = gpuFrameScope!"gpu.scene.opaque.postHooks"(frame);
+                    foreach (hook; postOpaqueHooks[0 .. postOpaqueHookCount]) {
+                        hook(frame);
+                        sceneDirtySinceSnapshot = true;
+                    }
                 }
                 if (skyEnabled) {
+                    auto zSky = profileZone!"scene.end.opaque.sky"();
+                    auto gSky = gpuFrameScope!"gpu.scene.opaque.sky"(frame);
                     sky.draw(frame, frameBindGroup);
                     sceneDirtySinceSnapshot = true;
                 }
@@ -1882,6 +1935,8 @@ struct Scene3DTextured {
                     frame.setBindGroup(2, iblBindGroup);
                 }
             } else if (pass == 1) {
+                auto zHooks = profileZone!"scene.end.ssr.transparentHooks"();
+                auto gHooks = gpuFrameScope!"gpu.scene.ssr.transparentHooks"(frame);
                 foreach (hook; transparentHooks[0 .. transparentHookCount]) {
                     hook(frame);
                     sceneDirtySinceSnapshot = true;
@@ -1891,7 +1946,7 @@ struct Scene3DTextured {
                     frame.setBindGroup(2, iblBindGroup);
                 }
             }
-        }
+        }}
         setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);
     }
 

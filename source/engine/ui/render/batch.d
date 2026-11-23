@@ -15,6 +15,8 @@ import engine.ui.tree;
 
 @safe:
 
+import engine.devtools.profiler : profileZone;
+
 /// Single 2D UI vertex layout (80 bytes, POD).
 struct UiVertex {
     float x = 0, y = 0;                  // 0..8: position in pixels
@@ -1203,6 +1205,7 @@ struct UiBatchRenderer {
     /// Flush the batch into GPU commands inside an active render pass.
     void flush(WGPURenderPassEncoder pass, float screenW, float screenH) nothrow @nogc @trusted {
         if (indexCount == 0 || vertexCount == 0) return;
+        auto z = profileZone!"ui.flush"();
 
         closeSegment();
         if (segmentCount == 0) return;

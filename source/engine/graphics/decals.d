@@ -32,6 +32,9 @@ import engine.scene.scene3d_textured : Scene3DTextured;
 
 @safe:
 
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler : gpuFrameScope;
+
 /// Per-instance GPU data (176 bytes, 11 vec4 attributes).
 struct DecalInstanceGpu {
     float[16] model;
@@ -317,6 +320,7 @@ struct DecalRenderer {
 
     /// Cull against the camera and upload the visible instances.
     void update(ref DecalSystem sys, ref const Camera camera) nothrow @nogc @trusted {
+        auto z = profileZone!"decals.update"();
         immutable f = Frustum.fromViewProj(camera.viewProjection());
         uint n = sys.gather(f);
         if (n > instanceCapacity) n = instanceCapacity;
@@ -326,6 +330,8 @@ struct DecalRenderer {
 
     private void draw(ref FrameContext frame) nothrow @nogc @trusted {
         if (drawCount == 0 || renderer is null || scene is null || !frame.valid) return;
+        auto z = profileZone!"decals.draw"();
+        auto g = gpuFrameScope!"gpu.decals"(frame);
         renderer.snapshotOpaque(frame);
         auto depthView = renderer.opaqueDepthView();
         if (depthView is null) return;

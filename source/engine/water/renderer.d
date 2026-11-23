@@ -29,6 +29,9 @@ import engine.water.gpu_data : GpuWaterData, MAX_WATER_BODIES, packWaterBody;
 
 @safe:
 
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler : gpuFrameScope, gpuComputeBegin, gpuComputeEnd, NO_GPU_SCOPE;
+
 /// Resolution of each body's wave/foam simulation texture.
 enum uint WATER_SIM_RES = 256;
 
@@ -248,6 +251,8 @@ struct WaterRenderer {
     /// surface uniforms, and steps the simulations. Also sets the scene time.
     void update(ref const Camera camera, float time) nothrow @nogc @trusted {
         if (scene is null) return;
+        auto z = profileZone!"water.update"();
+        uint gSim = NO_GPU_SCOPE;
         scene.setTime(time);
         GpuWaterData data;
         WGPUCommandEncoder enc;
@@ -266,6 +271,7 @@ struct WaterRenderer {
                 enc = wgpuDeviceCreateCommandEncoder(device, &ced);
                 WGPUComputePassDescriptor cpd;
                 pass = wgpuCommandEncoderBeginComputePass(enc, &cpd);
+                gSim = gpuComputeBegin!"gpu.water.sim"(pass);
                 wgpuComputePassEncoderSetPipeline(pass, simPipe);
             }
             wgpuComputePassEncoderSetBindGroup(pass, 0, s.simBg[s.ping], 0, null);
@@ -274,6 +280,7 @@ struct WaterRenderer {
         }
         scene.setWaterData(data);
         if (pass is null) return;
+        gpuComputeEnd(gSim, pass);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
         WGPUCommandBufferDescriptor cbd;
@@ -306,6 +313,8 @@ struct WaterRenderer {
     /// Transparent hook: one opaque snapshot, then every body.
     private void draw(ref FrameContext frame) nothrow @nogc @trusted {
         if (renderer is null || scene is null || !frame.valid) return;
+        auto z = profileZone!"water.draw"();
+        auto g = gpuFrameScope!"gpu.water"(frame);
         bool any, needSnapshot;
         foreach (ref s; slots) {
             if (!s.used) continue;

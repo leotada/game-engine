@@ -237,16 +237,19 @@ struct App {
 
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
         _frameStartTime = MonoTime.currTime;
+        auto z = profileZone!"app.beginFrame"();
         return renderer.beginFrame(clearColor);
     }
 
     FrameContext beginFrame(Color4 clearColor) nothrow @nogc {
         _frameStartTime = MonoTime.currTime;
+        auto z = profileZone!"app.beginFrame"();
         return renderer.beginFrame(clearColor);
     }
 
     /// Close the HDR scene pass, run post, reopen swapchain pass for UI/text.
     void resolvePost(ref FrameContext frame) nothrow @nogc {
+        auto z = profileZone!"app.resolvePost"();
         renderer.resolvePost(frame);
     }
 
@@ -270,6 +273,7 @@ struct App {
     }
 
     void endFrame(ref FrameContext frame) nothrow @nogc {
+        auto zEnd = profileZone!"app.endFrame"();
         renderer.endFrame(frame);
         if (_hasPendingShot) {
             _hasPendingShot = false;
@@ -290,6 +294,7 @@ struct App {
                 gcStepFrameSlack(slack - 250.usecs);
             }
         }
+        zEnd.close();
         profilerEndFrame();
     }
 

@@ -5,6 +5,7 @@ import bindings.box3d.ids : b3IsNonNull;
 import core.stdc.stdlib : free, realloc;
 import engine.math.vec : Vec3;
 import engine.physics.convert : toB3Vec3;
+import engine.devtools.profiler : profileSample, profileZone, profilerEnabled;
 
 @safe:
 
@@ -72,7 +73,36 @@ struct PhysicsWorld {
     }
 
     void step(float dt, int subStepCount = 4) nothrow @nogc @trusted {
+        auto z = profileZone!"physics.step"();
         b3World_StepD(_world, dt, subStepCount);
+        if (profilerEnabled()) {
+            // Box3D's own step profile (ms). `box3d.step` is its total; some fields nest inside
+            // `solve` (constraints, integrate*, warmStart, ...), see b3Profile in types.h.
+            immutable p = b3World_GetProfileD(_world);
+            profileSample!"box3d.step"(p.step);
+            profileSample!"box3d.pairs"(p.pairs);
+            profileSample!"box3d.collide"(p.collide);
+            profileSample!"box3d.solve"(p.solve);
+            profileSample!"box3d.solverSetup"(p.solverSetup);
+            profileSample!"box3d.constraints"(p.constraints);
+            profileSample!"box3d.prepareConstraints"(p.prepareConstraints);
+            profileSample!"box3d.integrateVelocities"(p.integrateVelocities);
+            profileSample!"box3d.warmStart"(p.warmStart);
+            profileSample!"box3d.solveImpulses"(p.solveImpulses);
+            profileSample!"box3d.integratePositions"(p.integratePositions);
+            profileSample!"box3d.relaxImpulses"(p.relaxImpulses);
+            profileSample!"box3d.applyRestitution"(p.applyRestitution);
+            profileSample!"box3d.storeImpulses"(p.storeImpulses);
+            profileSample!"box3d.splitIslands"(p.splitIslands);
+            profileSample!"box3d.transforms"(p.transforms);
+            profileSample!"box3d.sensorHits"(p.sensorHits);
+            profileSample!"box3d.jointEvents"(p.jointEvents);
+            profileSample!"box3d.hitEvents"(p.hitEvents);
+            profileSample!"box3d.refit"(p.refit);
+            profileSample!"box3d.bullets"(p.bullets);
+            profileSample!"box3d.sleepIslands"(p.sleepIslands);
+            profileSample!"box3d.sensors"(p.sensors);
+        }
     }
 
     void setGravity(Vec3 gravity) nothrow @nogc @trusted {

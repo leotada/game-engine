@@ -355,6 +355,8 @@ struct Renderer {
     /// refractive/SSR draws, then reopen the HDR pass with loadOp = load.
     void snapshotOpaque(ref FrameContext frame) nothrow @nogc @trusted {
         if (!frame.valid || frame.postResolved) return;
+        auto z = profileZone!"renderer.snapshotOpaque"();
+        auto g = gpuFrameScope!"gpu.snapshotOpaque"(frame);
         ensureOpaqueSnapshot();
         if (opaqueColorTex is null || opaqueDepthView_ is null || depthCopyBG is null) return;
 
@@ -490,7 +492,10 @@ struct Renderer {
 
         // Acquire swapchain
         WGPUSurfaceTexture surfTex;
-        wgpuSurfaceGetCurrentTexture(surface, &surfTex);
+        {
+            auto z = profileZone!"renderer.acquire"();
+            wgpuSurfaceGetCurrentTexture(surface, &surfTex);
+        }
         frame.acquireStatus = surfTex.status;
         if (surfTex.status != WGPUSurfaceGetCurrentTextureStatus.successOptimal &&
             surfTex.status != WGPUSurfaceGetCurrentTextureStatus.successSuboptimal)

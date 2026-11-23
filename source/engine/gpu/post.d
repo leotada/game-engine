@@ -8,6 +8,7 @@ import engine.gpu.buffer : createUniformBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders;
+import engine.gpu.gpu_profiler : gpuScope;
 
 @safe:
 
@@ -381,6 +382,7 @@ struct PostProcessor {
         WGPUTextureView sceneHdrIn = hdrView;
         immutable uint nBefore = countActivePasses(PostStage.beforeTonemap);
         if (nBefore > 0) {
+            auto g = gpuScope!"gpu.post.customBeforeTonemap"(encoder);
             ensureHdrScratch();
             uint idx = 0;
             foreach (ref cp; customPasses) {
@@ -400,6 +402,7 @@ struct PostProcessor {
             ? bloomLevels : cast(uint) clampedRadius;
         immutable useBloom = settings.bloom && activeLevels > 0;
         if (useBloom) {
+            auto gBloom = gpuScope!"gpu.post.bloom"(encoder);
             // Threshold → mip0 (soft knee + bloomClamp)
             {
                 float[4] params = [
@@ -461,16 +464,22 @@ struct PostProcessor {
         }
 
         if (settings.fxaa) {
-            drawPass(encoder, ldrRT.view, tonemapPipe, tmBG, true);
+            {
+                auto g = gpuScope!"gpu.post.tonemap"(encoder);
+                drawPass(encoder, ldrRT.view, tonemapPipe, tmBG, true);
+            }
             auto fxBG = makeSampleBG(sampleBGL, ldrRT.view);
             scope(exit) wgpuBindGroupRelease(fxBG);
+            auto g = gpuScope!"gpu.post.fxaa"(encoder);
             drawPass(encoder, ldrTarget, fxaaPipe, fxBG, true);
         } else {
             ensureTonemapSurfacePipe();
+            auto g = gpuScope!"gpu.post.tonemap"(encoder);
             drawPass(encoder, ldrTarget, tonemapToSurfacePipe, tmBG, true);
         }
 
         if (nAfter > 0) {
+            auto g = gpuScope!"gpu.post.customAfterTonemap"(encoder);
             WGPUTextureView cur = ldrScratchRT[0].view;
             uint idx = 0;
             foreach (ref cp; customPasses) {
@@ -493,6 +502,7 @@ struct PostProcessor {
         if (nUi == 0) return;
 
         ensureLdrScratch();
+        auto g = gpuScope!"gpu.post.afterUi"(encoder);
         WGPUTextureView cur = uiTargetRT.view;
         uint idx = 0;
         foreach (ref cp; customPasses) {

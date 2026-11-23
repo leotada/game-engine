@@ -139,9 +139,14 @@ uint profilerOverflow() nothrow @nogc { return prof.overflow; }
 struct ProfileZone {
     private bool active;
     @disable this(this);
-    ~this() nothrow @nogc {
-        if (active)
+    ~this() nothrow @nogc { close(); }
+
+    /// End the zone now (zones must close in LIFO order).
+    void close() nothrow @nogc {
+        if (active) {
+            active = false;
             endZone();
+        }
     }
 }
 

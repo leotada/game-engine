@@ -30,6 +30,9 @@ import engine.math.vec : Vec3;
 
 @safe:
 
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler : gpuScope;
+
 /// Sky state baked into the environment (mirrors the sky shader inputs).
 struct SkyIblParams {
     Vec3 sunDir = Vec3(0.3f, 0.85f, 0.4f);
@@ -248,7 +251,11 @@ struct DynamicIbl {
         immutable back = front ^ 1;
         WGPUCommandEncoderDescriptor ed;
         auto enc = wgpuDeviceCreateCommandEncoder(device, &ed);
-        encodeStep(enc, cast(uint) step, back);
+        auto z = profileZone!"ibl.bakeStep"();
+        {
+            auto g = gpuScope!"gpu.ibl.bakeStep"(enc);
+            encodeStep(enc, cast(uint) step, back);
+        }
         WGPUCommandBufferDescriptor cbd;
         auto cmd = wgpuCommandEncoderFinish(enc, &cbd);
         wgpuCommandEncoderRelease(enc);

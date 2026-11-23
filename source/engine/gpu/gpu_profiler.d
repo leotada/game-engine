@@ -16,7 +16,9 @@
 /// `Renderer.endFrame` resolves the queries into one of `GPU_READBACK_SLOTS` mappable buffers
 /// and maps it asynchronously; `Renderer.beginFrame` polls the device and commits finished
 /// frames (2-3 frames late). Every scope is a child of the root zone "gpu.frame", which holds
-/// the span from the first to the last timestamp of the frame. Inactive (profiler off, or the
+/// the sum of the top-level scopes: measured GPU work, without the idle gaps between
+/// submissions (the trace still shows the real span). Timestamps written inside a render pass
+/// are approximate on some drivers (a child can read slightly longer than its parent). Inactive (profiler off, or the
 /// device lacks the timestamp features: `GpuContext.timestampsSupported`) means no-op.
 module engine.gpu.gpu_profiler;
 
@@ -209,13 +211,54 @@ struct GpuScope {
     private void* target;
     private ubyte kind; // 0 encoder, 1 render pass, 2 compute pass
     @disable this(this);
-    ~this() nothrow @nogc {
+    ~this() nothrow @nogc { close(); }
+
+    /// End the scope now.
+    void close() nothrow @nogc {
         final switch (kind) {
             case 0: gpuEncoderEnd(s, target); break;
             case 1: gpuPassEnd(s, target); break;
             case 2: gpuComputeEnd(s, target); break;
         }
+        s = NO_GPU_SCOPE;
     }
+}
+
+/// Write the timestamp on `pass` when one is open, else on `enc` (frame-aware scopes).
+private void writeOn(uint query, WGPUCommandEncoder enc, WGPURenderPassEncoder pass) nothrow @nogc @trusted {
+    if (pass !is null)
+        wgpuRenderPassEncoderWriteTimestamp(pass, gp.querySet, query);
+    else if (enc !is null)
+        wgpuCommandEncoderWriteTimestamp(enc, gp.querySet, query);
+}
+
+/// Scope over a `FrameContext` (anything with `encoder` and `pass` fields). Each end writes on
+/// whatever is open at that moment, so the scope may span `suspendScenePass` /
+/// `resumeScenePass` (decals and water snapshot the opaque scene mid-pass).
+struct GpuFrameScope(F) {
+    private F* frame;
+    private uint s = NO_GPU_SCOPE;
+    @disable this(this);
+    ~this() nothrow @nogc { close(); }
+
+    /// End the scope now.
+    void close() nothrow @nogc @trusted {
+        if (frame is null || s == NO_GPU_SCOPE || !gp.created)
+            return;
+        writeOn(s * 2 + 1, frame.encoder, frame.pass);
+        closeScope(s);
+        s = NO_GPU_SCOPE;
+    }
+}
+
+GpuFrameScope!F gpuFrameScope(string name, F)(ref F frame) nothrow @nogc @trusted {
+    if (!gpuProfilerActive() || (frame.encoder is null && frame.pass is null))
+        return GpuFrameScope!F.init;
+    immutable s = allocScope(gpuZoneId!name());
+    if (s == NO_GPU_SCOPE)
+        return GpuFrameScope!F.init;
+    writeOn(s * 2, frame.encoder, frame.pass);
+    return GpuFrameScope!F(&frame, s);
 }
 
 GpuScope gpuScope(string name)(WGPUCommandEncoder enc) nothrow @nogc {
@@ -333,17 +376,21 @@ private void commitSlot(ref Slot s) nothrow @nogc @trusted {
                 if (e > last) last = e;
             }
             if (first != ulong.max) {
+                double busyMs = 0;
                 foreach (i; 0 .. s.scopes) {
                     immutable b = ts[i * 2], e = ts[i * 2 + 1];
                     if (b == 0 || e < b)
                         continue;
-                    addZoneTime(s.zone[i], (e - b) * gp.periodNs / 1e6);
+                    immutable ms = (e - b) * gp.periodNs / 1e6;
+                    if (s.depth[i] == 1)
+                        busyMs += ms;
+                    addZoneTime(s.zone[i], ms);
                     traceEvent(s.zone[i], s.depth[i], ZoneKind.gpu,
                         s.submitNs + cast(long)((b - first) * gp.periodNs),
                         s.submitNs + cast(long)((e - first) * gp.periodNs));
                 }
                 if (gp.frameZone != NO_ZONE) {
-                    addZoneTime(gp.frameZone, (last - first) * gp.periodNs / 1e6);
+                    addZoneTime(gp.frameZone, busyMs);
                     traceEvent(gp.frameZone, 0, ZoneKind.gpu, s.submitNs,
                         s.submitNs + cast(long)((last - first) * gp.periodNs));
                 }
