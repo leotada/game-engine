@@ -126,6 +126,15 @@ bool navSaveMeshToBuffer(const NavMeshHandle* mesh, uint8_t** outData, int* outS
 void navFreeBuffer(void* ptr);
 NavMeshHandle* navLoadMeshFromBuffer(const uint8_t* data, int size);
 
+/// Like `navSaveMeshToBuffer`, plus the TileCache (compressed layers, params, off-mesh links) as a
+/// trailing section (format version 2). With `tc == NULL` it is identical to `navSaveMeshToBuffer`.
+bool navSaveMeshAndTileCacheToBuffer(const NavMeshHandle* mesh, const NavTileCacheHandle* tc,
+                                     uint8_t** outData, int* outSize);
+
+/// Load a `.navmesh` and, when the buffer holds a TileCache section, rebuild the cache into `*outTc`
+/// (NULL otherwise). Dynamic obstacles are not persisted: add them again after loading.
+NavMeshHandle* navLoadMeshAndTileCacheFromBuffer(const uint8_t* data, int size, NavTileCacheHandle** outTc);
+
 /// Extract walkable triangles from `mesh` for debug rendering (`outVerts9` has 9 floats/tri).
 int navExtractDebugTriangles(const NavMeshHandle* mesh, float* outVerts9,
                              uint8_t* outAreas, int maxTris);

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Restore the `NavTileCache` from a `.navmesh`** (`saveNavMeshToBytes(mesh, tc, out)`, `saveNavMeshFile(mesh, tc, path)`,
+  `loadNavMeshAndCacheFromBytes`, `navSaveMeshAndTileCacheToBuffer` / `navLoadMeshAndTileCacheFromBuffer` in the shim):
+  format v2 appends the cache params, compressed layers and off-mesh links, so dynamic obstacles work after loading
+  without a re-bake. v1 files and the mesh-only readers are unchanged; truncated data is rejected.
+  **Rebuild `librecast_shim.a`** (`tools/build_sdl3_deps.sh`) after pulling.
 - **Navigation off-mesh links** (`engine.nav.types.NavOffMeshConnection`, `bakeNavMesh(..., triAreas, links)`,
   `navBakeGeometryEx` in the Recast shim, `docs/navigation-guide.md`): bake jump / ladder / drop connections into the
   navmesh. They are stored in the tile data (kept by `.navmesh` save/load) and in the `NavTileCache` (kept across

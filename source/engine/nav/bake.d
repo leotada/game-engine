@@ -79,6 +79,38 @@ bool saveNavMeshToBytes(ref const NavMesh mesh, out ubyte[] outBytes) @trusted {
     return true;
 }
 
+/// Like `saveNavMeshToBytes`, but also stores the `NavTileCache` (compressed layers, cache params and
+/// off-mesh links), so `loadNavMeshAndCacheFromBytes` can restore the obstacle layer without re-baking.
+/// Dynamic obstacles themselves are not stored. An invalid `tc` writes the plain mesh-only format.
+bool saveNavMeshToBytes(ref const NavMesh mesh, ref const NavTileCache tc, out ubyte[] outBytes) @trusted {
+    if (!mesh.isValid()) return false;
+    ubyte* ptr = null;
+    int size = 0;
+    if (!recast.navSaveMeshAndTileCacheToBuffer(mesh.handle, tc.handle, &ptr, &size) || ptr is null || size <= 0) {
+        return false;
+    }
+    scope(exit) recast.navFreeBuffer(ptr);
+    outBytes = ptr[0 .. cast(size_t) size].dup;
+    return true;
+}
+
+/// Load a `NavMesh` and, when the buffer carries one, its `NavTileCache`, from a `.navmesh` buffer.
+/// `tc` stays invalid for a mesh-only file; the call returns false when `data` is corrupt.
+bool loadNavMeshAndCacheFromBytes(scope const(ubyte)[] data, out NavMesh mesh, out NavTileCache tc)
+        @trusted nothrow @nogc {
+    if (data.length == 0) return false;
+    mesh.handle = recast.navLoadMeshAndTileCacheFromBuffer(data.ptr, cast(int) data.length, &tc.handle);
+    return mesh.isValid();
+}
+
+/// Write a `NavMesh` and its `NavTileCache` to a `.navmesh` file on disk.
+bool saveNavMeshFile(ref const NavMesh mesh, ref const NavTileCache tc, string path) {
+    ubyte[] bytes;
+    if (!saveNavMeshToBytes(mesh, tc, bytes)) return false;
+    write(path, bytes);
+    return true;
+}
+
 /// Load a `NavMesh` from a binary `.navmesh` buffer.
 NavMesh loadNavMeshFromBytes(scope const(ubyte)[] data) @trusted nothrow @nogc {
     NavMesh m;

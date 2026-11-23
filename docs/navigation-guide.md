@@ -52,6 +52,26 @@ NavMesh loaded = loadNavMeshFile("assets/nav/city_sector.navmesh");
 
 - Use the 5-argument overload `bakeNavMesh(navMesh, verts, indices, cfg)` when you only need a static `NavMesh` without `NavTileCache`.
 
+### Restoring dynamic obstacles from a saved `.navmesh`
+
+A mesh-only `.navmesh` has no `NavTileCache`, so dynamic obstacles would need a full re-bake (minutes on a big map). Save the cache next to the mesh and restore both:
+
+```d
+saveNavMeshFile(navMesh, tileCache, "assets/nav/city.navmesh");        // mesh + cache section (format v2)
+
+NavMesh mesh;
+NavTileCache cache;
+ubyte[] bytes = cast(ubyte[]) read("assets/nav/city.navmesh");
+if (loadNavMeshAndCacheFromBytes(bytes, mesh, cache)) {
+    // cache.isValid() is false when the file was saved mesh-only
+    NavObstacleRef ref_;
+    cache.addCylinderObstacle(pos, 1.0f, 2.0f, ref_);
+    cache.flushUpdates(mesh);              // rebuilds only the affected tiles from the stored layers
+}
+```
+
+The section stores the cache parameters, the compressed tile layers and the off-mesh links; plain `loadNavMeshFromBytes` / `loadNavMeshFile` still read these files (they ignore the section), and old v1 files load as before. Obstacles themselves are not stored: add them again after loading.
+
 ### Off-mesh links (jumps, ladders, drops)
 
 Pass `NavOffMeshConnection[]` as the last argument of `bakeNavMesh` (after the optional per-triangle `triAreas`) to connect surfaces that are not adjacent in the geometry:

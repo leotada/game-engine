@@ -69,6 +69,9 @@ NavStatus navTileCacheUpdate(NavTileCacheHandle* tc, NavMeshHandle* mesh, bool* 
 bool navSaveMeshToBuffer(const(NavMeshHandle)* mesh, ubyte** outData, int* outSize);
 void navFreeBuffer(void* ptr);
 NavMeshHandle* navLoadMeshFromBuffer(const(ubyte)* data, int size);
+bool navSaveMeshAndTileCacheToBuffer(const(NavMeshHandle)* mesh, const(NavTileCacheHandle)* tc,
+                                     ubyte** outData, int* outSize);
+NavMeshHandle* navLoadMeshAndTileCacheFromBuffer(const(ubyte)* data, int size, NavTileCacheHandle** outTc);
 
 int navExtractDebugTriangles(const(NavMeshHandle)* mesh, float* outVerts9,
                              ubyte* outAreas, int maxTris);

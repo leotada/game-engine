@@ -21,6 +21,8 @@ static const uint8_t WALKABLE_AREA = RC_WALKABLE_AREA;
 static const uint16_t POLYFLAGS_WALK = 0x01;
 static const uint32_t NAVMESH_MAGIC = 0x4E41564Du; // 'NAVM'
 static const uint32_t NAVMESH_VERSION = 1u;
+static const uint32_t NAVMESH_VERSION_TILECACHE = 2u; // v1 + trailing TileCache section
+static const uint32_t TILECACHE_MAGIC = 0x48435456u;  // 'VTCH'
 
 struct FastLZCompressor final : public dtTileCacheCompressor {
     int maxCompressedSize(const int bufferSize) override {
@@ -84,10 +86,12 @@ struct OffMeshSet {
     std::vector<unsigned char> areas;
     std::vector<unsigned short> flags;
     std::vector<unsigned int> ids;
+    std::vector<NavOffMeshConnectionC> src; // the original structs, for `.navmesh` persistence
 
     void assign(const NavOffMeshConnectionC* cons, int count) {
-        verts.clear(); rads.clear(); dirs.clear(); areas.clear(); flags.clear(); ids.clear();
+        verts.clear(); rads.clear(); dirs.clear(); areas.clear(); flags.clear(); ids.clear(); src.clear();
         if (!cons || count <= 0) return;
+        src.assign(cons, cons + count);
         for (int i = 0; i < count; ++i) {
             const NavOffMeshConnectionC& c = cons[i];
             verts.insert(verts.end(), c.start, c.start + 3);
@@ -278,32 +282,14 @@ void navDestroyMesh(NavMeshHandle* mesh) {
     std::free(mesh);
 }
 
-NavTileCacheHandle* navCreateTileCache(NavMeshHandle* /*mesh*/,
-                                       float originX, float originY, float originZ,
-                                       float tileWidth, float tileHeight,
-                                       const NavBakeConfig* cfg) {
-    if (!cfg) return nullptr;
+/// Build a TileCache handle from explicit params (shared by `navCreateTileCache` and `.navmesh` loading).
+static NavTileCacheHandle* makeTileCache(const dtTileCacheParams& tcParams) {
     dtTileCache* tc = dtAllocTileCache();
     if (!tc) return nullptr;
 
     auto* alloc = new LinearAllocator(64 * 1024);
     auto* comp = new FastLZCompressor();
     auto* proc = new DefaultMeshProcess();
-
-    dtTileCacheParams tcParams{};
-    tcParams.orig[0] = originX;
-    tcParams.orig[1] = originY;
-    tcParams.orig[2] = originZ;
-    tcParams.cs = cfg->cellSize;
-    tcParams.ch = cfg->cellHeight;
-    tcParams.width = cfg->tileSize;
-    tcParams.height = cfg->tileSize;
-    tcParams.walkableHeight = cfg->agentHeight;
-    tcParams.walkableRadius = cfg->agentRadius;
-    tcParams.walkableClimb = cfg->agentMaxClimb;
-    tcParams.maxSimplificationError = cfg->edgeMaxError;
-    tcParams.maxTiles = (cfg->maxTiles > 0 ? cfg->maxTiles : 1024) * (cfg->maxLayersPerTile > 0 ? cfg->maxLayersPerTile : 4);
-    tcParams.maxObstacles = cfg->maxObstacles > 0 ? cfg->maxObstacles : 256;
 
     if (dtStatusFailed(tc->init(&tcParams, alloc, comp, proc))) {
         dtFreeTileCache(tc);
@@ -326,6 +312,31 @@ NavTileCacheHandle* navCreateTileCache(NavMeshHandle* /*mesh*/,
     h->comp = comp;
     h->proc = proc;
     return h;
+}
+
+NavTileCacheHandle* navCreateTileCache(NavMeshHandle* /*mesh*/,
+                                       float originX, float originY, float originZ,
+                                       float tileWidth, float tileHeight,
+                                       const NavBakeConfig* cfg) {
+    (void)tileWidth;
+    (void)tileHeight;
+    if (!cfg) return nullptr;
+
+    dtTileCacheParams tcParams{};
+    tcParams.orig[0] = originX;
+    tcParams.orig[1] = originY;
+    tcParams.orig[2] = originZ;
+    tcParams.cs = cfg->cellSize;
+    tcParams.ch = cfg->cellHeight;
+    tcParams.width = cfg->tileSize;
+    tcParams.height = cfg->tileSize;
+    tcParams.walkableHeight = cfg->agentHeight;
+    tcParams.walkableRadius = cfg->agentRadius;
+    tcParams.walkableClimb = cfg->agentMaxClimb;
+    tcParams.maxSimplificationError = cfg->edgeMaxError;
+    tcParams.maxTiles = (cfg->maxTiles > 0 ? cfg->maxTiles : 1024) * (cfg->maxLayersPerTile > 0 ? cfg->maxLayersPerTile : 4);
+    tcParams.maxObstacles = cfg->maxObstacles > 0 ? cfg->maxObstacles : 256;
+    return makeTileCache(tcParams);
 }
 
 void navDestroyTileCache(NavTileCacheHandle* tc) {
@@ -756,7 +767,98 @@ void navFreeBuffer(void* ptr) {
     std::free(ptr);
 }
 
-NavMeshHandle* navLoadMeshFromBuffer(const uint8_t* data, int size) {
+bool navSaveMeshAndTileCacheToBuffer(const NavMeshHandle* mesh, const NavTileCacheHandle* tc,
+                                     uint8_t** outData, int* outSize) {
+    if (!navSaveMeshToBuffer(mesh, outData, outSize)) return false;
+    if (!tc || !tc->tc) return true; // plain v1 buffer
+
+    const dtTileCache* cache = tc->tc;
+    const std::vector<NavOffMeshConnectionC>& links = tc->proc->offMesh.src;
+
+    int tileCount = 0;
+    size_t extra = sizeof(uint32_t) + sizeof(dtTileCacheParams) + sizeof(int32_t)
+                 + links.size() * sizeof(NavOffMeshConnectionC) + sizeof(int32_t);
+    for (int i = 0; i < cache->getTileCount(); ++i) {
+        const dtCompressedTile* t = cache->getTile(i);
+        if (!t || !t->header || !t->data || t->dataSize <= 0) continue;
+        tileCount++;
+        extra += sizeof(int32_t) + static_cast<size_t>(t->dataSize);
+    }
+
+    auto* grown = static_cast<uint8_t*>(std::realloc(*outData, static_cast<size_t>(*outSize) + extra));
+    if (!grown) {
+        std::free(*outData);
+        *outData = nullptr;
+        *outSize = 0;
+        return false;
+    }
+    size_t off = static_cast<size_t>(*outSize);
+    auto writeBytes = [&](const void* src, size_t n) {
+        std::memcpy(grown + off, src, n);
+        off += n;
+    };
+    // Patch the version (right after the magic) and append the section.
+    std::memcpy(grown + sizeof(uint32_t), &NAVMESH_VERSION_TILECACHE, sizeof(uint32_t));
+    writeBytes(&TILECACHE_MAGIC, sizeof(uint32_t));
+    writeBytes(cache->getParams(), sizeof(dtTileCacheParams));
+    const int32_t linkCount = static_cast<int32_t>(links.size());
+    writeBytes(&linkCount, sizeof(int32_t));
+    if (linkCount > 0) writeBytes(links.data(), links.size() * sizeof(NavOffMeshConnectionC));
+    writeBytes(&tileCount, sizeof(int32_t));
+    for (int i = 0; i < cache->getTileCount(); ++i) {
+        const dtCompressedTile* t = cache->getTile(i);
+        if (!t || !t->header || !t->data || t->dataSize <= 0) continue;
+        const int32_t sz = t->dataSize;
+        writeBytes(&sz, sizeof(int32_t));
+        writeBytes(t->data, static_cast<size_t>(sz));
+    }
+    *outData = grown;
+    *outSize = static_cast<int>(off);
+    return true;
+}
+
+/// Parse the trailing TileCache section of a v2 `.navmesh` starting at `off`.
+static bool readTileCacheSection(const uint8_t* data, int size, size_t off, NavTileCacheHandle*& outHandle) {
+    auto readBytes = [&](void* dst, size_t n) -> bool {
+        if (off + n > static_cast<size_t>(size)) return false;
+        std::memcpy(dst, data + off, n);
+        off += n;
+        return true;
+    };
+    uint32_t magic = 0;
+    dtTileCacheParams params{};
+    int32_t linkCount = 0, tileCount = 0;
+    if (!readBytes(&magic, sizeof(magic)) || magic != TILECACHE_MAGIC) return false;
+    if (!readBytes(&params, sizeof(params)) || !readBytes(&linkCount, sizeof(linkCount))) return false;
+    if (linkCount < 0 || params.maxTiles <= 0) return false;
+
+    std::vector<NavOffMeshConnectionC> links(static_cast<size_t>(linkCount));
+    if (linkCount > 0 && !readBytes(links.data(), links.size() * sizeof(NavOffMeshConnectionC))) return false;
+    if (!readBytes(&tileCount, sizeof(tileCount)) || tileCount < 0 || tileCount > params.maxTiles) return false;
+
+    outHandle = makeTileCache(params);
+    if (!outHandle) return false;
+    outHandle->proc->offMesh.assign(links.data(), linkCount);
+
+    for (int32_t i = 0; i < tileCount; ++i) {
+        int32_t sz = 0;
+        if (!readBytes(&sz, sizeof(sz)) || sz <= 0 || off + static_cast<size_t>(sz) > static_cast<size_t>(size))
+            return false;
+        auto* tileData = static_cast<unsigned char*>(dtAlloc(static_cast<size_t>(sz), DT_ALLOC_PERM));
+        if (!tileData) return false;
+        std::memcpy(tileData, data + off, static_cast<size_t>(sz));
+        off += static_cast<size_t>(sz);
+        dtCompressedTileRef ref = 0;
+        if (dtStatusFailed(outHandle->tc->addTile(tileData, sz, DT_COMPRESSEDTILE_FREE_DATA, &ref))) {
+            dtFree(tileData);
+            return false;
+        }
+        // The navmesh tiles were loaded from the file already: only the compressed layer is restored.
+    }
+    return true;
+}
+
+static NavMeshHandle* loadMeshImpl(const uint8_t* data, int size, NavTileCacheHandle** outTc) {
     if (!data || size < static_cast<int>(sizeof(uint32_t) * 2 + sizeof(dtNavMeshParams) + sizeof(int32_t)))
         return nullptr;
 
@@ -772,7 +874,7 @@ NavMeshHandle* navLoadMeshFromBuffer(const uint8_t* data, int size) {
     dtNavMeshParams params{};
     int32_t tileCount = 0;
     if (!readBytes(&magic, sizeof(magic)) || !readBytes(&ver, sizeof(ver))) return nullptr;
-    if (magic != NAVMESH_MAGIC || ver != NAVMESH_VERSION) return nullptr;
+    if (magic != NAVMESH_MAGIC || (ver != NAVMESH_VERSION && ver != NAVMESH_VERSION_TILECACHE)) return nullptr;
     if (!readBytes(&params, sizeof(params)) || !readBytes(&tileCount, sizeof(tileCount))) return nullptr;
 
     dtNavMesh* nav = dtAllocNavMesh();
@@ -808,7 +910,27 @@ NavMeshHandle* navLoadMeshFromBuffer(const uint8_t* data, int size) {
         return nullptr;
     }
     h->nav = nav;
+
+    if (ver == NAVMESH_VERSION_TILECACHE && outTc) {
+        NavTileCacheHandle* tcHandle = nullptr;
+        if (!readTileCacheSection(data, size, off, tcHandle)) {
+            if (tcHandle) navDestroyTileCache(tcHandle);
+            dtFreeNavMesh(nav);
+            std::free(h);
+            return nullptr;
+        }
+        *outTc = tcHandle;
+    }
     return h;
+}
+
+NavMeshHandle* navLoadMeshFromBuffer(const uint8_t* data, int size) {
+    return loadMeshImpl(data, size, nullptr);
+}
+
+NavMeshHandle* navLoadMeshAndTileCacheFromBuffer(const uint8_t* data, int size, NavTileCacheHandle** outTc) {
+    if (outTc) *outTc = nullptr;
+    return loadMeshImpl(data, size, outTc);
 }
 
 int navExtractDebugTriangles(const NavMeshHandle* mesh, float* outVerts9,

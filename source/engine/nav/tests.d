@@ -299,3 +299,74 @@ private bool pathCrossesGap(ref NavMesh mesh, out bool usedOffMesh) {
     assert(tc.flushUpdates(tcMesh));
     assert(pathCrossesGap(tcMesh, used) && used, "off-mesh link must survive a TileCache rebuild");
 }
+
+@safe unittest {
+    // `.navmesh` with a TileCache section: the obstacle layer and the off-mesh links are restored
+    // without re-baking, and a mesh-only file still loads (with an invalid cache).
+    Vec3[] verts;
+    int[] indices;
+    buildGapPlatforms(verts, indices);
+
+    auto cfg = NavBakeConfig.defaults();
+    cfg.cellSize = 0.3f;
+    cfg.cellHeight = 0.2f;
+    cfg.tileSize = 50;
+    cfg.maxTiles = 64;
+    cfg.maxPolysPerTile = 512;
+    cfg.maxObstacles = 16;
+    immutable float tileWorld = cfg.tileSize * cfg.cellSize;
+    immutable origin = Vec3(-15.0f, -5.0f, -10.0f);
+
+    NavOffMeshConnection link;
+    link.start = Vec3(-3.0f, 0.0f, 0.0f);
+    link.end = Vec3(3.0f, 0.0f, 0.0f);
+    link.radius = 1.0f;
+    const links = [link];
+
+    auto mesh = NavMesh.createTiled(origin, tileWorld, tileWorld, cfg.maxTiles, cfg.maxPolysPerTile);
+    auto tc = NavTileCache.create(mesh, origin, tileWorld, tileWorld, cfg);
+    assert(bakeNavMesh(mesh, tc, verts, indices, cfg, null, links) > 0);
+
+    ubyte[] withCache, meshOnly;
+    assert(saveNavMeshToBytes(mesh, tc, withCache));
+    assert(saveNavMeshToBytes(mesh, meshOnly));
+    assert(withCache.length > meshOnly.length, "TileCache section must be appended");
+
+    // Mesh-only file: loads, no cache.
+    NavMesh m1;
+    NavTileCache tc1;
+    assert(loadNavMeshAndCacheFromBytes(meshOnly, m1, tc1));
+    assert(m1.isValid() && !tc1.isValid());
+
+    // Mesh + cache: the cache is rebuilt and dynamic obstacles work on it.
+    NavMesh m2;
+    NavTileCache tc2;
+    assert(loadNavMeshAndCacheFromBytes(withCache, m2, tc2));
+    assert(m2.isValid() && tc2.isValid());
+    bool used;
+    assert(pathCrossesGap(m2, used) && used, "links must survive the restore");
+
+    auto query = NavQuery.create(m2, 1024);
+    auto filter = NavQueryFilter.defaults();
+    immutable ext = Vec3(1.0f, 2.0f, 1.0f);
+    NavPolyRef sp = 0;
+    Vec3 spt;
+    assert(query.findNearestPoly(Vec3(-9.0f, 0.0f, 0.0f), ext, filter, sp, spt));
+    NavRaycastHit hit;
+    assert(query.raycast(sp, spt, Vec3(-5.0f, 0.0f, 0.0f), filter, hit));
+    assert(!hit.hit, "no obstacle yet");
+
+    NavObstacleRef obs = 0;
+    assert(tc2.addCylinderObstacle(Vec3(-7.0f, 0.0f, 0.0f), 1.0f, 2.0f, obs));
+    assert(tc2.flushUpdates(m2));
+    assert(query.findNearestPoly(Vec3(-9.0f, 0.0f, 0.0f), ext, filter, sp, spt));
+    assert(query.raycast(sp, spt, Vec3(-5.0f, 0.0f, 0.0f), filter, hit));
+    assert(hit.hit && hit.t < 1.0f, "obstacle added to the restored cache must carve the mesh");
+    assert(pathCrossesGap(m2, used) && used, "links must survive the obstacle rebuild of the restored cache");
+
+    // Corrupt / truncated data is rejected.
+    NavMesh m3;
+    NavTileCache tc3;
+    assert(!loadNavMeshAndCacheFromBytes(withCache[0 .. withCache.length - 7], m3, tc3));
+    assert(!m3.isValid());
+}
