@@ -207,7 +207,10 @@ drawModel(scene, car, inst, carWorld, pool);
 scene.renderShadows(frame, lights);
 scene.end(frame);
 auto st = scene.stats();      // draw calls, visible instances, LOD histogram
+auto bs = scene.batchStats(); // batches used this frame, peak, capacity, growths
 ```
+
+- **Batch budget:** `Scene3DTextured.create(gpu, maxBatches)` sets only the initial size of the `(mesh, material, lod)` batch table. The table doubles when a frame needs more batches, so draws are not dropped. Use `batchStats().peak` in `--perf` output or a headless budget check, and raise `maxBatches` when `growths > 0`. Details: [graphics.md › Batch table](graphics.md#batch-table).
 
 - **Culling:** frustum culling is on by default (`scene.setCulling(false)` to disable); add `scene.setDistanceCull(maxDistance, minPixelSize)` for small dynamic props and `StaticBuildOptions` / `sib.setMeshCull` for static ones.
 - **LOD:** `drawMatrix` defaults to `LOD_AUTO` (screen-space error, `scene.setLodScreenHeight(h)`, `setLodBias`); static buffers pick one LOD per 128 m cell.

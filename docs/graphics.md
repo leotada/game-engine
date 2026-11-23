@@ -338,7 +338,22 @@ UI and 2D textures keep a single mip; the glTF loaders (`loadGltfPbr`, `loadGltf
 - `RenderStats.shadowInstancesDrawn` counts dynamic casters over every shadow view.
 - `setCulling(bool)` (default on) and `setDistanceCull(maxDistance, minPixelSize)` (0 disables either test).
 - `drawMatrix(..., lod = LOD_AUTO)` picks the LOD per instance from `selectLod` (`engine.graphics.lod`): the coarsest level whose projected simplifier error stays under one pixel, given `setLodScreenHeight` (default 1080) and `setLodBias`. Pass an explicit level (e.g. `MeshLod.current` from `lodSelectSystem`) to get hysteresis.
-- `stats()` returns `RenderStats`: batches, draw calls, shadow draw calls, dynamic submitted/visible, static visible/ranges, and a per-LOD instance histogram.
+- `stats()` returns `RenderStats`: batches, draw calls, shadow draw calls, dynamic submitted/visible, static visible/ranges, a per-LOD instance histogram, and `droppedDraws`.
+
+### Batch table
+
+Dynamic draws are grouped into one batch per `(TexMesh*, Material*, lod)` key (skinned draws use `(SkinnedMesh*, Material*)` and share the same table). A batch keeps its malloc-backed instance list and its GPU instance buffer across frames, and the buffer is created on the batch's first upload.
+
+- **Grows on demand.** `create(gpu, maxBatches)` only sets the initial capacity (default 256). When a frame needs a new key and the table is full, the table doubles (`realloc`, `@nogc`, no GC allocation) and the lookup map is rebuilt from the frame's live batches. A small `maxBatches` costs a reallocation, never a missing draw. Pointers to batches are never held across a draw call, so moving them is safe. A hook that calls `draw*` while `end` is iterating batches is not supported.
+- **Hard ceiling.** `Scene3DTextured.MAX_BATCHES_HARD` (65,536) bounds memory. Past it, new keys are dropped and counted in `RenderStats.droppedDraws`, and a warning is logged on every frame that drops a draw (existing keys still draw).
+- **Stats.** `batchStats()` returns `BatchStats { used, peak, capacity, growths, droppedDraws }`:
+  - `used`: batches used by the current frame, culled ones included;
+  - `peak`: the highest `used` since `create`;
+  - `capacity`: the current table size;
+  - `growths`: how many times the table grew past the initial capacity;
+  - `droppedDraws`: lifetime drops at the ceiling.
+
+  Show `used`/`peak` in a perf overlay, or assert `peak <= budget` in a headless gate. A non-zero `growths` count means `maxBatches` can be raised to avoid the mid-frame reallocation.
 
 ### LOD chains at load time
 

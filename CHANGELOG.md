@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`Scene3DTextured` batch table grows on demand** (`docs/graphics.md` › Batch table): a full `(mesh, material, lod)`
+  table used to drop extra draws for the rest of the frame and warned only once per scene. It now doubles (`@nogc`,
+  malloc) up to `Scene3DTextured.MAX_BATCHES_HARD` (65,536). `create(gpu, maxBatches, createIbl)` keeps its signature;
+  `maxBatches` is now the initial capacity. The new `batchStats()` returns `BatchStats { used, peak, capacity, growths,
+  droppedDraws }`. Drops past the ceiling are counted in `RenderStats.droppedDraws` and warned on every frame that drops.
+  Per-batch GPU instance buffers are now created on first upload instead of in `create`.
 - **Multithreaded NavMesh bake** (`NavBakeConfig.threads`, `docs/navigation-guide.md`): tiles are built on worker
   threads and committed serially in tile order, so the `.navmesh` is byte-identical to the serial bake (tested on the
   direct and TileCache paths). `1` = serial (default), `0` = all hardware threads. ~6-8x faster on a 16-thread machine
