@@ -12,6 +12,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [audio-guide.md](audio-guide.md) | 8-bus audio mixer, real-time `@nogc` DSP (VHF radio/biquads), 3D Doppler spatialization, and OGG Vorbis streaming |
 | [navigation-guide.md](navigation-guide.md) | 3D Recast/Detour NavMesh baking (multithreaded, `NavBakeConfig` reference), off-mesh links, `.navmesh` persistence (with the restorable `TileCache`), dynamic obstacles, `NavCrowd`, and ECS integration |
 | [graphics.md](graphics.md) | 3-layer GPU architecture (WGPU), open-world and outdoor rendering (CSM, fog, sky, weather, IBL, decals) |
+| [profiling.md](profiling.md) | Frame profiler: CPU zones, per-pass GPU timestamps, Box3D step profile, overlay and Perfetto traces |
 | [water-guide.md](water-guide.md) | Water: `WaterRenderer` / `WaterBody`, Gerstner waves, shared GPU wave data, caustics, wet marks, gameplay queries, buoyancy, wet material presets, `WaterSurface` scene component |
 | [terrain-guide.md](terrain-guide.md) | Chunked heightmap terrain: splat layers, LOD/geomorphing, shadows, Box3D colliders, procedural generation |
 | [multiplatform-and-shaders.md](multiplatform-and-shaders.md) | Multiplatform support (Wayland/X11, Win32, Android, Metal) & modular shaders with hot-reload |

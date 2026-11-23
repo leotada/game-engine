@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Native frame profiler** (`docs/profiling.md`): `engine.devtools.profiler` adds hierarchical CPU zones
+  (`profileZone!"name"()`, `@nogc`, off by default), external samples (`profileSample`), mean/p50/p95/p99/max per zone
+  (`profilerReport`, `profilerVisit`, `DebugOverlay.addProfiler`) and Chrome Trace Event export (`startProfilerTrace`,
+  `profilerTraceJson`, opens in Perfetto). `engine.gpu.gpu_profiler` measures GPU passes with timestamp queries
+  (`gpuScope`, `gpuPassScope`, `gpuComputeScope`, `gpuFrameScope`), resolved into async readback buffers, no stalls.
+  `GpuContext` now requests `TimestampQuery` + the native in-encoder / in-pass features when available
+  (`timestampsSupported()`; `ENGINE_NO_GPU_TIMESTAMPS=1` opts out). The renderer, `Scene3DTextured` (shadows, every
+  scene pass and segment), post, terrain, decals, water, IBL, UI and `PhysicsWorld.step` (Box3D `b3World_GetProfile`
+  as `box3d.*` samples) are instrumented. New bindings: timestamp queries, `ResolveQuerySet`, `CopyBufferToBuffer`,
+  `HasFeature`, `QueueGetTimestampPeriod`, `b3World_GetProfileD`.
 - **LDC 1.43.0 verified** (`docs/dmd-inline-crash.md` › Installing a newer LDC than the distro ships): release builds of
   `player` / `gesc`, `dub test --config=library` and `--assert-no-gc` pass. The editor must be linked against the shared
   druntime (`-link-defaultlib-shared`) because the static druntime of 1.43 has no `rt_loadLibrary` (hot reload).

@@ -668,6 +668,15 @@ Deep dive: [navigation-guide.md](navigation-guide.md).
   overlay.addGcStats();
   overlay.render(text, frame); // renders through TextRenderer
   ```
+- **Frame Profiler (`engine.devtools.profiler`, `engine.gpu.gpu_profiler`):** hierarchical CPU zones, per-pass GPU timestamps and Box3D's step profile, with p50/p95/p99 and a Perfetto trace. Off by default.
+  ```d
+  enableProfiler(true);                         // once
+  { auto z = profileZone!"mygame.ai"(); ... }   // scoped CPU zone, @nogc
+  { auto g = gpuFrameScope!"gpu.mypass"(frame); ... } // GPU timestamps around your draws
+  overlay.addProfiler(0.05);                    // live tree in DebugOverlay
+  foreach (r; profilerReport()) ...;            // stats; startProfilerTrace() + profilerTraceJson() for traces
+  ```
+  The engine already instruments the renderer, scene passes, shadows, post, terrain, decals, water, UI and physics. Deep dive: [profiling.md](profiling.md).
 - **WGSL Shader Hot-Reload (`engine.hotreload.shader_reload`):** `ShaderHotReloader` watches `assets/shaders/` (supporting `#include`, `#define`, `#ifdef`) and transactionally swaps pipelines without dropping frames on syntax errors. Deep dive: [multiplatform-and-shaders.md](multiplatform-and-shaders.md).
 - **Scene rendering (editor + player):** both draw scenes with the shared `SceneRenderer` (OpenPBR, glTF/GLB mesh assets, scene lights with shadows, culling, LOD); `game-engine-player --headless-frames=600 --render --assert-no-gc` checks zero GC with real rendering. See [editor-guide.md §2.3.1](editor-guide.md).
 - **Visual Editor (`dub run --config=editor`):** Unity/Godot-style docked editor with Hierarchy, Scene/Game View, reflected Inspector, Project Browser (128-bit GUIDs + `.meta`), Console, Prefabs (`*.prefab.json`), Scenes (`*.scene.json`), and non-destructive Play/Pause/Step mode. Deep dive: [editor-guide.md](editor-guide.md).

@@ -328,6 +328,33 @@ ZoneReport[] profilerReport() {
     return rows;
 }
 
+/// Walk the zone tree depth-first without allocating (overlays): `dg(name, kind, depth,
+/// recentMs)` where `recentMs` is the mean of the last `window` frames. Stops when `dg`
+/// returns false.
+void profilerVisit(scope bool delegate(scope const(char)[] name, ZoneKind kind, ubyte depth,
+        double recentMs) nothrow @nogc @safe dg, uint window = 60) nothrow @nogc {
+    bool walk(ushort parent) nothrow @nogc @safe {
+        foreach (i; 0 .. prof.zoneCount) {
+            if (prof.zones[i].parent != parent || i == parent)
+                continue;
+            const a = &prof.acc[i];
+            double sum = 0;
+            immutable n = a.histFilled < window ? a.histFilled : window;
+            foreach (k; 0 .. n) {
+                immutable idx = (a.histCursor + PROFILE_HISTORY - 1 - k) % PROFILE_HISTORY;
+                sum += prof.history[i * PROFILE_HISTORY + idx];
+            }
+            if (!dg(prof.zones[i].name, prof.zones[i].kind, prof.zones[i].depth, n ? sum / n : 0))
+                return false;
+            if (!walk(cast(ushort) i))
+                return false;
+        }
+        return true;
+    }
+    if (prof.history.length)
+        walk(NO_ZONE);
+}
+
 /// Start recording individual events (up to `maxEvents`, then recording stops by itself).
 void startProfilerTrace(size_t maxEvents = 1 << 18) {
     if (prof.trace.length < maxEvents)
@@ -422,4 +449,31 @@ unittest {
     foreach (r; profilerReport())
         if (r.name == "gpu.test")
             assert(r.frames == 1 && r.meanMs == 2.0);
+}
+
+unittest {
+    // profilerVisit: depth-first, recent mean, early stop; no allocation on the walk.
+    resetProfilerForTests();
+    enableProfiler(true);
+    scope (exit) enableProfiler(false);
+    foreach (_; 0 .. 3) {
+        {
+            auto a = profileZone!"visit.a"();
+            profileSample!"visit.a.s"(2.0);
+        }
+        profilerEndFrame();
+    }
+    string order;
+    double sMs = -1;
+    profilerVisit((scope const(char)[] name, ZoneKind kind, ubyte depth, double ms) nothrow @nogc @safe {
+        if (name == "visit.a.s") sMs = ms;
+        return true;
+    });
+    assert(sMs == 2.0);
+    int seen;
+    profilerVisit((scope const(char)[] name, ZoneKind kind, ubyte depth, double ms) nothrow @nogc @safe {
+        ++seen;
+        return false;
+    });
+    assert(seen == 1);
 }

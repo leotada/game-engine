@@ -102,6 +102,39 @@ struct DebugOverlay {
         label("GC", "pause ", pauseMs, "ms (max ", maxPauseMs, "ms) | work ", workMs, "ms | cycles ", t.cycleCount, " | cards ", windowGiB, "GiB");
     }
 
+    /// Profiler tree (engine.devtools.profiler): one line per zone whose recent mean is at
+    /// least `minMs`, indented by depth, up to the free lines. Needs `enableProfiler(true)`.
+    void addProfiler(double minMs = 0.05) nothrow @nogc {
+        import engine.devtools.profiler : profilerVisit, ZoneKind;
+        section("profiler (ms, last 60 frames)");
+        profilerVisit((scope const(char)[] name, ZoneKind kind, ubyte depth, double ms) nothrow @nogc {
+            if (lineCount >= MAX_LINES)
+                return false;
+            if (ms < minMs)
+                return true;
+            auto dst = buffer[lineCount][];
+            size_t w = 0;
+            void put(char c) { if (w + 1 < dst.length) dst[w++] = c; }
+            foreach (_; 0 .. depth * 2) put(' ');
+            foreach (ch; name) put(ch);
+            foreach (_; w .. 44) put(' ');
+            foreach (ch; kind == ZoneKind.gpu ? "gpu " : kind == ZoneKind.sample ? "smp " : "cpu ") put(ch);
+            // fixed-point ms with 3 decimals, no formatting library
+            immutable long us = cast(long)(ms * 1000.0 + 0.5);
+            char[24] num = 0;
+            size_t n = 0;
+            long v = us;
+            do { num[n++] = cast(char)('0' + v % 10); v /= 10; } while (v > 0 || n < 4);
+            foreach_reverse (k; 0 .. n) {
+                put(num[k]);
+                if (k == 3) put('.');
+            }
+            lineLen[lineCount] = w;
+            lineCount++;
+            return true;
+        });
+    }
+
     /// Insert a section header line (no "name:" prefix). Renders as
     /// "-- title --" to visually group following labels.
     void section(scope const(char)[] title) nothrow @nogc {
