@@ -14,6 +14,8 @@
 #include <cstring>
 #include <cmath>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 namespace {
 
@@ -221,6 +223,7 @@ NavBakeConfig navDefaultBakeConfig(void) {
     cfg.maxPolysPerTile = 2048;
     cfg.maxLayersPerTile = 16;
     cfg.maxObstacles = 256;
+    cfg.threads = 1;
     return cfg;
 }
 
@@ -348,7 +351,16 @@ void navDestroyTileCache(NavTileCacheHandle* tc) {
     std::free(tc);
 }
 
-static int bakeTileWithTileCache(NavMeshHandle* mesh, NavTileCacheHandle* tc,
+/// Blobs produced by one tile's build phase. Built in parallel, committed serially in tile order.
+struct TileBlobs {
+    struct Blob { unsigned char* data; int size; };
+    int tx = 0, ty = 0;
+    std::vector<Blob> blobs;
+};
+
+/// Build phase of the TileCache path: rasterize the tile and compress its layers into `out`.
+/// Touches no shared mutable state (`comp` is stateless FastLZ), so it runs on worker threads.
+static void buildTileCacheLayers(FastLZCompressor* comp, TileBlobs& out,
                                  int tx, int ty,
                                  const float* tileBmin, const float* tileBmax,
                                  const float* verts3, int vertCount,
@@ -388,13 +400,13 @@ static int bakeTileWithTileCache(NavMeshHandle* mesh, NavTileCacheHandle* tc,
     rcHeightfield* solid = rcAllocHeightfield();
     if (!solid || !rcCreateHeightfield(&ctx, *solid, rcfg.width, rcfg.height, rcfg.bmin, rcfg.bmax, rcfg.cs, rcfg.ch)) {
         rcFreeHeightField(solid);
-        return 0;
+        return;
     }
 
     if (!filterTrianglesForTile(verts3, tris3, triCount, triAreasOrNull, rcfg.bmin, rcfg.bmax,
                                 rcfg.walkableSlopeAngle, ctx, *solid)) {
         rcFreeHeightField(solid);
-        return 0;
+        return;
     }
     (void)vertCount;
 
@@ -406,24 +418,25 @@ static int bakeTileWithTileCache(NavMeshHandle* mesh, NavTileCacheHandle* tc,
     if (!chf || !rcBuildCompactHeightfield(&ctx, rcfg.walkableHeight, rcfg.walkableClimb, *solid, *chf)) {
         rcFreeHeightField(solid);
         rcFreeCompactHeightfield(chf);
-        return 0;
+        return;
     }
     rcFreeHeightField(solid);
 
     if (!rcErodeWalkableArea(&ctx, rcfg.walkableRadius, *chf)) {
         rcFreeCompactHeightfield(chf);
-        return 0;
+        return;
     }
 
     rcHeightfieldLayerSet* lset = rcAllocHeightfieldLayerSet();
     if (!lset || !rcBuildHeightfieldLayers(&ctx, *chf, rcfg.borderSize, rcfg.walkableHeight, *lset)) {
         rcFreeCompactHeightfield(chf);
         rcFreeHeightfieldLayerSet(lset);
-        return 0;
+        return;
     }
     rcFreeCompactHeightfield(chf);
 
-    int added = 0;
+    out.tx = tx;
+    out.ty = ty;
     for (int i = 0; i < lset->nlayers && i < TileCacheMeshData::MAX_LAYERS; ++i) {
         const rcHeightfieldLayer* layer = &lset->layers[i];
         dtTileCacheLayerHeader header{};
@@ -445,23 +458,33 @@ static int bakeTileWithTileCache(NavMeshHandle* mesh, NavTileCacheHandle* tc,
 
         unsigned char* tileData = nullptr;
         int tileDataSize = 0;
-        if (dtStatusSucceed(dtBuildTileCacheLayer(tc->comp, &header, layer->heights, layer->areas, layer->cons,
+        if (dtStatusSucceed(dtBuildTileCacheLayer(comp, &header, layer->heights, layer->areas, layer->cons,
                                                   &tileData, &tileDataSize))) {
-            dtCompressedTileRef tcRef = 0;
-            if (dtStatusSucceed(tc->tc->addTile(tileData, tileDataSize, DT_COMPRESSEDTILE_FREE_DATA, &tcRef))) {
-                tc->tc->buildNavMeshTile(tcRef, mesh->nav);
-                added++;
-            } else {
-                dtFree(tileData);
-            }
+            out.blobs.push_back({tileData, tileDataSize});
         }
     }
 
     rcFreeHeightfieldLayerSet(lset);
+}
+
+/// Commit phase of the TileCache path (serial): add the layers and build their navmesh tiles.
+static int commitTileCacheLayers(NavMeshHandle* mesh, NavTileCacheHandle* tc, TileBlobs& t) {
+    int added = 0;
+    for (auto& b : t.blobs) {
+        dtCompressedTileRef tcRef = 0;
+        if (dtStatusSucceed(tc->tc->addTile(b.data, b.size, DT_COMPRESSEDTILE_FREE_DATA, &tcRef))) {
+            tc->tc->buildNavMeshTile(tcRef, mesh->nav);
+            added++;
+        } else {
+            dtFree(b.data);
+        }
+    }
+    t.blobs.clear();
     return added;
 }
 
-static int bakeTileDirect(NavMeshHandle* mesh,
+/// Build phase of the direct path: run the full Recast pipeline and emit the Detour tile data.
+static void buildTileDirect(TileBlobs& out,
                           int tx, int ty,
                           const float* tileBmin, const float* tileBmax,
                           const float* verts3, int /*vertCount*/,
@@ -502,13 +525,13 @@ static int bakeTileDirect(NavMeshHandle* mesh,
     rcHeightfield* solid = rcAllocHeightfield();
     if (!solid || !rcCreateHeightfield(&ctx, *solid, rcfg.width, rcfg.height, rcfg.bmin, rcfg.bmax, rcfg.cs, rcfg.ch)) {
         rcFreeHeightField(solid);
-        return 0;
+        return;
     }
 
     if (!filterTrianglesForTile(verts3, tris3, triCount, triAreasOrNull, rcfg.bmin, rcfg.bmax,
                                 rcfg.walkableSlopeAngle, ctx, *solid)) {
         rcFreeHeightField(solid);
-        return 0;
+        return;
     }
 
     rcFilterLowHangingWalkableObstacles(&ctx, rcfg.walkableClimb, *solid);
@@ -519,24 +542,24 @@ static int bakeTileDirect(NavMeshHandle* mesh,
     if (!chf || !rcBuildCompactHeightfield(&ctx, rcfg.walkableHeight, rcfg.walkableClimb, *solid, *chf)) {
         rcFreeHeightField(solid);
         rcFreeCompactHeightfield(chf);
-        return 0;
+        return;
     }
     rcFreeHeightField(solid);
 
     if (!rcErodeWalkableArea(&ctx, rcfg.walkableRadius, *chf)) {
         rcFreeCompactHeightfield(chf);
-        return 0;
+        return;
     }
     if (!rcBuildDistanceField(&ctx, *chf) || !rcBuildRegions(&ctx, *chf, rcfg.borderSize, rcfg.minRegionArea, rcfg.mergeRegionArea)) {
         rcFreeCompactHeightfield(chf);
-        return 0;
+        return;
     }
 
     rcContourSet* cset = rcAllocContourSet();
     if (!cset || !rcBuildContours(&ctx, *chf, rcfg.maxSimplificationError, rcfg.maxEdgeLen, *cset)) {
         rcFreeCompactHeightfield(chf);
         rcFreeContourSet(cset);
-        return 0;
+        return;
     }
 
     rcPolyMesh* pmesh = rcAllocPolyMesh();
@@ -544,7 +567,7 @@ static int bakeTileDirect(NavMeshHandle* mesh,
         rcFreeCompactHeightfield(chf);
         rcFreeContourSet(cset);
         rcFreePolyMesh(pmesh);
-        return 0;
+        return;
     }
 
     rcPolyMeshDetail* dmesh = rcAllocPolyMeshDetail();
@@ -553,7 +576,7 @@ static int bakeTileDirect(NavMeshHandle* mesh,
         rcFreeContourSet(cset);
         rcFreePolyMesh(pmesh);
         rcFreePolyMeshDetail(dmesh);
-        return 0;
+        return;
     }
 
     rcFreeCompactHeightfield(chf);
@@ -593,20 +616,30 @@ static int bakeTileDirect(NavMeshHandle* mesh,
 
     unsigned char* navData = nullptr;
     int navDataSize = 0;
-    int result = 0;
-    if (dtCreateNavMeshData(&params, &navData, &navDataSize)) {
-        mesh->nav->removeTile(mesh->nav->getTileRefAt(tx, ty, 0), nullptr, nullptr);
-        if (dtStatusSucceed(mesh->nav->addTile(navData, navDataSize, DT_TILE_FREE_DATA, 0, nullptr))) {
-            result = 1;
-        } else {
-            dtFree(navData);
-        }
-    }
+    out.tx = tx;
+    out.ty = ty;
+    if (dtCreateNavMeshData(&params, &navData, &navDataSize))
+        out.blobs.push_back({navData, navDataSize});
 
     rcFreePolyMesh(pmesh);
     rcFreePolyMeshDetail(dmesh);
+}
+
+/// Commit phase of the direct path (serial): replace the tile in the navmesh.
+static int commitTileDirect(NavMeshHandle* mesh, TileBlobs& t) {
+    int result = 0;
+    for (auto& b : t.blobs) {
+        mesh->nav->removeTile(mesh->nav->getTileRefAt(t.tx, t.ty, 0), nullptr, nullptr);
+        if (dtStatusSucceed(mesh->nav->addTile(b.data, b.size, DT_TILE_FREE_DATA, 0, nullptr)))
+            result = 1;
+        else
+            dtFree(b.data);
+    }
+    t.blobs.clear();
     return result;
 }
+
+
 
 int navBakeGeometry(NavMeshHandle* mesh,
                     NavTileCacheHandle* tc,
@@ -662,21 +695,52 @@ int navBakeGeometryEx(NavMeshHandle* mesh,
         directOffMesh.assign(offMeshCons, offMeshConCount);
     }
 
-    int totalBuilt = 0;
-    for (int ty = ty0; ty <= ty1; ++ty) {
-        for (int tx = tx0; tx <= tx1; ++tx) {
+    const bool useCache = tc && tc->tc;
+    const int nx = tx1 - tx0 + 1;
+    const int ny = ty1 - ty0 + 1;
+    const int tileCount = nx * ny;
+    std::vector<TileBlobs> tiles(static_cast<size_t>(tileCount));
+
+    // Build phase: tiles are independent (own rcContext, read-only geometry), so workers pull
+    // tile indices from an atomic counter. The commit below stays serial and in row-major order,
+    // so the result is identical for any thread count.
+    std::atomic<int> next(0);
+    auto worker = [&]() {
+        for (int k = next.fetch_add(1); k < tileCount; k = next.fetch_add(1)) {
+            const int tx = tx0 + k % nx;
+            const int ty = ty0 + k / nx;
             float tbmin[3] = { np->orig[0] + tx * tw, bmin[1] - 1.0f, np->orig[2] + ty * th };
             float tbmax[3] = { np->orig[0] + (tx + 1) * tw, bmax[1] + 1.0f, np->orig[2] + (ty + 1) * th };
-            if (tc && tc->tc) {
-                totalBuilt += bakeTileWithTileCache(mesh, tc, tx, ty, tbmin, tbmax,
-                                                    verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg);
+            if (useCache) {
+                buildTileCacheLayers(tc->comp, tiles[k], tx, ty, tbmin, tbmax,
+                                     verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg);
             } else {
-                totalBuilt += bakeTileDirect(mesh, tx, ty, tbmin, tbmax,
-                                             verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg,
-                                             directOffMesh);
+                buildTileDirect(tiles[k], tx, ty, tbmin, tbmax,
+                                verts3, vertCount, tris3, triCount, triAreasOrNull, *cfg,
+                                directOffMesh);
             }
         }
+    };
+
+    int threads = cfg->threads;
+    if (threads <= 0) {
+        const unsigned hw = std::thread::hardware_concurrency();
+        threads = hw > 0 ? static_cast<int>(hw) : 1;
     }
+    if (threads > tileCount) threads = tileCount;
+    if (threads <= 1) {
+        worker();
+    } else {
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(threads - 1));
+        for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+        worker();
+        for (auto& t : pool) t.join();
+    }
+
+    int totalBuilt = 0;
+    for (auto& t : tiles)
+        totalBuilt += useCache ? commitTileCacheLayers(mesh, tc, t) : commitTileDirect(mesh, t);
     return totalBuilt;
 }
 

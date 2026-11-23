@@ -57,6 +57,9 @@ struct NavBakeConfig {
     int maxPolysPerTile = 4096;
     int maxLayersPerTile = 32;
     int maxObstacles = 512;
+    /// Bake worker threads: 1 = serial, 0 = one per hardware thread. The baked navmesh is identical
+    /// for every value; only the bake time changes.
+    int threads = 1;
 
     static NavBakeConfig defaults() nothrow @nogc {
         return NavBakeConfig.init;
@@ -82,6 +85,7 @@ struct NavBakeConfig {
         c.maxPolysPerTile = maxPolysPerTile;
         c.maxLayersPerTile = maxLayersPerTile;
         c.maxObstacles = maxObstacles;
+        c.threads = threads;
         return c;
     }
 }

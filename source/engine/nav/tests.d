@@ -370,3 +370,76 @@ private bool pathCrossesGap(ref NavMesh mesh, out bool usedOffMesh) {
     assert(!loadNavMeshAndCacheFromBytes(withCache[0 .. withCache.length - 7], m3, tc3));
     assert(!m3.isValid());
 }
+
+/// Hilly terrain with box blocks, large enough to span many tiles.
+private void buildHillyTerrain(out Vec3[] verts, out int[] indices, int n, float step) {
+    import core.stdc.math : sinf, cosf;
+    immutable half = n * step * 0.5f;
+    foreach (z; 0 .. n + 1)
+        foreach (x; 0 .. n + 1) {
+            immutable fx = x * step - half, fz = z * step - half;
+            verts ~= Vec3(fx, 1.5f * sinf(fx * 0.15f) * cosf(fz * 0.11f), fz);
+        }
+    foreach (z; 0 .. n)
+        foreach (x; 0 .. n) {
+            immutable i = z * (n + 1) + x;
+            indices ~= [i, i + n + 1, i + 1, i + 1, i + n + 1, i + n + 2];
+        }
+    // A few raised blocks (top faces only) so regions and contours are not trivial.
+    foreach (b; 0 .. 16) {
+        immutable cx = (b % 4) * 20.0f - 30.0f, cz = (b / 4) * 20.0f - 30.0f;
+        immutable base = cast(int) verts.length;
+        verts ~= [Vec3(cx - 3, 4, cz - 3), Vec3(cx - 3, 4, cz + 3), Vec3(cx + 3, 4, cz + 3), Vec3(cx + 3, 4, cz - 3)];
+        indices ~= [base, base + 1, base + 2, base, base + 2, base + 3];
+    }
+}
+
+@safe unittest {
+    // Multithreaded bake must produce byte-identical `.navmesh` output on both bake paths.
+    import core.time : MonoTime;
+    import std.stdio : writefln;
+
+    Vec3[] verts;
+    int[] indices;
+    buildHillyTerrain(verts, indices, 120, 1.0f); // 120 m x 120 m
+
+    auto cfg = NavBakeConfig.defaults();
+    cfg.tileSize = 32; // 9.6 m tiles -> ~13x13 tiles
+    cfg.maxTiles = 512;
+    immutable tileWorld = cfg.tileSize * cfg.cellSize;
+    immutable origin = Vec3(-60.0f, -10.0f, -60.0f);
+
+    ubyte[] bakeDirect(int threads, out long usecs) {
+        auto c = cfg;
+        c.threads = threads;
+        auto mesh = NavMesh.createTiled(origin, tileWorld, tileWorld, c.maxTiles, c.maxPolysPerTile);
+        immutable t0 = MonoTime.currTime;
+        assert(bakeNavMesh(mesh, verts, indices, c) > 50);
+        usecs = (MonoTime.currTime - t0).total!"usecs";
+        ubyte[] bytes;
+        assert(saveNavMeshToBytes(mesh, bytes));
+        return bytes;
+    }
+
+    ubyte[] bakeCached(int threads, out long usecs) {
+        auto c = cfg;
+        c.threads = threads;
+        auto mesh = NavMesh.createTiled(origin, tileWorld, tileWorld, c.maxTiles, c.maxPolysPerTile);
+        auto tc = NavTileCache.create(mesh, origin, tileWorld, tileWorld, c);
+        immutable t0 = MonoTime.currTime;
+        assert(bakeNavMesh(mesh, tc, verts, indices, c) > 50);
+        usecs = (MonoTime.currTime - t0).total!"usecs";
+        ubyte[] bytes;
+        assert(saveNavMeshToBytes(mesh, tc, bytes));
+        return bytes;
+    }
+
+    long d1, d8, dAuto, c1, c8;
+    const direct1 = bakeDirect(1, d1);
+    assert(bakeDirect(8, d8) == direct1, "direct bake: 8 threads must match serial output");
+    assert(bakeDirect(0, dAuto) == direct1, "direct bake: auto thread count must match serial output");
+    const cached1 = bakeCached(1, c1);
+    assert(bakeCached(8, c8) == cached1, "TileCache bake: 8 threads must match serial output");
+    writefln("nav multithread bake: direct %d -> %d us (8 thr), %d us (auto); tilecache %d -> %d us (8 thr)",
+             d1, d8, dAuto, c1, c8);
+}

@@ -36,6 +36,8 @@ typedef struct NavBakeConfig {
     int maxPolysPerTile;
     int maxLayersPerTile;
     int maxObstacles;
+    /// Bake worker threads: 1 = serial, 0 = one per hardware thread. Output is identical either way.
+    int threads;
 } NavBakeConfig;
 
 /// Off-mesh link (jump, ladder, teleport). `start`/`end` are world positions that must lie within

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Multithreaded NavMesh bake** (`NavBakeConfig.threads`, `docs/navigation-guide.md`): tiles are built on worker
+  threads and committed serially in tile order, so the `.navmesh` is byte-identical to the serial bake (tested on the
+  direct and TileCache paths). `1` = serial (default), `0` = all hardware threads. ~6-8x faster on a 16-thread machine
+  in the test terrain. `NavBakeConfig` (C) gains a trailing `threads` field: **rebuild `librecast_shim.a`**
+  (`tools/build_sdl3_deps.sh`) after pulling.
 - **Restore the `NavTileCache` from a `.navmesh`** (`saveNavMeshToBytes(mesh, tc, out)`, `saveNavMeshFile(mesh, tc, path)`,
   `loadNavMeshAndCacheFromBytes`, `navSaveMeshAndTileCacheToBuffer` / `navLoadMeshAndTileCacheFromBuffer` in the shim):
   format v2 appends the cache params, compressed layers and off-mesh links, so dynamic obstacles work after loading

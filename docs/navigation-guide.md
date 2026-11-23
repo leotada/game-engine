@@ -52,6 +52,25 @@ NavMesh loaded = loadNavMeshFile("assets/nav/city_sector.navmesh");
 
 - Use the 5-argument overload `bakeNavMesh(navMesh, verts, indices, cfg)` when you only need a static `NavMesh` without `NavTileCache`.
 
+### Multithreaded bake
+
+Set `cfg.threads` to bake tiles on several threads: `1` (default) is serial, `0` uses one thread per
+hardware thread, any other value is an explicit count. Each tile's Recast pipeline (rasterization,
+regions, contours, poly mesh, and the TileCache layer compression) runs on the workers; inserting the
+tiles into the `NavMesh` / `NavTileCache` (and, on the TileCache path, `buildNavMeshTile`) stays serial
+in row-major tile order. The baked `.navmesh` is byte-identical for every thread count, which
+`engine/nav/tests.d` checks on both paths.
+
+```d
+cfg.threads = 0; // all cores
+bakeNavMesh(navMesh, tileCache, verts, indices, cfg);
+```
+
+Measured on a 120 m x 120 m hilly test terrain (~170 tiles, 16 hardware threads): direct path
+149 ms → 23 ms (8 threads) / 18 ms (`threads = 0`), TileCache path 125 ms → 22 ms (8 threads). Each tile still rasterizes the whole input
+triangle list, so very large meshes gain the most from splitting the geometry per region before baking.
+Peak memory grows by the built tile data held until the serial commit (the same data ends up in the mesh).
+
 ### Restoring dynamic obstacles from a saved `.navmesh`
 
 A mesh-only `.navmesh` has no `NavTileCache`, so dynamic obstacles would need a full re-bake (minutes on a big map). Save the cache next to the mesh and restore both:

@@ -602,7 +602,9 @@ NavMesh navMesh;
 NavTileCache tileCache;
 scope(exit) { tileCache.destroy(); navMesh.destroy(); }
 
-bakeNavMesh(navMesh, tileCache, verts, indices, NavBakeConfig.defaults());
+auto bakeCfg = NavBakeConfig.defaults();
+bakeCfg.threads = 0; // bake tiles on all cores (1 = serial, the default); output is identical
+bakeNavMesh(navMesh, tileCache, verts, indices, bakeCfg);
 
 auto query = NavQuery.create(navMesh);
 auto crowd = NavCrowd.create(maxAgents: 64, maxAgentRadius: 0.6f, navMesh);
