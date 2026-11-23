@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **DMD 2.114.0 support** (`docs/dmd-inline-crash.md` › Status on DMD 2.114.0): the debug build segfaulted (backend
+  stack overflow) in `engine.gpu.sky`, `engine.graphics.decals` and `engine.terrain.renderer`. The preprocessed shader
+  sources in `engine.gpu.shaders` are now `immutable string` globals instead of `enum`s. **Rebuild
+  `libsymgc-cards.a`** (`tools/build_symgc.sh dmd`) after upgrading DMD: the 2.113 build does not link against the
+  2.114 druntime. The 2.113 `-inline` SIMD crash is still present in 2.114; keep its workaround.
 - **`Scene3DTextured` batch table grows on demand** (`docs/graphics.md` › Batch table): a full `(mesh, material, lod)`
   table used to drop extra draws for the rest of the frame and warned only once per scene. It now doubles (`@nogc`,
   malloc) up to `Scene3DTextured.MAX_BATCHES_HARD` (65,536). `create(gpu, maxBatches, createIbl)` keeps its signature;

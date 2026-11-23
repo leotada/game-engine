@@ -45,3 +45,23 @@ which the inliner handles. Behaviour and generated math are unchanged. The scala
 Release builds should use LDC2 (`--compiler=ldc2 --build=release`); DMD is for development.
 If another DMD `-inline` crash shows up, bisect per module with
 `dmd -c -of/tmp/x.o -inline -Isource -preview=dip1000 <file>.d`.
+
+## Status on DMD 2.114.0
+
+- **The `-inline` bug above is not fixed.** The minimal reproducer still segfaults with
+  `dmd -c -inline repro.d` on 2.114.0. Keep the named-local workaround in `SimdFloat4.opBinary`.
+- **Backend stack overflow on large CTFE shader strings got wider.** On 2.113 only
+  `engine.water.renderer` hit it (worked around with module-level `immutable` copies). On 2.114 the
+  plain debug build (no `-inline`) also crashed in `engine.gpu.sky`, `engine.graphics.decals` and
+  `engine.terrain.renderer`. It is a stack overflow: the same modules compile under
+  `ulimit -s unlimited`. Fix: every `preprocessShader(...)` result in `engine.gpu.shaders` is now an
+  `immutable string` global instead of an `enum`, so the source is one symbol and not a literal
+  pasted into each function that uses it. CTFE reads (`static assert`) still work.
+  **Rule:** declare new large generated shader sources as `immutable string`, not `enum`.
+- **Prebuilt D static libraries must be rebuilt after a DMD upgrade.** `libs/<target>/libsymgc-cards.a`
+  built with 2.113 fails to link against the 2.114 druntime (undefined
+  `core.thread.osthread.suspend`, `Thread.isRunning`, `ClassInfo for Thread`). Run
+  `tools/build_symgc.sh dmd` (or `ldc2`) with the new compiler.
+- To find a crashing module, compile each one separately with codegen enabled (a frontend-only
+  `-o-` pass does not reproduce backend crashes):
+  `dmd -c -od/tmp/x -g -debug -Isource -Ivendor/zipd -Jassets/shaders -preview=dip1000 <file>.d`.
