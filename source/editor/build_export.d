@@ -578,6 +578,7 @@ struct ExportPipeline {
             "-P-I" ~ buildPath(engineRoot, "vendor/box3d/include"),
             "-I" ~ buildPath(projRoot, opts.sourceDir),
             "-I" ~ buildPath(engineRoot, "source"),
+            "-I" ~ buildPath(engineRoot, "vendor/zipd"),
             "-I" ~ buildPath(engineRoot, "source/bindings/box3d"),
             "-I" ~ buildPath(engineRoot, "source/bindings/recast"),
             "-J" ~ buildPath(engineRoot, "assets/shaders"),
@@ -625,6 +626,15 @@ struct ExportPipeline {
         foreach (entry; dirEntries(bindingsDir, SpanMode.depth)) {
             if (entry.isFile && extension(entry.name) == ".d") {
                 engineFiles ~= entry.name;
+            }
+        }
+        // Pure-D zstd codec (engine.assets.zstd imports zipd.compressor.*); same set as dub.json `sourcePaths`.
+        immutable zipdDir = buildPath(engineRoot, "vendor/zipd");
+        if (exists(zipdDir)) {
+            foreach (entry; dirEntries(zipdDir, SpanMode.depth)) {
+                if (entry.isFile && extension(entry.name) == ".d") {
+                    engineFiles ~= entry.name;
+                }
             }
         }
         engineFiles.sort();
@@ -701,6 +711,7 @@ struct ExportPipeline {
             "-P-std=c17",
             "-P-Ivendor/box3d/include",
             "-I=source",
+            "-I=vendor/zipd",
             "-I=source/bindings/box3d",
             "-I=source/bindings/recast",
             "-J=assets/shaders",
@@ -739,7 +750,7 @@ struct ExportPipeline {
 
         string ldcCmd = format(
             "ldc2 -c -mtriple=wasm32-unknown-emscripten %s -preview=dip1000 "
-            ~ "-I=source -I=source/bindings/box3d -I=source/bindings/recast -J=assets/shaders "
+            ~ "-I=source -I=vendor/zipd -I=source/bindings/box3d -I=source/bindings/recast -J=assets/shaders "
             ~ "-d-version=WebAssembly -d-version=StaticSDLDeps -od=%s "
             ~ "tools/player/player_main.d",
             opts.release ? "-O3 -release" : "-O1",
@@ -1303,6 +1314,7 @@ unittest {
     auto winCmd = ExportPipeline.buildCompileCommand(winCmdOpts);
     assert(winCmd.canFind(" -i "));
     assert(winCmd.canFind("box3d_import.c"));
+    assert(winCmd.canFind("-I=vendor/zipd"), "pure-D zstd codec must be on the import path");
     assert(winCmd.canFind("symgc-cards.lib"));
     assert(winCmd.canFind("/EXPORT:__sd_gc_card_lo"));
     assert(winCmd.canFind("/EXPORT:__sd_gc_card_n"));
@@ -1326,6 +1338,7 @@ unittest {
     auto webCmds = ExportPipeline.buildWebExportCommands(webOpts);
     assert(webCmds[0].canFind("wasm32-unknown-emscripten"));
     assert(webCmds[0].canFind("-d-version=WebAssembly"));
+    assert(webCmds[0].canFind("-I=vendor/zipd"));
     assert(webCmds[1].canFind("-sUSE_WEBGPU=1"));
     assert(ExportPipeline.renderWebShellHtml("<title>{{APP_TITLE}}</title>", webOpts)
         == "<title>Crystal Collector Web</title>");
@@ -1387,4 +1400,24 @@ unittest {
     assert(!lddRes.output.canFind("libbox3d"), "libbox3d dynamically linked:\n" ~ lddRes.output);
 
     if (exists("build/test_export")) rmdirRecurse("build/test_export");
+}
+
+/// External-project compile args must carry the pure-D zstd codec (`engine.assets.zstd` imports `zipd.compressor.*`).
+unittest {
+    immutable projDir = "build/test_zipd_args/proj";
+    if (exists("build/test_zipd_args")) rmdirRecurse("build/test_zipd_args");
+    mkdirRecurse(buildPath(projDir, "source"));
+    write(buildPath(projDir, "source/app.d"), "void main() {}\n");
+
+    BuildExportOptions opts;
+    opts.target = ExportTarget.linuxX86_64;
+    opts.outputDir = "build/test_zipd_args/out";
+    auto args = ExportPipeline.buildProjectCompileArgs(
+        opts, "ldc2", absolutePath(projDir), absolutePath("."), "build/test_zipd_args/obj", "build/test_zipd_args/bin");
+
+    assert(args.any!(a => a.canFind("vendor/zipd") && a[0 .. 2] == "-I"), "missing -I for vendor/zipd");
+    assert(args.any!(a => a.canFind("zipd/compressor/scratch.d")), "missing zipd sources");
+    assert(args.any!(a => a.canFind("zipd/compressor/zstd_dec.d")), "missing zipd sources");
+
+    rmdirRecurse("build/test_zipd_args");
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Export: pure-D zstd codec on the direct compile commands** (`source/editor/build_export.d`): the external-project
+  compile (`buildProjectCompileArgs`), the LDC `-i` command and the web command now pass `-I vendor/zipd`, and the
+  project compile also lists the `vendor/zipd` sources. Fixes `unable to read module scratch` (`zipd.compressor.scratch`)
+  when exporting a game after the zstd -> zipd migration. Covered by unit tests in `build_export.d`.
+- **LDC fix** (`engine.scene.chunk_components`): `sameLayout` no longer uses a local `ref` variable (only valid for
+  parameters and `foreach`), so the engine compiles with LDC 1.40.1 again.
 - **GESC soak and export tests** (`engine.scene.gesc_soak_tests`, `engine.scene.world_export_tests`): 100-cycle streaming soak
   for `.gesc` chunks (v1 and v2 binary components) compared against the JSON soak, the same soak from a mounted pak, a
   corrupt-chunk robustness soak, and an export -> GESC -> streamer round trip. `GESC_SOAK_FULL=1` selects the full 9 km2 size.
