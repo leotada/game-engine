@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`InputMap` read-back** (`engine.platform.input_map`): `numActions`, `actionName(i)`, `bindingCount(action)` and
+  `bindingAt(action, i, out binding)` (all `nothrow @nogc`) expose the bindings of an action so remap UIs no longer need
+  a parallel table. See `docs/game-development-guide.md` section 8.
 - **Export: pure-D zstd codec on the direct compile commands** (`source/editor/build_export.d`): the external-project
   compile (`buildProjectCompileArgs`), the LDC `-i` command and the web command now pass `-I vendor/zipd`, and the
   project compile also lists the `vendor/zipd` sources. Fixes `unable to read module scratch` (`zipd.compressor.scratch`)

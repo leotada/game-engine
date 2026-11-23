@@ -166,6 +166,33 @@ struct InputMap {
         actionCount = 0;
     }
 
+    /// Number of registered actions (valid indices for `actionName` are `0 .. actionCount`).
+    uint numActions() const nothrow @nogc pure {
+        return actionCount;
+    }
+
+    /// Name of the action at `index`, or `null` when out of range. The slice points into the map;
+    /// copy it before the action table changes.
+    const(char)[] actionName(uint index) const return nothrow @nogc pure {
+        return index < actionCount ? slots[index].name() : null;
+    }
+
+    /// Number of bindings of `action` (0 when the action is unknown).
+    uint bindingCount(scope const(char)[] action) const nothrow @nogc pure {
+        immutable int idx = findSlot(action);
+        return idx < 0 ? 0 : slots[idx].bindingCount;
+    }
+
+    /// Copy of binding `index` of `action`. Returns false (and leaves `outBinding` untouched)
+    /// when the action is unknown or `index` is out of range. Lets games build a remap UI
+    /// without keeping a parallel binding table.
+    bool bindingAt(scope const(char)[] action, uint index, out InputBinding outBinding) const nothrow @nogc pure {
+        immutable int idx = findSlot(action);
+        if (idx < 0 || index >= slots[idx].bindingCount) return false;
+        outBinding = slots[idx].bindings[index];
+        return true;
+    }
+
     /// Bind 4 directional keyboard keys to negative/positive X and Y action names.
     void bindAxis2D(
         scope const(char)[] negX, scope const(char)[] posX,
@@ -434,4 +461,39 @@ unittest {
     assert(restored.fromJson(json));
     assert(restored.isDown("jump", input));
     assert(restored.isDown("move_right", input));
+}
+
+/// Read-back of bindings (remap UIs): enumerate actions and copy their bindings.
+unittest {
+    InputMap m;
+    m.bindKey("jump", Key.space);
+    m.bindPadButton("jump", PadButton.a);
+    m.bindMouse("fire", MouseButton.left, 2.0f);
+
+    assert(m.numActions == 2);
+    assert(m.actionName(0) == "jump" && m.actionName(1) == "fire");
+    assert(m.actionName(2) is null);
+
+    assert(m.bindingCount("jump") == 2);
+    assert(m.bindingCount("fire") == 1);
+    assert(m.bindingCount("missing") == 0);
+
+    InputBinding b;
+    assert(m.bindingAt("jump", 0, b) && b.kind == InputBindingKind.key && b.code == cast(uint) Key.space);
+    assert(m.bindingAt("jump", 1, b) && b.kind == InputBindingKind.gamepadButton && b.code == cast(uint) PadButton.a);
+    assert(m.bindingAt("fire", 0, b) && b.kind == InputBindingKind.mouseButton && b.scale == 2.0f);
+
+    // Out of range / unknown action: false and `b` untouched.
+    b = InputBinding.init;
+    assert(!m.bindingAt("jump", 2, b));
+    assert(!m.bindingAt("missing", 0, b));
+    assert(b == InputBinding.init);
+
+    // Reflects mutations.
+    m.unbind("jump", InputBinding.fromKey(Key.space));
+    assert(m.bindingCount("jump") == 1);
+    m.clearAction("jump");
+    assert(m.bindingCount("jump") == 0);
+    m.clearAll();
+    assert(m.numActions == 0);
 }
