@@ -14,9 +14,9 @@ enum colored3dShaderSource = import("colored3d.wgsl");
 
 enum text2dShaderSource = import("text2d.wgsl");
 
-enum textured3dShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl").code;
-enum textured3dTangentShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT"]).code;
-enum textured3dSkinnedShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT", "SKINNED"]).code;
+immutable string textured3dShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl").code;
+immutable string textured3dTangentShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT"]).code;
+immutable string textured3dSkinnedShaderSource = preprocessShader(import("textured3d_pbr.wgsl"), "textured3d_pbr.wgsl", ["MESH_TANGENT", "SKINNED"]).code;
 
 /// PBR shader variants with the custom-surface hook enabled. They still hold
 /// the splice markers; build the final source with `composeSurfaceShader`.
@@ -121,8 +121,8 @@ unittest {
     assert(surfaceDisplaceKind(basicSrc ~ exSrc) == DisplaceKind.extended);
 }
 
-enum shadowDepthShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl").code;
-enum shadowDepthSkinnedShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["SKINNED"]).code;
+immutable string shadowDepthShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl").code;
+immutable string shadowDepthSkinnedShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["SKINNED"]).code;
 
 enum gizmoLineShaderSource = import("gizmo_line.wgsl");
 
@@ -130,33 +130,33 @@ enum ui2dShaderSource = import("ui2d.wgsl");
 
 enum sprite2dShaderSource = import("sprite2d.wgsl");
 
-enum bloomThresholdShaderSource = preprocessShader(import("post_bloom_threshold.wgsl"), "post_bloom_threshold.wgsl").code;
+immutable string bloomThresholdShaderSource = preprocessShader(import("post_bloom_threshold.wgsl"), "post_bloom_threshold.wgsl").code;
 
-enum bloomDownsampleKarisShaderSource = preprocessShader(import("post_bloom_down_karis.wgsl"), "post_bloom_down_karis.wgsl").code;
+immutable string bloomDownsampleKarisShaderSource = preprocessShader(import("post_bloom_down_karis.wgsl"), "post_bloom_down_karis.wgsl").code;
 
-enum bloomDownsampleShaderSource = preprocessShader(import("post_bloom_down.wgsl"), "post_bloom_down.wgsl").code;
+immutable string bloomDownsampleShaderSource = preprocessShader(import("post_bloom_down.wgsl"), "post_bloom_down.wgsl").code;
 
-enum bloomUpsampleShaderSource = preprocessShader(import("post_bloom_up.wgsl"), "post_bloom_up.wgsl").code;
+immutable string bloomUpsampleShaderSource = preprocessShader(import("post_bloom_up.wgsl"), "post_bloom_up.wgsl").code;
 
-enum tonemapShaderSource = preprocessShader(import("post_tonemap.wgsl"), "post_tonemap.wgsl").code;
+immutable string tonemapShaderSource = preprocessShader(import("post_tonemap.wgsl"), "post_tonemap.wgsl").code;
 
-enum fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
+immutable string fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
 
-enum blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;
+immutable string blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;
 
 enum skinnedShaderSource = import("skinned.wgsl");
 
 /// Engine sky (fullscreen, far plane) — `engine.gpu.sky.SkyRenderer`.
-enum skyShaderSource = preprocessShader(import("sky.wgsl"), "sky.wgsl").code;
+immutable string skyShaderSource = preprocessShader(import("sky.wgsl"), "sky.wgsl").code;
 /// Runtime HDR IBL compute passes — `engine.gpu.ibl_dynamic.DynamicIbl`.
-enum iblSkyCsShaderSource = preprocessShader(import("ibl_sky_cs.wgsl"), "ibl_sky_cs.wgsl").code;
+immutable string iblSkyCsShaderSource = preprocessShader(import("ibl_sky_cs.wgsl"), "ibl_sky_cs.wgsl").code;
 /// Chunked terrain — `engine.terrain.renderer.TerrainRenderer`.
-enum terrainPbrShaderSource = preprocessShader(import("terrain_pbr.wgsl"), "terrain_pbr.wgsl").code;
-enum terrainShadowShaderSource = preprocessShader(import("terrain_shadow.wgsl"), "terrain_shadow.wgsl").code;
+immutable string terrainPbrShaderSource = preprocessShader(import("terrain_pbr.wgsl"), "terrain_pbr.wgsl").code;
+immutable string terrainShadowShaderSource = preprocessShader(import("terrain_shadow.wgsl"), "terrain_shadow.wgsl").code;
 /// Projected decals — `engine.graphics.decals.DecalRenderer`.
-enum decalPbrShaderSource = preprocessShader(import("decal_pbr.wgsl"), "decal_pbr.wgsl").code;
-enum waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;
-enum depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;
-enum waterSimCsShaderSource = preprocessShader(import("water_sim_cs.wgsl"), "water_sim_cs.wgsl").code;
+immutable string decalPbrShaderSource = preprocessShader(import("decal_pbr.wgsl"), "decal_pbr.wgsl").code;
+immutable string waterSurfaceShaderSource = preprocessShader(import("water_surface.wgsl"), "water_surface.wgsl").code;
+immutable string depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;
+immutable string waterSimCsShaderSource = preprocessShader(import("water_sim_cs.wgsl"), "water_sim_cs.wgsl").code;
 /// Clustered Forward compute light culling — `engine.gpu.clustered.ClusteredLightCuller`.
-enum clusterCullCsShaderSource = preprocessShader(import("clustered_cull_cs.wgsl"), "clustered_cull_cs.wgsl").code;
+immutable string clusterCullCsShaderSource = preprocessShader(import("clustered_cull_cs.wgsl"), "clustered_cull_cs.wgsl").code;
