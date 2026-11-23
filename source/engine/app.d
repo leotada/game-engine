@@ -14,6 +14,7 @@ import engine.assets.png : saveRgbaPngZ;
 import engine.core.log;
 import engine.core.arena : FrameArena;
 import engine.core.gc : gcStepFrameSlack, gcDefragment;
+import engine.devtools.profiler : profileZone, profilerEndFrame;
 import core.time : MonoTime, Duration, usecs;
 
 @safe:
@@ -285,9 +286,11 @@ struct App {
             immutable slack = _targetFrameBudget - _lastFrameElapsed;
             // Leave a 250us safety margin for presentation & OS scheduling
             if (slack > 500.usecs) {
+                auto zGc = profileZone!"gc.frameSlack"();
                 gcStepFrameSlack(slack - 250.usecs);
             }
         }
+        profilerEndFrame();
     }
 
     void destroy() {
