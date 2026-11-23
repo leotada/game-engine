@@ -307,12 +307,17 @@ struct Scene3DTextured {
     private WGPUBuffer boundSpotLightsBuf;
 
     private enum DEFAULT_MAX_BATCHES = 256;
+    /// Hard ceiling on (mesh, material, lod) batches per frame. The batch
+    /// table doubles on demand up to this size; past it draws are dropped and
+    /// counted in `RenderStats.droppedDraws`.
+    enum uint MAX_BATCHES_HARD = 1u << 16;
     /// Initial instance capacity; a batch's buffer doubles when exceeded.
     private enum INITIAL_INSTANCES_PER_BATCH = 512;
 
     /// One (mesh, material, lod) draw list. `instances` is malloc-backed and
     /// keeps its capacity across frames, so steady-state submission never
-    /// allocates.
+    /// allocates. All-zero bytes are a valid empty batch (see `reserveBatches`);
+    /// `instanceBuf` is created on first upload.
     private struct Batch {
         TexMesh*     mesh;
         SkinnedMesh* skinnedMesh;
@@ -397,9 +402,11 @@ struct Scene3DTextured {
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
     private uint surfaceShaderCount = 0;
 
+    /// malloc-backed batch table (see `reserveBatches`); `length` is the
+    /// capacity, `batchCount` the batches used this frame.
     private Batch[] batches;
-    private uint[] sortOrder;
-    private float[] sortFarthest;
+    private PodBuffer!uint sortOrder;
+    private PodBuffer!float sortFarthest;
     private uint batchCount = 0;
 
     // Automatic LOD inputs, captured in `begin`.
@@ -446,6 +453,10 @@ struct Scene3DTextured {
     /// starts with a cheap flat-grey environment instead. Use it for scenes that bind their own
     /// environment right after creation (`setEnvironment` / `setEnvironmentBindGroup`, e.g. a
     /// second scene for unlit particle pools sharing the main scene's `DynamicIbl`).
+    ///
+    /// `maxBatches` is the initial capacity of the (mesh, material, lod) batch
+    /// table. The table doubles on demand (up to `MAX_BATCHES_HARD`), so a low
+    /// value costs a reallocation, never dropped draws; see `batchStats`.
     static Scene3DTextured create(ref GpuContext gpu, uint maxBatches = DEFAULT_MAX_BATCHES,
                                   bool createIbl = true) @trusted {
         if (maxBatches == 0) maxBatches = DEFAULT_MAX_BATCHES;
@@ -501,15 +512,7 @@ struct Scene3DTextured {
         s.iblBindGroup = s.ownedIbl.bindGroup;
         s.ownsIbl = true;
 
-        s.batches = new Batch[maxBatches];
-        s.batchMap.reserve(maxBatches);
-        s.sortOrder = new uint[maxBatches];
-        s.sortFarthest = new float[maxBatches];
-        foreach (ref b; s.batches) {
-            b.instanceBuf = createDynamicVertexBuffer(
-                device, INITIAL_INSTANCES_PER_BATCH * TexInstanceData.sizeof);
-            b.capacity = INITIAL_INSTANCES_PER_BATCH;
-        }
+        s.reserveBatches(maxBatches < MAX_BATCHES_HARD ? maxBatches : MAX_BATCHES_HARD);
         s.skinPaletteCapacity = INITIAL_SKIN_PALETTE_MATRICES;
         s.skinPaletteBuf = createStorageBuffer(device, s.skinPaletteCapacity * Mat4.sizeof);
         s.rebuildSkinPaletteBindGroup();
@@ -1923,8 +1926,8 @@ struct Scene3DTextured {
 
     private void ensureBatchUploaded(ref Batch b) @trusted {
         if (b.uploaded) return;
-        if (b.instances.length > b.capacity) {
-            size_t cap = b.capacity;
+        if (b.instanceBuf is null || b.instances.length > b.capacity) {
+            size_t cap = b.capacity > 0 ? b.capacity : INITIAL_INSTANCES_PER_BATCH;
             while (cap < b.instances.length) cap *= 2;
             destroyBuffer(b.instanceBuf);
             b.instanceBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
@@ -2056,10 +2059,7 @@ struct Scene3DTextured {
         skinPaletteStaging.release();
         foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
         surfaceShaderCount = 0;
-        foreach (ref b; batches) {
-            destroyBuffer(b.instanceBuf);
-            b.instances.release();
-        }
+        releaseBatches();
         partitionScratch.release();
         partitionClasses.release();
         staticRuns.release();
@@ -2340,20 +2340,44 @@ struct Scene3DTextured {
     }
 
     private Batch* findOrAdd(ref TexMesh mesh, ref Material material, ubyte lod) nothrow @nogc @trusted {
-        immutable meshKey = cast(size_t) &mesh;
-        immutable matKey = cast(size_t) &material;
+        auto b = findOrAddKey(cast(size_t) &mesh, cast(size_t) &material, lod);
+        if (b !is null && b.material is null) {
+            b.mesh = &mesh;
+            b.material = &material;
+        }
+        return b;
+    }
+
+    private Batch* findOrAddSkinned(ref SkinnedMesh mesh, ref Material material) nothrow @nogc @trusted {
+        auto b = findOrAddKey(cast(size_t) &mesh, cast(size_t) &material, SKINNED_BATCH_LOD);
+        if (b !is null && b.material is null) {
+            b.skinnedMesh = &mesh;
+            b.material = &material;
+        }
+        return b;
+    }
+
+    /// Batch for a (mesh, material, lod) key, appending a fresh one (with
+    /// `material is null`, for the caller to fill) when absent. Doubles the
+    /// table when full; `null` only past `MAX_BATCHES_HARD`.
+    private Batch* findOrAddKey(size_t meshKey, size_t matKey, ubyte lod) nothrow @nogc {
         immutable found = batchMap.find(meshKey, matKey, lod);
         if (found != BatchMap.none) return &batches[found];
         if (batchCount >= batches.length) {
-            if (!warnedBatchOverflow)
-                warn("Scene3DTextured: more than ", batches.length, " (mesh, material, lod) batches; extra draws are dropped");
-            warnedBatchOverflow = true;
-            return null;
+            if (batches.length >= MAX_BATCHES_HARD) {
+                if (!warnedBatchOverflow)
+                    warn("Scene3DTextured: more than ", batches.length,
+                         " (mesh, material, lod) batches; extra draws are dropped");
+                warnedBatchOverflow = true;
+                return null;
+            }
+            immutable size_t want = batches.length < 8 ? 16 : batches.length * 2;
+            reserveBatches(want < MAX_BATCHES_HARD ? want : MAX_BATCHES_HARD);
         }
         auto b = &batches[batchCount];
-        b.mesh = &mesh;
+        b.mesh = null;
         b.skinnedMesh = null;
-        b.material = &material;
+        b.material = null;
         b.lod = lod;
         b.instances.clear();
         b.uploaded = false;
@@ -2363,28 +2387,43 @@ struct Scene3DTextured {
         return b;
     }
 
-    private Batch* findOrAddSkinned(ref SkinnedMesh mesh, ref Material material) nothrow @nogc @trusted {
-        immutable meshKey = cast(size_t) &mesh;
-        immutable matKey = cast(size_t) &material;
-        immutable found = batchMap.find(meshKey, matKey, SKINNED_BATCH_LOD);
-        if (found != BatchMap.none) return &batches[found];
-        if (batchCount >= batches.length) {
-            if (!warnedBatchOverflow)
-                warn("Scene3DTextured: more than ", batches.length, " batches; extra draws are dropped");
-            warnedBatchOverflow = true;
-            return null;
+    /// Grow the batch table to `cap` entries (no-op when already that large).
+    /// Existing batches move bitwise, keeping their instance storage and GPU
+    /// buffers; the lookup map is rebuilt from this frame's live batches.
+    /// `@nogc`, so it may run inside the frame loop; no `Batch*` may be held
+    /// across a call (`draw*` only use the pointer for one append).
+    private void reserveBatches(size_t cap) nothrow @nogc @trusted {
+        import core.stdc.stdlib : abort, realloc;
+        import core.stdc.string : memset;
+        immutable old = batches.length;
+        if (cap <= old) return;
+        auto p = cast(Batch*) realloc(batches.ptr, cap * Batch.sizeof);
+        if (p is null) abort();
+        memset(p + old, 0, (cap - old) * Batch.sizeof);
+        batches = p[0 .. cap];
+        sortOrder.resize(cap);
+        sortFarthest.resize(cap);
+        batchMap.reserve(cap);
+        foreach (i, ref b; batches[0 .. batchCount]) {
+            immutable meshKey = b.skinnedMesh !is null
+                ? cast(size_t) b.skinnedMesh : cast(size_t) b.mesh;
+            batchMap.insert(meshKey, cast(size_t) b.material, b.lod, cast(uint) i);
         }
-        auto b = &batches[batchCount];
-        b.mesh = null;
-        b.skinnedMesh = &mesh;
-        b.material = &material;
-        b.lod = SKINNED_BATCH_LOD;
-        b.instances.clear();
-        b.uploaded = false;
-        b.prepared = false;
-        batchMap.insert(meshKey, matKey, SKINNED_BATCH_LOD, batchCount);
-        batchCount++;
-        return b;
+    }
+
+    /// Free the batch table with every batch's instance storage and buffer.
+    private void releaseBatches() nothrow @nogc @trusted {
+        import core.stdc.stdlib : free;
+        foreach (ref b; batches) {
+            destroyBuffer(b.instanceBuf);
+            b.instances.release();
+        }
+        free(batches.ptr);
+        batches = null;
+        batchCount = 0;
+        sortOrder.release();
+        sortFarthest.release();
+        batchMap.release();
     }
 
     private void rebuildSkinPaletteBindGroup() nothrow @nogc @trusted {
@@ -2582,6 +2621,39 @@ package(engine) struct BatchMap {
         assert(map.find(k * 16, 0, 0) == k);
     map.release();
     assert(map.find(0, 0, 0) == BatchMap.none);
+}
+
+@("scene3dTextured.batchTableGrows") unittest {
+    // No GPU needed: batches create their instance buffer on first upload.
+    auto s = new Scene3DTextured;
+    s.reserveBatches(4);
+    auto meshes = new TexMesh[40];
+    auto mats = new Material[3];
+    foreach (i; 0 .. 40) {
+        auto b = s.findOrAdd(meshes[i], mats[i % 3], cast(ubyte)(i % 2));
+        assert(b !is null, "a full table must grow, not drop the draw");
+        b.instances.put(TexInstanceData.init);
+    }
+    assert(s.batchCount == 40);
+    assert(s.batches.length == 64);   // 4 -> 16 -> 32 -> 64
+    assert(s.sortOrder.length == 64 && s.sortFarthest.length == 64);
+
+    // Batches created before a growth keep their key and instances.
+    foreach (i; 0 .. 40) {
+        auto b = s.findOrAdd(meshes[i], mats[i % 3], cast(ubyte)(i % 2));
+        assert(b is &s.batches[i]);
+        assert(b.mesh is &meshes[i] && b.material is &mats[i % 3]);
+        assert(b.instances.length == 1);
+    }
+
+    // Skinned and static batches share the table.
+    SkinnedMesh skinned;
+    auto sb = s.findOrAddSkinned(skinned, mats[0]);
+    assert(sb !is null && sb.skinnedMesh is &skinned && sb.mesh is null);
+    assert(s.findOrAddSkinned(skinned, mats[0]) is sb);
+    assert(s.batchCount == 41);
+    s.releaseBatches();
+    assert(s.batches.length == 0);
 }
 
 @safe unittest {
