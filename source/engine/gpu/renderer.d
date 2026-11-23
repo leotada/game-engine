@@ -9,6 +9,8 @@ import engine.gpu.shaders : depthCopyShaderSource, bloomDownsampleShaderSource;
 import engine.graphics.texture : mipCount;
 import engine.graphics.types : Color4;
 import engine.core.log;
+import engine.devtools.profiler : profileZone;
+import engine.gpu.gpu_profiler;
 
 @safe:
 
@@ -19,6 +21,7 @@ struct Color {
 struct Renderer {
     private WGPUDevice   device;
     private WGPUQueue    queue;
+    private uint uiGpuScope = NO_GPU_SCOPE; /// GPU profiler scope over the UI pass
     private WGPUSurface  surface;
     private WGPUTexture  depthTexture;
     private WGPUTextureView depthView;
@@ -63,6 +66,7 @@ struct Renderer {
         r.post = PostProcessor.create(gpuCtx, gpuCtx.getFormat());
         r.postOwned = true;
         r.createSceneTargets(gpuCtx.width(), gpuCtx.height());
+        gpuProfilerInit(r.device, r.queue, gpuCtx.timestampsSupported());
         return r;
     }
 
@@ -437,6 +441,10 @@ struct Renderer {
     }
 
     private FrameContext beginFrameImpl(double cr, double cg, double cb, double ca) nothrow @nogc @trusted {
+        {
+            auto z = profileZone!"renderer.gpuReadback"();
+            gpuProfilerCollect(); // commit GPU timings of frames that finished (non-blocking)
+        }
         WGPUCommandEncoderDescriptor encDesc;
         auto encoder = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 
@@ -490,6 +498,7 @@ struct Renderer {
             // Swapchain not available this frame (outdated / timeout / lost):
             // drop the recorded work instead of leaking the encoder + texture.
             if (surfTex.texture !is null) wgpuTextureRelease(surfTex.texture);
+            gpuProfilerDiscardFrame();
             wgpuCommandEncoderRelease(frame.encoder);
             frame.encoder = null;
             frame.valid = false;
@@ -505,7 +514,11 @@ struct Renderer {
         WGPUTextureView uiDst = useUiRT ? post.ensureUiTargetView() : surfView;
         if (uiDst is null) uiDst = surfView;
 
-        post.execute(frame.encoder, hdrView, uiDst);
+        {
+            auto z = profileZone!"renderer.post"();
+            auto g = gpuScope!"gpu.post"(frame.encoder);
+            post.execute(frame.encoder, hdrView, uiDst);
+        }
 
         // Present pass for UI (no depth)
         WGPURenderPassColorAttachment colorAtt;
@@ -520,6 +533,7 @@ struct Renderer {
         passDesc.colorAttachments     = &colorAtt;
 
         frame.pass = wgpuCommandEncoderBeginRenderPass(frame.encoder, &passDesc);
+        uiGpuScope = gpuPassBegin!"gpu.ui"(frame.pass); // ended in endFrame, same pass
         frame.postResolved = true;
     }
 
@@ -531,6 +545,8 @@ struct Renderer {
             resolvePost(frame);
         if (!frame.valid) return;
 
+        gpuPassEnd(uiGpuScope, frame.pass);
+        uiGpuScope = NO_GPU_SCOPE;
         wgpuRenderPassEncoderEnd(frame.pass);
         wgpuRenderPassEncoderRelease(frame.pass);
 
@@ -539,15 +555,23 @@ struct Renderer {
         }
 
         if (captureBuf !is null && frame.texture !is null) encodeCapture(frame);
+        gpuProfilerResolve(frame.encoder);
 
-        WGPUCommandBufferDescriptor cbDesc;
-        auto cmdBuf = wgpuCommandEncoderFinish(frame.encoder, &cbDesc);
-        wgpuCommandEncoderRelease(frame.encoder);
+        {
+            auto z = profileZone!"renderer.submit"();
+            WGPUCommandBufferDescriptor cbDesc;
+            auto cmdBuf = wgpuCommandEncoderFinish(frame.encoder, &cbDesc);
+            wgpuCommandEncoderRelease(frame.encoder);
 
-        wgpuQueueSubmit(queue, 1, &cmdBuf);
-        wgpuCommandBufferRelease(cmdBuf);
+            wgpuQueueSubmit(queue, 1, &cmdBuf);
+            wgpuCommandBufferRelease(cmdBuf);
+        }
+        gpuProfilerAfterSubmit();
 
-        wgpuSurfacePresent(surface);
+        {
+            auto z = profileZone!"renderer.present"();
+            wgpuSurfacePresent(surface);
+        }
 
         if (frame.view !is null) wgpuTextureViewRelease(frame.view);
         if (frame.texture !is null) wgpuTextureRelease(frame.texture);
@@ -692,6 +716,7 @@ struct Renderer {
     }
 
     void destroy() nothrow @nogc @trusted {
+        gpuProfilerDestroy();
         releaseSceneTargets();
         if (opaqueDownPipe !is null)    { wgpuRenderPipelineRelease(opaqueDownPipe); opaqueDownPipe = null; }
         if (opaqueDownPL !is null)      { wgpuPipelineLayoutRelease(opaqueDownPL); opaqueDownPL = null; }
