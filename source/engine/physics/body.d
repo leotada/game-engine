@@ -647,6 +647,75 @@ float getMass(const b3BodyId bodyId) nothrow @nogc @trusted {
     return b3Body_IsValidD(bodyId) ? b3Body_GetMassD(bodyId) : 0.0f;
 }
 
+/// Mass properties of a body in its local space. `inertiaX/Y/Z` are the columns of the
+/// symmetric 3x3 inertia tensor about the center of mass (kg*m^2).
+struct BodyMassData {
+    float mass = 0.0f;
+    Vec3 center;      /// local center of mass
+    Vec3 inertiaX;
+    Vec3 inertiaY;
+    Vec3 inertiaZ;
+
+    /// Mass data with a diagonal inertia tensor (principal moments `ix`, `iy`, `iz`),
+    /// the common case for boxes, cylinders and vehicles.
+    static BodyMassData diagonal(float mass, Vec3 center, float ix, float iy, float iz) nothrow @nogc pure @safe {
+        BodyMassData d;
+        d.mass = mass;
+        d.center = center;
+        d.inertiaX = Vec3(ix, 0.0f, 0.0f);
+        d.inertiaY = Vec3(0.0f, iy, 0.0f);
+        d.inertiaZ = Vec3(0.0f, 0.0f, iz);
+        return d;
+    }
+}
+
+static assert(isPod!BodyMassData);
+
+/// Current mass, local center of mass and inertia tensor. A default-initialized value
+/// (zero mass) is returned for an invalid body.
+BodyMassData getMassData(const b3BodyId bodyId) nothrow @nogc @trusted {
+    BodyMassData d;
+    if (!b3Body_IsValidD(bodyId)) return d;
+    const raw = b3Body_GetMassDataD(bodyId);
+    d.mass = raw.mass;
+    d.center = toEngineVec3(raw.center);
+    d.inertiaX = toEngineVec3(raw.inertia.cx);
+    d.inertiaY = toEngineVec3(raw.inertia.cy);
+    d.inertiaZ = toEngineVec3(raw.inertia.cz);
+    return d;
+}
+
+/// Override mass, center of mass and inertia (e.g. a vehicle whose inertia is computed from its
+/// bounding box instead of the collision shapes). Box3D discards the override when a shape is
+/// added or removed or the body type changes; call `resetMassFromShapes` to undo it.
+void setMassData(const b3BodyId bodyId, const BodyMassData data) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId)) return;
+    b3MassData raw;
+    raw.mass = data.mass;
+    raw.center = toB3Vec3(data.center);
+    raw.inertia.cx = toB3Vec3(data.inertiaX);
+    raw.inertia.cy = toB3Vec3(data.inertiaY);
+    raw.inertia.cz = toB3Vec3(data.inertiaZ);
+    b3Body_SetMassDataD(bodyId, raw);
+}
+
+/// Recompute mass properties from the shapes' densities, discarding a `setMassData` override.
+void resetMassFromShapes(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (b3Body_IsValidD(bodyId)) b3Body_ApplyMassFromShapesD(bodyId);
+}
+
+/// Center of mass in the body's local space.
+Vec3 getLocalCenterOfMass(const b3BodyId bodyId) nothrow @nogc @trusted {
+    return b3Body_IsValidD(bodyId) ? toEngineVec3(b3Body_GetLocalCenterOfMassD(bodyId)) : Vec3.init;
+}
+
+/// Local-space rotational inertia diagonal (Ixx, Iyy, Izz) in kg*m^2.
+Vec3 getLocalInertiaDiagonal(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId)) return Vec3.init;
+    const m = b3Body_GetLocalRotationalInertiaD(bodyId);
+    return Vec3(m.cx.x, m.cy.y, m.cz.z);
+}
+
 /// Body orientation.
 Quat getRotation(const b3BodyId bodyId) nothrow @nogc @trusted {
     return toEngineQuat(b3Body_GetRotationD(bodyId));
@@ -1024,4 +1093,39 @@ private b3Capsule makeYAxisCapsule(float height, float radius) pure nothrow @nog
     assert(f.categoryBits == ulong.max);
     assert(f.maskBits == ulong.max);
     assert(f.groupIndex == 0);
+}
+
+unittest {
+    // Mass data: read back, override (diagonal inertia + shifted center), and reset from shapes.
+    import std.math : fabs;
+
+    auto world = PhysicsWorld.createDefault();
+    BodyDesc desc;
+    desc.position = Vec3(0.0f, 5.0f, 0.0f);
+    desc.density = 100.0f;
+    auto box = createBoxBody(world, desc, Vec3(1.0f, 0.5f, 2.0f));
+    assert(isBodyValid(box));
+
+    immutable base = getMassData(box);
+    // 2 x 1 x 4 m box at 100 kg/m^3.
+    assert(fabs(base.mass - 800.0f) < 1.0f);
+    assert(base.inertiaX.x > 0.0f && base.inertiaY.y > 0.0f && base.inertiaZ.z > 0.0f);
+    assert(fabs(getMass(box) - base.mass) < 1e-3f);
+    immutable diag = getLocalInertiaDiagonal(box);
+    assert(fabs(diag.x - base.inertiaX.x) < 1e-3f);
+
+    setMassData(box, BodyMassData.diagonal(1200.0f, Vec3(0.0f, -0.25f, 0.0f), 10.0f, 20.0f, 30.0f));
+    immutable over = getMassData(box);
+    assert(fabs(over.mass - 1200.0f) < 1e-3f);
+    assert(fabs(getMass(box) - 1200.0f) < 1e-3f);
+    assert(fabs(getLocalCenterOfMass(box).y + 0.25f) < 1e-4f);
+    immutable od = getLocalInertiaDiagonal(box);
+    assert(fabs(od.x - 10.0f) < 1e-3f && fabs(od.y - 20.0f) < 1e-3f && fabs(od.z - 30.0f) < 1e-3f);
+
+    resetMassFromShapes(box);
+    assert(fabs(getMass(box) - base.mass) < 1.0f);
+
+    destroyBody(box);
+    // Invalid body: harmless defaults.
+    assert(getMassData(box).mass == 0.0f);
 }

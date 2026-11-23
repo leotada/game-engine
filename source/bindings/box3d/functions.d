@@ -50,6 +50,10 @@ pragma(mangle, "b3Body_SetAngularVelocity") void b3Body_SetAngularVelocityD(b3Bo
 pragma(mangle, "b3Body_ApplyForceToCenter") void b3Body_ApplyForceToCenterD(b3BodyId bodyId, b3Vec3 force, bool wake);
 pragma(mangle, "b3Body_ApplyForce") void b3Body_ApplyForceD(b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake);
 pragma(mangle, "b3Body_GetMass") float b3Body_GetMassD(b3BodyId bodyId);
+pragma(mangle, "b3Body_GetMassData") b3MassData b3Body_GetMassDataD(b3BodyId bodyId);
+pragma(mangle, "b3Body_SetMassData") void b3Body_SetMassDataD(b3BodyId bodyId, b3MassData massData);
+pragma(mangle, "b3Body_GetLocalRotationalInertia") b3Matrix3 b3Body_GetLocalRotationalInertiaD(b3BodyId bodyId);
+pragma(mangle, "b3Body_GetLocalCenterOfMass") b3Vec3 b3Body_GetLocalCenterOfMassD(b3BodyId bodyId);
 pragma(mangle, "b3Body_ApplyLinearImpulse") void b3Body_ApplyLinearImpulseD(b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bool wake);
 pragma(mangle, "b3Body_ApplyLinearImpulseToCenter") void b3Body_ApplyLinearImpulseToCenterD(b3BodyId bodyId, b3Vec3 impulse, bool wake);
 pragma(mangle, "b3Body_ApplyAngularImpulse") void b3Body_ApplyAngularImpulseD(b3BodyId bodyId, b3Vec3 impulse, bool wake);
