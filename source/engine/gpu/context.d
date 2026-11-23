@@ -21,6 +21,7 @@ struct GpuContext {
     private WGPUTextureFormat surfaceFormat;
     private WGPUPresentMode presentModeVal;
     private uint surfW, surfH;
+    private bool timestamps; /// device created with timestamp-query features (GPU profiler)
 
     @disable this(this);
 
@@ -144,6 +145,21 @@ struct GpuContext {
             reqLimits.maxComputeWorkgroupsPerDimension = clampLimit(adapterLimits.maxComputeWorkgroupsPerDimension, 64);
             devDesc.requiredLimits = &reqLimits;
         }
+        // GPU timestamps for the profiler (engine.gpu.gpu_profiler): only when the adapter has
+        // all three features; `ENGINE_NO_GPU_TIMESTAMPS=1` opts out (fallback testing).
+        WGPUFeatureName[3] tsFeatures = [WGPUFeatureName.timestampQuery,
+            WGPUFeatureName.timestampQueryInsideEncoders, WGPUFeatureName.timestampQueryInsidePasses];
+        version (WebAssembly) {} else {
+            import core.stdc.stdlib : getenv;
+            const optOut = getenv("ENGINE_NO_GPU_TIMESTAMPS");
+            bool all = optOut is null || optOut[0] == '0';
+            foreach (f; tsFeatures)
+                all = all && wgpuAdapterHasFeature(ctx.adapter, f) != 0;
+            if (all) {
+                devDesc.requiredFeatureCount = tsFeatures.length;
+                devDesc.requiredFeatures = cast(void*) tsFeatures.ptr;
+            }
+        }
         WGPURequestDeviceCallbackInfo devCb;
         devCb.mode      = WGPUCallbackMode.allowProcessEvents;
         devCb.callback  = &onDeviceReady;
@@ -163,6 +179,11 @@ struct GpuContext {
             fatal("Failed to obtain WGPU device");
         }
         info("WGPU device obtained");
+        version (WebAssembly) {} else {
+            ctx.timestamps = wgpuDeviceHasFeature(ctx.device, WGPUFeatureName.timestampQuery) != 0
+                && wgpuDeviceHasFeature(ctx.device, WGPUFeatureName.timestampQueryInsidePasses) != 0;
+        }
+        info("GPU timestamps: ", ctx.timestamps ? "available" : "unavailable");
 
         // 5. Queue
         ctx.queue = wgpuDeviceGetQueue(ctx.device);
@@ -274,6 +295,8 @@ struct GpuContext {
 
     WGPUDevice   getDevice()  nothrow @nogc { return device; }
     WGPUQueue    getQueue()   nothrow @nogc { return queue; }
+    /// True when GPU timestamp queries (between and inside passes) are enabled on the device.
+    bool timestampsSupported() const nothrow @nogc { return timestamps; }
     WGPUSurface  getSurface() nothrow @nogc { return surface; }
     WGPUTextureFormat getFormat() const nothrow @nogc { return surfaceFormat; }
     uint width()  const nothrow @nogc { return surfW; }

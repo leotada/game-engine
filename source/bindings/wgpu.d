@@ -169,6 +169,36 @@ enum WGPUBufferUsage : WGPUFlags {
     uniform  = 0x0000_0040,
     storage  = 0x0000_0080,
     indirect = 0x0000_0100,
+    queryResolve = 0x0000_0200,
+}
+
+/// Subset of `WGPUFeatureName` (webgpu.h) plus the wgpu-native timestamp extensions (wgpu.h,
+/// `WGPUNativeFeature`). Values checked against wgpu-native v29.0.1.1.
+enum WGPUFeatureName : uint {
+    timestampQuery = 0x0000_0009,
+    /// wgpu-native: `wgpuCommandEncoderWriteTimestamp` between passes.
+    timestampQueryInsideEncoders = 0x0003_0024,
+    /// wgpu-native: `wgpuRenderPassEncoderWriteTimestamp` / `wgpuComputePassEncoderWriteTimestamp`.
+    timestampQueryInsidePasses = 0x0003_0025,
+}
+
+enum WGPUQueryType : uint {
+    occlusion = 0x0000_0001,
+    timestamp = 0x0000_0002,
+}
+
+struct WGPUQuerySetDescriptor {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    WGPUQueryType type = WGPUQueryType.timestamp;
+    uint count;
+}
+
+struct WGPUPassTimestampWrites {
+    WGPUChainedStruct* nextInChain;
+    WGPUQuerySet querySet;
+    uint beginningOfPassWriteIndex = uint.max; // WGPU_QUERY_SET_INDEX_UNDEFINED
+    uint endOfPassWriteIndex = uint.max;
 }
 
 enum WGPULoadOp : uint {
@@ -1108,7 +1138,22 @@ void wgpuBufferAddRef(WGPUBuffer buffer);
 void wgpuBufferRelease(WGPUBuffer buffer);
 WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset, size_t size, WGPUBufferMapCallbackInfo callbackInfo);
 const(void)* wgpuBufferGetConstMappedRange(WGPUBuffer buffer, size_t offset, size_t size);
-void wgpuBufferUnmap(WGPUBuffer buffer);
+
+// Timestamp queries (GPU profiler). `*WriteTimestamp` and `wgpuQueueGetTimestampPeriod` are
+// wgpu-native extensions (wgpu.h); the period is nanoseconds per tick.
+WGPUBool wgpuAdapterHasFeature(WGPUAdapter adapter, WGPUFeatureName feature);
+WGPUBool wgpuDeviceHasFeature(WGPUDevice device, WGPUFeatureName feature);
+WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, const(WGPUQuerySetDescriptor)* descriptor);
+void wgpuQuerySetDestroy(WGPUQuerySet querySet);
+void wgpuQuerySetRelease(WGPUQuerySet querySet);
+void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
+void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
+void wgpuComputePassEncoderWriteTimestamp(WGPUComputePassEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
+void wgpuCommandEncoderResolveQuerySet(WGPUCommandEncoder encoder, WGPUQuerySet querySet, uint firstQuery,
+    uint queryCount, WGPUBuffer destination, ulong destinationOffset);
+void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder encoder, WGPUBuffer source, ulong sourceOffset,
+    WGPUBuffer destination, ulong destinationOffset, ulong size);
+float wgpuQueueGetTimestampPeriod(WGPUQueue queue);
 // wgpu-native extension (wgpu.h): blocks until submitted work completes when `wait` is true.
 WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, const(void)* wrappedSubmissionIndex);
 
