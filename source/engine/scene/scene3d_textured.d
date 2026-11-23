@@ -443,7 +443,12 @@ struct Scene3DTextured {
 
     @disable this(this);
 
-    static Scene3DTextured create(ref GpuContext gpu, uint maxBatches = DEFAULT_MAX_BATCHES) @trusted {
+    /// `createIbl = false` skips the procedural sky + IBL prefilter (~1 s in debug builds) and
+    /// starts with a cheap flat-grey environment instead. Use it for scenes that bind their own
+    /// environment right after creation (`setEnvironment` / `setEnvironmentBindGroup`, e.g. a
+    /// second scene for unlit particle pools sharing the main scene's `DynamicIbl`).
+    static Scene3DTextured create(ref GpuContext gpu, uint maxBatches = DEFAULT_MAX_BATCHES,
+                                  bool createIbl = true) @trusted {
         if (maxBatches == 0) maxBatches = DEFAULT_MAX_BATCHES;
         Scene3DTextured s;
         s.device = gpu.getDevice();
@@ -491,7 +496,9 @@ struct Scene3DTextured {
             s.defaultShadow2dView, s.defaultShadow2dView,
             s.defaultSceneColorView, s.defaultShadow2dView);
 
-        s.ownedIbl = IblEnvironment.create(gpu, s.pipeline.iblBindGroupLayout);
+        s.ownedIbl = createIbl
+            ? IblEnvironment.create(gpu, s.pipeline.iblBindGroupLayout)
+            : IblEnvironment.createSolid(gpu, s.pipeline.iblBindGroupLayout, [0.25f, 0.25f, 0.25f], [0.25f, 0.25f, 0.25f]);
         s.iblBindGroup = s.ownedIbl.bindGroup;
         s.ownsIbl = true;
 

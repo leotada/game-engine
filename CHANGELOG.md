@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`Scene3DTextured.create(gpu, maxBatches, createIbl)`**: `createIbl = false` skips the procedural sky + IBL prefilter
+  (~1 s in debug builds) and uses `IblEnvironment.createSolid` (flat grey) until the game binds its own environment with
+  `setEnvironment` / `setEnvironmentBindGroup`. Default `true` keeps existing behavior. See `docs/graphics.md`.
 - **`App.setSize(w, h)` / `Window.setSize`** (`engine.app`, `engine.platform.window`, `bindings.sdl3.SDL_SetWindowSize`): request a
   new windowed size at runtime and reconfigure the swapchain and post targets immediately, like `setFullscreen`.
   Returns false for a zero size, while fullscreen, or when SDL refuses. See `docs/game-development-guide.md`.
