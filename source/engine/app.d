@@ -223,6 +223,17 @@ struct App {
         return ok;
     }
 
+    /// Resize the (windowed) window and reconfigure the swapchain and HDR/post targets right
+    /// away, like `setFullscreen`. `width`/`height` are SDL window coordinates; read the real
+    /// drawable size back from `window.width/height`. Returns false when the size is invalid,
+    /// the window is fullscreen (leave fullscreen first) or SDL refused the change.
+    /// Games should call this instead of `window.setSize`.
+    bool setSize(uint width, uint height) @trusted {
+        immutable bool ok = window.setSize(width, height);
+        handleResize();
+        return ok;
+    }
+
     FrameContext beginFrame(Color clearColor) nothrow @nogc {
         _frameStartTime = MonoTime.currTime;
         return renderer.beginFrame(clearColor);

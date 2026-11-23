@@ -344,6 +344,7 @@ SDL_PropertiesID SDL_GetWindowProperties(SDL_Window* window);
 ulong SDL_GetWindowFlags(SDL_Window* window);
 bool SDL_GetWindowSize(SDL_Window* window, int* w, int* h);
 bool SDL_GetWindowSizeInPixels(SDL_Window* window, int* w, int* h);
+bool SDL_SetWindowSize(SDL_Window* window, int w, int h);
 void SDL_SetWindowTitle(SDL_Window* window, const(char)* title);
 bool SDL_SetWindowFullscreen(SDL_Window* window, bool fullscreen);
 bool SDL_SetWindowResizable(SDL_Window* window, bool resizable);

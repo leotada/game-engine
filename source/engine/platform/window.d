@@ -92,6 +92,19 @@ struct Window {
         return ok;
     }
 
+    /// Request a new windowed client size (SDL window coordinates; on high-DPI displays the
+    /// drawable size in pixels can differ). Like `setFullscreen` it does NOT update
+    /// width()/height(): that happens in `refreshSize()`. Prefer `App.setSize`, which also
+    /// reconfigures the swapchain and render targets. Returns false for an invalid size,
+    /// while fullscreen, or when SDL refuses the change.
+    bool setSize(uint width, uint height) @trusted {
+        if (handle is null || width == 0 || height == 0 || width > int.max || height > int.max) return false;
+        if (isFullscreen()) return false;
+        immutable bool ok = SDL_SetWindowSize(handle, cast(int) width, cast(int) height);
+        SDL_SyncWindow(handle);
+        return ok;
+    }
+
     bool isFullscreen() const nothrow @nogc @trusted {
         if (handle is null) return false;
         return (SDL_GetWindowFlags(cast(SDL_Window*) handle) & SDL_WINDOW_FULLSCREEN) != 0;

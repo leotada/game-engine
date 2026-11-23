@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`App.setSize(w, h)` / `Window.setSize`** (`engine.app`, `engine.platform.window`, `bindings.sdl3.SDL_SetWindowSize`): request a
+  new windowed size at runtime and reconfigure the swapchain and post targets immediately, like `setFullscreen`.
+  Returns false for a zero size, while fullscreen, or when SDL refuses. See `docs/game-development-guide.md`.
 - **`InputMap` read-back** (`engine.platform.input_map`): `numActions`, `actionName(i)`, `bindingCount(action)` and
   `bindingAt(action, i, out binding)` (all `nothrow @nogc`) expose the bindings of an action so remap UIs no longer need
   a parallel table. See `docs/game-development-guide.md` section 8.
