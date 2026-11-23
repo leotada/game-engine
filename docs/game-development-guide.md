@@ -85,7 +85,7 @@ void main() {
 
 ### `App` & `Window` Key Options
 
-- **Present mode & VSync:** `App.create(title, w, h, WGPUPresentMode.fifo)` (`fifo` = VSync, `mailbox` / `immediate` = uncapped). Toggle at runtime via `app.setVsync(bool)` or `app.setPresentMode(mode)`; set frame budget for `steadygc` slack stepping with `app.setTargetFps(fps)` (`0` = uncapped).
+- **Present mode & VSync:** `App.create(title, w, h, WGPUPresentMode.fifo)` (`fifo` = VSync, `mailbox` / `immediate` = uncapped). Toggle at runtime via `app.setVsync(bool)` or `app.setPresentMode(mode)`; a hidden or occluded window can make `fifo` block for a long time on Wayland (the compositor stops sending frame callbacks), so headless smoke tests and tools that hide the window should call `app.setVsync(false)` first; set frame budget for `steadygc` slack stepping with `app.setTargetFps(fps)` (`0` = uncapped).
 - **Window flags & runtime controls:** `Window.create(title, w, h, WindowOptions(fullscreen, borderless, resizable, highPixelDensity, hidden))`; at runtime call `app.setFullscreen(bool)` or `app.setSize(w, h)` (windowed only; both reconfigure the swapchain and post targets, while `window.setFullscreen` / `window.setSize` alone leave them at the old size and do not update `width()/height()`; `setSize` takes SDL window coordinates, so read the drawable size back from `window.width/height`), `app.window.` `setTitle(text)`, `setResizable(bool)`, `setBordered(bool)`, `setIcon(rgba, w, h)`, `setCursorVisible(bool)`, `setCustomCursor(rgba, w, h, hotX, hotY)`, `resetCursor()`, and `setRelativeMouseMode(bool)`.
 - **Screenshots:** Call `app.saveScreenshot("shot.png")` before `app.endFrame(frame)` to capture the presented frame via SDL3 (`SDL_SavePNG`).
 
