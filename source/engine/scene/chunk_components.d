@@ -370,7 +370,8 @@ private bool sameLayout(ref const GescTypeSchema src, ref const TypeRegistry reg
     if (src.size != d.size || src.fields.length != fs.length)
         return false;
     foreach (i, ref const f; fs) {
-        ref const g = src.fields[i];
+        // A pointer, not a `ref` local: D only allows `ref` on parameters and foreach variables (LDC enforces it).
+        const g = &src.fields[i];
         if (g.name != strings.get(f.name) || g.kind != f.kind || g.offset != f.offset || g.size != f.size
                 || g.arrayLen != f.arrayLen)
             return false;
