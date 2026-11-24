@@ -16,7 +16,7 @@ import engine.app;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
 import engine.gpu.skinned : SkinnedMesh;
 import engine.graphics.texmesh : TexMesh;
-import engine.graphics.texture : Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
+import engine.graphics.texture : alphaCoverageOf, Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, SkinnedVertex;
 import engine.gpu.pipeline : BlendMode, RenderState;
 import engine.gpu.post : AaMode, OutputTransfer, PostSettings;
@@ -397,15 +397,33 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.0, 0
     LightList lights;
     scope(exit) lights.release();
 
-    Shot shoot(string name, bool spot) {
+    Vec3 localAt;
+    bool localPoint;
+    Shot shoot(string name, bool local, bool sun) {
         return capture(app, name, (ref FrameContext f) {
             lights.clear();
-            lights.dirEnabled = !spot;
+            lights.dirEnabled = sun;
             lights.dir.direction = Vec3(1, 1, 0).normalized();
             lights.dir.intensity = 3.0f;
             lights.dir.castShadows = true;
             lights.dir.cascades.maxDistance = 80;
-            if (spot) addLocalLights(lights);
+            if (local && localPoint) {
+                GpuPointLight p;
+                p.position = localAt;
+                p.range = 20;
+                p.intensity = 200;
+                p.castShadows = true;
+                lights.addPoint(p);
+            } else if (local) {
+                GpuSpotLight sl;
+                sl.position = localAt;
+                sl.range = 20;
+                sl.intensity = 200;
+                sl.castShadows = true;
+                sl.innerConeDeg = 45;
+                sl.outerConeDeg = 50;
+                lights.addSpot(sl);
+            }
             scene.begin(cam);
             scene.draw(quad, ground, Vec3(0, 0, 0), Vec3(60, 1, 60));
             scene.drawMatrix(quad, maskMat, Mat4.translation(-4, H, -4) * Mat4.scaling(4, 1, 4), Color4.white);
@@ -417,7 +435,7 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.0, 0
             scene.end(f);
         });
     }
-    auto s = shoot("mask", false);
+    auto s = shoot("mask", false, true);
     if (!s.valid) return expect(false, "frame captured");
     import std.math : tan;
     float lumaAt(ref Shot sh, float wx, float wy, float wz) {
@@ -449,34 +467,95 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.0, 0
     probe("static", 4, -4, true);
     probe("control", 4, 4, false);
 
-    // Spot over the dynamic quad, point over the static one: light passes the
-    // cut half only (a shadow edge is 1.6x the quad: height 8 over height 3).
-    auto local = shoot("mask_local", true);
-    if (!local.valid) return expect(false, "frame captured");
-    foreach (i, cx; [-4.0f, 4.0f]) {
-        immutable kept = lumaAt(local, cx + 2.9f, 0, -4), cut = lumaAt(local, cx - 2.9f, 0, -4);
-        writefln("  %s: shadow kept %.0f cut %.0f", i == 0 ? "spot" : "point", kept, cut);
-        ok &= expect(cut - kept > 25, (i == 0 ? "spot" : "point") ~ " shadow is masked");
+    // Local lights one at a time, 8 units up over each quad: a shadow edge is
+    // 1.6x the quad. With no other light, the shadowed ground must match the
+    // unlit frame (ambient only) and the ground behind the hole must be lit.
+    auto ambient = shoot("mask_ambient", false, false);
+    if (!ambient.valid) return expect(false, "frame captured");
+    struct Caster { string name; float x, z; bool masked; }
+    static immutable Caster[5] casters = [
+        Caster("dynamic", -4, -4, true), Caster("displaceEx", -4, 4, true), Caster("skinned", -4, 10, true),
+        Caster("static", 4, -4, true), Caster("control", 4, 4, false)];
+    foreach (point; [false, true]) foreach (ref c; casters) {
+        immutable label = (point ? "point " : "spot ") ~ c.name;
+        localAt = Vec3(c.x, 8, c.z);
+        localPoint = point;
+        auto sh = shoot("mask_local", true, false);
+        if (!sh.valid) return expect(false, "frame captured");
+        immutable kept = lumaAt(sh, c.x + 2.9f, 0, c.z), keptDark = lumaAt(ambient, c.x + 2.9f, 0, c.z);
+        immutable cut = lumaAt(sh, c.x - 2.9f, 0, c.z), cutDark = lumaAt(ambient, c.x - 2.9f, 0, c.z);
+        writefln("  %s: kept %.0f (unlit %.0f) cut %.0f (unlit %.0f)", label, kept, keptDark, cut, cutDark);
+        ok &= expect(kept - keptDark < 8, label ~ ": kept half casts a full shadow");
+        ok &= expect(c.masked ? cut - cutDark > 60 : cut - cutDark < 8,
+                     label ~ (c.masked ? ": light passes the hole" : ": control casts a full shadow"));
     }
-    return ok;
+    immutable coverageOk = checkMaskCoverage(app);
+    return ok && coverageOk;
 }
 
-private void addLocalLights(ref LightList lights) @safe {
-    GpuSpotLight s;
-    s.position = Vec3(-4, 8, -4);
-    s.direction = Vec3(0, -1, 0);
-    s.range = 20;
-    s.intensity = 200;
-    s.castShadows = true;
-    s.innerConeDeg = 45;
-    s.outerConeDeg = 50;
-    lights.addSpot(s);
-    GpuPointLight p;
-    p.position = Vec3(4, 8, -4);
-    p.range = 20;
-    p.intensity = 200;
-    p.castShadows = true;
-    lights.addPoint(p);
+/// Distant masked noise: `alphaCoverage` mips keep the fraction of drawn pixels
+/// of level 0, plain box mips lose it.
+private bool checkMaskCoverage(ref App app) {
+    import std.random : Random, uniform;
+    auto scene = Scene3DTextured.create(app.gpu, 32, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    enum N = 512, SIZE = 12.0f;
+    auto px = new ubyte[N * N * 4];
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 400.0f);
+    cam.lookAt(Vec3(0, 60, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    float drawn(string name, float coverage) @safe {
+        auto d = TextureDesc.mipped();
+        d.alphaCoverage = coverage;
+        auto tex = Texture.fromPixels(app.gpu, px, N, N, d);
+        scope(exit) tex.destroy();
+        MaterialParams mp;
+        mp.baseColor = [0, 0, 0];
+        mp.emissionColor = [1, 1, 1];
+        mp.emissionLuminance = 1;
+        auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, tex, mp, null, null, null, null);
+        scope(exit) mat.destroy();
+        mat.renderState = RenderState(BlendMode.opaque, true, true, true);
+        auto sh = capture(app, name, (ref FrameContext f) {
+            scene.begin(cam);
+            scene.drawMatrix(quad, mat, Mat4.scaling(SIZE, 1, SIZE), Color4.white);
+            scene.end(f);
+        });
+        if (!sh.valid) return -1;
+        import std.math : tan;
+        immutable k = (sh.h * 0.5f) / (tan(0.45f) * 60);
+        immutable r = cast(int)(SIZE * 0.5f * k) - 2;
+        uint hit = 0, total = 0;
+        foreach (y; -r .. r) foreach (x; -r .. r) {
+            total++;
+            if (sh.luma(cast(uint)(cast(int) sh.w / 2 + x), cast(uint)(cast(int) sh.h / 2 + y)) > 128) hit++;
+        }
+        return cast(float) hit / total;
+    }
+    bool ok = true;
+    void check(string name) {
+        immutable want = alphaCoverageOf(px, N, N, 0.5f);
+        immutable plain = drawn("mask_" ~ name ~ "_plain", 0), kept = drawn("mask_" ~ name ~ "_coverage", 0.5f);
+        writefln("  %s coverage: near %.3f, far plain %.3f, far preserved %.3f", name, want, plain, kept);
+        ok &= expect(plain < want * 0.8f, name ~ ": plain mips miss the same 20% band (control)");
+        ok &= expect(kept > want * 0.8f && kept < want * 1.2f, name ~ ": coverage mips keep it within 20%");
+    }
+    auto rng = Random(11);
+    foreach (i; 0 .. N * N) {
+        px[i * 4 .. i * 4 + 4] = 255;
+        px[i * 4 + 3] = uniform(0, 100, rng) < 30 ? 255 : 0;
+    }
+    check("noise");
+    // Wire grid, 3 texels every 32: a chain-link fence seen from afar.
+    foreach (y; 0 .. N) foreach (x; 0 .. N)
+        px[(y * N + x) * 4 + 3] = (x % 32 < 3 || y % 32 < 3) ? 255 : 0;
+    check("grid");
+    return ok;
 }
 
 /// Stars are round: every isolated bright blob must be compact (no voxel
