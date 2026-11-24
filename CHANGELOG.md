@@ -22,6 +22,10 @@
   same name is an error instead of silent memory corruption.
 - **Hot reload with a changed component layout**: `SceneWorld.unregisterType` forgets the old layout, so a reloaded
   component gets its new size, fields and defaults (they stayed those of the first load).
+- **Script lifecycle**: methods not marked `nothrow` were silently never called (no attributes are needed now,
+  unsupported signatures do not compile, exceptions are logged); `onLateUpdate` runs; `onStart` runs for components added
+  during play; systems run by `order`; spawning or destroying entities inside a callback no longer skips or corrupts
+  components; a module that fails to load no longer loses the script state. Script ABI bumped: rebuild game modules.
 
 ### Other changes
 

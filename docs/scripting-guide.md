@@ -77,12 +77,16 @@ The reflection engine inspects struct members at compile-time to automatically g
 
 Component methods are detected via compile-time introspection. The engine builds direct, zero-overhead function pointers without virtual dispatch:
 
-- `void onStart(scope ref ScriptContext ctx)`: Invoked once when entering Play Mode or when an entity spawns during gameplay.
+- `void onStart(scope ref ScriptContext ctx)`: Invoked once when entering Play Mode, and for components added during gameplay, before their next callback.
 - `void onUpdate(scope ref ScriptContext ctx, float dt)` (or without `dt`): Invoked every visual frame during the gameplay tick.
 - `void onFixedUpdate(scope ref ScriptContext ctx, float dt)`: Invoked during fixed physics simulation steps.
 - `void onLateUpdate(scope ref ScriptContext ctx, float dt)`: Invoked after all standard update systems have executed (e.g. for camera tracking).
-- `void onDestroy(scope ref ScriptContext ctx)`: Invoked when the entity is destroyed or Play Mode is stopped.
+- `void onDestroy(scope ref ScriptContext ctx)`: Invoked when Play Mode is stopped (not when a single entity is destroyed).
 - `void onValidate(scope ref ScriptContext ctx)`: Invoked in the editor whenever a property is changed in the Inspector.
+
+Each method may declare `(ref ScriptContext, float dt)`, `(ref ScriptContext)`, `(float dt)` or no parameters; any other signature is a compile error. No attributes are required (`nothrow`, `@safe`, …): an exception is logged and the frame goes on. A method may spawn entities, add or remove components, and destroy entities, including its own (`ctx.destroy(ctx.entity)` takes effect when the method returns). `@system` functions of one stage run by ascending `order`, then registration order.
+
+If a rebuilt module fails to load, the script state saved before the reload is kept and restored by the next module that loads.
 
 ---
 

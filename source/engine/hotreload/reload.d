@@ -6,6 +6,7 @@ import engine.hotreload.watcher : FileWatcher;
 import engine.hotreload.build_runner : BuildRunner, BuildResult, Diagnostic;
 import engine.hotreload.loader : ScriptModule;
 import engine.script.context : ScriptContext;
+import engine.script.module_entry : ScriptComponentDescriptor;
 import engine.reflect.attrs : Stage;
 import engine.reflect.descriptor : ComponentTypeId, TypeRegistry, LifecycleMask, invalidComponentTypeId;
 import engine.reflect.serialize : serializeComponent, deserializeComponent;
@@ -18,6 +19,7 @@ import engine.core.log : info, warn, err;
 
 struct EntityScriptSnapshot {
     EntityId entity;
+    uint generation; /// Of `entity` when the snapshot was taken: its id may be recycled before the state is restored.
     StringId typeName;
     JSONValue json;
 }
@@ -31,6 +33,11 @@ struct HotReloadManager {
     bool enabled = true;
     bool buildInFlight = false;
     Diagnostic[] lastDiagnostics;
+
+    private EntityScriptSnapshot[] pendingRestore; /// State saved by a reload whose new module failed to load.
+    private bool playing = false;                  /// Between the onStart and onDestroy dispatches.
+    private uint[][] startedGen;                   /// Per component, by entity id: generation that got onStart.
+    private EntityId[] dispatchIds;                /// Reused by `dispatch` (no allocation once grown).
 
     bool init(string[] watchDirs, string soPath = ".engine/bin/libgame.so", string dubCommand = "dub build --config=game-module --compiler=dmd") @trusted {
         soSourcePath = soPath;
@@ -84,6 +91,10 @@ struct HotReloadManager {
 
         info("HotReload: compilation successful, snapshotting script components...");
         auto snapshots = snapshotScriptData(world, types, strings);
+        // With no module loaded (the previous reload failed), the state saved back then is still the latest.
+        if (!currentModule.isLoaded() && snapshots.length == 0)
+            snapshots = pendingRestore;
+        pendingRestore = snapshots;
 
         // Unload existing module and unregister old types
         if (currentModule.isLoaded()) {
@@ -99,6 +110,8 @@ struct HotReloadManager {
 
         info("HotReload: restoring script state (%d entity components)...", cast(int) snapshots.length);
         restoreScriptData(world, types, strings, snapshots);
+        pendingRestore = null;
+        remapStarted(world, snapshots);
 
         info("HotReload: completed successfully (instance #%d)", cast(int) instanceCounter);
         return true;
@@ -125,7 +138,7 @@ struct HotReloadManager {
                 if (bytes.length == 0) continue;
 
                 auto json = serializeComponent(types, comp.typeId, bytes, strings);
-                snapshots ~= EntityScriptSnapshot(entityId, comp.qualifiedName, json);
+                snapshots ~= EntityScriptSnapshot(entityId, world.generation(entityId), comp.qualifiedName, json);
             }
         }
         return snapshots;
@@ -138,7 +151,7 @@ struct HotReloadManager {
         const(EntityScriptSnapshot)[] snapshots
     ) scope @trusted {
         foreach (ref const snap; snapshots) {
-            if (!world.alive(snap.entity)) continue;
+            if (!world.alive(snap.entity, snap.generation)) continue;
             auto tid = types.find(strings.get(snap.typeName), strings);
             if (tid == invalidComponentTypeId) continue;
 
@@ -172,29 +185,112 @@ struct HotReloadManager {
     ) scope @trusted {
         if (!currentModule.isLoaded() && currentModule.registrar.components.length == 0) return;
 
-        foreach (ref comp; currentModule.registrar.components) {
-            if ((comp.lifecycleMask & lifecycleFlag) == 0) continue;
+        auto components = currentModule.registrar.components;
+        if (lifecycleFlag == LifecycleMask.onStart) {
+            playing = true;
+            startedGen = null;
+        }
+        // Components that appeared during play get onStart before their first other callback.
+        if (playing && lifecycleFlag != LifecycleMask.onDestroy) {
+            if (startedGen.length < components.length)
+                startedGen.length = components.length;
+            foreach (ci; 0 .. components.length)
+                dispatch(world, cast(uint) ci, LifecycleMask.onStart, ctx, true);
+        }
+        if (lifecycleFlag != LifecycleMask.onStart) {
+            foreach (ci; 0 .. components.length)
+                dispatch(world, cast(uint) ci, lifecycleFlag, ctx, false);
+        }
+        if (lifecycleFlag == LifecycleMask.onDestroy) {
+            playing = false;
+            startedGen = null;
+        }
+    }
 
-            // Pick callback
-            auto cb = (lifecycleFlag == LifecycleMask.onStart) ? comp.onStart :
-                      (lifecycleFlag == LifecycleMask.onUpdate) ? comp.onUpdate :
-                      (lifecycleFlag == LifecycleMask.onFixedUpdate) ? comp.onFixedUpdate :
-                      (lifecycleFlag == LifecycleMask.onDestroy) ? comp.onDestroy :
-                      (lifecycleFlag == LifecycleMask.onValidate) ? comp.onValidate : null;
+    /// Calls one method of one component type on every entity that owned it when the pass began. Callbacks may spawn,
+    /// destroy and add or remove components.
+    private void dispatch(
+        ref SceneWorld world,
+        uint compIndex,
+        uint flag,
+        scope ref ScriptContext ctx,
+        bool onlyNew
+    ) scope @trusted {
+        auto comp = &currentModule.registrar.components[compIndex];
+        auto cb = callbackFor(*comp, flag);
+        auto store = world.getStore(comp.typeId);
+        if (store is null || store.count == 0) return;
+        if (cb is null) return;
 
-            if (cb is null) continue;
+        immutable n = store.count;
+        if (dispatchIds.length < n)
+            dispatchIds.length = n;
+        dispatchIds[0 .. n] = store.denseToEntity[0 .. n];
 
-            auto store = world.getStore(comp.typeId);
-            if (store is null || store.count == 0) continue;
-            immutable itemSize = store.itemSize;
-            foreach (i; 0 .. store.count) {
-                auto entityId = store.denseToEntity[i];
-                if (!world.alive(entityId)) continue;
+        foreach (i; 0 .. n) {
+            immutable entityId = dispatchIds[i];
+            // Stores can be replaced while callbacks run.
+            store = world.getStore(comp.typeId);
+            if (store is null) return;
+            if (!world.alive(entityId) || !store.has(entityId)) continue;
+            immutable gen = world.generation(entityId);
+            if (onlyNew) {
+                if (startedGen[compIndex].length <= entityId)
+                    startedGen[compIndex].length = entityId + 1;
+                if (startedGen[compIndex][entityId] == gen) continue;
+                startedGen[compIndex][entityId] = gen;
+            }
 
-                auto ptr = store.denseData.ptr + i * itemSize;
-                ctx.entity = entityId;
-                ctx.world = &world;
-                cb(ptr, ctx);
+            auto bytes = store.get(entityId);
+            ctx.entity = entityId;
+            ctx.world = &world;
+            ctx.deferSelfDestroy = true;
+            ctx.selfDestroyRequested = false;
+            cb(bytes.ptr, ctx);
+            ctx.deferSelfDestroy = false;
+
+            if (ctx.selfDestroyRequested) {
+                ctx.selfDestroyRequested = false;
+                if (world.alive(entityId, gen))
+                    world.destroy(entityId);
+                continue;
+            }
+            // The callback may have grown or compacted the store: the method kept writing to the old location, which
+            // is still readable (`bytes` keeps it alive). Move what it wrote to where the component lives now.
+            if (world.alive(entityId, gen)) {
+                store = world.getStore(comp.typeId);
+                if (store !is null && store.has(entityId)) {
+                    auto now = store.get(entityId);
+                    if (now.ptr !is bytes.ptr && now.length == bytes.length)
+                        now[] = bytes[];
+                }
+            }
+        }
+    }
+
+    private static auto callbackFor(ref const ScriptComponentDescriptor comp, uint flag) nothrow @nogc {
+        switch (flag) {
+            case LifecycleMask.onStart:       return comp.onStart;
+            case LifecycleMask.onUpdate:      return comp.onUpdate;
+            case LifecycleMask.onFixedUpdate: return comp.onFixedUpdate;
+            case LifecycleMask.onLateUpdate:  return comp.onLateUpdate;
+            case LifecycleMask.onDestroy:     return comp.onDestroy;
+            case LifecycleMask.onValidate:    return comp.onValidate;
+            default:                          return null;
+        }
+    }
+
+    /// After a reload during play, components restored from the old module were already started.
+    private void remapStarted(ref SceneWorld world, const(EntityScriptSnapshot)[] snapshots) scope @trusted {
+        if (!playing) return;
+        auto components = currentModule.registrar.components;
+        startedGen = new uint[][](components.length);
+        foreach (ci, ref comp; components) {
+            foreach (ref const s; snapshots) {
+                if (s.typeName != comp.qualifiedName || !world.alive(s.entity, s.generation)) continue;
+                if (startedGen[ci].length <= s.entity)
+                    startedGen[ci].length = s.entity + 1;
+                startedGen[ci][s.entity] = world.generation(s.entity);
             }
         }
     }
@@ -270,4 +366,96 @@ unittest {
     bool foundLate;
     foreach (ref s; snaps2) if (s.entity == late) foundLate = true;
     assert(foundLate);
+}
+
+version (unittest) {
+    // Module-level structs: attributes are not inferred, as in a real game module.
+    private struct ScrPlain {
+        int started, updated, fixedUpdated, late, destroyed;
+        void onStart(scope ref ScriptContext ctx) { started++; }
+        void onUpdate(scope ref ScriptContext ctx, float dt) { updated++; }
+        void onFixedUpdate(float dt) { fixedUpdated++; }
+        void onLateUpdate(ref ScriptContext ctx) { late++; }
+        void onDestroy() { destroyed++; }
+    }
+    private struct ScrThrows {
+        int n;
+        void onUpdate(ref ScriptContext ctx) { n++; throw new Exception("boom"); }
+    }
+    private struct ScrSuicide {
+        int n;
+        void onUpdate(ref ScriptContext ctx) { ctx.destroy(ctx.entity); n = 1000; }
+    }
+    private struct ScrSpawner {
+        int tag = 5, done;
+        void onUpdate(ref ScriptContext ctx) {
+            if (tag != 5) return;
+            foreach (_; 0 .. 400) ctx.world.set(ctx.spawn(), ScrSpawner(1, 0));
+            done = 99;
+        }
+    }
+    import scrSystem = engine.reflect.attrs;
+    private __gshared string scrOrder;
+    @(scrSystem.system(Stage.update, 10)) private void scrLast(ref SceneWorld, float) @trusted { scrOrder ~= "c"; }
+    @(scrSystem.system(Stage.update, -1)) private void scrFirst(ref SceneWorld, float) @trusted { scrOrder ~= "a"; }
+    @(scrSystem.system(Stage.update, 0)) private void scrMid(ref SceneWorld, float) @trusted { scrOrder ~= "b"; }
+}
+
+@("scripts: methods need no attributes, every lifecycle method runs, late spawns get onStart")
+@system unittest {
+    import engine.script.module_entry : ModuleRegistrar;
+    SceneWorld w;
+    HotReloadManager m;
+    ModuleRegistrar reg;
+    reg.types = &w.types;
+    reg.strings = &w.strings;
+    reg.registerComponent!ScrPlain();
+    reg.registerComponent!ScrThrows();
+    reg.registerSystem!scrLast();
+    reg.registerSystem!scrFirst();
+    reg.registerSystem!scrMid();
+    m.currentModule.registrar = reg;
+    ScriptContext ctx;
+
+    auto e = w.spawn();
+    w.set(e, ScrPlain());
+    w.set(e, ScrThrows());
+    m.tickLifecycle(w, LifecycleMask.onStart, ctx);
+    auto late = w.spawn();
+    w.set(late, ScrPlain());
+    foreach (flag; [LifecycleMask.onFixedUpdate, LifecycleMask.onUpdate, LifecycleMask.onLateUpdate, LifecycleMask.onDestroy])
+        m.tickLifecycle(w, flag, ctx);
+    assert(w.get!ScrPlain(e) == ScrPlain(1, 1, 1, 1, 1));
+    assert(w.get!ScrPlain(late) == ScrPlain(1, 1, 1, 1, 1));
+    assert(w.get!ScrThrows(e).n == 1);
+
+    scrOrder = null;
+    m.tickSystems(w, Stage.update, 0.1f);
+    assert(scrOrder == "abc");
+}
+
+@("scripts: self-destroy and store growth inside a callback do not corrupt other components")
+@system unittest {
+    import engine.script.module_entry : ModuleRegistrar;
+    SceneWorld w;
+    HotReloadManager m;
+    ModuleRegistrar reg;
+    reg.types = &w.types;
+    reg.strings = &w.strings;
+    reg.registerComponent!ScrSuicide();
+    reg.registerComponent!ScrSpawner();
+    m.currentModule.registrar = reg;
+    ScriptContext ctx;
+
+    auto a = w.spawn();
+    auto b = w.spawn();
+    auto s = w.spawn();
+    w.set(a, ScrSuicide());
+    w.set(s, ScrSpawner());
+    w.set(b, ScrSuicide(-7));
+    immutable genA = w.generation(a), genB = w.generation(b);
+    m.tickLifecycle(w, LifecycleMask.onUpdate, ctx);
+    assert(!w.alive(a, genA) && !w.alive(b, genB)); // the spawner recycled their ids
+    assert(w.get!ScrSpawner(s).done == 99);
+    assert(w.entityCount() == 401);
 }

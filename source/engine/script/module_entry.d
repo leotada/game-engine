@@ -7,10 +7,11 @@ import engine.reflect.attrs;
 import engine.reflect.descriptor : ComponentTypeId, TypeRegistry, LifecycleMask;
 import engine.core.strings : StringId, StringTable;
 import engine.script.context : ScriptContext;
+import engine.core.log : err;
 
 @safe:
 
-enum uint ENGINE_SCRIPT_ABI = 0x2026_0102;
+enum uint ENGINE_SCRIPT_ABI = 0x2026_0103;
 
 alias ScriptLifecycleFn = void function(void* compPtr, scope ref ScriptContext ctx) @safe nothrow;
 alias SystemFn = void function(ref SceneWorld world, float dt);
@@ -33,6 +34,30 @@ struct ScriptSystemDescriptor {
     SystemFn callback;
 }
 
+/// Type-erased entry point of one component method. Exceptions are logged: they must not cross into the engine.
+private void lifecycleThunk(C, string method)(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
+    try
+        callLifecycle!(C, method)(*cast(C*) ptr, ctx);
+    catch (Exception e)
+        err(__traits(identifier, C) ~ "." ~ method ~ ": exception: ", e.msg);
+}
+
+/// Calls `comp.method` with whichever supported parameter list it declares. Not `nothrow`, so methods need no
+/// particular attributes; a method with any other signature is a compile error instead of silently never running.
+private void callLifecycle(C, string method)(ref C comp, ref ScriptContext ctx) @system {
+    static if (__traits(compiles, __traits(getMember, comp, method)(ctx, ctx.dt)))
+        __traits(getMember, comp, method)(ctx, ctx.dt);
+    else static if (__traits(compiles, __traits(getMember, comp, method)(ctx)))
+        __traits(getMember, comp, method)(ctx);
+    else static if (__traits(compiles, __traits(getMember, comp, method)(ctx.dt)))
+        __traits(getMember, comp, method)(ctx.dt);
+    else static if (__traits(compiles, __traits(getMember, comp, method)()))
+        __traits(getMember, comp, method)();
+    else
+        static assert(false, C.stringof ~ "." ~ method
+            ~ " must be callable as (ref ScriptContext, float dt), (ref ScriptContext), (float dt) or ()");
+}
+
 /// Registrar passed across the dynamic library boundary to discover components and systems.
 struct ModuleRegistrar {
     TypeRegistry* types = null;
@@ -51,68 +76,11 @@ struct ModuleRegistrar {
         desc.qualifiedName = strings.intern(name);
         desc.typeId = tid;
 
-        static if (__traits(hasMember, C, "onStart")) {
-            desc.lifecycleMask |= LifecycleMask.onStart;
-            desc.onStart = function(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
-                try {
-                    auto comp = cast(C*) ptr;
-                    static if (__traits(compiles, comp.onStart(ctx))) {
-                        comp.onStart(ctx);
-                    }
-                } catch (Exception) {}
-            };
-        }
-
-        static if (__traits(hasMember, C, "onUpdate")) {
-            desc.lifecycleMask |= LifecycleMask.onUpdate;
-            desc.onUpdate = function(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
-                try {
-                    auto comp = cast(C*) ptr;
-                    static if (__traits(compiles, comp.onUpdate(ctx, ctx.dt))) {
-                        comp.onUpdate(ctx, ctx.dt);
-                    } else static if (__traits(compiles, comp.onUpdate(ctx))) {
-                        comp.onUpdate(ctx);
-                    }
-                } catch (Exception) {}
-            };
-        }
-
-        static if (__traits(hasMember, C, "onFixedUpdate")) {
-            desc.lifecycleMask |= LifecycleMask.onFixedUpdate;
-            desc.onFixedUpdate = function(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
-                try {
-                    auto comp = cast(C*) ptr;
-                    static if (__traits(compiles, comp.onFixedUpdate(ctx, ctx.dt))) {
-                        comp.onFixedUpdate(ctx, ctx.dt);
-                    } else static if (__traits(compiles, comp.onFixedUpdate(ctx))) {
-                        comp.onFixedUpdate(ctx);
-                    }
-                } catch (Exception) {}
-            };
-        }
-
-        static if (__traits(hasMember, C, "onDestroy")) {
-            desc.lifecycleMask |= LifecycleMask.onDestroy;
-            desc.onDestroy = function(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
-                try {
-                    auto comp = cast(C*) ptr;
-                    static if (__traits(compiles, comp.onDestroy(ctx))) {
-                        comp.onDestroy(ctx);
-                    }
-                } catch (Exception) {}
-            };
-        }
-
-        static if (__traits(hasMember, C, "onValidate")) {
-            desc.lifecycleMask |= LifecycleMask.onValidate;
-            desc.onValidate = function(void* ptr, scope ref ScriptContext ctx) @trusted nothrow {
-                try {
-                    auto comp = cast(C*) ptr;
-                    static if (__traits(compiles, comp.onValidate(ctx))) {
-                        comp.onValidate(ctx);
-                    }
-                } catch (Exception) {}
-            };
+        static foreach (method; ["onStart", "onUpdate", "onFixedUpdate", "onLateUpdate", "onDestroy", "onValidate"]) {
+            static if (__traits(hasMember, C, method)) {
+                desc.lifecycleMask |= __traits(getMember, LifecycleMask, method);
+                __traits(getMember, desc, method) = &lifecycleThunk!(C, method);
+            }
         }
 
         components ~= desc;
@@ -131,7 +99,11 @@ struct ModuleRegistrar {
         desc.callback = function(ref SceneWorld world, float dt) {
             Fn(world, dt);
         };
-        systems ~= desc;
+        // Kept sorted by `order`; systems with the same order keep their registration order.
+        size_t at = systems.length;
+        while (at > 0 && systems[at - 1].order > desc.order)
+            at--;
+        systems = systems[0 .. at] ~ desc ~ systems[at .. $];
     }
 }
 

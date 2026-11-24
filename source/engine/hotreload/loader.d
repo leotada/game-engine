@@ -118,6 +118,11 @@ struct ScriptModule {
                 regSym(registrar);
             } catch (Exception e) {
                 err("ScriptModule.load: exception during engine_game_register: %s", e.msg);
+                // What was registered so far points into the library about to be unloaded.
+                foreach (ref comp; registrar.components)
+                    types.markStale(comp.typeId);
+                registrar.components = null;
+                registrar.systems = null;
                 unloadInternal();
                 return false;
             }
