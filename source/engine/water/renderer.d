@@ -17,7 +17,7 @@ import engine.core.log : fatal, info;
 import engine.gpu.buffer : createIndexBuffer, createUniformBuffer, createVertexBuffer,
     destroyBuffer, releaseBindGroup, updateBuffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.renderer : FrameContext, Renderer, SnapshotParts;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : waterSimCsShaderSource, waterSurfaceShaderSource;
 import engine.graphics.types : TexVert;
@@ -322,7 +322,8 @@ struct WaterRenderer {
             if (s.desc.has(WaterFeature.refraction) || s.desc.has(WaterFeature.ssr)) needSnapshot = true;
         }
         if (!any) return;
-        if (needSnapshot) renderer.snapshotOpaque(frame);
+        // Water samples level 0 of the color copy only: skip the mip pyramid.
+        if (needSnapshot) renderer.snapshotOpaque(frame, SnapshotParts.colorAndDepth);
         auto colorView = renderer.opaqueColorView();
         auto depthView = renderer.opaqueDepthView();
         if (colorView is null || depthView is null) return;

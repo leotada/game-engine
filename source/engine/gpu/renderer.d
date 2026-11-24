@@ -18,6 +18,21 @@ struct Color {
     double r = 0, g = 0, b = 0, a = 1;
 }
 
+/// What `Renderer.snapshotOpaque` copies.
+enum SnapshotParts : uint {
+    none  = 0,
+    /// HDR color, level 0 (water refraction / reflections).
+    color = 1,
+    /// Downsampled color pyramid, levels 1+ (rough SSR, rough transmission). Requires `color`.
+    mips  = 2 | color,
+    /// Resolved depth (decals, water, SSR ray marching).
+    depth = 4,
+    /// Level-0 color and depth, no pyramid (water).
+    colorAndDepth = color | depth,
+    all   = color | mips | depth,
+}
+private enum uint SNAPSHOT_MIPS_BIT = 2;
+
 struct Renderer {
     private WGPUDevice   device;
     private WGPUQueue    queue;
@@ -353,8 +368,11 @@ struct Renderer {
 
     /// Snapshot the current opaque HDR color and depth buffers for subsequent
     /// refractive/SSR draws, then reopen the HDR pass with loadOp = load.
-    void snapshotOpaque(ref FrameContext frame) nothrow @nogc @trusted {
-        if (!frame.valid || frame.postResolved) return;
+    /// `parts` limits the copy to what the caller reads (each part is a copy pass):
+    /// depth-only consumers (decals) or level-0 color readers (water) skip the rest.
+    /// Parts not copied keep their previous content.
+    void snapshotOpaque(ref FrameContext frame, SnapshotParts parts = SnapshotParts.all) nothrow @nogc @trusted {
+        if (!frame.valid || frame.postResolved || parts == SnapshotParts.none) return;
         auto z = profileZone!"renderer.snapshotOpaque"();
         auto g = gpuFrameScope!"gpu.snapshotOpaque"(frame);
         ensureOpaqueSnapshot();
@@ -363,7 +381,7 @@ struct Renderer {
         {
             frame.suspendScenePass();
             scope(exit) frame.resumeScenePass();
-            {
+            if (parts & SnapshotParts.color) {
                 WGPUImageCopyTexture src;
                 src.texture = hdrTexture;
                 WGPUImageCopyTexture dst;
@@ -373,7 +391,7 @@ struct Renderer {
                 wgpuCommandEncoderCopyTextureToTexture(frame.encoder, &src, &dst, &copySz);
             }
 
-            if (opaqueDownPipe !is null) {
+            if (opaqueDownPipe !is null && (parts & SNAPSHOT_MIPS_BIT)) {
                 foreach (m; 1 .. opaqueMipCount) {
                     if (opaqueMipViews[m] is null || opaqueDownBG[m] is null) break;
                     WGPURenderPassColorAttachment ca;
@@ -393,7 +411,7 @@ struct Renderer {
                 }
             }
 
-            {
+            if (parts & SnapshotParts.depth) {
                 WGPURenderPassDepthStencilAttachment dAtt;
                 dAtt.view = opaqueDepthView_;
                 dAtt.depthLoadOp = WGPULoadOp.clear;

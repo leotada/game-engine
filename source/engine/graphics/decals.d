@@ -21,7 +21,7 @@ import bindings.wgpu;
 import engine.core.log;
 import engine.core.pod : isPod, Pod;
 import engine.gpu.context : GpuContext;
-import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.renderer : FrameContext, Renderer, SnapshotParts;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : decalPbrShaderSource;
 import engine.graphics.texture : Sampler, SamplerDesc, TextureArray, TextureDesc, TextureFilter, TextureWrap;
@@ -332,7 +332,7 @@ struct DecalRenderer {
         if (drawCount == 0 || renderer is null || scene is null || !frame.valid) return;
         auto z = profileZone!"decals.draw"();
         auto g = gpuFrameScope!"gpu.decals"(frame);
-        renderer.snapshotOpaque(frame);
+        renderer.snapshotOpaque(frame, SnapshotParts.depth); // the decals only read depth
         auto depthView = renderer.opaqueDepthView();
         if (depthView is null) return;
         if (depthView !is boundDepth) {
