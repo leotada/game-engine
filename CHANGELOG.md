@@ -12,6 +12,10 @@
   scene pass and segment), post, terrain, decals, water, IBL, UI and `PhysicsWorld.step` (Box3D `b3World_GetProfile`
   as `box3d.*` samples) are instrumented. New bindings: timestamp queries, `ResolveQuerySet`, `CopyBufferToBuffer`,
   `HasFeature`, `QueueGetTimestampPeriod`, `b3World_GetProfileD`.
+- **Static props: fewer redundant state changes.** `drawStatic` and `encodeStaticShadow` bind pipeline, material,
+  vertex and index buffers once per (mesh × material) group instead of once per visible cell run, and the shared
+  instance buffer once per pass. Same draw count, same image; in viatura-VI (~2,500 draws/frame)
+  `renderer.submit.finish` dropped from 2.61 to 1.96 ms and the frame from 10.0 to 9.15 ms.
 - **LDC 1.43.0 verified** (`docs/dmd-inline-crash.md` › Installing a newer LDC than the distro ships): release builds of
   `player` / `gesc`, `dub test --config=library` and `--assert-no-gc` pass. The editor must be linked against the shared
   druntime (`-link-defaultlib-shared`) because the static druntime of 1.43 has no `rt_loadLibrary` (hot reload).
