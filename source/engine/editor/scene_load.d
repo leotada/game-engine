@@ -88,23 +88,37 @@ SceneLoadResult loadSceneAdditive(W)(
         enforce(false, msg);
     }
 
+    // All or nothing: a failure midway must not leave half of the scene in the world.
+    scope (failure) {
+        foreach (id; result.spawnedEntities)
+            world.destroy(id);
+    }
+
     // First pass: spawn entities + components (parents deferred). Worlds with a batch API (SceneWorld) get the
     // entities spawned at once and the Transform / Name columns inserted in one pass each.
     enum batched = __traits(hasMember, W, "spawnBatch") && __traits(hasMember, W, "setBatch");
     static if (batched) {
         result.spawnedEntities = world.spawnBatch(scene.entities.length);
+        // Recycled ids come back in reverse. Ascending ids keep file order through a save (sorted by id) and through
+        // `collectSubtreeEntities`.
+        sortEntityIds(result.spawnedEntities);
         auto transforms = new Transform[scene.entities.length];
         EntityId[] nameIds;
         Name[] names;
     }
+    // Ids are assigned up front: components may reference entities that come later in the file.
     foreach (idx, ref e; scene.entities) {
-        static if (batched) {
-            auto id = result.spawnedEntities[idx];
-        } else {
-            auto id = world.spawn();
-            result.spawnedEntities ~= id;
-        }
-        result.fileIdToEntity[e.id] = id;
+        static if (!batched)
+            result.spawnedEntities ~= world.spawn();
+        result.fileIdToEntity[e.id] = result.spawnedEntities[idx];
+    }
+    uint toLive(uint fileId) @safe {
+        auto p = fileId in result.fileIdToEntity;
+        return p is null ? EntityId.max : *p;
+    }
+
+    foreach (idx, ref e; scene.entities) {
+        auto id = result.spawnedEntities[idx];
 
         Transform t;
         t.position = Vec3(e.transform.pos[0], e.transform.pos[1], e.transform.pos[2]);
@@ -158,11 +172,16 @@ SceneLoadResult loadSceneAdditive(W)(
             import engine.reflect.descriptor : invalidComponentTypeId;
             foreach (ref comp; e.customComponents) {
                 auto tid = world.types.find(comp.typeName, world.strings);
+                if (tid == invalidComponentTypeId && comp.typeName == "PrefabInstance") {
+                    // Engine component: the world registers it on first use, so a freshly started player lacks it.
+                    import engine.scene.prefab : PrefabInstance;
+                    tid = world.ensureRegistered!PrefabInstance();
+                }
                 if (tid != invalidComponentTypeId) {
                     auto defs = world.types.getDefaults(tid);
                     world.rawAdd(tid, id, defs);
                     auto slice = world.rawGet(tid, id);
-                    deserializeComponent(world.types, tid, comp.data, slice, world.strings);
+                    deserializeComponent(world.types, tid, comp.data, slice, world.strings, &toLive);
                 } else {
                     result.unresolvedComponents ~= UnresolvedComponent(id, comp.typeName);
                 }
@@ -302,6 +321,11 @@ SceneFile worldToSceneFile(W)(
     uint[EntityId] entityToFileId;
     foreach (i, id; ids)
         entityToFileId[id] = cast(uint)(i + 1);
+    // `@entityRef` values are saved as file ids (0 = none, or not part of this file).
+    uint toFile(uint live) @safe {
+        auto p = live in entityToFileId;
+        return p is null ? 0 : *p;
+    }
 
     // Build strings table via temporary interning order (first-seen).
     foreach (id; ids) {
@@ -382,7 +406,7 @@ SceneFile worldToSceneFile(W)(
 
                 auto bytes = (cast() world).rawGet(tid, id);
                 if (bytes !is null) {
-                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings);
+                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings, &toFile);
                     e.customComponents ~= SceneComponentData(qname, cjson);
                 }
             }
@@ -448,6 +472,11 @@ SceneFile subtreeToSceneFile(W)(
     uint[EntityId] entityToFileId;
     foreach (i, id; ids)
         entityToFileId[id] = cast(uint)(i + 1);
+    // `@entityRef` values are saved as file ids (0 = none, or not part of this file).
+    uint toFile(uint live) @safe {
+        auto p = live in entityToFileId;
+        return p is null ? 0 : *p;
+    }
 
     foreach (i, id; ids) {
         SceneEntityData e;
@@ -528,7 +557,7 @@ SceneFile subtreeToSceneFile(W)(
 
                 auto bytes = (cast() world).rawGet(tid, id);
                 if (bytes !is null) {
-                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings);
+                    auto cjson = serializeComponent(world.types, tid, bytes, world.strings, &toFile);
                     e.customComponents ~= SceneComponentData(qname, cjson);
                 }
             }
@@ -629,7 +658,7 @@ private string visualKindToString(VisualKind k) pure nothrow {
     }
 }
 
-private MaterialOverride materialFromData(const ref SceneMaterialData d) {
+package(engine) MaterialOverride materialFromData(const ref SceneMaterialData d) {
     MaterialOverride m;
     m.baseColor = d.baseColor;
     m.baseWeight = d.baseWeight;
@@ -659,7 +688,7 @@ private MaterialOverride materialFromData(const ref SceneMaterialData d) {
     return m;
 }
 
-private SceneMaterialData materialToData(MaterialOverride m) {
+package(engine) SceneMaterialData materialToData(MaterialOverride m) {
     SceneMaterialData d;
     d.baseColor = m.baseColor;
     d.baseWeight = m.baseWeight;
@@ -688,7 +717,7 @@ private SceneMaterialData materialToData(MaterialOverride m) {
     return d;
 }
 
-private PhysicsBody physicsFromData(const ref ScenePhysicsData d, StringId assetSid) {
+package(engine) PhysicsBody physicsFromData(const ref ScenePhysicsData d, StringId assetSid) {
     PhysicsBody p;
     p.enabled = d.enabled ? 1 : 0;
     p.motion = motionFromString(d.motion);
@@ -703,7 +732,7 @@ private PhysicsBody physicsFromData(const ref ScenePhysicsData d, StringId asset
     return p;
 }
 
-private ScenePhysicsData physicsToData(PhysicsBody p) {
+package(engine) ScenePhysicsData physicsToData(PhysicsBody p) {
     ScenePhysicsData d;
     d.enabled = p.enabled != 0;
     d.motion = motionToString(p.motion);
@@ -749,7 +778,7 @@ private string shapeToString(uint s) pure nothrow {
     return "primitive";
 }
 
-private Light lightFromData(const ref SceneLightData d) {
+package(engine) Light lightFromData(const ref SceneLightData d) {
     Light l;
     l.type = lightTypeFromString(d.type);
     l.color = d.color;
@@ -761,7 +790,7 @@ private Light lightFromData(const ref SceneLightData d) {
     return l;
 }
 
-private SceneLightData lightToData(Light l) {
+package(engine) SceneLightData lightToData(Light l) {
     SceneLightData d;
     d.type = lightTypeToString(l.type);
     d.color = l.color;
@@ -800,16 +829,9 @@ private int internSceneString(ref SceneFile scene, const(char)[] s) {
 }
 
 private void sortEntityIds(ref EntityId[] ids) {
-    // Simple insertion sort (N is small in editor scenes).
-    foreach (i; 1 .. ids.length) {
-        immutable key = ids[i];
-        sizediff_t j = cast(sizediff_t) i - 1;
-        while (j >= 0 && ids[j] > key) {
-            ids[j + 1] = ids[j];
-            j--;
-        }
-        ids[j + 1] = key;
-    }
+    import std.algorithm.sorting : isSorted, sort;
+    if (!isSorted(ids))
+        sort(ids);
 }
 
 private string toStringy(uint v) {
@@ -1105,4 +1127,50 @@ private string toStringy(uint v) {
     assert(sub.entities[0].id == 1 && sub.entities[0].parent == sceneNoParent);
     assert(sub.entities[0].transform.pos == [0.0f, 2.0f, 0.0f]);
     assert(sub.entities[1].id == 2 && sub.entities[1].parent == 1);
+}
+
+@("scene load: entity refs are file-local, failures leave no entities, PrefabInstance survives a fresh world")
+unittest {
+    import engine.ecs.scene_world : SceneWorld;
+    import engine.project.asset_ref : AssetGuid;
+    import engine.reflect.attrs : component, entityRef;
+    import engine.scene.prefab : PrefabInstance;
+    import std.exception : assertThrown;
+
+    @component static struct Follow { @entityRef uint target = uint.max; @entityRef uint other = uint.max; }
+
+    SceneWorld w;
+    SceneLightSettings ls;
+    auto hole = w.spawn();
+    auto a = w.spawn();
+    auto b = w.spawn();
+    w.destroy(hole);
+    foreach (id; [a, b]) w.set(id, Transform.init);
+    w.set(a, Follow(b, uint.max)); // forward reference
+    w.set(b, Follow(a, hole));     // `hole` is dead
+    auto guid = AssetGuid.generate();
+    w.set(b, PrefabInstance(guid, 1, Vec3(1, 2, 3)));
+
+    auto file = worldToSceneFile(w, ls);
+    SceneWorld w2;
+    w2.ensureRegistered!Follow();
+    auto shift = w2.spawn(); // live ids differ from the first world's
+    auto res = loadSceneAdditive(w2, file);
+    auto a2 = res.spawnedEntities[0], b2 = res.spawnedEntities[1];
+    assert(w2.get!Follow(a2) == Follow(b2, uint.max));
+    assert(w2.get!Follow(b2) == Follow(a2, uint.max));
+    assert(w2.get!PrefabInstance(b2).prefabGuid == guid);
+    assert(w2.get!PrefabInstance(b2).spawnOffset == Vec3(1, 2, 3));
+
+    // A missing parent fails the load and leaves the world as it was.
+    file.entities[1].parent = 77;
+    assertThrown(loadSceneAdditive(w2, file));
+    assert(w2.entityCount() == 3);
+
+    // Recycled ids still follow file order.
+    w2.destroy(a2);
+    w2.destroy(b2);
+    file.entities[1].parent = sceneNoParent;
+    auto again = loadSceneAdditive(w2, file);
+    assert(again.spawnedEntities[0] < again.spawnedEntities[1]);
 }

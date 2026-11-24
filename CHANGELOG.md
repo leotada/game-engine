@@ -28,6 +28,9 @@
   components; a module that fails to load no longer loses the script state. Script ABI bumped: rebuild game modules.
 - **Parent cycles** in a scene file are a validation error (`parentCycle`), and `worldMatrix` no longer recurses forever
   on a cycle made at run time.
+- **Scene save/load**: `@entityRef` fields are stored as file ids and remapped on load (they kept the ids of the saving
+  session); `PrefabInstance` is no longer dropped in a fresh world; a load that fails midway leaves no entities behind;
+  loaded entities get ascending ids in file order.
 
 ### Other changes
 
