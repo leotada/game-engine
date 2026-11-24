@@ -1646,11 +1646,29 @@ struct Scene3DTextured {
         bool groupZeroIsSurface = false;
         scope(exit) if (groupZeroIsSurface)
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+        // Runs come sorted by (group, cell): bind the group state once and only re-issue the
+        // draw (plus the index buffer when the LOD switches buffers) for the next runs.
+        uint boundGroup = uint.max;
+        WGPUBuffer boundIndex = null;
+        bool instancesBound = false;
         foreach (ref run; staticRuns[0 .. n]) {
             auto g = &sib.groups[run.group];
             auto mesh = sib.meshes[g.mesh];
             auto mat = sib.materials[g.material];
             if (!mat.renderState.depthWrite) continue;
+            if (run.group == boundGroup) {
+                ShadowLodDraw lodSame = mesh.shadowLodDraw(run.lod);
+                WGPUBuffer ib = lodSame.useLodRange ? mesh.indexBuffer : mesh.shadowDrawBuffer();
+                if (ib !is boundIndex) {
+                    wgpuRenderPassEncoderSetIndexBuffer(pass, ib, mesh.indexFormat, 0,
+                        lodSame.useLodRange ? mesh.indexBufSize : mesh.shadowDrawBytes());
+                    boundIndex = ib;
+                }
+                wgpuRenderPassEncoderDrawIndexed(pass, lodSame.count, run.count, lodSame.first, 0, run.firstInstance);
+                frameStats.shadowDrawCalls++;
+                continue;
+            }
+            boundGroup = run.group;
             auto p = shadowPipe.pipelineFor(mesh.vertexStride, mat.renderState.doubleSided);
             auto dp = displacedShadowPipeline(mat.surfaceShader, mesh.vertexStride, mat.renderState.doubleSided);
             if (dp !is null) {
@@ -1664,12 +1682,16 @@ struct Scene3DTextured {
             }
             wgpuRenderPassEncoderSetPipeline(pass, p);
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
-            wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 1, sib.instanceBuf, 0, sib.instanceCount * TexInstanceData.sizeof);
+            if (!instancesBound) {
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass, 1, sib.instanceBuf, 0, sib.instanceCount * TexInstanceData.sizeof);
+                instancesBound = true;
+            }
             ShadowLodDraw lod = mesh.shadowLodDraw(run.lod);
             WGPUBuffer indexBuf = lod.useLodRange ? mesh.indexBuffer : mesh.shadowDrawBuffer();
             ulong indexBytes = lod.useLodRange ? mesh.indexBufSize : mesh.shadowDrawBytes();
             wgpuRenderPassEncoderSetIndexBuffer(pass, indexBuf, mesh.indexFormat, 0, indexBytes);
+            boundIndex = indexBuf;
             wgpuRenderPassEncoderDrawIndexed(pass, lod.count, run.count, lod.first, 0, run.firstInstance);
             frameStats.shadowDrawCalls++;
         }
@@ -1679,18 +1701,31 @@ struct Scene3DTextured {
     /// runs of one `StaticInstanceBuffer`; only `firstInstance` changes.
     private void drawStatic(ref FrameContext frame, ref StaticInstanceBuffer sib) @trusted {
         immutable n = collectStaticRuns(sib, cameraFrustum, true);
+        // Runs come sorted by (group, cell): bind the group state once, then only draw.
+        uint boundGroup = uint.max;
+        bool groupDrawable = false;
+        bool instancesBound = false;
         foreach (ref run; staticRuns[0 .. n]) {
             auto g = &sib.groups[run.group];
             auto mesh = sib.meshes[g.mesh];
-            auto mat = sib.materials[g.material];
-            immutable tangent = mesh.vertexStride == 48;
-            auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, tangent);
-            if (pipe is null) continue;
-            frame.setPipeline(pipe);
-            frame.setBindGroup(1, mat.bindGroup);
-            frame.setVertexBuffer(0, mesh.vertexBuffer, mesh.vertexBufSize);
-            frame.setVertexBuffer(1, sib.instanceBuf, sib.instanceCount * TexInstanceData.sizeof);
-            frame.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat, mesh.indexBufSize);
+            if (run.group != boundGroup) {
+                boundGroup = run.group;
+                auto mat = sib.materials[g.material];
+                immutable tangent = mesh.vertexStride == 48;
+                auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, tangent);
+                groupDrawable = pipe !is null;
+                if (!groupDrawable) continue;
+                frame.setPipeline(pipe);
+                frame.setBindGroup(1, mat.bindGroup);
+                frame.setVertexBuffer(0, mesh.vertexBuffer, mesh.vertexBufSize);
+                if (!instancesBound) {
+                    frame.setVertexBuffer(1, sib.instanceBuf, sib.instanceCount * TexInstanceData.sizeof);
+                    instancesBound = true;
+                }
+                frame.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat, mesh.indexBufSize);
+            } else if (!groupDrawable) {
+                continue;
+            }
             immutable range = mesh.colorLodRange(run.lod);
             frame.drawIndexed(range.count, run.count, range.first, 0, run.firstInstance);
             frameStats.drawCalls++;
