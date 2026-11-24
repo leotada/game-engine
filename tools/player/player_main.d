@@ -14,13 +14,14 @@ import engine.editor.demo_level : findCurrentCamera, sceneCameraToGpu;
 import engine.editor.light_panel : SceneLightSettings;
 import engine.editor.physics_panel : makeAssetResolver;
 import engine.editor.physics_sim : PhysicsSimSession;
-import engine.editor.scene_load : loadSceneIntoWorld;
+import engine.editor.scene_load : loadSceneGravity, loadSceneIntoWorld;
 import engine.editor.selection : noSelection;
 import engine.graphics.types : Color4;
 import engine.math.vec : Vec3;
 import engine.platform.input : Key;
 import engine.scene.camera : Camera;
-import engine.scene.scene_file : SceneFile, loadSceneFile;
+import engine.scene.prefab : PrefabInstance;
+import engine.scene.scene_file : SceneFile, loadSceneFile, validateScene;
 import engine.scene.streamer : WorldStreamer;
 import engine.editor.scene_renderer : SceneRenderer;
 import engine.water.component : WaterSurface;
@@ -67,14 +68,17 @@ void main(string[] args) {
     SceneWorld world = SceneWorld.init;
     world.ensureRegistered!Camera3D();
     world.ensureRegistered!WaterSurface();
+    world.ensureRegistered!PrefabInstance();
     SceneLightSettings lightSettings;
     WorldStreamer streamer;
     bool streamingEnabled = false;
+    float[3] gravity = [0, -9.81f, 0];
 
     if (exists(scenePath)) {
         try {
             auto sf = loadSceneFile(scenePath);
             loadSceneIntoWorld(world, sf, lightSettings);
+            gravity = loadSceneGravity(sf);
             if (sf.hasChunkManifest && sf.chunkManifest.chunks.length > 0) {
                 streamer.initFromManifest(sf.chunkManifest);
                 streamer.startWorker();
@@ -87,6 +91,7 @@ void main(string[] args) {
     }
 
     auto physics = PhysicsWorld.createDefault();
+    physics.setGravity(Vec3(gravity[0], gravity[1], gravity[2]));
     PhysicsSimSession sim;
     sim.beginSimulate(world, physics, makeAssetResolver(world));
 
@@ -157,17 +162,35 @@ void main(string[] args) {
             warn("Player: root scene changed; reload of streamed worlds needs a restart");
             return;
         }
+        bool stopped;
         try {
             auto sf = loadSceneFile(scenePath);
+            // Checked before the running scene is touched.
+            auto check = validateScene(sf);
+            if (!check.ok) {
+                err("Player: scene reload failed (keeping the running scene): ", check.errors[0].message);
+                return;
+            }
             sim.stopSimulate(world);
+            stopped = true;
             loadSceneIntoWorld(world, sf, lightSettings);
+            immutable g = loadSceneGravity(sf);
+            physics.setGravity(Vec3(g[0], g[1], g[2]));
             sim.beginSimulate(world, physics, makeAssetResolver(world));
             renderer.syncAssets(app.gpu, world);
             info("Player: hot-reloaded scene ", scenePath);
         } catch (Exception e) {
-            err("Player: scene reload failed (keeping the running scene): ", e.msg);
+            if (stopped)
+                err("Player: scene reload failed (the world is now empty; fix the file to reload it): ", e.msg);
+            else
+                err("Player: scene reload failed (keeping the running scene): ", e.msg);
         }
     }
+
+    // Physics runs at a fixed 60 Hz whatever the display rate; long stalls are dropped instead of caught up.
+    enum float STEP = 1.0f / 60.0f;
+    enum int MAX_STEPS = 5;
+    float accumulator = 0;
 
     void frameFn(float dt) {
         app.pollEvents();
@@ -195,7 +218,15 @@ void main(string[] args) {
         if (hotReloadEnabled)
             pollHotReload(dt);
 
-        sim.tick(world, physics, 1.0f / 60.0f);
+        accumulator += dt;
+        int steps;
+        while (accumulator >= STEP * 0.999f && steps < MAX_STEPS) {
+            sim.tick(world, physics, STEP);
+            accumulator -= STEP;
+            steps++;
+        }
+        if (steps == MAX_STEPS || accumulator < 0)
+            accumulator = 0;
 
         auto frame = app.beginFrame(Color4(0.08f, 0.09f, 0.12f, 1.0f));
         if (!frame.valid) {

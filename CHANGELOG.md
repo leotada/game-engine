@@ -42,6 +42,8 @@
   and scale were ignored), and the body of a destroyed entity is removed instead of driving whoever reuses its id.
 - **Static ECS `World`**: `set` on a dead entity is ignored (the component leaked into the next entity with that id) and
   `ComponentStore.add` overwrites instead of adding a duplicate entry.
+- **Player**: physics steps at a fixed 60 Hz independently of the display rate and uses the scene's gravity; a scene that
+  fails validation on hot reload really keeps the running one.
 
 ### Other changes
 
