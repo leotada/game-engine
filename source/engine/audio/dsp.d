@@ -19,6 +19,9 @@ enum DspEffectType : ubyte {
     staticHiss,
 }
 
+/// Interleaved channels a DSP chain can process.
+enum uint MAX_DSP_CHANNELS = 8;
+
 /// Biquad filter coefficients and per-channel Direct Form II Transposed delay state.
 struct BiquadState {
     float b0 = 1.0f;
@@ -26,8 +29,8 @@ struct BiquadState {
     float b2 = 0.0f;
     float a1 = 0.0f;
     float a2 = 0.0f;
-    float[2] z1 = [0.0f, 0.0f];
-    float[2] z2 = [0.0f, 0.0f];
+    float[MAX_DSP_CHANNELS] z1 = 0.0f;
+    float[MAX_DSP_CHANNELS] z2 = 0.0f;
 }
 
 /// Single POD DSP effect slot.
@@ -92,15 +95,15 @@ static assert(isPod!BiquadState);
 static assert(isPod!DspEffectSlot);
 static assert(isPod!DspChain);
 
-/// Process `frames` interleaved samples (`channels` <= 2) through `chain` in place.
+/// Process `frames` interleaved samples (`channels` <= `MAX_DSP_CHANNELS`) through `chain` in place.
 void processDspChain(ref DspChain chain,
                      scope float[] interleaved,
                      uint frames,
                      uint channels,
                      bool hasSignal) nothrow @nogc {
-    immutable uint ch = channels == 1 ? 1 : 2;
+    immutable uint ch = channels;
     immutable size_t count = cast(size_t) frames * ch;
-    if (interleaved.length < count || count == 0)
+    if (ch == 0 || ch > MAX_DSP_CHANNELS || interleaved.length < count || count == 0)
         return;
 
     foreach (si; 0 .. MAX_DSP_SLOTS) {
@@ -286,4 +289,19 @@ private float clamp01(float v) pure nothrow @nogc {
         if (a > peak12k) peak12k = a;
     }
     assert(peak12k < 0.12f);
+}
+
+@("dsp: every channel of a surround buffer is filtered on its own")
+@safe nothrow @nogc unittest {
+    float[6 * 64] buf;
+    foreach (f; 0 .. 64)
+        foreach (c; 0 .. 6)
+            buf[f * 6 + c] = 1.0f;
+    DspChain chain;
+    chain.slots[0] = DspEffectSlot.lowPass(500.0f, 0.7071f, 48_000);
+    processDspChain(chain, buf[], 64, 6, true);
+    foreach (f; 0 .. 64)
+        foreach (c; 1 .. 6)
+            assert(buf[f * 6 + c] == buf[f * 6]);
+    assert(buf[0] < 0.1f && buf[63 * 6 + 5] > buf[5]);
 }

@@ -44,6 +44,8 @@
   `ComponentStore.add` overwrites instead of adding a duplicate entry.
 - **Player**: physics steps at a fixed 60 Hz independently of the display rate and uses the scene's gravity; a scene that
   fails validation on hot reload really keeps the running one.
+- **`AudioMixer`**: the `VoiceId` of a voice that ended no longer controls the next one in its slot, the last chunk of a
+  voice with DSP is heard, a stream's last frames are not dropped at end of file, and DSP supports up to 8 channels.
 
 ### Other changes
 

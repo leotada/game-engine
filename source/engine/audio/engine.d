@@ -264,8 +264,11 @@ private float readSampleNorm(const(ubyte)* data, SDL_AudioFormat fmt,
     return (cast(const(float)*) data)[idx];
 }
 
+/// Free the slot. The generation changes whichever way the voice ends, so its `VoiceId` cannot reach the next one.
 private void resetVoice(ref MixerVoice v) nothrow @nogc {
     v.active = false;
+    v.generation++;
+    if (v.generation == 0) v.generation = 1;
     v.data = null;
     v.streamRing = null;
     v.streamEof = null;
@@ -302,10 +305,12 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
             busActive[busIdx] = true;
         }
 
-        float[] targetBuf = v.hasDsp
+        // Kept for the whole chunk: a voice that ends inside it still has its last samples processed below.
+        immutable bool useDsp = v.hasDsp;
+        float[] targetBuf = useDsp
             ? state.voiceScratch[0 .. needed]
             : state.busAccum[busIdx][0 .. needed];
-        if (v.hasDsp)
+        if (useDsp)
             targetBuf[0 .. needed] = 0.0f;
 
         immutable float busG = state.busGains[busIdx];
@@ -330,6 +335,8 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
         float curPanVal = panStart;
 
         if (isStream) {
+            // Read before popping: the producer sets it after its last push.
+            immutable bool eof = v.streamEof !is null && atomicLoad!(MemoryOrder.acq)(*v.streamEof);
             if (!v.streamPrimed) {
                 if (v.streamRing.popFrame(v.streamPrev)) {
                     if (!v.streamRing.popFrame(v.streamCurr))
@@ -337,7 +344,7 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
                     v.streamFrac = 0.0;
                     v.streamPrimed = true;
                 } else {
-                    if (v.streamEof !is null && atomicLoad!(MemoryOrder.acq)(*v.streamEof)) {
+                    if (eof) {
                         resetVoice(*v);
                     }
                     continue;
@@ -354,7 +361,7 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
                         v.streamCurr = nextFrame;
                         v.streamFrac -= 1.0;
                     } else {
-                        if (v.streamEof !is null && atomicLoad!(MemoryOrder.acq)(*v.streamEof)) {
+                        if (eof) {
                             resetVoice(*v);
                         }
                         v.streamFrac = 1.0;
@@ -439,7 +446,7 @@ private void mixVoicesInto(ref MixerState state, float[] outInterleaved, uint ou
             v.curPan = v.pan;
         }
 
-        if (v.hasDsp) {
+        if (useDsp) {
             processDspChain(v.dsp, targetBuf, outFrames, outCh, true);
             foreach (i; 0 .. needed)
                 state.busAccum[busIdx][i] += targetBuf[i];
@@ -685,7 +692,6 @@ struct AudioMixer {
         auto v = &state.voices[idx];
         if (v.active && v.generation == gen) {
             resetVoice(*v);
-            v.generation++;
         }
     }
 
@@ -838,7 +844,6 @@ struct AudioMixer {
         foreach (i; 0 .. MAX_AUDIO_VOICES) {
             if (state.voices[i].active && state.voices[i].bus == bus) {
                 resetVoice(state.voices[i]);
-                state.voices[i].generation++;
             }
         }
         SDL_UnlockAudioStream(stream);
@@ -850,7 +855,6 @@ struct AudioMixer {
         foreach (i; 0 .. MAX_AUDIO_VOICES) {
             if (state.voices[i].active) {
                 resetVoice(state.voices[i]);
-                state.voices[i].generation++;
             }
         }
         SDL_UnlockAudioStream(stream);
@@ -970,4 +974,29 @@ unittest {
         mixVoicesInto(sr, mixOut[], 8);
         assert(mixOut[0] != 0.0f);
     }();
+}
+
+@("mixer: a voice that ends keeps its last DSP samples and invalidates its id")
+unittest {
+    static float energy(bool dsp, uint frames) @trusted {
+        auto st = new MixerState;
+        auto buf = new float[frames * 2];
+        buf[] = 0.5f;
+        auto v = &st.voices[0];
+        v.data = cast(const(ubyte)*) buf.ptr;
+        v.frameCount = frames;
+        v.active = true;
+        v.hasDsp = dsp;
+        float acc = 0;
+        auto o = new float[1024];
+        foreach (_; 0 .. 4) {
+            mixVoicesInto(*st, o, 512);
+            foreach (x; o) acc += x < 0 ? -x : x;
+        }
+        assert(!v.active && v.generation == 2);
+        return acc;
+    }
+    import std.math : abs;
+    foreach (n; [300u, 700u])
+        assert(abs(energy(true, n) - energy(false, n)) < 0.01f);
 }
