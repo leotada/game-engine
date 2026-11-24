@@ -319,6 +319,7 @@ dub run --config=export -- --target=<id> [options]
 | Mode / Option | API | Shader Constants (`assets/shaders/ui2d.wgsl`) | Best For |
 |:---|:---|:---|:---|
 | **FreeType SDF (Default)** | `font.loadFromFile(path, pxHeight, useSdf = true)` / `font.loadFromMemory(...)` | `SDF_BASE_HEIGHT = 48.0f`, `SDF_PADDING = 8`, `onedge = 128/255 (0.50196078)`, `pixel_dist_scale = 16/255` (`slope = 15.9375`) | Arbitrary zoom/UI scaling from a single atlas (`sdfScaleForSize`) |
+| **Atlas cache** | `font.loadFromFileCached(path, cachePath, pxHeight, useSdf)` | — | Faster start-up: the pre-baked atlas is stored in `cachePath` (a per-user writable file) and rebuilt when the font, size, mode, hinting or SDL3_ttf version changes |
 | **Hinted Bitmap** | `font.loadFromFile(path, pxHeight, useSdf = false)` | Bitmap mask path (`in.rectParams.x == 0`) | Pixel-aligned small HUD / inspector labels |
 | **Hinting Flags** | `font.setHinting(TTF_HintingFlags.<flag>)` | `normal (0)`, `light (1)`, `mono (2)`, `none (3)`, `lightSubpixel (4)` | Fine-tuning glyph sharpness (`light`/`normal` recommended) |
 | **Kerning & Fallbacks** | `font.getKerning(prevCp, cp, pxHeight)`, `font.addFallbackFont(bytes)` | Applied automatically in `Font.measure`, `shaping.truncateWithEllipsis`, `UiBatchRenderer.drawText` | Proper spacing (`VA`, `To`) and multi-font Unicode glyph coverage |

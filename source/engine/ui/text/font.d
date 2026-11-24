@@ -79,6 +79,32 @@ struct Font {
     /// When `useSdf` is true (default), glyphs are baked once into a FreeType SDF atlas
     /// and scale crisply to any pixel height.
     bool loadFromMemory(ubyte[] ttfBytes, float defaultPixelHeight = 16.0f, bool useSdf = true) nothrow {
+        if (!openFont(ttfBytes, defaultPixelHeight, useSdf)) return false;
+        prebake();
+        return true;
+    }
+
+    /// Like `loadFromFile`, but keeps the pre-baked atlas in `cachePath`: baking the SDF glyphs takes
+    /// most of the load time (~5 ms per glyph). A missing, damaged or outdated cache file (other font
+    /// bytes, size, mode, hinting or SDL3_ttf version) is rebuilt; failing to write it is not an error.
+    bool loadFromFileCached(scope const(char)[] path, scope const(char)[] cachePath,
+                            float defaultPixelHeight = 16.0f, bool useSdf = true) nothrow {
+        if (path.length == 0) return false;
+        try {
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) return false;
+            if (!openFont(bytes, defaultPixelHeight, useSdf)) return false;
+            immutable ulong key = atlasCacheKey(bytes);
+            if (restoreAtlas(readCacheFile(cachePath), key)) return true;
+            prebake();
+            writeCacheFile(cachePath, serializeAtlas(key));
+            return true;
+        } catch (Exception) {
+            return false;
+        }
+    }
+
+    private bool openFont(ubyte[] ttfBytes, float defaultPixelHeight, bool useSdf) nothrow {
         if (ttfBytes.length == 0) return false;
 
         destroy();
@@ -104,7 +130,11 @@ struct Font {
         atlasVer++;
         atlasDirty = true;
         initialized = true;
+        return true;
+    }
 
+    private void prebake() nothrow {
+        immutable float prebakeH = sdfEnabled ? SDF_BASE_HEIGHT : pixelHeight;
         // Pre-bake ASCII printable range (32 .. 126)
         foreach (int cp; 32 .. 127) {
             rasterizeGlyph(cp, prebakeH);
@@ -113,8 +143,124 @@ struct Font {
         foreach (int cp; 160 .. 256) {
             rasterizeGlyph(cp, prebakeH);
         }
+    }
 
+    // --- Atlas cache file: header, `CachedGlyph[glyphCount]`, atlas pixels -----------------------
+
+    private enum uint CACHE_MAGIC = 0x46534447; // "GDSF"
+    private enum uint CACHE_VERSION = 1;
+
+    private struct CacheHeader {
+        uint magic, formatVersion;
+        ulong key;         // what the atlas was baked from (`atlasCacheKey`)
+        ulong payloadHash; // of everything after the header
+        int atlasWidth, atlasHeight, currentX, currentY, rowHeight;
+        uint glyphCount;
+    }
+
+    private struct CachedGlyph {
+        ulong key;
+        float u0, v0, u1, v1, width, height, xOffset, yOffset, advance;
+        uint valid;
+    }
+
+    static assert(isPod!CacheHeader && isPod!CachedGlyph);
+
+    private static ulong fnv1a(scope const(ubyte)[] data, ulong h = 0xcbf29ce484222325UL) pure nothrow @nogc {
+        foreach (b; data)
+            h = (h ^ b) * 0x100000001b3UL;
+        return h;
+    }
+
+    private ulong atlasCacheKey(scope const(ubyte)[] ttfBytes) const nothrow @nogc {
+        immutable int ttfVersion = () @trusted { return TTF_Version(); }();
+        immutable int[7] inputs = [ttfVersion, cast(int) sdfEnabled, cast(int)(pixelHeight * 64.0f), cast(int) currentHinting,
+            cast(int) SDF_BASE_HEIGHT, SDF_PADDING, INITIAL_ATLAS_DIM];
+        ulong h = fnv1a(ttfBytes);
+        foreach (v; inputs) {
+            foreach (shift; 0 .. 4)
+                h = (h ^ ((cast(uint) v >> (shift * 8)) & 0xFF)) * 0x100000001b3UL;
+        }
+        return h;
+    }
+
+    private ubyte[] serializeAtlas(ulong key) const nothrow {
+        CacheHeader h;
+        h.magic = CACHE_MAGIC;
+        h.formatVersion = CACHE_VERSION;
+        h.key = key;
+        h.atlasWidth = atlasWidth;
+        h.atlasHeight = atlasHeight;
+        h.currentX = currentX;
+        h.currentY = currentY;
+        h.rowHeight = rowHeight;
+        h.glyphCount = cast(uint) cacheCount;
+        CachedGlyph[] glyphs;
+        glyphs.reserve(cacheCount);
+        foreach (ref e; cache) {
+            if (!e.occupied) continue;
+            const g = e.glyph;
+            glyphs ~= CachedGlyph(e.key, g.u0, g.v0, g.u1, g.v1, g.width, g.height, g.xOffset, g.yOffset, g.advance, g.valid);
+        }
+        auto data = new ubyte[CacheHeader.sizeof + glyphs.length * CachedGlyph.sizeof + atlasPixels.length];
+        immutable size_t pixelsAt = CacheHeader.sizeof + glyphs.length * CachedGlyph.sizeof;
+        () @trusted { data[CacheHeader.sizeof .. pixelsAt] = cast(const(ubyte)[]) glyphs; }();
+        data[pixelsAt .. $] = atlasPixels[];
+        h.payloadHash = fnv1a(data[CacheHeader.sizeof .. $]);
+        () @trusted { data[0 .. CacheHeader.sizeof] = (cast(const(ubyte)*) &h)[0 .. CacheHeader.sizeof]; }();
+        return data;
+    }
+
+    /// Replaces the (empty) atlas by the cached one. Changes nothing when `data` does not match.
+    private bool restoreAtlas(scope const(ubyte)[] data, ulong key) nothrow {
+        static bool validDim(int d) { return d >= INITIAL_ATLAS_DIM && d <= MAX_ATLAS_DIM && (d & (d - 1)) == 0; }
+        if (data.length < CacheHeader.sizeof) return false;
+        CacheHeader h;
+        () @trusted { (cast(ubyte*) &h)[0 .. CacheHeader.sizeof] = data[0 .. CacheHeader.sizeof]; }();
+        if (h.magic != CACHE_MAGIC || h.formatVersion != CACHE_VERSION || h.key != key) return false;
+        if (!validDim(h.atlasWidth) || !validDim(h.atlasHeight) || h.glyphCount > 0xFFFF) return false;
+        if (h.currentX < 1 || h.currentX > h.atlasWidth || h.currentY < 1 || h.currentY > h.atlasHeight
+            || h.rowHeight < 0 || h.rowHeight > h.atlasHeight) return false;
+        immutable size_t pixelCount = cast(size_t) h.atlasWidth * h.atlasHeight;
+        immutable size_t pixelsAt = CacheHeader.sizeof + h.glyphCount * CachedGlyph.sizeof;
+        if (data.length != pixelsAt + pixelCount || fnv1a(data[CacheHeader.sizeof .. $]) != h.payloadHash) return false;
+
+        auto glyphs = new CachedGlyph[h.glyphCount];
+        () @trusted { (cast(ubyte[]) glyphs)[] = data[CacheHeader.sizeof .. pixelsAt]; }();
+        foreach (ref c; glyphs)
+            insertCache(c.key, Glyph(c.u0, c.v0, c.u1, c.v1, c.width, c.height, c.xOffset, c.yOffset, c.advance, c.valid != 0));
+        atlasPixels = data[pixelsAt .. $].dup;
+        atlasWidth = h.atlasWidth;
+        atlasHeight = h.atlasHeight;
+        currentX = h.currentX;
+        currentY = h.currentY;
+        rowHeight = h.rowHeight;
         return true;
+    }
+
+    private static ubyte[] readCacheFile(scope const(char)[] path) nothrow {
+        import std.file : exists, read;
+        try {
+            if (path.length == 0 || !exists(path)) return null;
+            return () @trusted { return cast(ubyte[]) read(path); }();
+        } catch (Exception)
+            return null;
+    }
+
+    /// Written aside and renamed, so another process never reads half a file.
+    private static void writeCacheFile(scope const(char)[] path, scope const(ubyte)[] data) nothrow {
+        import std.conv : to;
+        import std.file : mkdirRecurse, rename, write;
+        import std.path : dirName;
+        import std.process : thisProcessID;
+        if (path.length == 0) return;
+        try {
+            mkdirRecurse(dirName(path));
+            immutable string tmp = path.idup ~ ".tmp" ~ thisProcessID.to!string;
+            write(tmp, data);
+            rename(tmp, path);
+        } catch (Exception e)
+            warn("Font: atlas cache not written: ", e.msg);
     }
 
     /// Initialize font from a TTF/OTF file path (or mounted `GEPK` asset pack).
@@ -690,6 +836,46 @@ unittest {
         assert(font.getGlyph('B').valid);
         font.destroy();
         assert(!font.isLoaded);
+
+        // Atlas cache: the restored font equals the baked one, damaged files are rebuilt
+        import std.file : getSize, remove, tempDir, write;
+        import std.path : buildPath;
+        import std.conv : to;
+        import std.process : thisProcessID;
+        immutable cachePath = buildPath(tempDir(), "game-engine-font-cache-test-" ~ thisProcessID.to!string ~ ".bin");
+        scope (exit) if (exists(cachePath)) remove(cachePath);
+        enum ttfPath = "assets/fonts/default.ttf";
+        Font plain, baked, cached;
+        assert(plain.loadFromFile(ttfPath, 16.0f));
+        assert(baked.loadFromFileCached(ttfPath, cachePath, 16.0f) && exists(cachePath));
+        immutable good = () @trusted { return cast(immutable(ubyte)[]) read(cachePath); }();
+        static void same(ref Font a, ref Font b) {
+            // The last codepoint is not pre-baked: the shelf packer resumes at the same place.
+            foreach (int cp; ['A', 'g', ' ', 'ã', 0x2605]) {
+                assert(a.getGlyph(cp, 24.0f) == b.getGlyph(cp, 24.0f));
+            }
+            assert(a.atlasW == b.atlasW && a.atlasH == b.atlasH && a.pixels == b.pixels && a.cacheCount == b.cacheCount);
+        }
+        assert(cached.loadFromFileCached(ttfPath, cachePath, 16.0f) && cached.isDirty && cached.isSdf);
+        same(plain, baked);
+        same(plain, cached);
+        immutable ulong key = cached.atlasCacheKey(data);
+        Font probe;
+        assert(probe.openFont(data, 16.0f, true));
+        assert(probe.atlasCacheKey(data) == key);
+        assert(!probe.restoreAtlas(good, key + 1), "other font");
+        assert(!probe.restoreAtlas(good[0 .. $ - 1], key) && !probe.restoreAtlas(good[0 .. 10], key) && !probe.restoreAtlas(null, key));
+        auto flipped = good.dup;
+        flipped[$ / 2] ^= 1;
+        assert(!probe.restoreAtlas(flipped, key));
+        assert(probe.cacheCount == 0 && probe.restoreAtlas(good, key));
+        assert(probe.openFont(data, 16.0f, false) && probe.atlasCacheKey(data) != key, "bitmap mode has its own atlas");
+        write(cachePath, flipped);
+        Font rebuilt;
+        assert(rebuilt.loadFromFileCached(ttfPath, cachePath, 16.0f) && getSize(cachePath) == good.length);
+        assert((() @trusted => cast(ubyte[]) read(cachePath))() == good, "rewritten");
+        foreach (f; [&plain, &baked, &cached, &probe, &rebuilt])
+            f.destroy();
 
         // Invalid data fails gracefully
         ubyte[] bad = [0x01, 0x02];
