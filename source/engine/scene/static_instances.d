@@ -37,6 +37,7 @@ import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
+import engine.scene.cascades : ReceiverCull;
 import bindings.wgpu : WGPUBuffer, WGPUQueue;
 
 @safe:
@@ -199,8 +200,16 @@ StaticLayout buildStaticLayout(scope const(StaticInstanceDesc)[] descs,
  * cell can be skipped without testing them (`collectVisibleRuns`).
  */
 void markVisibleCells(scope const(Aabb)[] cellBounds, ref const Frustum frustum,
+                      scope bool[] visible, ref const StaticViewParams view) nothrow @nogc {
+    foreach (c, ref b; cellBounds)
+        visible[c] = frustum.intersectsAabb(b) && (!view.receiverCull || view.receiver.keeps(b));
+}
+
+/// ditto, frustum only.
+void markVisibleCells(scope const(Aabb)[] cellBounds, ref const Frustum frustum,
                       scope bool[] visible) nothrow @nogc {
-    foreach (c, ref b; cellBounds) visible[c] = frustum.intersectsAabb(b);
+    StaticViewParams plain;
+    markVisibleCells(cellBounds, frustum, visible, plain);
 }
 
 /// Camera / LOD inputs of one culling pass.
@@ -211,6 +220,9 @@ struct StaticViewParams {
     float lodBias = 1;
     /// Apply group max-distance / min-pixel culling (color and directional passes).
     bool distanceCull = true;
+    /// Shadow cascades: also require `receiver.keeps(bounds)` (receiver-aware culling).
+    bool receiverCull = false;
+    ReceiverCull receiver;
 }
 
 /// Distance from `p` to the closest point of `b` (0 inside).
@@ -235,6 +247,7 @@ size_t collectVisibleRuns(const(StaticGroup)[] groups, const(StaticRange)[] rang
     foreach (ref r; ranges) {
         if (useCells && !cellVisible[r.cell]) continue;
         if (!frustum.intersectsAabb(r.bounds)) continue;
+        if (view.receiverCull && !view.receiver.keeps(r.bounds)) continue;
         auto g = &groups[r.group];
         immutable d = distanceToAabb(view.cameraPos, r.bounds);
         if (view.distanceCull) {

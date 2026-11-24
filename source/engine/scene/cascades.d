@@ -10,6 +10,8 @@ module engine.scene.cascades;
 
 import std.math : ceil, floor, pow, sqrt, tan;
 
+import engine.math.bounds : Aabb;
+import engine.math.frustum : Frustum;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
@@ -35,6 +37,11 @@ struct CascadeSettings {
     float casterMargin = 250.0f;
     /// Shadow-map resolution of every cascade layer.
     uint resolution = 2048;
+    /// Receiver-aware caster culling: draw a caster into a cascade only when its shadow can
+    /// land inside the camera slice that cascade shades (`ReceiverCull`).
+    bool receiverCulling = true;
+    /// How far below a caster's lowest point its shadow may still land (slopes, steps), meters.
+    float receiverDrop = 30.0f;
 }
 
 /// Fitted cascades for one frame.
@@ -43,12 +50,61 @@ struct CascadeSet {
     Mat4[MAX_CASCADES] viewProj;
     /// View-depth (distance along the camera forward axis) where each cascade ends.
     float[MAX_CASCADES] splitFar = 0;
+    /// View-depth where each cascade starts (previous split minus the blend band).
+    float[MAX_CASCADES] splitNear = 0;
     /// World size of one shadow-map texel per cascade.
     float[MAX_CASCADES] texelWorld = 0;
     /// Light-space depth range of each cascade (ortho far − near), world units.
     float[MAX_CASCADES] depthRange = 0;
     /// Distance where shadows start fading out / are fully faded.
     float fadeStart = 0, fadeEnd = 0;
+}
+
+/**
+ * Receiver-aware caster test for one cascade. A cascade's light box encloses the bounding
+ * sphere of its camera slice and reaches `casterMargin` toward the light, so it also holds
+ * casters behind or beside the camera whose shadows never reach the screen. A caster is
+ * kept when its bounds, swept along the shadow direction down to `drop` below their bottom,
+ * touch the camera slice the cascade shades. Conservative: never drops a visible shadow
+ * whose receiver lies within `drop` below the caster.
+ */
+struct ReceiverCull {
+    /// Camera sub-frustum `[splitNear, splitFar]` of the cascade.
+    Frustum slice;
+    /// Normalized surface → light direction.
+    Vec3 toLight = Vec3(0, 1, 0);
+    /// See `CascadeSettings.receiverDrop`.
+    float drop = 30.0f;
+
+    /// `b` extended along the shadow direction until `drop` below its bottom.
+    Aabb sweep(Aabb b) const pure nothrow @nogc {
+        if (b.empty) return b;
+        immutable float h = (b.max.y - b.min.y) + drop;
+        // A sun near the horizon throws very long shadows: cap the slope at ~3 degrees.
+        immutable float ly = toLight.y > 0.05f ? toLight.y : 0.05f;
+        immutable float len = h / ly;
+        immutable d = Vec3(-toLight.x * len, -toLight.y * len, -toLight.z * len);
+        Aabb r = b;
+        r.extend(Vec3(b.min.x + d.x, b.min.y + d.y, b.min.z + d.z));
+        r.extend(Vec3(b.max.x + d.x, b.max.y + d.y, b.max.z + d.z));
+        return r;
+    }
+
+    /// True when a caster with bounds `b` can shadow the slice.
+    bool keeps(Aabb b) const pure nothrow @nogc { return slice.intersectsAabb(sweep(b)); }
+}
+
+/// `ReceiverCull` of cascade `i` of `set` (fitted by `buildCascades` for `camera`).
+ReceiverCull cascadeReceiverCull(ref const Camera camera, ref const CascadeSet set, uint i,
+                                 Vec3 lightDir, float drop) pure nothrow @nogc {
+    Camera c = camera;
+    c.near = set.splitNear[i] > camera.near ? set.splitNear[i] : camera.near;
+    c.far = set.splitFar[i] > c.near ? set.splitFar[i] : c.near + 1.0f;
+    ReceiverCull rc;
+    rc.slice = Frustum.fromViewProj(c.viewProjection());
+    rc.toLight = lightDir.normalized();
+    rc.drop = drop;
+    return rc;
 }
 
 pure nothrow @nogc:
@@ -156,6 +212,7 @@ CascadeSet buildCascades(ref const Camera camera, Vec3 lightDir, ref const Casca
         // Overlap the previous cascade by the blend band so cross-fading has data.
         immutable blendBand = (set.splitFar[i] - prev) * settings.blendFraction;
         immutable start = (prev - blendBand) > camera.near ? prev - blendBand : camera.near;
+        set.splitNear[i] = start;
         Vec3 c;
         float r;
         subFrustumSphere(camera.position, fwd, right, up, tanHalf, camera.aspect,
@@ -229,4 +286,29 @@ unittest {
         assert(d > -1e-3f && d < 1e-3f);
     }
     assert(a.texelWorld[0] > 0 && a.texelWorld[0] == b.texelWorld[0]);
+}
+
+unittest {
+    // Receiver culling: casters behind the camera go, casters in view stay, and a tall
+    // caster beside the view whose shadow falls into it under a low sun stays too.
+    Camera cam = Camera.create(0.9f, 16.0f / 9.0f, 0.1f, 1000.0f);
+    cam.lookAt(Vec3(0, 2, 0), Vec3(0, 2, -10)); // looking down -Z
+    CascadeSettings cs;
+    cs.maxDistance = 250;
+    immutable sunHigh = Vec3(0.2f, 1.0f, 0.1f).normalized();
+    auto set = buildCascades(cam, sunHigh, cs);
+    immutable last = set.count - 1;
+    auto rc = cascadeReceiverCull(cam, set, last, sunHigh, cs.receiverDrop);
+    static Aabb box(float x, float z, float h) { return Aabb(Vec3(x - 1, 0, z - 1), Vec3(x + 1, h, z + 1)); }
+    assert(rc.keeps(box(0, -150, 4)));        // in the slice
+    assert(!rc.keeps(box(0, 120, 4)));        // behind the camera
+    assert(!rc.keeps(box(300, -150, 4)));     // far to the side
+    // Low sun from +X: a 20 m tower 60 m right of the view edge shadows the slice.
+    immutable sunLow = Vec3(1.0f, 0.15f, 0.0f).normalized();
+    auto low = cascadeReceiverCull(cam, set, last, sunLow, cs.receiverDrop);
+    immutable halfW = 150 * tan(cam.fovY * 0.5f) * cam.aspect;
+    assert(low.keeps(box(halfW + 60, -150, 20)));
+    assert(!low.keeps(box(-halfW - 60, -150, 20))); // on the far side of the light: shadow points away
+    // The slice starts at the previous split minus the blend band.
+    assert(set.splitNear[last] < set.splitFar[last - 1] && set.splitNear[0] >= cam.near);
 }

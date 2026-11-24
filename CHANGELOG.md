@@ -20,6 +20,14 @@
   shadow cascade) tests the cells first (`markVisibleCells`) and skips the ranges of invisible cells in
   `collectVisibleRuns`. Same runs, same order. viatura-VI (25k ranges): `scene.shadows.encode` 1.08 → 0.49 ms,
   `scene.end.opaque.static` 0.34 → 0.20 ms.
+- **Receiver-aware cascade caster culling** (`CascadeSettings.receiverCulling`, on by default; `receiverDrop` = 30 m):
+  - Casters go into a cascade only if their bounds, swept along the shadow direction, reach the camera slice that
+    cascade shades. This covers static ranges and cells and dynamic instances.
+  - viatura-VI: shadow draws 1512 → 751, static shadow instances 25.2k → 4.1k, cascade GPU 1.44 → 0.74 ms.
+    The image is pixel-identical.
+- **Fix: foliage SSS thickness past the shadow range.** `sampleDirShadowBackAndThickness` read the last cascade even
+  beyond `fadeEnd`, where shadows are already off. Distant foliage translucency therefore depended on how far that
+  cascade's light box happened to reach, and changed as the camera turned. It now fades out with the shadow.
 - **Shadow diagnostics:** `RenderStats.shadowStaticInstancesDrawn` and per-cascade `cascadeDrawCalls` /
   `cascadeDynamicInstances` / `cascadeStaticInstances`; profiler zones `scene.shadows.encode.cascadeN` and GPU scopes
   `gpu.shadows.cascades.cN`.

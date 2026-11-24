@@ -37,7 +37,7 @@ import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
 import engine.scene.atmosphere : FogSettings, packFog;
-import engine.scene.cascades : buildCascades, CascadeSet, MAX_CASCADES;
+import engine.scene.cascades : buildCascades, cascadeReceiverCull, CascadeSet, MAX_CASCADES, ReceiverCull;
 import engine.scene.light :
     DIR_SHADOW_RESOLUTION, GpuDirLight, GpuPointLight, GpuSpotLight,
     LIGHT_SHADOW_NEAR, LightList, LightSet,
@@ -194,7 +194,7 @@ void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere loc
                         Vec3 lightPos, float range, scope const(Frustum)[] views,
                         ref PodBuffer!TexInstanceData staging, scope CasterRange[] outRanges,
                         ref PodBuffer!uint candScratch, ref PodBuffer!BoundingSphere sphereScratch,
-                        bool isSkinned = false) nothrow @nogc {
+                        bool isSkinned = false, scope const(ReceiverCull)[] receivers = null) nothrow @nogc {
     assert(outRanges.length >= views.length);
     candScratch.clear();
     sphereScratch.clear();
@@ -213,8 +213,15 @@ void gatherLightCasters(scope const(TexInstanceData)[] items, BoundingSphere loc
     }
     foreach (k, ref f; views) {
         immutable first = cast(uint) staging.length;
-        foreach (c, idx; candScratch[])
-            if (f.intersectsSphere(sphereScratch[c])) staging.put(items[idx]);
+        immutable bool rc = receivers.length > k;
+        foreach (c, idx; candScratch[]) {
+            immutable sp = sphereScratch[c];
+            if (!f.intersectsSphere(sp)) continue;
+            if (rc && !receivers[k].keeps(Aabb(sp.center - Vec3(sp.radius, sp.radius, sp.radius),
+                                               sp.center + Vec3(sp.radius, sp.radius, sp.radius))))
+                continue;
+            staging.put(items[idx]);
+        }
         outRanges[k] = CasterRange(first, cast(uint) staging.length - first, false);
     }
 }
@@ -904,6 +911,9 @@ struct Scene3DTextured {
     }
 
     private float cascadeBlend = 0.1f;
+    /// Receiver-aware caster culling per cascade (`CascadeSettings.receiverCulling`).
+    private ReceiverCull[MAX_CASCADES] cascadeReceivers;
+    private bool cascadeReceiverCulling;
 
     /// Cascades fitted for the current frame (valid after `renderShadows`).
     ref const(CascadeSet) cascades() const return nothrow @nogc { return cascadeSet; }
@@ -1190,9 +1200,16 @@ struct Scene3DTextured {
                 hasOwnedDirShadow = true;
             }
             dirPtr = &ownedDirShadow;
+            cascadeReceiverCulling = false;
             if (cascaded) {
                 cascadeSet = buildCascades(frameCamera, dirLight.direction, cs);
                 cascadeBlend = cs.blendFraction;
+                if (cs.receiverCulling) {
+                    foreach (c; 0 .. cascadeSet.count)
+                        cascadeReceivers[c] = cascadeReceiverCull(frameCamera, cascadeSet, c,
+                                                                  dirLight.direction, cs.receiverDrop);
+                    cascadeReceiverCulling = true;
+                }
             }
         }
 
@@ -1369,7 +1386,8 @@ struct Scene3DTextured {
             if (cascadeCount > 0) {
                 uint[MAX_CASCADES] slots;
                 foreach (c; 0 .. cascadeCount) slots[c] = c;
-                gatherLocalCasters(slots[0 .. cascadeCount], Vec3(0, 0, 0), 0);
+                gatherLocalCasters(slots[0 .. cascadeCount], Vec3(0, 0, 0), 0,
+                                   cascadeReceiverCulling ? cascadeReceivers[0 .. cascadeCount] : null);
             }
             foreach (i; 0 .. frameData.pointCount) {
                 immutable int slot = pointLightsStaging[i].shadowSlot;
@@ -1591,7 +1609,9 @@ struct Scene3DTextured {
             }
             if (staticCount > 0) {
                 foreach (sib; staticBufs[0 .. staticCount])
-                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull, dynOffset);
+                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull, dynOffset,
+                        kind == ShadowViewKind.cascade && cascadeReceiverCulling && vpSlot < MAX_CASCADES
+                            ? &cascadeReceivers[vpSlot] : null);
             }
         }
         if (kind != ShadowViewKind.local) {
@@ -1602,7 +1622,8 @@ struct Scene3DTextured {
     }
 
     /// Fill `casterRanges` for the views `slots` of one local light.
-    private void gatherLocalCasters(scope const(uint)[] slots, Vec3 lightPos, float range) nothrow @nogc {
+    private void gatherLocalCasters(scope const(uint)[] slots, Vec3 lightPos, float range,
+                                    scope const(ReceiverCull)[] receivers = null) nothrow @nogc {
         Frustum[6] views;
         foreach (k, slot; slots) {
             Mat4 vp;
@@ -1623,7 +1644,7 @@ struct Scene3DTextured {
             immutable localSphere = b.mesh !is null ? b.mesh.localSphere : BoundingSphere.init;
             gatherLightCasters(b.instances[], localSphere, lightPos, range, views[0 .. slots.length],
                                casterStaging, ranges[0 .. slots.length], casterCandidates, casterSpheres,
-                               b.skinnedMesh !is null);
+                               b.skinnedMesh !is null, receivers);
             foreach (k, slot; slots) casterRanges[slot * batchCount + bi] = ranges[k];
         }
     }
@@ -1653,12 +1674,17 @@ struct Scene3DTextured {
     }
 
     private size_t collectStaticRuns(ref StaticInstanceBuffer sib, ref const Frustum f,
-                                     bool distanceCull) nothrow @nogc {
+                                     bool distanceCull, const(ReceiverCull)* receiver = null) nothrow @nogc {
         if (staticRuns.length < sib.ranges.length) staticRuns.resize(sib.ranges.length);
         if (staticCellVisible.length < sib.cellBounds.length) staticCellVisible.resize(sib.cellBounds.length);
+        auto view = staticView(distanceCull);
+        if (receiver !is null) {
+            view.receiverCull = true;
+            view.receiver = *receiver;
+        }
         // Coarse pass over the cells, so a view only tests the ranges of the cells it touches.
-        markVisibleCells(sib.cellBounds, f, staticCellVisible[]);
-        return collectVisibleRuns(sib.groups, sib.ranges, f, staticView(distanceCull), staticRuns[],
+        markVisibleCells(sib.cellBounds, f, staticCellVisible[], view);
+        return collectVisibleRuns(sib.groups, sib.ranges, f, view, staticRuns[],
                                   staticCellVisible[0 .. sib.cellBounds.length]);
     }
 
@@ -1668,8 +1694,8 @@ struct Scene3DTextured {
     /// are not drawn and should not cast either).
     private void encodeStaticShadow(WGPURenderPassEncoder pass, ref StaticInstanceBuffer sib,
                                     ref const Frustum lightFrustum, bool dirView,
-                                    uint dynOffset) nothrow @nogc @trusted {
-        immutable n = collectStaticRuns(sib, lightFrustum, dirView);
+                                    uint dynOffset, const(ReceiverCull)* receiver = null) nothrow @nogc @trusted {
+        immutable n = collectStaticRuns(sib, lightFrustum, dirView, receiver);
         bool groupZeroIsSurface = false;
         scope(exit) if (groupZeroIsSurface)
             wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
