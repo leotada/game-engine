@@ -249,7 +249,12 @@ struct WorldStreamer {
     }
 
     /// Start a background I/O & decode thread excluded from GC STW pauses.
+    /// No-op on WebAssembly (no threads): `update` decodes synchronously there.
     void startWorker() @trusted {
+        version (WebAssembly) {} else startWorkerThread();
+    }
+
+    private void startWorkerThread() @trusted {
         if (atomicLoad!(MemoryOrder.acq)(_workerRunning))
             return;
         if (_workerMutex is null)

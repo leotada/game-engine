@@ -487,7 +487,8 @@ struct WGPULimits {
     ulong maxBufferSize = WGPU_LIMIT_U64_UNDEFINED;
     uint  maxVertexAttributes = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxVertexBufferArrayStride = WGPU_LIMIT_U32_UNDEFINED;
-    uint  maxInterStageShaderComponents = WGPU_LIMIT_U32_UNDEFINED;
+    // wgpu-native keeps this field; emdawnwebgpu follows upstream webgpu.h, which removed it.
+    version (WebAssembly) {} else uint maxInterStageShaderComponents = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxInterStageShaderVariables = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxColorAttachments = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxColorAttachmentBytesPerSample = WGPU_LIMIT_U32_UNDEFINED;
@@ -497,12 +498,15 @@ struct WGPULimits {
     uint  maxComputeWorkgroupSizeY = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxComputeWorkgroupSizeZ = WGPU_LIMIT_U32_UNDEFINED;
     uint  maxComputeWorkgroupsPerDimension = WGPU_LIMIT_U32_UNDEFINED;
+    version (WebAssembly) uint maxImmediateSize = WGPU_LIMIT_U32_UNDEFINED;
 }
+version (WebAssembly) {} else {
 static assert(WGPULimits.sizeof == 152);
 static assert(WGPULimits.maxSampledTexturesPerShaderStage.offsetof == 0x2c);
 static assert(WGPULimits.maxUniformBufferBindingSize.offsetof == 0x40);
 static assert(WGPULimits.maxBufferSize.offsetof == 0x60);
 static assert(WGPULimits.maxInterStageShaderVariables.offsetof == 0x74);
+}
 
 // ---------------------------------------------------------------------------
 // Callback types
@@ -1090,7 +1094,12 @@ void wgpuQueueRelease(WGPUQueue queue);
 // Surface
 void wgpuSurfaceConfigure(WGPUSurface surface, const(WGPUSurfaceConfiguration)* config);
 void wgpuSurfaceGetCurrentTexture(WGPUSurface surface, WGPUSurfaceTexture* surfaceTexture);
-WGPUStatus wgpuSurfacePresent(WGPUSurface surface);
+version (WebAssembly) {
+    /// Browsers present when control returns to the event loop; emdawnwebgpu aborts on an explicit present.
+    extern (D) WGPUStatus wgpuSurfacePresent(WGPUSurface) { return WGPUStatus.success; }
+} else {
+    WGPUStatus wgpuSurfacePresent(WGPUSurface surface);
+}
 void wgpuSurfaceUnconfigure(WGPUSurface surface);
 WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface surface, WGPUAdapter adapter, WGPUSurfaceCapabilities* capabilities);
 void wgpuSurfaceCapabilitiesFreeMembers(WGPUSurfaceCapabilities capabilities);
@@ -1146,16 +1155,37 @@ WGPUBool wgpuDeviceHasFeature(WGPUDevice device, WGPUFeatureName feature);
 WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, const(WGPUQuerySetDescriptor)* descriptor);
 void wgpuQuerySetDestroy(WGPUQuerySet querySet);
 void wgpuQuerySetRelease(WGPUQuerySet querySet);
+version (WebAssembly) {
+    // Not in emdawnwebgpu. Never reached: GpuContext leaves timestamps off on web.
+    extern (D) void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder, WGPUQuerySet, uint) {}
+    extern (D) void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder, WGPUQuerySet, uint) {}
+    extern (D) void wgpuComputePassEncoderWriteTimestamp(WGPUComputePassEncoder, WGPUQuerySet, uint) {}
+    extern (D) float wgpuQueueGetTimestampPeriod(WGPUQueue) { return 1.0f; }
+
+    void emscripten_sleep(uint ms);
+
+    /// Instance pumped by the web `wgpuDevicePoll`; set by `GpuContext.create`.
+    extern (D) __gshared WGPUInstance wgpuWebInstance;
+
+    /// Web stand-in for the wgpu-native extension. `wait` yields to the browser once, so callers
+    /// must keep polling until their own completion flag is set.
+    extern (D) WGPUBool wgpuDevicePoll(WGPUDevice, WGPUBool wait, const(void)*) {
+        if (wait) emscripten_sleep(1);
+        if (wgpuWebInstance !is null) wgpuInstanceProcessEvents(wgpuWebInstance);
+        return WGPU_FALSE;
+    }
+} else {
 void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
 void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
 void wgpuComputePassEncoderWriteTimestamp(WGPUComputePassEncoder encoder, WGPUQuerySet querySet, uint queryIndex);
+float wgpuQueueGetTimestampPeriod(WGPUQueue queue);
+// wgpu-native extension (wgpu.h): blocks until submitted work completes when `wait` is true.
+WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, const(void)* wrappedSubmissionIndex);
+}
 void wgpuCommandEncoderResolveQuerySet(WGPUCommandEncoder encoder, WGPUQuerySet querySet, uint firstQuery,
     uint queryCount, WGPUBuffer destination, ulong destinationOffset);
 void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder encoder, WGPUBuffer source, ulong sourceOffset,
     WGPUBuffer destination, ulong destinationOffset, ulong size);
-float wgpuQueueGetTimestampPeriod(WGPUQueue queue);
-// wgpu-native extension (wgpu.h): blocks until submitted work completes when `wait` is true.
-WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, const(void)* wrappedSubmissionIndex);
 
 // ShaderModule
 void wgpuShaderModuleAddRef(WGPUShaderModule module_);

@@ -6,10 +6,6 @@ import bindings.wgpu;
 import engine.platform.window : NativeSurfaceInfo, NativeSurfaceBackend;
 import engine.core.log;
 
-version (WebAssembly) {
-    private extern (C) nothrow @nogc void emscripten_sleep(uint ms);
-}
-
 @safe:
 
 struct GpuContext {
@@ -36,6 +32,7 @@ struct GpuContext {
         if (ctx.instance is null) {
             fatal("wgpuCreateInstance failed");
         }
+        version (WebAssembly) wgpuWebInstance = ctx.instance;
         info("WGPU instance created");
 
         // 2. Surface (Wayland / X11 fallback / Win32 / Android / Metal / WebGPU canvas)
@@ -112,13 +109,18 @@ struct GpuContext {
         adapterCb.callback  = &onAdapterReady;
         adapterCb.userdata1 = cast(void*) &ctx.adapter;
 
-        wgpuInstanceRequestAdapter(ctx.instance, &adapterOpts, adapterCb);
         version (WebAssembly) {
-            while (ctx.adapter is null) {
-                wgpuInstanceProcessEvents(ctx.instance);
+            AsyncRequest!WGPUAdapter adapterReq;
+            adapterCb.callback  = &onWebRequest!(WGPURequestAdapterStatus, WGPUAdapter);
+            adapterCb.userdata1 = cast(void*) &adapterReq;
+            wgpuInstanceRequestAdapter(ctx.instance, &adapterOpts, adapterCb);
+            while (!adapterReq.done) {
                 emscripten_sleep(1);
+                wgpuInstanceProcessEvents(ctx.instance);
             }
+            ctx.adapter = adapterReq.handle;
         } else {
+            wgpuInstanceRequestAdapter(ctx.instance, &adapterOpts, adapterCb);
             wgpuInstanceProcessEvents(ctx.instance);
         }
 
@@ -165,13 +167,18 @@ struct GpuContext {
         devCb.callback  = &onDeviceReady;
         devCb.userdata1 = cast(void*) &ctx.device;
 
-        wgpuAdapterRequestDevice(ctx.adapter, &devDesc, devCb);
         version (WebAssembly) {
-            while (ctx.device is null) {
-                wgpuInstanceProcessEvents(ctx.instance);
+            AsyncRequest!WGPUDevice deviceReq;
+            devCb.callback  = &onWebRequest!(WGPURequestDeviceStatus, WGPUDevice);
+            devCb.userdata1 = cast(void*) &deviceReq;
+            wgpuAdapterRequestDevice(ctx.adapter, &devDesc, devCb);
+            while (!deviceReq.done) {
                 emscripten_sleep(1);
+                wgpuInstanceProcessEvents(ctx.instance);
             }
+            ctx.device = deviceReq.handle;
         } else {
+            wgpuAdapterRequestDevice(ctx.adapter, &devDesc, devCb);
             wgpuInstanceProcessEvents(ctx.instance);
         }
 
@@ -222,6 +229,9 @@ struct GpuContext {
                 chosenPresent = WGPUPresentMode.fifo;
             }
         }
+
+        // Canvases only present with vsync.
+        version (WebAssembly) chosenPresent = WGPUPresentMode.fifo;
 
         ctx.surfaceFormat = chosenFormat;
         ctx.presentModeVal = chosenPresent;
@@ -318,6 +328,22 @@ struct GpuContext {
 // ---------------------------------------------------------------------------
 // Callbacks (extern(C) for WGPU)
 // ---------------------------------------------------------------------------
+version (WebAssembly) {
+    /// Browser requests resolve after control returns to the event loop, with success or failure.
+    private struct AsyncRequest(H) {
+        H handle;
+        bool done;
+    }
+
+    private extern (C) void onWebRequest(Status, H)(
+        Status status, H handle, WGPUStringView message, void* userdata1, void* userdata2,
+    ) nothrow @nogc @trusted {
+        auto req = cast(AsyncRequest!H*) userdata1;
+        if (status == Status.success) req.handle = handle;
+        req.done = true;
+    }
+}
+
 private extern(C) void onAdapterReady(
     WGPURequestAdapterStatus status,
     WGPUAdapter adapter,

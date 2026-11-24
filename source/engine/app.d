@@ -22,52 +22,8 @@ import core.time : MonoTime, Duration, usecs;
 private enum size_t FRAME_ARENA_CAPACITY = 4 * 1024 * 1024; // 4 MB
 
 version (WebAssembly) {
-    private extern (C) nothrow @nogc {
-        void emscripten_set_main_loop_arg(
-            void function(void*) nothrow @system,
-            void* arg,
-            int fps,
-            bool simulateInfiniteLoop
-        );
-        void emscripten_cancel_main_loop();
-    }
-
-    private struct WebLoopState {
-        App* app;
-        void* callbackPtr;
-        MonoTime prevTime;
-        bool firstFrame = true;
-    }
-
-    private extern (C) void emscriptenFrameThunk(void* user) nothrow @trusted {
-        auto state = cast(WebLoopState*) user;
-        if (state is null || state.app is null || !state.app.running) {
-            emscripten_cancel_main_loop();
-            return;
-        }
-        immutable now = MonoTime.currTime;
-        float dt = 1.0f / 60.0f;
-        if (!state.firstFrame) {
-            immutable long us = (now - state.prevTime).total!"usecs";
-            dt = cast(float) us / 1_000_000.0f;
-            if (dt < 0.0001f) dt = 0.0001f;
-            if (dt > 0.1f) dt = 0.1f;
-        }
-        state.firstFrame = false;
-        state.prevTime = now;
-
-        alias CallbackFn = void delegate(float);
-        try {
-            auto dg = *cast(CallbackFn*) state.callbackPtr;
-            dg(dt);
-        } catch (Throwable) {
-            state.app.close();
-            emscripten_cancel_main_loop();
-        }
-        if (!state.app.running) {
-            emscripten_cancel_main_loop();
-        }
-    }
+    /// Suspends the Wasm stack (JSPI) until the next `requestAnimationFrame`; see `tools/web/engine_web.js`.
+    private extern (C) nothrow @nogc void engine_web_next_frame();
 }
 
 struct App {
@@ -109,33 +65,23 @@ struct App {
 
     void close() nothrow @nogc { _running = false; }
 
-    /// Execute `frameFn(dt)` continuously while `running()` is true.
-    /// Uses `emscripten_set_main_loop_arg` on WebAssembly and a `MonoTime`
-    /// delta-time loop on native desktop platforms.
+    /// Execute `frameFn(dt)` continuously while `running()` is true, with a `MonoTime` delta.
+    /// Frames must call `pollEvents`, which on WebAssembly also yields to the browser.
     void run(scope void delegate(float dt) frameFn) @trusted {
-        version (WebAssembly) {
-            WebLoopState state;
-            state.app = &this;
-            state.callbackPtr = cast(void*) &frameFn;
-            state.prevTime = MonoTime.currTime;
-            state.firstFrame = true;
-            emscripten_set_main_loop_arg(&emscriptenFrameThunk, cast(void*) &state, 0, true);
-        } else {
-            MonoTime prevTime = MonoTime.currTime;
-            bool firstFrame = true;
-            while (running) {
-                immutable now = MonoTime.currTime;
-                float dt = 1.0f / 60.0f;
-                if (!firstFrame) {
-                    immutable long us = (now - prevTime).total!"usecs";
-                    dt = cast(float) us / 1_000_000.0f;
-                    if (dt < 0.0001f) dt = 0.0001f;
-                    if (dt > 0.1f) dt = 0.1f;
-                }
-                firstFrame = false;
-                prevTime = now;
-                frameFn(dt);
+        MonoTime prevTime = MonoTime.currTime;
+        bool firstFrame = true;
+        while (running) {
+            immutable now = MonoTime.currTime;
+            float dt = 1.0f / 60.0f;
+            if (!firstFrame) {
+                immutable long us = (now - prevTime).total!"usecs";
+                dt = cast(float) us / 1_000_000.0f;
+                if (dt < 0.0001f) dt = 0.0001f;
+                if (dt > 0.1f) dt = 0.1f;
             }
+            firstFrame = false;
+            prevTime = now;
+            frameFn(dt);
         }
     }
 
@@ -176,7 +122,10 @@ struct App {
         return renderer.postSettings();
     }
 
+    /// Begin an input frame and drain OS events. Call exactly once per frame: on WebAssembly this
+    /// is also where the previous frame is presented and the browser event loop runs.
     void pollEvents() nothrow @nogc @trusted {
+        version (WebAssembly) engine_web_next_frame();
         input.beginFrame();
         pumpEvents();
     }
