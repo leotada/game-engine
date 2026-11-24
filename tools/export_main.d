@@ -59,6 +59,7 @@ private void printUsage() {
     writeln("  --pak-dir=<dir>      Extra project directory (e.g. streamed chunks) packed into the pak; repeatable");
     writeln("  --pak-key=<hex>      64-bit hex encryption key for GEPK asset container");
     writeln("  --version=<id>       Extra D version identifier (repeatable)");
+    writeln("  --link-flag=<flag>   Extra emcc link flag, web only (repeatable)");
     writeln("  --no-verify          Skip post-build static ELF DT_NEEDED / ldd verification");
     writeln("  --scene=<path>       Startup .scene.json path");
     writeln("  --name=<bin>         Executable/bundle base name (default: game-player)");
@@ -131,6 +132,8 @@ void main(string[] args) {
             }
         } else if (arg.length > 10 && arg[0 .. 10] == "--version=") {
             opts.extraVersions ~= arg[10 .. $];
+        } else if (arg.length > 12 && arg[0 .. 12] == "--link-flag=") {
+            opts.extraLinkFlags ~= arg[12 .. $];
         } else if (arg.length > 8 && arg[0 .. 8] == "--scene=") {
             opts.startScene = arg[8 .. $];
             customScene = true;

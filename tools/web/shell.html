@@ -142,7 +142,7 @@
                 <div class="progress-bar" id="progress-bar"></div>
             </div>
             <div class="error-banner" id="webgpu-warning">
-                WebGPU (`navigator.gpu`) is unavailable in this browser. Enable WebGPU or use Chrome/Edge/Firefox Nightly.
+                This game needs a browser with WebGPU and JavaScript Promise Integration: Chrome or Edge 137+, or Firefox 153+.
             </div>
         </div>
     </div>
@@ -155,10 +155,32 @@
             var warningEl = document.getElementById("webgpu-warning");
             var canvas = document.getElementById("canvas");
 
-            if (!navigator.gpu) {
-                warningEl.style.display = "block";
-                statusEl.textContent = "Missing WebGPU support";
+            var supported = !!navigator.gpu && "Suspending" in WebAssembly;
+            var failed = false;
+
+            function hideOverlay() {
+                if (!failed) overlay.classList.add("hidden");
             }
+            function fail(status, detail) {
+                failed = true;
+                overlay.classList.remove("hidden");
+                statusEl.textContent = status;
+                if (detail) warningEl.textContent = detail;
+                warningEl.style.display = "block";
+            }
+
+            if (!navigator.gpu) {
+                fail(window.isSecureContext
+                    ? "Missing WebGPU support"
+                    : "WebGPU requires HTTPS or localhost");
+            } else if (!supported) {
+                fail("Missing WebAssembly JSPI support");
+            }
+            window.addEventListener("unhandledrejection", function (ev) {
+                if (ev.reason instanceof WebAssembly.RuntimeError || /abort/i.test(String(ev.reason))) {
+                    fail("The game stopped", String(ev.reason));
+                }
+            });
 
             document.getElementById("fullscreen-btn").addEventListener("click", function () {
                 if (document.fullscreenElement) {
@@ -170,10 +192,11 @@
 
             window.Module = {
                 canvas: canvas,
-                preRun: [],
-                postRun: [function () {
-                    overlay.classList.add("hidden");
-                }],
+                arguments: {{APP_ARGS}},
+                noInitialRun: !supported,
+                onAbort: function (what) {
+                    fail("The game stopped", String(what));
+                },
                 print: function (text) {
                     console.log(text);
                 },
@@ -181,8 +204,9 @@
                     console.error(text);
                 },
                 setStatus: function (text) {
+                    if (failed) return;
                     if (!text) {
-                        overlay.classList.add("hidden");
+                        hideOverlay();
                         return;
                     }
                     statusEl.textContent = text;
@@ -194,6 +218,7 @@
                 },
                 totalDependencies: 0,
                 monitorRunDependencies: function (left) {
+                    if (failed) return;
                     this.totalDependencies = Math.max(this.totalDependencies, left);
                     if (left > 0) {
                         var pct = Math.round(((this.totalDependencies - left) / this.totalDependencies) * 100);
@@ -201,7 +226,7 @@
                         statusEl.textContent = "Loading assets (" + (this.totalDependencies - left) + "/" + this.totalDependencies + ")...";
                     } else {
                         progressBar.style.width = "100%";
-                        overlay.classList.add("hidden");
+                        statusEl.textContent = "Starting...";
                     }
                 }
             };

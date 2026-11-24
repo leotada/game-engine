@@ -7,7 +7,7 @@ import std.array : join, replace;
 import std.file : copy, dirEntries, exists, getAttributes, isDir, isFile, mkdirRecurse, read, readText, remove, rmdirRecurse, setAttributes, SpanMode, thisExePath, write;
 import std.format : format;
 import std.path : absolutePath, baseName, buildPath, dirName, extension, relativePath;
-import std.process : environment, executeShell;
+import std.process : environment, execute, executeShell;
 import std.string : split, strip, toLower;
 import engine.assets.pak : buildAssetPak, collectDirectoryPakInputs, DEFAULT_ASSET_PAK_KEY, pakContains;
 import engine.core.log : err, info, warn;
@@ -60,6 +60,7 @@ struct BuildExportOptions {
     bool embedAssetsPak = false;     /// Embed assets.pak into executable (-J + version=ProtectedAssets).
     string[] extraPakDirs;           /// Extra directories (relative to projectDir) packed into the pak, e.g. streamed chunk folders outside `assetsDir`.
     ulong assetPakKey = 0;           /// 64-bit encryption key (0 => DEFAULT_ASSET_PAK_KEY).
+    string[] extraLinkFlags;         /// Extra `emcc` link flags (web exports only).
     bool verifyStatic = true;        /// Run ELF DT_NEEDED / ldd / obfuscation verification on Linux static exports.
 }
 
@@ -386,11 +387,12 @@ struct ExportPipeline {
                 break;
             case ExportTarget.webWasm32:
                 args ~= [
-                    "-sUSE_WEBGPU=1",
-                    "-sASYNCIFY=1",
+                    "--use-port=emdawnwebgpu",
+                    "-sJSPI=1", // not ASYNCIFY: it cannot coexist with the Wasm exceptions LDC emits
                     "-sALLOW_MEMORY_GROWTH=1",
-                    "-sINITIAL_MEMORY=67108864",
-                    "--preload-file", "assets@/assets",
+                    "-sINITIAL_MEMORY=134217728",
+                    "-sSTACK_SIZE=4194304",
+                    "-sFORCE_FILESYSTEM=1",
                 ];
                 break;
         }
@@ -693,7 +695,11 @@ struct ExportPipeline {
         }
 
         if (tgt == ExportTarget.webWasm32) {
-            return buildWebExportCommands(opts)[1];
+            return buildWebCompileArgs(opts, ".", [], ["tools/player/player_main.d"],
+                buildPath(opts.outputDir, ".web_obj"),
+                buildPath(opts.outputDir, (opts.binaryName.length > 0 ? opts.binaryName : "game-player") ~ ".html"),
+                buildPath(opts.outputDir, ".shell.generated.html"),
+                buildPath(opts.outputDir, ".web_stage")).join(" ");
         }
 
         immutable spec = specFor(tgt);
@@ -740,46 +746,91 @@ struct ExportPipeline {
         return cmd.join(" ");
     }
 
-    /// Construct the two-stage `(ldc2 -> .o, emcc -> .html/.js/.wasm/.data)` WebAssembly commands.
-    static string[2] buildWebExportCommands(const ref BuildExportOptions opts) pure {
-        immutable binStem = opts.binaryName.length > 0 ? opts.binaryName : "game-player";
-        immutable libsDir = buildPath("libs", "web-wasm32");
-        immutable objDir = buildPath(opts.outputDir, "obj");
-        immutable htmlOut = buildPath(opts.outputDir, binStem ~ ".html");
-        immutable shellOut = buildPath(opts.outputDir, "shell.generated.html");
+    /// Compiler for web exports: `opts.compiler` when it is an LDC, else `ldc2` (DMD cannot target wasm).
+    private static string webCompiler(const ref BuildExportOptions opts) pure {
+        return baseName(opts.compiler).canFind("ldc") ? opts.compiler : "ldc2";
+    }
 
-        string ldcCmd = format(
-            "ldc2 -c -mtriple=wasm32-unknown-emscripten %s -preview=dip1000 "
-            ~ "-I=source -I=vendor/zipd -I=source/bindings/box3d -I=source/bindings/recast -J=assets/shaders "
-            ~ "-d-version=WebAssembly -d-version=StaticSDLDeps -od=%s "
-            ~ "tools/player/player_main.d",
-            opts.release ? "-O3 -release" : "-O1",
-            objDir);
-
-        string[] emccArgs = [
-            "emcc",
-            buildPath(objDir, "player_main.o"),
-            libsDir ~ "/libSDL3_ttf.a",
-            libsDir ~ "/libSDL3_image.a",
-            libsDir ~ "/libfreetype.a",
-            libsDir ~ "/libSDL3.a",
-            libsDir ~ "/libbox3d.a",
-            libsDir ~ "/librecast_shim.a",
-            libsDir ~ "/libstb_vorbis.a",
-            "-sUSE_WEBGPU=1",
-            "-sASYNCIFY=1",
-            "-sALLOW_MEMORY_GROWTH=1",
-            "-sINITIAL_MEMORY=67108864",
-            "--shell-file", shellOut,
-            "--preload-file", "assets@/assets",
-            "-o", htmlOut,
+    /// Single `ldc2` command line that compiles the sources and links them through `emcc`
+    /// into `<outHtml>` plus `.js`, `.wasm` and `.data`. LDC supplies druntime/Phobos, and
+    /// `-Xcc=` hands flags to `emcc` verbatim. `sources` are roots; `-i` pulls in the rest.
+    /// `stageDir` (may be empty) is preloaded at the root of the virtual filesystem.
+    static string[] buildWebCompileArgs(
+        const ref BuildExportOptions opts,
+        string engineRoot,
+        const(string)[] importDirs,
+        const(string)[] sources,
+        string objDir,
+        string outHtml,
+        string shellPath,
+        string stageDir,
+        string pakStageDir = ""
+    ) pure {
+        string[] args = [
+            webCompiler(opts),
+            "-mtriple=" ~ specFor(ExportTarget.webWasm32).ldcTriple,
+            "-i",
+            "-preview=dip1000",
+            "-P-std=c17",
+            "-P-I" ~ buildPath(engineRoot, "vendor/box3d/include"),
         ];
-        return [ldcCmd, emccArgs.join(" ")];
+        args ~= opts.release ? ["-O3", "-release"] : ["-O1", "-g"];
+        foreach (dir; importDirs) args ~= "-I" ~ dir;
+        args ~= [
+            "-I" ~ buildPath(engineRoot, "source"),
+            "-I" ~ buildPath(engineRoot, "vendor/zipd"),
+            "-I" ~ buildPath(engineRoot, "source/bindings/box3d"),
+            "-I" ~ buildPath(engineRoot, "source/bindings/recast"),
+            "-J" ~ buildPath(engineRoot, "assets/shaders"),
+            "-d-version=StaticSDLDeps", // `WebAssembly` / `Emscripten` are predefined by the triple
+        ];
+        if (pakStageDir.length > 0) {
+            args ~= ["-J" ~ pakStageDir, "-d-version=ProtectedAssets"];
+        }
+        foreach (v; opts.extraVersions) {
+            if (v.length > 0) args ~= "-d-version=" ~ v;
+        }
+        args ~= ["-od=" ~ objDir, "-oq", "-of=" ~ outHtml];
+        args ~= sources;
+        args ~= [
+            buildPath(engineRoot, "source/bindings/box3d/box3d_import.c"),
+            buildPath(engineRoot, "source/bindings/stb_vorbis/stb_vorbis_import.c"),
+            buildPath(engineRoot, "source/bindings/recast/recast_import.c"),
+        ];
+
+        string[] cc = buildStaticLinkArgs(ExportTarget.webWasm32,
+            buildPath(engineRoot, "libs", specFor(ExportTarget.webWasm32).libsSubdir));
+        cc ~= [opts.release ? "-O3" : "-O1", opts.release ? "-sASSERTIONS=0" : "-sASSERTIONS=1"];
+        cc ~= ["--js-library", buildPath(engineRoot, "tools/web/engine_web.js")];
+        cc ~= ["--shell-file", shellPath];
+        if (stageDir.length > 0) cc ~= ["--preload-file", stageDir ~ "@/"];
+        cc ~= opts.extraLinkFlags;
+        foreach (flag; cc) args ~= "-Xcc=" ~ flag;
+        return args;
+    }
+
+    /// JSON array literal, safe to embed inside an inline HTML `<script>`.
+    private static string jsStringArray(const(string)[] items) pure {
+        string[] quoted;
+        foreach (item; items) {
+            string s;
+            foreach (char c; item) {
+                if (c == '"' || c == '\\') s ~= "\\" ~ c;
+                else if (c == '<' || c == '>' || c == '&' || c < 0x20) s ~= format("\\u%04x", cast(uint) c);
+                else s ~= c;
+            }
+            quoted ~= `"` ~ s ~ `"`;
+        }
+        return "[" ~ quoted.join(",") ~ "]";
     }
 
     static string renderWebShellHtml(scope const(char)[] shellTemplate, const ref BuildExportOptions opts) pure {
         immutable title = opts.appTitle.length > 0 ? opts.appTitle : "Game Engine Player";
-        return shellTemplate.idup.replace("{{APP_TITLE}}", escapeXml(title));
+        string[] gameArgs;
+        if (opts.startScene.length > 0) gameArgs ~= "--scene=" ~ opts.startScene;
+        return shellTemplate.idup
+            .replace("{{APP_TITLE}}", escapeXml(title))
+            .replace("{{APP_ARGS}}", jsStringArray(gameArgs));
     }
 
     static void writeThirdPartyLicenses(string destDir, string engineRoot = ".") @trusted {
@@ -945,6 +996,14 @@ struct ExportPipeline {
             if (exists(objDir)) rmdirRecurse(objDir);
         }
 
+        // Web bundles carry assets in the preloaded `.data` image instead of as loose files.
+        immutable bool isWeb = tgt == ExportTarget.webWasm32;
+        immutable assetRoot = isWeb ? buildPath(opts.outputDir, ".web_stage") : opts.outputDir;
+        if (isWeb) mkdirRecurse(assetRoot);
+        scope (exit) {
+            if (isWeb && exists(assetRoot)) rmdirRecurse(assetRoot);
+        }
+
         string pakStageDir;
         scope (exit) {
             if (pakStageDir.length > 0 && exists(pakStageDir)) rmdirRecurse(pakStageDir);
@@ -998,10 +1057,10 @@ struct ExportPipeline {
                 mkdirRecurse(pakStageDir);
                 write(buildPath(pakStageDir, "assets.pak"), pakBytes);
             } else {
-                write(buildPath(opts.outputDir, "assets.pak"), pakBytes);
+                write(buildPath(assetRoot, "assets.pak"), pakBytes);
             }
         } else if (!opts.protectAssets && exists(srcAssets)) {
-            immutable dstAssets = buildPath(opts.outputDir, baseName(opts.assetsDir));
+            immutable dstAssets = buildPath(assetRoot, baseName(opts.assetsDir));
             foreach (entry; dirEntries(srcAssets, SpanMode.depth)) {
                 if (!entry.isFile) continue;
                 auto rel = relativePath(entry.name, srcAssets);
@@ -1010,6 +1069,29 @@ struct ExportPipeline {
                 if (!exists(p)) mkdirRecurse(p);
                 copy(entry.name, dst);
             }
+        }
+
+        if (isWeb) {
+            BuildExportOptions webOpts = cloneOpts(opts);
+            if (webOpts.binaryName.length == 0) webOpts.binaryName = baseName(projRoot);
+            if (exists(buildPath(projRoot, "project.json"))) {
+                copy(buildPath(projRoot, "project.json"), buildPath(assetRoot, "project.json"));
+            }
+            immutable srcRoot = buildPath(projRoot, opts.sourceDir);
+            string[] gameSources;
+            foreach (entry; dirEntries(srcRoot, SpanMode.depth)) {
+                if (entry.isFile && extension(entry.name) == ".d") gameSources ~= entry.name;
+            }
+            gameSources.sort();
+            if (!buildWebBundle(webOpts, engineRoot, [srcRoot], gameSources, assetRoot,
+                    pakStageDir, outLog)) {
+                return false;
+            }
+            // Never archive the scratch directories.
+            foreach (dir; [assetRoot, objDir, pakStageDir]) {
+                if (dir.length > 0 && exists(dir)) rmdirRecurse(dir);
+            }
+            return finishWebExport(webOpts, outLog);
         }
 
         immutable destBin = buildPath(opts.outputDir, binName);
@@ -1094,7 +1176,8 @@ struct ExportPipeline {
             if (!exists(opts.outputDir)) mkdirRecurse(opts.outputDir);
 
             if (tgt == ExportTarget.webWasm32) {
-                return exportWebWasm(opts, outLog);
+                if (!exportWebWasm(opts, outLog)) return false;
+                return finishWebExport(opts, outLog);
             }
 
             if (tgt == ExportTarget.macosArm64 || tgt == ExportTarget.macosX86_64 ||
@@ -1189,6 +1272,7 @@ struct ExportPipeline {
         dst.sourceDir      = src.sourceDir;
         dst.assetsDir      = src.assetsDir;
         dst.extraVersions  = src.extraVersions.dup;
+        dst.extraLinkFlags = src.extraLinkFlags.dup;
         dst.protectAssets  = src.protectAssets;
         dst.embedAssetsPak = src.embedAssetsPak;
         dst.extraPakDirs = src.extraPakDirs.dup;
@@ -1253,28 +1337,76 @@ struct ExportPipeline {
         return true;
     }
 
+    private static bool finishWebExport(const ref BuildExportOptions opts, ref string outLog) @trusted {
+        if (opts.packageArchive) {
+            string zipLog;
+            if (!packageOutputArchive(ExportTarget.webWasm32, opts.outputDir, zipLog)) {
+                warn("Export: archive packaging failed (unarchived bundle remains valid)");
+            }
+            outLog ~= zipLog;
+        }
+        info("Export: successfully packaged web release in %s", opts.outputDir);
+        return true;
+    }
+
+    /// Export the built-in player: stage `assets/` and `project.json`, then compile and link.
     private static bool exportWebWasm(const ref BuildExportOptions opts, ref string outLog) @trusted {
-        immutable objDir = buildPath(opts.outputDir, "obj");
-        if (!exists(objDir)) mkdirRecurse(objDir);
+        immutable stageDir = buildPath(opts.outputDir, ".web_stage");
+        if (exists(stageDir)) rmdirRecurse(stageDir);
+        mkdirRecurse(stageDir);
+        scope (exit) {
+            if (exists(stageDir)) rmdirRecurse(stageDir);
+        }
+        copyBundleAssetsAndProject(stageDir, stageDir);
+        return buildWebBundle(opts, ".", [], ["tools/player/player_main.d"], stageDir, "", outLog);
+    }
 
-        immutable shellSrc = exists("tools/web/shell.html")
-            ? readText("tools/web/shell.html")
-            : "<!doctype html><html><body><canvas id=\"canvas\"></canvas>{{{ SCRIPT }}}</body></html>";
-        write(buildPath(opts.outputDir, "shell.generated.html"), renderWebShellHtml(shellSrc, opts));
+    /// Compile, link and finish a web bundle in `opts.outputDir` from an already staged filesystem.
+    private static bool buildWebBundle(
+        const ref BuildExportOptions opts,
+        string engineRoot,
+        const(string)[] importDirs,
+        const(string)[] sources,
+        string stageDir,
+        string pakStageDir,
+        ref string outLog
+    ) @trusted {
+        immutable objDir = buildPath(opts.outputDir, ".web_obj");
+        mkdirRecurse(objDir);
+        immutable shellOut = buildPath(opts.outputDir, ".shell.generated.html");
+        scope (exit) {
+            if (exists(objDir)) rmdirRecurse(objDir);
+            if (exists(shellOut)) remove(shellOut);
+        }
+        write(shellOut, renderWebShellHtml(
+            readText(buildPath(engineRoot, "tools/web/shell.html")), opts));
 
-        foreach (cmd; buildWebExportCommands(opts)) {
-            info("Export Web: %s", cmd);
-            auto res = executeShell(cmd);
-            outLog ~= res.output;
-            if (res.status != 0) {
-                err("Export Web failed (%d):\n%s", res.status, res.output);
+        immutable stem = opts.binaryName.length > 0 ? opts.binaryName : "game-player";
+        immutable htmlOut = buildPath(opts.outputDir, stem ~ ".html");
+        immutable bool hasFiles = !dirEntries(stageDir, SpanMode.shallow).empty;
+        auto args = buildWebCompileArgs(opts, engineRoot, importDirs, sources, objDir, htmlOut,
+            shellOut, hasFiles ? stageDir : "", pakStageDir);
+        info("Export Web: %s", args.join(" "));
+        auto res = execute(args);
+        outLog ~= res.output;
+        if (res.status != 0) {
+            err("Export Web failed (%d):\n%s", res.status, res.output);
+            return false;
+        }
+
+        string[] produced = [".html", ".js", ".wasm"];
+        if (hasFiles) produced ~= ".data";
+        foreach (ext; produced) {
+            immutable path = buildPath(opts.outputDir, stem ~ ext);
+            if (!exists(path)) {
+                outLog ~= "Export Web: expected output missing: " ~ path ~ "\n";
+                err("Export Web: expected output missing: %s", path);
                 return false;
             }
         }
-        writeThirdPartyLicenses(opts.outputDir);
-        if (opts.packageArchive) {
-            packageOutputArchive(ExportTarget.webWasm32, opts.outputDir, outLog);
-        }
+        // Static hosts (itch.io, GitHub Pages) open index.html.
+        if (stem != "index") copy(htmlOut, buildPath(opts.outputDir, "index.html"));
+        writeThirdPartyLicenses(opts.outputDir, engineRoot);
         return true;
     }
 }
@@ -1325,8 +1457,8 @@ unittest {
     assert(macArgs.any!(a => a == "-ObjC"));
 
     auto webArgs = ExportPipeline.buildStaticLinkArgs(ExportTarget.webWasm32, "libs/web-wasm32");
-    assert(webArgs.any!(a => a == "-sUSE_WEBGPU=1"));
-    assert(webArgs.any!(a => a == "assets@/assets"));
+    assert(webArgs.any!(a => a == "--use-port=emdawnwebgpu"));
+    assert(webArgs.any!(a => a == "-sJSPI=1"));
 
     // Web command & shell rendering verification
     BuildExportOptions webOpts;
@@ -1335,13 +1467,30 @@ unittest {
     webOpts.binaryName = "crystal";
     webOpts.outputDir = "build/test_web";
     webOpts.release = true;
-    auto webCmds = ExportPipeline.buildWebExportCommands(webOpts);
-    assert(webCmds[0].canFind("wasm32-unknown-emscripten"));
-    assert(webCmds[0].canFind("-d-version=WebAssembly"));
-    assert(webCmds[0].canFind("-I=vendor/zipd"));
-    assert(webCmds[1].canFind("-sUSE_WEBGPU=1"));
-    assert(ExportPipeline.renderWebShellHtml("<title>{{APP_TITLE}}</title>", webOpts)
-        == "<title>Crystal Collector Web</title>");
+    webOpts.startScene = `assets/a"</script>.json`;
+    webOpts.extraLinkFlags = ["-sSTACK_SIZE=8388608"];
+    auto webCmd = ExportPipeline.buildWebCompileArgs(webOpts, "/eng", ["/game/source"],
+        ["/game/source/app.d"], "obj", "out/crystal.html", "shell.html", "stage");
+    assert(webCmd[0] == "ldc2");
+    assert(webCmd.canFind("-mtriple=wasm32-unknown-emscripten"));
+    assert(webCmd.canFind("-i"));
+    assert(!webCmd.canFind("-d-version=WebAssembly"), "reserved version, set by the triple");
+    assert(webCmd.canFind("-I/eng/vendor/zipd") && webCmd.canFind("-I/game/source"));
+    assert(webCmd.any!(a => a.canFind("box3d_import.c")));
+    assert(webCmd.canFind("-Xcc=/eng/libs/web-wasm32/librecast_shim.a"));
+    assert(webCmd.canFind("-Xcc=/eng/tools/web/engine_web.js"));
+    assert(webCmd.canFind("-Xcc=stage@/"));
+    assert(webCmd.canFind("-Xcc=-sSTACK_SIZE=8388608"));
+    assert(!webCmd.any!(a => a.canFind("ProtectedAssets")));
+    webOpts.compiler = "dmd";
+    auto pakCmd = ExportPipeline.buildWebCompileArgs(webOpts, ".", [], [], "obj", "o.html", "s.html", "", "pak");
+    assert(pakCmd[0] == "ldc2", "DMD cannot target wasm");
+    assert(pakCmd.canFind("-Jpak") && pakCmd.canFind("-d-version=ProtectedAssets"));
+    assert(!pakCmd.any!(a => a.canFind("--preload-file")));
+    assert(ExportPipeline.renderWebShellHtml("<title>{{APP_TITLE}}</title>{{APP_ARGS}}", webOpts)
+        == `<title>Crystal Collector Web</title>["--scene=assets/a\"\u003c/script\u003e.json"]`);
+    immutable shellHtml = ExportPipeline.renderWebShellHtml(readText("tools/web/shell.html"), webOpts);
+    assert(!shellHtml.canFind("{{APP_") && shellHtml.canFind("{{{ SCRIPT }}}"));
 
     // Info.plist generation check
     if (!exists("build/test_plist")) mkdirRecurse("build/test_plist");

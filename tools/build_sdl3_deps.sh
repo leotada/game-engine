@@ -95,7 +95,7 @@ clone_repo() {
     fi
 }
 
-CMAKE_BIN="cmake"
+CMAKE_BIN=(cmake)
 CMAKE_GEN_ARGS=()
 CMAKE_TARGET_ARGS=(
     "-DCMAKE_BUILD_TYPE=Release"
@@ -182,12 +182,16 @@ case "$TARGET" in
             echo "Error: web-wasm32 requires Emscripten SDK (emcmake / emcc) in PATH." >&2
             exit 1
         fi
-        CMAKE_BIN="emcmake cmake"
+        CMAKE_BIN=(emcmake cmake)
         CMAKE_TARGET_ARGS=(
             "-DCMAKE_BUILD_TYPE=Release"
             "-DCMAKE_INSTALL_PREFIX=$STAGE_PREFIX"
             "-DCMAKE_INSTALL_LIBDIR=lib"
+            # The Emscripten toolchain file restricts find_package to its sysroot.
+            "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH"
+            "-DCMAKE_FIND_ROOT_PATH=$STAGE_PREFIX"
         )
+        export CC=emcc CXX=em++ AR=emar
         ;;
     *)
         echo "Error: unsupported target '$TARGET'" >&2
@@ -221,7 +225,7 @@ if [[ "$TARGET" == "linux-"* ]]; then
     )
 fi
 
-$CMAKE_BIN -S "$SDL_SRC" -B "$BUILD_ROOT/sdl3" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
+"${CMAKE_BIN[@]}" -S "$SDL_SRC" -B "$BUILD_ROOT/sdl3" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
     -DBUILD_SHARED_LIBS=OFF \
     -DSDL_STATIC=ON \
     -DSDL_SHARED=OFF \
@@ -234,7 +238,7 @@ cmake --install "$BUILD_ROOT/sdl3"
 
 # 2. Build static FreeType 2 (minimal zero-external-dep configuration)
 echo "--- [2/4] Building static FreeType ($FREETYPE_TAG) ---"
-$CMAKE_BIN -S "$FT_SRC" -B "$BUILD_ROOT/freetype" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
+"${CMAKE_BIN[@]}" -S "$FT_SRC" -B "$BUILD_ROOT/freetype" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
     -DBUILD_SHARED_LIBS=OFF \
     -DFT_DISABLE_ZLIB=ON \
     -DFT_DISABLE_BZIP2=ON \
@@ -246,7 +250,7 @@ cmake --install "$BUILD_ROOT/freetype"
 
 # 3. Build static SDL3_image (stb backend + QOI + SVG + BMP + TGA + GIF)
 echo "--- [3/4] Building static SDL3_image ($SDL3_IMAGE_TAG) ---"
-$CMAKE_BIN -S "$IMG_SRC" -B "$BUILD_ROOT/sdl3_image" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
+"${CMAKE_BIN[@]}" -S "$IMG_SRC" -B "$BUILD_ROOT/sdl3_image" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
     -DCMAKE_PREFIX_PATH="$STAGE_PREFIX" \
     -DBUILD_SHARED_LIBS=OFF \
     -DSDLIMAGE_VENDORED=OFF \
@@ -278,7 +282,7 @@ echo "--- [4/4] Building static SDL3_ttf ($SDL3_TTF_TAG) ---"
 FT_STATIC_LIB="$STAGE_PREFIX/lib/libfreetype.a"
 [[ -f "$STAGE_PREFIX/lib/freetype.lib" ]] && FT_STATIC_LIB="$STAGE_PREFIX/lib/freetype.lib"
 
-$CMAKE_BIN -S "$TTF_SRC" -B "$BUILD_ROOT/sdl3_ttf" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
+"${CMAKE_BIN[@]}" -S "$TTF_SRC" -B "$BUILD_ROOT/sdl3_ttf" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
     -DCMAKE_PREFIX_PATH="$STAGE_PREFIX" \
     -DBUILD_SHARED_LIBS=OFF \
     -DSDLTTF_VENDORED=OFF \
@@ -303,7 +307,7 @@ done
 # Cross-compile Box3D if building a non-host target
 if [[ "$TARGET" != "linux-x86_64" && -d "$ROOT_DIR/vendor/box3d" ]]; then
     echo "--- Building static Box3D for $TARGET ---"
-    $CMAKE_BIN -S "$ROOT_DIR/vendor/box3d" -B "$BUILD_ROOT/box3d" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
+    "${CMAKE_BIN[@]}" -S "$ROOT_DIR/vendor/box3d" -B "$BUILD_ROOT/box3d" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_TARGET_ARGS[@]}" \
         -DBUILD_SHARED_LIBS=OFF \
         -DBOX3D_SAMPLES=OFF \
         -DBOX3D_BENCHMARKS=OFF \
@@ -320,13 +324,16 @@ build_recast_shim() {
     if [[ ! -d "$recast_dir" || ! -f "$shim_dir/recast_shim.cpp" ]]; then
         return 0
     fi
-    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" ]]; then
+    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" && "$TARGET" != "web-wasm32" ]]; then
         echo "--- Skipping recast_shim auto-build for $TARGET (use target toolchain CMake/MSVC) ---"
         return 0
     fi
     local obj_dir="$BUILD_ROOT/recast_shim"
     mkdir -p "$obj_dir"
     local cxx="${CXX:-g++}"
+    local cxx_flags=()
+    # LDC's druntime cannot share a Wasm module with C++ code that uses exceptions.
+    [[ "$TARGET" == "web-wasm32" ]] && cxx_flags=(-fno-exceptions -fno-rtti)
     local cc="${CC:-gcc}"
     local ar="${AR:-ar}"
     echo "--- Building static librecast_shim.a for $TARGET ---"
@@ -338,7 +345,7 @@ build_recast_shim() {
         "$shim_dir/recast_shim.cpp"
     do
         local obj="$obj_dir/$(basename "${f%.cpp}").o"
-        "$cxx" -std=c++11 -O2 -fPIC -DDT_POLYREF64 \
+        "$cxx" -std=c++11 -O2 -fPIC "${cxx_flags[@]}" -DDT_POLYREF64 \
             -I"$recast_dir/Recast/Include" \
             -I"$recast_dir/Detour/Include" \
             -I"$recast_dir/DetourTileCache/Include" \
@@ -362,7 +369,7 @@ build_stb_vorbis() {
     if [[ ! -f "$stb_c" ]]; then
         return 0
     fi
-    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" ]]; then
+    if [[ "$TARGET" != "linux-x86_64" && "$TARGET" != "linux-arm64" && "$TARGET" != "macos-arm64" && "$TARGET" != "macos-x86_64" && "$TARGET" != "web-wasm32" ]]; then
         echo "--- Skipping stb_vorbis auto-build for $TARGET (use target toolchain CMake/MSVC) ---"
         return 0
     fi
