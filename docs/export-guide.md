@@ -59,6 +59,7 @@ dub run --config=export -- --target=<id> [options]
 | `--release` | `false` | Enables release optimizations (`--build=release` / `-O3`) |
 | `--archive` | `false` | Packages the exported bundle into `<output>.tar.gz` (Linux) or `<output>.zip` (Windows/macOS/Web) |
 | `--symgc` | `false` | Enables `steadygc` (`Symgc_cards`, `Symgc_druntime_hooks`) and requires `libsymgc-cards.a` / `symgc-cards.lib` |
+| `--link-flag=<flag>` | — | Extra `emcc` link flag, web only (repeatable) |
 | `--list-targets` | — | Lists every supported `--target=<id>` and LLVM triple |
 | `--check-toolchains` | — | Verifies compiler, linker, and `libs/<target>/` static archives on the current host |
 
@@ -209,42 +210,38 @@ dub run --config=export -- --target=<id> [options]
 
 - **Value:** `--target=web-wasm32` (aliases: `web`, `wasm`, `wasm32`)
 - **LLVM Triple:** `wasm32-unknown-emscripten`
-- **Build Dependencies:** `./tools/build_sdl3_deps.sh web-wasm32` (requires `emcmake` / Emscripten SDK activated in `PATH`)
-- **Preflight Tools:** `ldc2`, `emcc`
-- **Required Static Archives (`libs/web-wasm32/`):**
-  - `libSDL3_ttf.a`, `libSDL3_image.a`, `libfreetype.a`, `libSDL3.a`, `libbox3d.a` *(WebGPU comes from Emscripten `-sUSE_WEBGPU=1`; `SteadyGC` is automatically stubbed under `version (WebAssembly)`)*
-- **Two-Stage Build Commands (`ExportPipeline.buildWebExportCommands`):**
+- **Status:** the exporter, the 32-bit frontend check and the host tests pass. Compiling and linking with a real LDC + Emscripten, and running in a browser, have not been verified yet.
+- **Toolchain:**
+  1. LDC 1.43 or newer, with the matching `ldc2-<version>-addon-emscripten.tar.xz` unpacked into the LDC directory (provides druntime and Phobos).
+  2. Emscripten SDK with `emcc` in `PATH`. It must be recent enough for `--use-port=emdawnwebgpu` and stable `-sJSPI`.
+  3. `./tools/build_sdl3_deps.sh web-wasm32`, which builds SDL3, SDL3_image, SDL3_ttf, FreeType, Box3D, `recast_shim` and `stb_vorbis` into `libs/web-wasm32/`.
+- **Browsers:** WebGPU plus JavaScript Promise Integration: Chrome/Edge 137+, Firefox 153+. The shell page explains what is missing on others.
+- **Build command (`ExportPipeline.buildWebCompileArgs`):** one `ldc2 -mtriple=wasm32-unknown-emscripten -i ...` call that compiles and links through `emcc`. `-Xcc=` passes flags to `emcc`; `--link-flag=<flag>` (repeatable) adds your own. Do not pass `-d-version=WebAssembly`: it is predefined by the triple and reserved.
+- **Export:**
   ```bash
-  # Stage 1: Compile D player/engine to Emscripten object file
-  ldc2 -c -mtriple=wasm32-unknown-emscripten -O3 -release -preview=dip1000 \
-    -I=source -I=source/bindings/box3d -J=assets/shaders \
-    -d-version=WebAssembly -d-version=StaticSDLDeps \
-    -od=build/web-wasm32/obj tools/player/player_main.d
-
-  # Stage 2: Link WebGPU + SDL3 + virtual asset filesystem via emcc
-  emcc build/web-wasm32/obj/player_main.o \
-    libs/web-wasm32/libSDL3_ttf.a libs/web-wasm32/libSDL3_image.a \
-    libs/web-wasm32/libfreetype.a libs/web-wasm32/libSDL3.a libs/web-wasm32/libbox3d.a \
-    -sUSE_WEBGPU=1 -sASYNCIFY=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 \
-    --shell-file build/web-wasm32/shell.generated.html \
-    --preload-file assets@/assets \
-    -o build/web-wasm32/game-player.html
+  # Built-in player
+  dub run --config=export -- --target=web --release --archive --scene=assets/scenes/arena_01.scene.json
+  # Your own game (D sources plus assets)
+  dub run --config=export -- --target=web --release --project=/path/to/game --assets=Assets --name=my-game
   ```
-- **HTML Shell Template (`tools/web/shell.html`):** Dark studio viewport canvas (`id="canvas"`), `navigator.gpu` capability warning banner, asset download progress bar, fullscreen toggle, and `{{APP_TITLE}}` / `{{{ SCRIPT }}}` substitution into `shell.generated.html`.
-- **Output Structure & Local Serving:**
+  `--protect-assets`, `--embed-pak`, `--pak-dir` and `--version` work as on desktop. `--scene` reaches the game as a command-line argument.
+- **Output:**
   ```text
   build/web-wasm32/
-  ├── game-player.html            # Entry HTML page (stem from --name)
-  ├── game-player.js              # Emscripten glue JS
+  ├── index.html                  # Copy of game-player.html for static hosts
+  ├── game-player.html            # Entry page (stem from --name)
+  ├── game-player.js              # Emscripten glue
   ├── game-player.wasm            # WebAssembly module
-  ├── game-player.data            # Preloaded assets/ VFS payload
+  ├── game-player.data            # Preloaded assets (or assets.pak) and project.json
   └── THIRD-PARTY-LICENSES.txt
-  build/web-wasm32.zip            # Created when --archive is passed
   ```
-  Serve over HTTP (required by browser WebGPU / WASM `fetch`):
-  ```bash
-  python3 -m http.server 8080 --directory build/web-wasm32
-  ```
+  Serve over HTTPS or localhost: `python3 -m http.server 8080 --directory build/web-wasm32`
+- **Runtime rules:**
+  - Call `App.pollEvents()` exactly once per frame. On web it suspends until the next `requestAnimationFrame`, which is also when the previous frame is presented. Both `App.run` and manual `while (app.running)` loops work.
+  - There are no threads: `WorldStreamer.startWorker` is a no-op and chunks decode synchronously in `update`. Other `core.thread` use fails at run time.
+  - Vsync only, scalar animation math, no GPU timestamps, no hot reload and no `steadygc`.
+  - D and C++ exceptions cannot share a module, so link only C++ code built with `-fno-exceptions`.
+  - Writes to the virtual filesystem are lost on reload.
 
 ---
 

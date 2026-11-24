@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Web export rework** (`docs/export-guide.md` 4.7): `--target=web` now builds with one LDC 1.43+ command linking
+  through `emcc` (emdawnwebgpu, JSPI), supports `--project`, asset paks, `--scene` and `--link-flag`, and writes
+  `index.html`. `App.pollEvents` paces frames on web, streaming decodes without threads, and the player sources
+  compile for 32-bit targets. Not yet verified with a real Emscripten toolchain or in a browser.
 - **Native frame profiler** (`docs/profiling.md`): `engine.devtools.profiler` adds hierarchical CPU zones
   (`profileZone!"name"()`, `@nogc`, off by default), external samples (`profileSample`), mean/p50/p95/p99/max per zone
   (`profilerReport`, `profilerVisit`, `DebugOverlay.addProfiler`) and Chrome Trace Event export (`startProfilerTrace`,

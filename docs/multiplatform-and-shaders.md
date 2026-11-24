@@ -59,7 +59,7 @@ When calling `window.nativeSurface()`, the engine detects the active platform vi
 6. **Web (Emscripten WebAssembly + WebGPU)**:
    - Under `version (WebAssembly)`, `Window.nativeSurface()` returns `NativeSurfaceBackend.webCanvas` with selector `"#canvas"`.
    - `GpuContext.create` chains `WGPUSurfaceSourceCanvasHTMLSelector` (`WGPUSType.surfaceSourceCanvasHTMLSelector = 0x0004_0000`) and polls adapter/device callbacks via `wgpuInstanceProcessEvents` + `emscripten_sleep(1)`.
-   - `App.run` delegates the frame callback to `emscripten_set_main_loop_arg`, and Linux-only `inotify`/POSIX `dlfcn`/`std.process`/`steadygc` symbols are guarded out cleanly in `engine.hotreload` and `engine.core.gc`.
+   - `App.pollEvents` suspends through JSPI until the next animation frame (so `App.run` keeps its normal loop), and Linux-only `inotify`/POSIX `dlfcn`/`std.process`/`steadygc` symbols are guarded out cleanly in `engine.hotreload` and `engine.core.gc`.
 
 ### 1.2 Dynamic Swapchain Negotiation
 

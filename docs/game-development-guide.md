@@ -81,7 +81,7 @@ void main() {
 }
 ```
 
-> **Tip:** Prefer `app.run((float dt) { ... })` over a raw `while (app.running())` loop — it drives native `MonoTime` delta time on desktop and `emscripten_set_main_loop_arg` on WebAssembly. Calling `app.endFrame(frame)` runs `resolvePost(frame)` automatically if you omitted it.
+> **Tip:** Prefer `app.run((float dt) { ... })` over a raw `while (app.running())` loop — it drives native `MonoTime` delta time on desktop and a browser-paced frame on WebAssembly (call `app.pollEvents()` exactly once per frame). See [export-guide.md](export-guide.md) for web export. Calling `app.endFrame(frame)` runs `resolvePost(frame)` automatically if you omitted it.
 
 ### `App` & `Window` Key Options
 
