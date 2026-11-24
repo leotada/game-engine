@@ -103,6 +103,8 @@ struct StaticLayout {
     StaticRange[] ranges;
     /// `slotOf[descIndex]` = position of that instance in `instances`.
     uint[] slotOf;
+    /// `cellBounds[cell]` = union of every range bound in that cell (empty for unused cells).
+    Aabb[] cellBounds;
 }
 
 /**
@@ -183,7 +185,22 @@ StaticLayout buildStaticLayout(scope const(StaticInstanceDesc)[] descs,
         if (sc > r.maxScale) r.maxScale = sc;
         if (s.radius > r.maxRadius) r.maxRadius = s.radius;
     }
+    uint maxCell = 0;
+    foreach (ref r; layout.ranges) if (r.cell > maxCell) maxCell = r.cell;
+    layout.cellBounds = new Aabb[maxCell + 1];
+    foreach (ref r; layout.ranges)
+        layout.cellBounds[r.cell] = layout.cellBounds[r.cell].merge(r.bounds);
     return layout;
+}
+
+/**
+ * Coarse culling pass: `visible[c]` = whether cell `c`'s bounds touch `frustum`.
+ * `visible.length` must be at least `cellBounds.length`. Ranges of an invisible
+ * cell can be skipped without testing them (`collectVisibleRuns`).
+ */
+void markVisibleCells(scope const(Aabb)[] cellBounds, ref const Frustum frustum,
+                      scope bool[] visible) nothrow @nogc {
+    foreach (c, ref b; cellBounds) visible[c] = frustum.intersectsAabb(b);
 }
 
 /// Camera / LOD inputs of one culling pass.
@@ -212,9 +229,11 @@ float distanceToAabb(Vec3 p, Aabb b) pure nothrow @nogc {
  */
 size_t collectVisibleRuns(const(StaticGroup)[] groups, const(StaticRange)[] ranges,
                           ref const Frustum frustum, StaticViewParams view,
-                          scope StaticRun[] outRuns) nothrow @nogc {
+                          scope StaticRun[] outRuns, scope const(bool)[] cellVisible = null) nothrow @nogc {
     size_t n = 0;
+    immutable bool useCells = cellVisible.length > 0;
     foreach (ref r; ranges) {
+        if (useCells && !cellVisible[r.cell]) continue;
         if (!frustum.intersectsAabb(r.bounds)) continue;
         auto g = &groups[r.group];
         immutable d = distanceToAabb(view.cameraPos, r.bounds);
@@ -247,6 +266,8 @@ struct StaticInstanceBuffer {
     package(engine) Material*[] materials;
     package(engine) Pod!StaticGroup[] groups;
     package(engine) Pod!StaticRange[] ranges;
+    /// Union of the range bounds per cell (coarse culling, `markVisibleCells`).
+    package(engine) Pod!Aabb[] cellBounds;
     package(engine) WGPUBuffer instanceBuf;
     package(engine) uint instanceCount;
     private Pod!uint[] slotOf;
@@ -282,12 +303,13 @@ struct StaticInstanceBuffer {
         }
         sib.groups = layout.groups;
         sib.ranges = layout.ranges;
+        sib.cellBounds = layout.cellBounds;
         sib.slotOf = layout.slotOf;
         sib.instanceCount = cast(uint) layout.instances.length;
         if (layout.instances.length)
             sib.instanceBuf = createVertexBuffer(gpu.getDevice(), sib.queue, layout.instances);
         info("StaticInstanceBuffer: ", sib.instanceCount, " instances, ", sib.groups.length,
-             " groups, ", sib.ranges.length, " ranges");
+             " groups, ", sib.ranges.length, " ranges, ", sib.cellBounds.length, " cells");
         return sib;
     }
 
@@ -434,4 +456,35 @@ version (unittest) {
     layout.groups[0].minPixelSize = 4;
     n = collectVisibleRuns(layout.groups, layout.ranges, f, view, runs[]);
     assert(n == 1 && runs[0].count < 8 && runs[0].count >= 1);
+}
+
+unittest {
+    // The cell mask only skips work: the runs equal the plain per-range scan.
+    import std.random : Random, uniform;
+    import engine.scene.camera : Camera;
+    auto rng = Random(7);
+    StaticInstanceDesc[] descs;
+    foreach (i; 0 .. 3000)
+        descs ~= prop(uniform(0, 4, rng), uniform(0, 2, rng), uniform(-900.0f, 900.0f, rng),
+                      uniform(-900.0f, 900.0f, rng), uniform(0.5f, 3.0f, rng));
+    BoundingSphere[4] spheres;
+    foreach (ref sp; spheres) sp = BoundingSphere(Vec3(0, 0, 0), 1.5f);
+    auto layout = buildStaticLayout(descs, spheres[], 128);
+    foreach (ref r; layout.ranges) assert(!layout.cellBounds[r.cell].empty);
+    auto visible = new bool[layout.cellBounds.length];
+    auto a = new StaticRun[layout.ranges.length], b = new StaticRun[layout.ranges.length];
+    foreach (k; 0 .. 40) {
+        auto cam = Camera.create(uniform(0.5f, 1.4f, rng), 16.0f / 9.0f, 0.5f, uniform(80.0f, 900.0f, rng));
+        immutable pos = Vec3(uniform(-800.0f, 800.0f, rng), 5, uniform(-800.0f, 800.0f, rng));
+        cam.lookAt(pos, pos + Vec3(uniform(-1.0f, 1.0f, rng), -0.1f, uniform(-1.0f, 1.0f, rng)));
+        immutable f = Frustum.fromViewProj(cam.viewProjection());
+        StaticViewParams view;
+        view.cameraPos = pos;
+        view.distanceCull = (k & 1) == 0;
+        immutable na = collectVisibleRuns(layout.groups, layout.ranges, f, view, a);
+        markVisibleCells(layout.cellBounds, f, visible);
+        immutable nb = collectVisibleRuns(layout.groups, layout.ranges, f, view, b, visible);
+        assert(na == nb);
+        foreach (i; 0 .. na) assert(a[i] == b[i]);
+    }
 }

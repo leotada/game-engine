@@ -32,7 +32,7 @@ import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
 import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
 import engine.meshopt.internal.bits : bitsFloat, floatBits;
-import engine.scene.static_instances : collectVisibleRuns, StaticInstanceBuffer, StaticRun, StaticViewParams;
+import engine.scene.static_instances : collectVisibleRuns, markVisibleCells, StaticInstanceBuffer, StaticRun, StaticViewParams;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
@@ -396,6 +396,7 @@ struct Scene3DTextured {
     private StaticInstanceBuffer*[MAX_STATIC_SUBMISSIONS] staticBufs;
     private uint staticCount;
     private PodBuffer!StaticRun staticRuns;
+    private PodBuffer!bool staticCellVisible;
 
     private enum uint SHADOW_VP_STRIDE = 256;
     /// Shadow VP slots reserved for the directional light (one per cascade).
@@ -1654,7 +1655,11 @@ struct Scene3DTextured {
     private size_t collectStaticRuns(ref StaticInstanceBuffer sib, ref const Frustum f,
                                      bool distanceCull) nothrow @nogc {
         if (staticRuns.length < sib.ranges.length) staticRuns.resize(sib.ranges.length);
-        return collectVisibleRuns(sib.groups, sib.ranges, f, staticView(distanceCull), staticRuns[]);
+        if (staticCellVisible.length < sib.cellBounds.length) staticCellVisible.resize(sib.cellBounds.length);
+        // Coarse pass over the cells, so a view only tests the ranges of the cells it touches.
+        markVisibleCells(sib.cellBounds, f, staticCellVisible[]);
+        return collectVisibleRuns(sib.groups, sib.ranges, f, staticView(distanceCull), staticRuns[],
+                                  staticCellVisible[0 .. sib.cellBounds.length]);
     }
 
     /// Static shadow casters: culled against the light view; LOD still from
@@ -2206,6 +2211,7 @@ struct Scene3DTextured {
         partitionScratch.release();
         partitionClasses.release();
         staticRuns.release();
+        staticCellVisible.release();
         destroyBuffer(casterBuf);
         casterBuf = null;
         casterCapacity = 0;
