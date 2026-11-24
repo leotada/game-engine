@@ -49,6 +49,7 @@ struct Renderer {
     // Frame capture (screenshots for verification): readback buffer filled during endFrame.
     private WGPUBuffer captureBuf;
     private uint captureStride, captureW, captureH;
+    private bool captureFilled; // the copy was recorded: the buffer holds (or will hold) a frame
     // Lazy opt-in opaque snapshot (HDR color pyramid + depth32Float resolve for water/transmission).
     private enum uint OPAQUE_COLOR_MIPS = 5;
     private bool snapshotActive = false;
@@ -608,7 +609,8 @@ struct Renderer {
     /// Asks for the next presented frame to be copied into a readback buffer. Fetch it with
     /// `readCapture` after `endFrame`. Not for the frame path (allocates a GPU buffer).
     void requestCapture() nothrow @nogc @trusted {
-        if (captureBuf !is null) return;
+        if (captureBuf !is null || rtW == 0 || rtH == 0) return;
+        captureFilled = false;
         captureW = rtW;
         captureH = rtH;
         captureStride = (captureW * 4 + 255) & ~255u; // bytesPerRow must be a multiple of 256
@@ -618,7 +620,19 @@ struct Renderer {
         captureBuf = wgpuDeviceCreateBuffer(device, &bd);
     }
 
+    /// True when a requested capture was recorded by `endFrame` and can be read. A frame that could not be presented
+    /// leaves the request pending for the next one.
+    bool captureReady() const nothrow @nogc { return captureBuf !is null && captureFilled; }
+
     private void encodeCapture(ref FrameContext frame) nothrow @nogc @trusted {
+        if (captureFilled) return; // not read yet
+        if (captureW != rtW || captureH != rtH) { // resized since the request
+            wgpuBufferRelease(captureBuf);
+            captureBuf = null;
+            requestCapture();
+            if (captureBuf is null) return;
+        }
+        captureFilled = true;
         WGPUImageCopyTexture src;
         src.texture = frame.texture;
         WGPUImageCopyBuffer dst;
@@ -695,8 +709,8 @@ struct Renderer {
     }
 
     ubyte[] readCapture(out uint width, out uint height) @trusted {
-        if (captureBuf is null) return null;
-        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+        if (!captureReady()) return null;
+        scope(exit) { captureFilled = false; wgpuBufferRelease(captureBuf); captureBuf = null; }
         const(ubyte)* src = null;
         bool bgra = false;
         uint cw = 0, ch = 0, stride = 0;
@@ -718,8 +732,8 @@ struct Renderer {
         void* user
     ) nothrow @nogc @trusted {
         import core.stdc.stdlib : malloc, free;
-        if (captureBuf is null || sink is null) return false;
-        scope(exit) { wgpuBufferRelease(captureBuf); captureBuf = null; }
+        if (!captureReady() || sink is null) return false;
+        scope(exit) { captureFilled = false; wgpuBufferRelease(captureBuf); captureBuf = null; }
 
         const(ubyte)* src = null;
         bool bgra = false;
@@ -836,12 +850,9 @@ struct FrameContext {
         viewportRect = [x, y, w, h];
         viewportTarget = [targetW, targetH];
         wgpuRenderPassEncoderSetViewport(pass, x, y, w, h, 0.0f, 1.0f);
-        immutable uint sx = x < 0 ? 0 : cast(uint) x;
-        immutable uint sy = y < 0 ? 0 : cast(uint) y;
-        uint sw = cast(uint) w;
-        uint sh = cast(uint) h;
-        if (sx + sw > targetW) sw = targetW > sx ? targetW - sx : 1;
-        if (sy + sh > targetH) sh = targetH > sy ? targetH - sy : 1;
+        uint sx, sy, sw, sh;
+        clipSpan(x, w, targetW, sx, sw);
+        clipSpan(y, h, targetH, sy, sh);
         wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
     }
 
@@ -874,4 +885,28 @@ struct FrameContext {
                      int baseVertex = 0, uint firstInstance = 0) nothrow @nogc @trusted {
         wgpuRenderPassEncoderDrawIndexed(pass, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     }
+}
+
+/// Intersect the viewport span `[pos, pos + size)` with `[0, target)`: a scissor rect must lie inside the target.
+private void clipSpan(float pos, float size, uint target, out uint start, out uint length) pure nothrow @nogc @safe {
+    immutable float lo = pos < 0 ? 0 : pos;
+    immutable float end = pos + size;
+    immutable float hi = end > target ? target : end;
+    if (!(hi > lo)) return; // fully outside: empty
+    start = cast(uint) lo;
+    length = cast(uint) hi - start;
+}
+
+@("renderer: the viewport scissor stays inside the target")
+@safe pure nothrow @nogc unittest {
+    static uint[2] clip(float p, float s, uint t) {
+        uint a, b;
+        clipSpan(p, s, t, a, b);
+        return [a, b];
+    }
+    assert(clip(0, 100, 100) == [0, 100]);
+    assert(clip(-20, 100, 200) == [0, 80]);
+    assert(clip(150, 100, 200) == [150, 50]);
+    assert(clip(250, 100, 200) == [0, 0]);
+    assert(clip(-300, 100, 200) == [0, 0]);
 }

@@ -49,6 +49,8 @@
 - **`WorldStreamer`**: a load canceled after its asset step releases its assets, internal arrays stay bounded while
   travelling, unloading a chunk does not destroy entities that reuse its ids, and a released navmesh tile is loaded again
   on the next visit.
+- **Renderer**: a screenshot requested on a frame that cannot be presented (or that is resized) waits for the next one
+  instead of saving garbage, and `setViewport` keeps its scissor inside the target.
 
 ### Other changes
 

@@ -215,7 +215,8 @@ struct App {
     void requestCapture() nothrow @nogc { renderer.requestCapture(); }
     ubyte[] readCapture(out uint w, out uint h) { return renderer.readCapture(w, h); }
 
-    /// Schedule saving the current frame (after `endFrame()`) to a PNG file via SDL3.
+    /// Schedule saving the current frame (after `endFrame()`) to a PNG file via SDL3. If that frame cannot be
+    /// presented, the next one is saved.
     bool saveScreenshot(scope const(char)[] path) nothrow @nogc {
         if (path.length == 0 || path.length >= _pendingShotPath.length) return false;
         _pendingShotPath[] = 0;
@@ -233,7 +234,7 @@ struct App {
     void endFrame(ref FrameContext frame) nothrow @nogc {
         auto zEnd = profileZone!"app.endFrame"();
         renderer.endFrame(frame);
-        if (_hasPendingShot) {
+        if (_hasPendingShot && renderer.captureReady()) {
             _hasPendingShot = false;
             () @trusted {
                 renderer.consumeCaptureWith(&pngCaptureSink, _pendingShotPath.ptr);
