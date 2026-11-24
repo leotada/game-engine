@@ -564,10 +564,13 @@ struct Renderer {
 
         {
             auto z = profileZone!"renderer.submit"();
+            auto zFinish = profileZone!"renderer.submit.finish"(); // wgpu-core validates the recorded passes
             WGPUCommandBufferDescriptor cbDesc;
             auto cmdBuf = wgpuCommandEncoderFinish(frame.encoder, &cbDesc);
             wgpuCommandEncoderRelease(frame.encoder);
+            zFinish.close();
 
+            auto zQueue = profileZone!"renderer.submit.queue"(); // HAL encoding + vkQueueSubmit
             wgpuQueueSubmit(queue, 1, &cmdBuf);
             wgpuCommandBufferRelease(cmdBuf);
         }
