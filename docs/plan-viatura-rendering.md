@@ -30,7 +30,7 @@ features below. This file keeps the requests and their status.
 | E9 | Soft, lit particles with an animated atlas | — | planned |
 | E10 | BC7 / BC5 textures, conversion tool, RGBA8 fallback | Memory and load time measured | planned |
 | E13 | Minimum 1 px width for thin geometry, per material | No sorted alpha if possible | planned |
-| S1 | Round, soft stars instead of hard-edged voxels | — | planned |
+| S1 | Round, soft stars instead of hard-edged voxels | — | done |
 | E14 | GPU occlusion culling (Hi-Z, two-phase), after E11, main view only | Same image on/off, counter, measured gain | planned |
 
 ## Delivery order

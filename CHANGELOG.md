@@ -7,6 +7,8 @@
 - **Foundation**: bindings for indirect / multi-draw-indirect draws, indirect dispatch, BC formats and WGSL override
   constants; optional device features requested only when available (`GpuContext.hasFeature`); `MaterialParams` grows
   to 240 bytes (surface options block); new `render-check` config with GPU pixel checks.
+- **Stars** (default on): the night sky draws round stars with a jittered center and a smooth falloff, at least one
+  pixel wide (`SkyInputs.pixelAngle`). They were hard-edged voxel slivers.
 
 ### Engine bug fixes
 

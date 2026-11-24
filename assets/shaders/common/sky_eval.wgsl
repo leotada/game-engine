@@ -16,6 +16,9 @@ struct SkyInputs {
     time: f32,
     /// Final multiplier (HDR exposure of the sky).
     exposure: f32,
+    /// Angular size of one output pixel in radians: stars never get smaller
+    /// than it, so they do not flicker when the camera moves.
+    pixelAngle: f32,
 };
 
 fn skyHash21(p: vec2<f32>) -> f32 {
@@ -28,6 +31,45 @@ fn skyHash31(p: vec3<f32>) -> f32 {
     var p3 = fract(p * 0.1031);
     p3 += dot(p3, p3.zyx + 31.32);
     return fract((p3.x + p3.y) * p3.z);
+}
+
+/// Star brightness in [0, 1] along `d` (normalized): round dots with a jittered
+/// center and a radial falloff. The sphere is split into equiangular cube-face
+/// cells, one star per cell at most; the disc stays inside its cell, so a
+/// single cell is enough and no star is clipped.
+fn skyStars(d: vec3<f32>, pixelAngle: f32) -> f32 {
+    const CELLS: f32 = 110.0;
+    const DENSITY: f32 = 0.045;
+    const QUARTER_PI: f32 = 0.78539816;
+    let a = abs(d);
+    var face = 0.0;
+    var uvw = vec3<f32>(d.z, d.y, d.x);
+    if (a.y >= a.x && a.y >= a.z) {
+        face = 2.0;
+        uvw = vec3<f32>(d.x, d.z, d.y);
+    } else if (a.z > a.x) {
+        face = 4.0;
+        uvw = vec3<f32>(d.x, d.y, d.z);
+    }
+    face += select(0.0, 1.0, uvw.z < 0.0);
+    let grid = (atan(uvw.xy / abs(uvw.z)) / QUARTER_PI * 0.5 + 0.5) * CELLS;
+    let cell = vec3<f32>(min(floor(grid), vec2<f32>(CELLS - 1.0)), face * 157.0);
+    if (skyHash31(cell) >= DENSITY) {
+        return 0.0;
+    }
+    let jitter = vec2<f32>(skyHash31(cell + vec3<f32>(3.0, 17.0, 29.0)),
+                           skyHash31(cell + vec3<f32>(41.0, 5.0, 11.0)));
+    let center = cell.xy + 0.25 + 0.5 * jitter;
+    let tanUv = tan((center / CELLS * 2.0 - 1.0) * QUARTER_PI);
+    let starDir = normalize(vec3<f32>(tanUv, 1.0));
+    let dist = distance(normalize(vec3<f32>(uvw.xy, abs(uvw.z))), starDir);
+
+    // Bright stars are slightly larger; widened stars keep their energy.
+    let mag = skyHash31(cell + vec3<f32>(7.0));
+    let base = mix(0.0008, 0.0014, mag * mag);
+    let radius = clamp(base, pixelAngle, 0.0024);
+    let t = saturate(1.0 - dist / (radius * 1.5));
+    return t * t * (3.0 - 2.0 * t) * (0.25 + 0.75 * mag * mag) * (base * base) / (radius * radius);
 }
 
 fn skyNoise2(p: vec2<f32>) -> f32 {
@@ -118,9 +160,7 @@ fn evalSkyBase(dirIn: vec3<f32>, s: SkyInputs) -> SkyBase {
     let clouds = skyCloudDensity(d, cov, s.time);
     let clearSky = 1.0 - clouds;
     if (s.starIntensity > 0.0 && d.y > 0.0) {
-        let cell = floor(d * 220.0);
-        let h = skyHash31(cell);
-        let star = smoothstep(0.9965, 1.0, h) * (0.4 + 0.6 * skyHash31(cell + vec3<f32>(7.0)));
+        let star = skyStars(d, s.pixelAngle);
         sky += vec3<f32>(0.9, 0.95, 1.0) * star * s.starIntensity * clearSky * smoothstep(0.0, 0.15, d.y);
     }
     if (s.moonIntensity > 0.0) {

@@ -72,6 +72,7 @@ fn cs_sky(@builtin(global_invocation_id) id: vec3<u32>) {
     s.cloudCoverage = P.moonDir.w;
     s.time = P.misc.x;
     s.exposure = P.misc.y;
+    s.pixelAngle = 0.0024;
     // The HDR sun disc would alias in a 64² cube and blow up the specular
     // mips: clamp radiance (direct sun comes from the directional light).
     let c = min(evalSky(texelDir(id, size), s), vec3<f32>(6.0));

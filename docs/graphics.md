@@ -487,6 +487,7 @@ Everything stays zero-GC in the frame loop. The reference scene is `dub run --co
   - `setSkyState(moonDir, moonIntensity, starIntensity, exposure)`;
   - cloud coverage from `setWeather`.
 - `common/sky_eval.wgsl` (`evalSky`) blends night, dusk and day gradients. It adds Mie scattering, overcast grey, stars, the moon, fBm clouds, and the sun halo and disc.
+- Stars are round dots with a jittered center and a radial falloff, one per equiangular cube-face cell at most. They never get smaller than one pixel (`SkyInputs.pixelAngle`, from screen derivatives in `sky.wgsl`), and a widened star keeps its energy.
 - `common/sky_frame.wgsl` builds `SkyInputs` from the frame uniforms (`frameSkyInputs()`, `frameSky(dir)`). Include it (after `shadows.wgsl` and `sky_eval.wgsl`) in any shader that reflects the sky, such as water, so reflections and fog match the visible sky exactly.
 
 ### Day/night and weather (`engine.scene.time_of_day`)

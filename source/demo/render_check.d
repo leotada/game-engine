@@ -126,6 +126,64 @@ private bool checkUnlit(ref App app) {
     return expect(abs(v - 186) <= 1, "unlit 0.5 is gamma encoded on output");
 }
 
+/// Stars are round: every isolated bright blob must be compact (no voxel
+/// slivers or X shapes) and peak at its center.
+private bool checkStars(ref App app) {
+    import std.math : sqrt;
+    auto rig = QuadRig.create(app);
+    scope(exit) rig.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto cam = Camera.create(0.45f, WIN_W, WIN_H, 0.1f, 1000.0f);
+    cam.lookAt(Vec3(0, 0, 0), Vec3(1, 1.2f, 0.4f));
+    rig.scene.setSkyEnabled(true);
+    rig.scene.setSkyState(Vec3(0, -1, 0), 0, 1.0f);
+    rig.scene.setSkySun(Vec3(0, -1, 0), Vec3(0, 0, 0));
+    auto s = capture(app, "stars", (ref FrameContext f) {
+        rig.scene.begin(cam);
+        rig.scene.end(f);
+    });
+    if (!s.valid) return expect(false, "frame captured");
+
+    enum R = 5;
+    uint stars, round, centered;
+    foreach (y; R + 1 .. s.h - R - 1) foreach (x; R + 1 .. s.w - R - 1) {
+        immutable c = s.luma(x, y);
+        if (c < 110) continue;
+        bool peak = true;
+        foreach (dy; -1 .. 2) foreach (dx; -1 .. 2)
+            if ((dx || dy) && s.luma(x + dx, y + dy) > c) peak = false;
+        if (!peak) continue;
+        // Second moments of the light above the local background.
+        float bg = 255;
+        foreach (dy; -R .. R + 1) foreach (dx; -R .. R + 1) {
+            immutable l = s.luma(x + dx, y + dy);
+            if (l < bg) bg = l;
+        }
+        float sum = 0, mx = 0, my = 0, xx = 0, yy = 0, xy = 0, edge = 0;
+        foreach (dy; -R .. R + 1) foreach (dx; -R .. R + 1) {
+            immutable l = s.luma(x + dx, y + dy) - bg - 6;
+            if (l <= 0) continue;
+            if (abs(dx) == R || abs(dy) == R) edge += l;
+            sum += l; mx += l * dx; my += l * dy;
+            xx += l * dx * dx; yy += l * dy * dy; xy += l * dx * dy;
+        }
+        if (edge > 30 || sum <= 0) continue; // touches a neighbor
+        mx /= sum; my /= sum;
+        xx = xx / sum - mx * mx; yy = yy / sum - my * my; xy = xy / sum - mx * my;
+        immutable disc = sqrt((xx - yy) * (xx - yy) + 4 * xy * xy);
+        immutable hi = sqrt((xx + yy + disc) * 0.5f), lo2 = (xx + yy - disc) * 0.5f;
+        immutable lo = lo2 > 0.01f ? sqrt(lo2) : 0.1f;
+        stars++;
+        if (hi / lo < 1.6f) round++;
+        if (abs(mx) < 0.8f && abs(my) < 0.8f) centered++;
+    }
+    writefln("  stars %s, round %s, centered %s", stars, round, centered);
+    bool ok = expect(stars >= 15, "the night sky has stars");
+    ok &= expect(round * 100 >= stars * 90, "stars are round");
+    ok &= expect(centered * 100 >= stars * 90, "stars peak at their center");
+    return ok;
+}
+
 private struct Check {
     string name;
     bool function(ref App) @safe run;
@@ -133,6 +191,7 @@ private struct Check {
 
 private immutable Check[] checks = [
     Check("unlit", &checkUnlit),
+    Check("stars", &checkStars),
 ];
 
 int main(string[] args) {

@@ -30,7 +30,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let far = frame.invViewProj * vec4<f32>(in.ndc, 1.0, 1.0);
     let dir = normalize(far.xyz / far.w - frame.cameraPos);
-    var col = evalSky(dir, frameSkyInputs());
+    var inputs = frameSkyInputs();
+    inputs.pixelAngle = 0.5 * (length(dpdx(dir)) + length(dpdy(dir)));
+    var col = evalSky(dir, inputs);
     // Fog along the ray up to the far plane (height falloff keeps the zenith clear).
     let f = fogAmount(frame.cameraPos + dir * frame.cameraFar);
     col = mix(col, fogColorFor(dir), f);

@@ -19,6 +19,7 @@ fn frameSkyInputs() -> SkyInputs {
     s.cloudCoverage = frame.cloudCoverage;
     s.time = frame.time;
     s.exposure = frame.skyParams.y;
+    s.pixelAngle = 0.001;
     return s;
 }
 
