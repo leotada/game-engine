@@ -38,6 +38,8 @@
   the ground no longer hovers, and ground friction does not apply in the air.
 - **Physics bodies**: cylinder bodies are centered on their position (the base was there), hull/cylinder bodies with
   unusable input return a null body instead of one without shapes, and body getters/setters accept destroyed bodies.
+- **Scene physics** (`PhysicsSimSession`, player and Simulate): colliders use the entity's world pose and scale (parents
+  and scale were ignored), and the body of a destroyed entity is removed instead of driving whoever reuses its id.
 
 ### Other changes
 
