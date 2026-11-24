@@ -348,21 +348,24 @@ struct Scene3DTextured {
     /// table doubles on demand up to this size; past it draws are dropped and
     /// counted in `RenderStats.droppedDraws`.
     enum uint MAX_BATCHES_HARD = 1u << 16;
-    /// Initial instance capacity; a batch's buffer doubles when exceeded.
-    private enum INITIAL_INSTANCES_PER_BATCH = 512;
+    /// Initial capacity (instances) of the shared per-frame instance buffer; doubles when exceeded.
+    private enum INITIAL_SHARED_INSTANCES = 16384;
 
     /// One (mesh, material, lod) draw list. `instances` is malloc-backed and
     /// keeps its capacity across frames, so steady-state submission never
-    /// allocates. All-zero bytes are a valid empty batch (see `reserveBatches`);
-    /// `instanceBuf` is created on first upload.
+    /// allocates. All-zero bytes are a valid empty batch (see `reserveBatches`).
+    /// Instances live in the shared per-frame buffer at `[base, base + instances.length)`
+    /// once `uploaded` (see `uploadPendingBatches`).
     private struct Batch {
         TexMesh*     mesh;
         SkinnedMesh* skinnedMesh;
         Material*    material;
         ubyte        lod;
         PodBuffer!TexInstanceData instances;
-        WGPUBuffer   instanceBuf;
-        size_t       capacity;
+        /// First instance of this batch in the shared instance buffer (valid while `uploaded`).
+        uint         base;
+        /// `frameSerial` of the frame `base` was assigned in, and the region's size.
+        uint         regionFrame, regionCount;
         bool         uploaded = false;
         /// Culling partition (see `prepareBatch`): color pass draws
         /// `[colorFirst, colorFirst + colorCount)`, the directional shadow
@@ -392,6 +395,14 @@ struct Scene3DTextured {
     // Per-view dynamic caster lists for point-face / spot shadow views,
     // indexed `[vpSlot * batchCount + batch]`; valid when `localCulled[vpSlot]`.
     private PodBuffer!TexInstanceData casterStaging;
+    /// Every dynamic batch's instances of this frame, packed back to back. Uploaded with one
+    /// `wgpuQueueWriteBuffer` per upload phase instead of one buffer + write per batch: each
+    /// write costs a staging allocation in wgpu, and each distinct buffer costs tracking.
+    private PodBuffer!TexInstanceData sharedStaging;
+    private WGPUBuffer sharedInstBuf;
+    private size_t sharedCapacity;  // instances
+    private size_t sharedFlushed;   // instances of `sharedStaging` already written to `sharedInstBuf`
+    private uint frameSerial;
     private PodBuffer!CasterRange casterRanges;
     private PodBuffer!uint casterCandidates;
     private PodBuffer!BoundingSphere casterSpheres;
@@ -1122,6 +1133,9 @@ struct Scene3DTextured {
         immutable vp = camera.viewProjection();
         cameraFrustum = Frustum.fromViewProj(vp);
         frameStats = RenderStats.init;
+        frameSerial++;
+        sharedStaging.clear();
+        sharedFlushed = 0;
         frameData.viewProj = vp.m;
         frameData.invViewProj = vp.inverse().m;
         frameData.cameraPos = [camera.position.x, camera.position.y, camera.position.z];
@@ -1330,9 +1344,9 @@ struct Scene3DTextured {
         foreach (ref b; batches[0 .. batchCount]) {
             if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
             prepareBatch(b, cullDir ? &dirFrustum : null);
-            ensureBatchUploaded(b);
             casterBatches++;
         }
+        uploadPendingBatches();
 
         zPrepare.close();
         auto zUpload = profileZone!"scene.shadows.upload"();
@@ -1548,11 +1562,11 @@ struct Scene3DTextured {
             bool groupZeroIsSurface = false;
             foreach (bi, ref b; batches[0 .. batchCount]) {
                 if (b.instances.length == 0 || !b.material.renderState.depthWrite) continue;
-                uint first = 0, count = cast(uint) b.instances.length;
-                WGPUBuffer instBuf = b.instanceBuf;
-                ulong instBytes = b.instances.length * TexInstanceData.sizeof;
+                uint first = b.base, count = cast(uint) b.instances.length;
+                WGPUBuffer instBuf = sharedInstBuf;
+                ulong instBytes = sharedCapacity * TexInstanceData.sizeof;
                 if (dirView) {
-                    first = b.dirFirst;
+                    first = b.base + b.dirFirst;
                     count = b.dirCount;
                 } else if (localCulled[vpSlot]) {
                     immutable r = casterRanges[vpSlot * batchCount + bi];
@@ -1931,6 +1945,7 @@ struct Scene3DTextured {
             frameStats.instancesSubmitted += cast(uint) b.instances.length;
             frameStats.instancesVisible += b.colorCount;
         }
+        uploadPendingBatches();
         zPrepare.close();
 
         uint orderCount = 0;
@@ -2098,17 +2113,64 @@ struct Scene3DTextured {
         return true;
     }
 
+    /// Give every batch that is not uploaded yet a region of the shared instance buffer and
+    /// write all new regions with one `wgpuQueueWriteBuffer`.
+    private void uploadPendingBatches() nothrow @nogc @trusted {
+        foreach (ref b; batches[0 .. batchCount]) {
+            if (b.uploaded || b.instances.length == 0) continue;
+            if (b.regionFrame == frameSerial && b.regionCount == b.instances.length) {
+                rewriteBatchRegion(b);
+                continue;
+            }
+            // New this frame, or it grew since its region was assigned: append a new region.
+            b.base = cast(uint) sharedStaging.length;
+            b.regionFrame = frameSerial;
+            b.regionCount = cast(uint) b.instances.length;
+            immutable n = b.instances.length;
+            sharedStaging.resize(b.base + n);
+            sharedStaging[][b.base .. b.base + n] = b.instances[];
+            b.uploaded = true;
+        }
+        flushSharedInstances();
+    }
+
+    /// Same instance count, new order (the transparent sort): rewrite the batch's region in place.
+    private void rewriteBatchRegion(ref Batch b) nothrow @nogc @trusted {
+        immutable n = b.instances.length;
+        sharedStaging[][b.base .. b.base + n] = b.instances[];
+        b.uploaded = true;
+        if (b.base + n <= sharedFlushed)
+            wgpuQueueWriteBuffer(queue, sharedInstBuf, b.base * TexInstanceData.sizeof,
+                                 sharedStaging[].ptr + b.base, n * TexInstanceData.sizeof);
+    }
+
+    /// Write the staged instances not yet on the GPU. Growing the buffer mid-frame creates a new
+    /// one and writes everything again; passes already recorded keep the old buffer alive.
+    private void flushSharedInstances() nothrow @nogc @trusted {
+        immutable total = sharedStaging.length;
+        if (total == sharedFlushed) return;
+        if (total > sharedCapacity || sharedInstBuf is null) {
+            size_t cap = sharedCapacity ? sharedCapacity : INITIAL_SHARED_INSTANCES;
+            while (cap < total) cap *= 2;
+            // Release only: passes recorded earlier this frame still read the old buffer.
+            if (sharedInstBuf !is null) wgpuBufferRelease(sharedInstBuf);
+            sharedInstBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
+            sharedCapacity = cap;
+            sharedFlushed = 0;
+        }
+        wgpuQueueWriteBuffer(queue, sharedInstBuf, sharedFlushed * TexInstanceData.sizeof,
+                             sharedStaging[].ptr + sharedFlushed, (total - sharedFlushed) * TexInstanceData.sizeof);
+        sharedFlushed = total;
+    }
+
     private void ensureBatchUploaded(ref Batch b) @trusted {
         if (b.uploaded) return;
-        if (b.instanceBuf is null || b.instances.length > b.capacity) {
-            size_t cap = b.capacity > 0 ? b.capacity : INITIAL_INSTANCES_PER_BATCH;
-            while (cap < b.instances.length) cap *= 2;
-            destroyBuffer(b.instanceBuf);
-            b.instanceBuf = createDynamicVertexBuffer(device, cap * TexInstanceData.sizeof);
-            b.capacity = cap;
+        if (b.regionFrame == frameSerial && b.regionCount == b.instances.length && b.instances.length > 0) {
+            // The region of this frame still fits (only the order changed).
+            rewriteBatchRegion(b);
+            return;
         }
-        updateBuffer(queue, b.instanceBuf, b.instances[]);
-        b.uploaded = true;
+        uploadPendingBatches();
     }
 
     private void drawBatch(ref FrameContext frame, ref Batch b) @trusted {
@@ -2121,9 +2183,9 @@ struct Scene3DTextured {
             frame.setBindGroup(1, b.material.bindGroup);
             frame.setBindGroup(3, skinPaletteBg);
             frame.setVertexBuffer(0, b.skinnedMesh.vertexBuffer, b.skinnedMesh.vertexBufSize);
-            frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
+            frame.setVertexBuffer(1, sharedInstBuf, sharedCapacity * TexInstanceData.sizeof);
             frame.setIndexBuffer(b.skinnedMesh.indexBuffer, b.skinnedMesh.indexFormat, b.skinnedMesh.indexBufSize);
-            frame.drawIndexed(b.skinnedMesh.indexCount, b.colorCount, 0, 0, b.colorFirst);
+            frame.drawIndexed(b.skinnedMesh.indexCount, b.colorCount, 0, 0, b.base + b.colorFirst);
             frameStats.drawCalls++;
             frameStats.lodHistogram[0] += b.colorCount;
             return;
@@ -2135,10 +2197,10 @@ struct Scene3DTextured {
         frame.setPipeline(pipe);
         frame.setBindGroup(1, b.material.bindGroup);
         frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
-        frame.setVertexBuffer(1, b.instanceBuf, b.instances.length * TexInstanceData.sizeof);
+        frame.setVertexBuffer(1, sharedInstBuf, sharedCapacity * TexInstanceData.sizeof);
         frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
         immutable range = b.mesh.colorLodRange(b.lod);
-        frame.drawIndexed(range.count, b.colorCount, range.first, 0, b.colorFirst);
+        frame.drawIndexed(range.count, b.colorCount, range.first, 0, b.base + b.colorFirst);
         frameStats.drawCalls++;
         frameStats.lodHistogram[b.lod < 3 ? b.lod : 3] += b.colorCount;
     }
@@ -2240,6 +2302,10 @@ struct Scene3DTextured {
         staticCellVisible.release();
         destroyBuffer(casterBuf);
         casterBuf = null;
+        destroyBuffer(sharedInstBuf);
+        sharedInstBuf = null;
+        sharedCapacity = 0;
+        sharedStaging.release();
         casterCapacity = 0;
         casterStaging.release();
         casterRanges.release();
@@ -2595,10 +2661,8 @@ struct Scene3DTextured {
     /// Free the batch table with every batch's instance storage and buffer.
     private void releaseBatches() nothrow @nogc @trusted {
         import core.stdc.stdlib : free;
-        foreach (ref b; batches) {
-            destroyBuffer(b.instanceBuf);
+        foreach (ref b; batches)
             b.instances.release();
-        }
         free(batches.ptr);
         batches = null;
         batchCount = 0;

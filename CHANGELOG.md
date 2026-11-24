@@ -20,6 +20,14 @@
   shadow cascade) tests the cells first (`markVisibleCells`) and skips the ranges of invisible cells in
   `collectVisibleRuns`. Same runs, same order. viatura-VI (25k ranges): `scene.shadows.encode` 1.08 → 0.49 ms,
   `scene.end.opaque.static` 0.34 → 0.20 ms.
+- **Dynamic batches share one per-frame instance buffer.**
+  - Previously every (mesh, material, lod) batch owned a vertex buffer and uploaded it with its own
+    `wgpuQueueWriteBuffer`, about 300 per frame in viatura-VI. Each write costs a staging allocation in wgpu.
+  - Batches now get regions of one buffer, written once per upload phase (shadows, `end`). The transparent re-sort
+    rewrites its region in place.
+  - `scene.shadows.prepare` 0.58 → 0.30 ms, same image.
+- **Partial opaque snapshots** (`Renderer.snapshotOpaque(frame, SnapshotParts)`): decals copy only depth, and water
+  copies color level 0 and depth, without the mip pyramid. `gpu.snapshotOpaque` 1.05 → 0.78 ms (debug), same image.
 - **Receiver-aware cascade caster culling** (`CascadeSettings.receiverCulling`, on by default; `receiverDrop` = 30 m):
   - Casters go into a cascade only if their bounds, swept along the shadow direction, reach the camera slice that
     cascade shades. This covers static ranges and cells and dynamic instances.
