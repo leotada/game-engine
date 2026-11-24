@@ -49,10 +49,13 @@ struct App {
 
         App app;
         app.window   = Window.create(toStringz(title), width, height);
+        // `Window.create` already read the real drawable size (HiDPI, tiling window managers, web canvas): it can
+        // differ from the request, and `handleResize` only reports later changes.
         GpuContext.create(
             app.gpu,
             app.window.nativeSurface(),
-            width, height,
+            app.window.width > 0 ? app.window.width : width,
+            app.window.height > 0 ? app.window.height : height,
             presentMode,
         );
         app.renderer = Renderer.create(app.gpu);
@@ -127,13 +130,19 @@ struct App {
     void pollEvents() nothrow @nogc @trusted {
         version (WebAssembly) engine_web_next_frame();
         input.beginFrame();
-        pumpEvents();
+        drainEvents();
     }
 
     /// Drain the OS queue without starting a new input frame.
     /// Call this immediately before a blocking swapchain acquire so a click
-    /// is not left unread on the Wayland socket while wgpu waits.
-    void pumpEvents() nothrow @nogc @trusted {
+    /// is not left unread on the Wayland socket while wgpu waits. Edges, motion, wheel and
+    /// text that arrive here are delivered by the next `pollEvents`.
+    void pumpEvents() nothrow @nogc {
+        input.beginLateEvents();
+        drainEvents();
+    }
+
+    private void drainEvents() nothrow @nogc @trusted {
         SDL_Event ev = void;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_LOW_MEMORY || ev.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {

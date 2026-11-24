@@ -457,7 +457,7 @@ if (app.input.padConnected(0) && app.input.padPressed(PadButton.x, 0)) {
 }
 ```
 
-For a key-remapping UI, read the table back instead of keeping a parallel copy: `numActions` / `actionName(i)` enumerate the actions, `bindingCount(action)` and `bindingAt(action, i, out binding)` copy each `InputBinding` (`kind`, `code`, `scale`, `deadzone`). Change them with `unbind` / `clearAction` / `bind`.
+For a key-remapping UI, read the table back instead of keeping a parallel copy: `numActions` / `actionName(i)` enumerate the actions, `bindingCount(action)` and `bindingAt(action, i, binding)` copy each `InputBinding` (`kind`, `code`, `scale`, `deadzone`). Change them with `unbind` / `clearAction` / `bind`. `bind` returns false for names longer than 64 bytes and for invalid kinds or codes. Triggers and sticks bound to an action also report `actionPressed` / `actionUp` (threshold 0.5).
 
 Direct queries include `keyPressed`/`keyDown`/`keyUp`, `mousePressed`/`mouseDown`/`mouseUp`, `mx`/`my`/`mdx`/`mdy`, `wheelX`/`wheelY`, `textInput()`, `padLeftStick`/`padRightStick`, and `padLeftTrigger`/`padRightTrigger`. Gamepad demo: `dub run --config=gamepad`.
 

@@ -11,6 +11,11 @@
 - **`Timers`**: a timer created by a callback that canceled its own timer is no longer deactivated, and a repeating
   timer with a tiny interval no longer stalls on a large `dt`.
 - **`FlyCamera.right()`** follows yaw at any pitch (it jumped to +X near the poles).
+- **`InputMap`**: names longer than 32 bytes no longer leak a slot per `bind` (limit 64, longer names are rejected);
+  invalid kinds/codes are rejected (also from JSON); names are JSON-escaped; axis bindings report press/release edges;
+  axis bindings add no second deadzone by default; `bindingAt` leaves its output untouched on failure.
+- **Input pumped before present** (`App.pumpEvents`): key/mouse/gamepad edges, motion, wheel and text are delivered by
+  the next `pollEvents` instead of being dropped (`InputState.beginLateEvents`).
 
 ### Other changes
 

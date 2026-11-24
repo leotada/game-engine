@@ -4,7 +4,7 @@ module engine.platform.input_map;
 
 import engine.core.pod : isPod;
 import engine.math.vec : Vec2;
-import engine.platform.gamepad : GamepadState, PadButton;
+import engine.platform.gamepad : GamepadState, PAD_BUTTON_COUNT, PadButton;
 import engine.platform.input : InputState, Key, MouseButton;
 import std.math : sqrt;
 
@@ -34,7 +34,8 @@ struct InputBinding {
     InputBindingKind kind = InputBindingKind.key;
     uint code = 0;
     float scale = 1.0f;
-    float deadzone = 0.15f;
+    /// Extra per-binding deadzone for axes, on top of the one `Gamepads` already applied to the stick or trigger.
+    float deadzone = 0.0f;
 
     static InputBinding fromKey(Key k, float scale = 1.0f) nothrow @nogc pure {
         return InputBinding(InputBindingKind.key, cast(uint) k, scale, 0.0f);
@@ -48,7 +49,7 @@ struct InputBinding {
         return InputBinding(InputBindingKind.gamepadButton, cast(uint) b, scale, 0.0f);
     }
 
-    static InputBinding fromPadAxis(PadAxis a, bool positive = true, float deadzone = 0.15f, float scale = 1.0f) nothrow @nogc pure {
+    static InputBinding fromPadAxis(PadAxis a, bool positive = true, float deadzone = 0.0f, float scale = 1.0f) nothrow @nogc pure {
         return InputBinding(
             positive ? InputBindingKind.gamepadAxisPos : InputBindingKind.gamepadAxisNeg,
             cast(uint) a,
@@ -60,8 +61,11 @@ struct InputBinding {
 
 static assert(isPod!InputBinding);
 
+/// Longest accepted action name, in bytes.
+enum uint MAX_ACTION_NAME = 64;
+
 private struct ActionSlot {
-    char[32] nameBuf = 0;
+    char[MAX_ACTION_NAME] nameBuf = 0;
     uint nameLen = 0;
     InputBinding[4] bindings;
     uint bindingCount = 0;
@@ -91,19 +95,20 @@ struct InputMap {
     private int getOrCreateSlot(scope const(char)[] name) nothrow @nogc {
         immutable int existing = findSlot(name);
         if (existing >= 0) return existing;
-        if (name.length == 0 || actionCount >= MAX_ACTIONS) return -1;
+        if (name.length == 0 || name.length > MAX_ACTION_NAME || actionCount >= MAX_ACTIONS) return -1;
 
         immutable uint idx = actionCount++;
         auto s = &slots[idx];
         *s = ActionSlot.init;
-        immutable uint n = cast(uint)(name.length < 32 ? name.length : 32);
-        s.nameBuf[0 .. n] = name[0 .. n];
-        s.nameLen = n;
+        s.nameBuf[0 .. name.length] = name[];
+        s.nameLen = cast(uint) name.length;
         return cast(int) idx;
     }
 
-    /// Add a binding to an action (avoids duplicates). Returns false if table/slot full.
+    /// Add a binding to an action (avoids duplicates). Returns false if the table/slot is full, the name is empty or
+    /// longer than `MAX_ACTION_NAME`, or the binding's kind/code is not a valid input.
     bool bind(scope const(char)[] action, InputBinding binding) nothrow @nogc {
+        if (!isValidBinding(binding)) return false;
         immutable int idx = getOrCreateSlot(action);
         if (idx < 0) return false;
         auto s = &slots[idx];
@@ -116,6 +121,17 @@ struct InputMap {
         if (s.bindingCount >= MAX_BINDINGS_PER_ACTION) return false;
         s.bindings[s.bindingCount++] = binding;
         return true;
+    }
+
+    private static bool isValidBinding(InputBinding b) nothrow @nogc pure {
+        switch (b.kind) {
+            case InputBindingKind.key:            return b.code < InputState.MAX_KEYS;
+            case InputBindingKind.mouseButton:    return b.code > 0 && b.code < InputState.MAX_MOUSE_BUTTONS;
+            case InputBindingKind.gamepadButton:  return b.code < PAD_BUTTON_COUNT;
+            case InputBindingKind.gamepadAxisPos:
+            case InputBindingKind.gamepadAxisNeg: return b.code <= PadAxis.max;
+            default:                              return false;
+        }
     }
 
     /// Convenience key binding overload.
@@ -135,7 +151,7 @@ struct InputMap {
 
     /// Convenience gamepad axis half-axis binding overload.
     bool bindPadAxis(scope const(char)[] action, PadAxis a, bool positive = true,
-                     float deadzone = 0.15f, float scale = 1.0f) nothrow @nogc {
+                     float deadzone = 0.0f, float scale = 1.0f) nothrow @nogc {
         return bind(action, InputBinding.fromPadAxis(a, positive, deadzone, scale));
     }
 
@@ -186,7 +202,7 @@ struct InputMap {
     /// Copy of binding `index` of `action`. Returns false (and leaves `outBinding` untouched)
     /// when the action is unknown or `index` is out of range. Lets games build a remap UI
     /// without keeping a parallel binding table.
-    bool bindingAt(scope const(char)[] action, uint index, out InputBinding outBinding) const nothrow @nogc pure {
+    bool bindingAt(scope const(char)[] action, uint index, ref InputBinding outBinding) const nothrow @nogc pure {
         immutable int idx = findSlot(action);
         if (idx < 0 || index >= slots[idx].bindingCount) return false;
         outBinding = slots[idx].bindings[index];
@@ -210,7 +226,7 @@ struct InputMap {
         scope const(char)[] negX, scope const(char)[] posX,
         scope const(char)[] negY, scope const(char)[] posY,
         PadAxis xAxis = PadAxis.leftX, PadAxis yAxis = PadAxis.leftY,
-        float deadzone = 0.15f
+        float deadzone = 0.0f
     ) nothrow @nogc {
         bindPadAxis(negX, xAxis, false, deadzone);
         bindPadAxis(posX, xAxis, true,  deadzone);
@@ -238,10 +254,10 @@ struct InputMap {
                     if (input.padDown(cast(PadButton) cast(ubyte) b.code, padSlot)) v = 1.0f;
                     break;
                 case InputBindingKind.gamepadAxisPos:
-                    v = evalAxis(input.pad(padSlot), cast(PadAxis) cast(ubyte) b.code, true, b.deadzone);
+                    v = evalAxis(input.pad(padSlot), b, false);
                     break;
                 case InputBindingKind.gamepadAxisNeg:
-                    v = evalAxis(input.pad(padSlot), cast(PadAxis) cast(ubyte) b.code, false, b.deadzone);
+                    v = evalAxis(input.pad(padSlot), b, false);
                     break;
             }
             v *= b.scale;
@@ -272,6 +288,7 @@ struct InputMap {
                     break;
                 case InputBindingKind.gamepadAxisPos:
                 case InputBindingKind.gamepadAxisNeg:
+                    if (axisDown(input.pad(padSlot), b, false) && !axisDown(input.pad(padSlot), b, true)) return true;
                     break;
             }
         }
@@ -296,6 +313,7 @@ struct InputMap {
                     break;
                 case InputBindingKind.gamepadAxisPos:
                 case InputBindingKind.gamepadAxisNeg:
+                    if (!axisDown(input.pad(padSlot), b, false) && axisDown(input.pad(padSlot), b, true)) return true;
                     break;
             }
         }
@@ -321,10 +339,11 @@ struct InputMap {
     /// Serialize all action bindings to JSON string.
     string toJson() const {
         import std.format : format;
+        import std.json : JSONValue;
         string outStr = "{\n  \"actions\": {\n";
         foreach (uint i; 0 .. actionCount) {
             const s = &slots[i];
-            outStr ~= format("    \"%s\": [", s.name());
+            outStr ~= format("    %s: [", JSONValue(s.name().idup).toString());
             foreach (uint j; 0 .. s.bindingCount) {
                 immutable b = s.bindings[j];
                 if (j > 0) outStr ~= ", ";
@@ -356,8 +375,16 @@ struct InputMap {
                 foreach (item; arrItems) {
                     if (item.type != JSONType.object) continue;
                     InputBinding b;
-                    if ("kind" in item) b.kind = cast(InputBindingKind) item["kind"].get!long();
-                    if ("code" in item) b.code = cast(uint) item["code"].get!long();
+                    if ("kind" in item) {
+                        immutable k = item["kind"].get!long();
+                        if (k < InputBindingKind.min || k > InputBindingKind.max) continue;
+                        b.kind = cast(InputBindingKind) k;
+                    }
+                    if ("code" in item) {
+                        immutable c = item["code"].get!long();
+                        if (c < 0 || c > uint.max) continue;
+                        b.code = cast(uint) c;
+                    }
                     if ("scale" in item) b.scale = cast(float) jsonFloat(item["scale"]);
                     if ("deadzone" in item) b.deadzone = cast(float) jsonFloat(item["deadzone"]);
                     bind(name, b);
@@ -398,17 +425,16 @@ struct InputMap {
         return 0.0;
     }
 
-    private static float evalAxis(const(GamepadState)* gp, PadAxis axis, bool positive, float deadzone) nothrow @nogc pure {
-        if (gp is null || !gp.connected) return 0.0f;
-        float raw = 0.0f;
-        final switch (axis) {
-            case PadAxis.leftX:        raw = gp.leftX; break;
-            case PadAxis.leftY:        raw = gp.leftY; break;
-            case PadAxis.rightX:       raw = gp.rightX; break;
-            case PadAxis.rightY:       raw = gp.rightY; break;
-            case PadAxis.leftTrigger:  raw = gp.leftTrigger; break;
-            case PadAxis.rightTrigger: raw = gp.rightTrigger; break;
-        }
+    private static bool axisDown(const(GamepadState)* gp, InputBinding b, bool previous) nothrow @nogc pure {
+        return evalAxis(gp, b, previous) * b.scale >= 0.5f;
+    }
+
+    /// Analog value of an axis binding, this frame or the previous one.
+    private static float evalAxis(const(GamepadState)* gp, InputBinding b, bool previous) nothrow @nogc pure {
+        if (gp is null || !gp.connected || b.code > PadAxis.max) return 0.0f;
+        immutable float raw = previous ? gp.prevAxes[b.code] : gp.axes()[b.code];
+        immutable bool positive = b.kind == InputBindingKind.gamepadAxisPos;
+        immutable float deadzone = b.deadzone;
         immutable float signed = positive ? raw : -raw;
         if (signed <= deadzone) return 0.0f;
         if (deadzone >= 0.99f) return 1.0f;
@@ -496,4 +522,58 @@ unittest {
     assert(m.bindingCount("jump") == 0);
     m.clearAll();
     assert(m.numActions == 0);
+}
+
+@("input map: long names, invalid bindings, escaped names and axis edges")
+unittest {
+    import bindings.sdl3;
+
+    InputMap m;
+    enum longName = "player_one_secondary_fire_alternate_mode"; // 40 bytes
+    foreach (_; 0 .. 40)
+        assert(m.bindKey(longName, Key.space));
+    assert(m.numActions == 1 && m.bindingCount(longName) == 1);
+    char[MAX_ACTION_NAME + 1] tooLong = 'x';
+    assert(!m.bindKey(tooLong[], Key.space));
+    assert(m.numActions == 1);
+
+    assert(!m.bind("bad", InputBinding(InputBindingKind.key, 512)));
+    assert(!m.bind("bad", InputBinding(InputBindingKind.mouseButton, 0)));
+    assert(!m.bind("bad", InputBinding(cast(InputBindingKind) 9, 0)));
+    InputState st;
+    assert(m.fromJson(`{"actions": {"a": [{"kind": 77, "code": 1}, {"kind": 0, "code": 9999}, {"kind": 0, "code": -1},
+        {"kind": 0, "code": 44}]}}`));
+    assert(m.bindingCount("a") == 1 && !m.isDown("a", st));
+
+    InputMap q;
+    q.bindKey(`say "hi"`, Key.h);
+    InputMap q2;
+    assert(q2.fromJson(q.toJson()) && q2.bindingCount(`say "hi"`) == 1);
+
+    // `bindingAt` leaves the output untouched on failure.
+    auto keep = InputBinding.fromKey(Key.z);
+    assert(!q.bindingAt("missing", 0, keep) && keep.code == cast(uint) Key.z);
+
+    // Trigger bound to an action: press and release edges.
+    InputState input;
+    input.gamepads.pads[0].connected = true;
+    input.gamepads.pads[0].id = 1;
+    input.actions.bindPadAxis("fire", PadAxis.rightTrigger);
+    static void axis(ref InputState s, short v) @trusted {
+        SDL_Event ev = SDL_Event.init;
+        ev.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+        ev.gaxis.which = 1;
+        ev.gaxis.axis = SDL_GamepadAxis.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
+        ev.gaxis.value = v;
+        s.processEvent(ev);
+    }
+    input.beginFrame();
+    axis(input, 32_767);
+    assert(input.actionPressed("fire") && input.actionDown("fire") && !input.actionUp("fire"));
+    input.beginFrame();
+    assert(!input.actionPressed("fire") && input.actionDown("fire"));
+    input.beginLateEvents(); // released while the frame was waiting to present
+    axis(input, 0);
+    input.beginFrame();
+    assert(input.actionUp("fire") && !input.actionDown("fire"));
 }

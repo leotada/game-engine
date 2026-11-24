@@ -97,8 +97,8 @@ enum MouseButton : ubyte {
 }
 
 struct InputState {
-    private enum MAX_KEYS = 512;
-    private enum MAX_MOUSE_BUTTONS = 6; // indices 1..5 used (SDL button ids)
+    package enum MAX_KEYS = 512;
+    package enum MAX_MOUSE_BUTTONS = 6; // indices 1..5 used (SDL button ids)
     private bool[MAX_KEYS] current;
     private bool[MAX_KEYS] keyPressedEdge;
     private bool[MAX_KEYS] keyReleasedEdge;
@@ -112,6 +112,16 @@ struct InputState {
     private float _wheelX = 0, _wheelY = 0;
     private bool _quit = false;
     private bool keepEdges = false;
+
+    // What arrived after `beginLateEvents`; becomes the next frame's input in `beginFrame`.
+    private bool _late = false;
+    private bool[MAX_KEYS] lateKeyPressed;
+    private bool[MAX_KEYS] lateKeyReleased;
+    private bool[MAX_MOUSE_BUTTONS] lateMousePressed;
+    private bool[MAX_MOUSE_BUTTONS] lateMouseReleased;
+    private float lateDX = 0, lateDY = 0;
+    private float lateWheelX = 0, lateWheelY = 0;
+    private uint _lateTextStart = 0;
 
     private char[128] _textBuf;
     private uint _textLen = 0;
@@ -135,18 +145,48 @@ struct InputState {
     /// visible to the next update instead of being cleared unread.
     void beginFrame() nothrow @nogc {
         if (!keepEdges) {
-            keyPressedEdge[] = false;
-            keyReleasedEdge[] = false;
-            mousePressedEdge[] = false;
-            mouseReleasedEdge[] = false;
+            keyPressedEdge = lateKeyPressed;
+            keyReleasedEdge = lateKeyReleased;
+            mousePressedEdge = lateMousePressed;
+            mouseReleasedEdge = lateMouseReleased;
         }
         keepEdges = false;
-        mouseDX = 0;
-        mouseDY = 0;
-        _wheelX = 0;
-        _wheelY = 0;
-        _textLen = 0;
+        mouseDX = lateDX;
+        mouseDY = lateDY;
+        _wheelX = lateWheelX;
+        _wheelY = lateWheelY;
+        uint kept = 0;
+        if (_late) {
+            kept = _textLen - _lateTextStart;
+            foreach (i; 0 .. kept)
+                _textBuf[i] = _textBuf[_lateTextStart + i];
+            clearLate();
+        }
+        _textLen = kept;
         gamepads.beginFrame();
+    }
+
+    /// Mark that this frame's input was already consumed: press/release edges, mouse motion, wheel and text that
+    /// arrive from here until the next `beginFrame` are delivered in the next frame instead of being dropped.
+    /// `App.pumpEvents` calls this.
+    void beginLateEvents() nothrow @nogc {
+        if (!_late) {
+            _late = true;
+            _lateTextStart = _textLen;
+        }
+        gamepads.beginLateEvents();
+    }
+
+    private void clearLate() nothrow @nogc {
+        _late = false;
+        lateKeyPressed[] = false;
+        lateKeyReleased[] = false;
+        lateMousePressed[] = false;
+        lateMouseReleased[] = false;
+        lateDX = 0;
+        lateDY = 0;
+        lateWheelX = 0;
+        lateWheelY = 0;
     }
 
     /// Keep edges set after this frame's update so the next `beginFrame`
@@ -160,11 +200,15 @@ struct InputState {
     void clearKeyEdges() nothrow @nogc {
         keyPressedEdge[] = false;
         keyReleasedEdge[] = false;
+        lateKeyPressed[] = false;
+        lateKeyReleased[] = false;
     }
 
     void clearPointerEdges() nothrow @nogc {
         mousePressedEdge[] = false;
         mouseReleasedEdge[] = false;
+        lateMousePressed[] = false;
+        lateMouseReleased[] = false;
     }
 
     void clearGamepadEdges() nothrow @nogc {
@@ -186,6 +230,7 @@ struct InputState {
         foreach (i; 1 .. MAX_MOUSE_BUTTONS) {
             if (mouseCurrent[i]) {
                 mouseReleasedEdge[i] = true;
+                if (_late) lateMouseReleased[i] = true;
                 mouseCurrent[i] = false;
             }
         }
@@ -201,14 +246,20 @@ struct InputState {
             case SDL_EVENT_KEY_DOWN:
                 immutable sc = ev.key.scancode;
                 if (sc < MAX_KEYS) {
-                    if (!current[sc]) keyPressedEdge[sc] = true;
+                    if (!current[sc]) {
+                        keyPressedEdge[sc] = true;
+                        if (_late) lateKeyPressed[sc] = true;
+                    }
                     current[sc] = true;
                 }
                 break;
             case SDL_EVENT_KEY_UP:
                 immutable sc = ev.key.scancode;
                 if (sc < MAX_KEYS) {
-                    if (current[sc]) keyReleasedEdge[sc] = true;
+                    if (current[sc]) {
+                        keyReleasedEdge[sc] = true;
+                        if (_late) lateKeyReleased[sc] = true;
+                    }
                     current[sc] = false;
                 }
                 break;
@@ -228,13 +279,20 @@ struct InputState {
                 mouseY  = ev.motion.y;
                 mouseDX += ev.motion.xrel;
                 mouseDY += ev.motion.yrel;
+                if (_late) {
+                    lateDX += ev.motion.xrel;
+                    lateDY += ev.motion.yrel;
+                }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 mouseX = ev.button.x;
                 mouseY = ev.button.y;
                 immutable bd = ev.button.button;
                 if (bd > 0 && bd < MAX_MOUSE_BUTTONS) {
-                    if (!mouseCurrent[bd]) mousePressedEdge[bd] = true;
+                    if (!mouseCurrent[bd]) {
+                        mousePressedEdge[bd] = true;
+                        if (_late) lateMousePressed[bd] = true;
+                    }
                     mouseCurrent[bd] = true;
                 }
                 break;
@@ -243,13 +301,20 @@ struct InputState {
                 mouseY = ev.button.y;
                 immutable bu = ev.button.button;
                 if (bu > 0 && bu < MAX_MOUSE_BUTTONS) {
-                    if (mouseCurrent[bu]) mouseReleasedEdge[bu] = true;
+                    if (mouseCurrent[bu]) {
+                        mouseReleasedEdge[bu] = true;
+                        if (_late) lateMouseReleased[bu] = true;
+                    }
                     mouseCurrent[bu] = false;
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
                 _wheelX += ev.wheel.x;
                 _wheelY += ev.wheel.y;
+                if (_late) {
+                    lateWheelX += ev.wheel.x;
+                    lateWheelY += ev.wheel.y;
+                }
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 // Without pointer capture, a release outside the window never
@@ -401,4 +466,38 @@ unittest {
     s.beginFrame();
     assert(s.mouseDown(MouseButton.left));
     assert(!s.mousePressed(MouseButton.left));
+}
+
+@("input: events pumped after the frame's input was consumed reach the next frame")
+@trusted unittest {
+    InputState s;
+    s.beginFrame();
+    pushButton(s, SDL_EVENT_MOUSE_BUTTON_DOWN, MouseButton.right);
+    s.beginLateEvents();
+
+    SDL_Event ev = SDL_Event.init;
+    ev.type = SDL_EVENT_KEY_DOWN;
+    ev.key.scancode = SDL_Scancode.SCANCODE_ESCAPE;
+    s.processEvent(ev);
+    ev = SDL_Event.init;
+    ev.type = SDL_EVENT_MOUSE_WHEEL;
+    ev.wheel.y = 2;
+    s.processEvent(ev);
+    ev = SDL_Event.init;
+    ev.type = SDL_EVENT_MOUSE_MOTION;
+    ev.motion.xrel = 3;
+    s.processEvent(ev);
+    ev = SDL_Event.init;
+    ev.type = SDL_EVENT_TEXT_INPUT;
+    ev.text.text = "hi".ptr;
+    s.processEvent(ev);
+
+    s.beginFrame();
+    assert(s.keyPressed(Key.escape) && s.keyDown(Key.escape));
+    assert(!s.mousePressed(MouseButton.right)); // seen last frame, not late
+    assert(s.wheelY() == 2 && s.mdx() == 3 && s.textInput() == "hi");
+
+    s.beginFrame();
+    assert(!s.keyPressed(Key.escape) && s.keyDown(Key.escape));
+    assert(s.wheelY() == 0 && s.mdx() == 0 && s.textInput().length == 0);
 }

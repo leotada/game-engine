@@ -95,6 +95,18 @@ struct GamepadState {
     /// deadzones stay coupled across X/Y pairs when single-axis events arrive.
     short[6] rawAxes = 0;
 
+    /// Normalized axes (PadAxis order) as they were at the previous frame; lets axis bindings detect a press edge.
+    float[6] prevAxes = 0.0f;
+
+    /// Button edges that arrived after the frame's input was consumed (`Gamepads.beginLateEvents`).
+    package bool[PAD_BUTTON_COUNT] latePressed = false;
+    package bool[PAD_BUTTON_COUNT] lateReleased = false;
+
+    /// Current normalized axes in PadAxis order.
+    float[6] axes() const pure nothrow @nogc {
+        return [leftX, leftY, rightX, rightY, leftTrigger, rightTrigger];
+    }
+
     /// Human-readable device name reported by SDL3.
     const(char)[] name() const return pure nothrow @nogc {
         return nameBuf[0 .. nameLen];
@@ -184,6 +196,7 @@ struct Gamepads {
     GamepadState[MAX_GAMEPADS] pads;
     private SDL_Gamepad*[MAX_GAMEPADS] handles;
     private bool keepEdges = false;
+    private bool late = false;
 
     float stickDeadzone = 0.15f;
     float triggerDeadzone = 0.05f;
@@ -207,10 +220,28 @@ struct Gamepads {
 
     /// Clear per-frame press/release edges unless `keepEdgesForNextFrame` was set.
     void beginFrame() nothrow @nogc {
-        if (!keepEdges) {
-            clearEdges();
+        foreach (i; 0 .. MAX_GAMEPADS) {
+            auto p = &pads[i];
+            if (!keepEdges) {
+                p.pressed = p.latePressed;
+                p.released = p.lateReleased;
+            }
+            p.latePressed[] = false;
+            p.lateReleased[] = false;
+            if (!late)
+                p.prevAxes = p.axes();
         }
         keepEdges = false;
+        late = false;
+    }
+
+    /// Events from here until the next `beginFrame` arrive after this frame's input was consumed: their edges are
+    /// delivered (again) in the next frame.
+    void beginLateEvents() nothrow @nogc {
+        if (late) return;
+        late = true;
+        foreach (i; 0 .. MAX_GAMEPADS)
+            pads[i].prevAxes = pads[i].axes();
     }
 
     /// Preserve edges through the next `beginFrame` (used when pumping before present).
@@ -223,6 +254,8 @@ struct Gamepads {
         foreach (i; 0 .. MAX_GAMEPADS) {
             pads[i].pressed[] = false;
             pads[i].released[] = false;
+            pads[i].latePressed[] = false;
+            pads[i].lateReleased[] = false;
         }
     }
 
@@ -472,10 +505,16 @@ struct Gamepads {
         if (slot < 0 || btn >= PAD_BUTTON_COUNT) return;
 
         if (isDown) {
-            if (!pads[slot].down[btn]) pads[slot].pressed[btn] = true;
+            if (!pads[slot].down[btn]) {
+                pads[slot].pressed[btn] = true;
+                if (late) pads[slot].latePressed[btn] = true;
+            }
             pads[slot].down[btn] = true;
         } else {
-            if (pads[slot].down[btn]) pads[slot].released[btn] = true;
+            if (pads[slot].down[btn]) {
+                pads[slot].released[btn] = true;
+                if (late) pads[slot].lateReleased[btn] = true;
+            }
             pads[slot].down[btn] = false;
         }
     }
