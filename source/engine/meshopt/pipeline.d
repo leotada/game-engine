@@ -21,9 +21,13 @@ struct MeshOptSettings {
     bool vertexFetch = true;
     /// Position-only index buffer for the shadow pass. Empty when off.
     bool shadowIndices = true;
+    /// Fill the ratios of `before`/`after`. Off by default: the overdraw figure rasterizes the mesh
+    /// in software twice, which costs more than the optimization itself.
+    bool stats = false;
 }
 
 /// ACMR, ATVR, overfetch, and overdraw for one index buffer.
+/// The ratios stay 0 unless `MeshOptSettings.stats` is set; the counts are always filled.
 struct MeshStats {
     uint vertexCount;
     uint indexCount;
@@ -53,7 +57,7 @@ OptimizedMesh!(V, I) optimizeMesh(V, I)(const(V)[] verts, const(I)[] indices, co
 if ((is(I == ushort) || is(I == uint)) && is(typeof(V.init.pos) == float[3]) && V.pos.offsetof == 0 && V.sizeof % 4 == 0 && V.sizeof > 0 && V.sizeof <= 256) {
     assert(indices.length % 3 == 0);
     OptimizedMesh!(V, I) result;
-    result.before = measure!(V, I)(verts, indices);
+    result.before = measure!(V, I)(verts, indices, settings.stats);
 
     V[] v = verts.dup;
     I[] idx = indices.dup;
@@ -91,7 +95,7 @@ if ((is(I == ushort) || is(I == uint)) && is(typeof(V.init.pos) == float[3]) && 
 
     result.vertices = v;
     result.indices = idx;
-    result.after = measure!(V, I)(v, idx);
+    result.after = measure!(V, I)(v, idx, settings.stats);
     return result;
 }
 
@@ -105,7 +109,7 @@ if (is(I == ushort) || is(I == uint)) {
     return true;
 }
 
-private MeshStats measure(V, I)(const(V)[] verts, const(I)[] indices)
+private MeshStats measure(V, I)(const(V)[] verts, const(I)[] indices, bool ratios)
 if ((is(I == ushort) || is(I == uint)) && is(typeof(V.init.pos) == float[3])) {
     MeshStats s;
     s.vertexCount = cast(uint) verts.length;
@@ -114,7 +118,7 @@ if ((is(I == ushort) || is(I == uint)) && is(typeof(V.init.pos) == float[3])) {
     s.atvr = 0;
     s.overfetch = 0;
     s.overdraw = 0;
-    if (indices.length == 0 || verts.length == 0)
+    if (!ratios || indices.length == 0 || verts.length == 0)
         return s;
     auto cache = analyzeVertexCache(indices, verts.length);
     s.acmr = cache.acmr;
@@ -177,6 +181,15 @@ private ubyte[] mutableBytes(V)(V[] verts) nothrow @trusted {
     auto opt16 = optimizeMesh(verts, idx16);
     assert(opt16.vertices.length == 3);
     assert(opt16.indices.length == 6);
+
+    // The ratios are opt-in and do not change the result.
+    assert(opt.before.acmr == 0 && opt.before.overdraw == 0 && opt.after.overfetch == 0);
+    MeshOptSettings measured;
+    measured.stats = true;
+    auto full = optimizeMesh(verts, idx, measured);
+    assert(full.before.acmr > 0 && full.after.acmr > 0 && full.after.overfetch > 0 && full.after.overdraw > 0);
+    assert(full.indices == opt.indices && full.vertices == opt.vertices);
+    assert(optimizeMesh(verts, idx16, measured).after.overdraw > 0);
 }
 
 @("optimizeMesh.disabled") unittest {
