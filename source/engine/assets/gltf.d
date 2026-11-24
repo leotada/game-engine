@@ -26,6 +26,7 @@ import std.string : toLower;
 import engine.assets.pak : assetExists, readAssetBytes;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
+import engine.gpu.pipeline : BlendMode, RenderState;
 import engine.graphics.material : Material, MaterialFlags, MaterialLayerMaps, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Texture, TextureDesc, Sampler;
@@ -74,6 +75,33 @@ struct GltfImportOptions {
     /// Read base color, emissive and sheen color textures as sRGB (the glTF
     /// rule). Normal, ORM and factor colors stay linear.
     bool srgbColor = false;
+    /// Apply `alphaMode` / `alphaCutoff`: `MASK` becomes `RenderState.alphaMask`
+    /// with coverage-preserving base color mips, `OPAQUE` disables blending.
+    bool alphaModes = false;
+}
+
+/// glTF `alphaMode`.
+enum GltfAlphaMode : ubyte { opaque, mask, blend }
+
+/// Base color upload options of `desc` under `opts`.
+package(engine) TextureDesc gltfBaseColorDesc(ref const GltfMaterialDesc desc, GltfImportOptions opts,
+                                              bool generateMips) pure nothrow @nogc {
+    TextureDesc d;
+    d.generateMips = generateMips;
+    d.srgb = opts.srgbColor;
+    if (opts.alphaModes && desc.alphaMode == GltfAlphaMode.mask) d.alphaCoverage = desc.params.alphaCutoff;
+    return d;
+}
+
+/// Render state of a glTF material under `opts`.
+package(engine) RenderState gltfRenderState(ref const GltfMaterialDesc desc, GltfImportOptions opts) pure nothrow @nogc {
+    RenderState s;
+    s.doubleSided = desc.doubleSided;
+    if (opts.alphaModes) {
+        if (desc.alphaMode != GltfAlphaMode.blend) s.blend = BlendMode.opaque;
+        s.alphaMask = desc.alphaMode == GltfAlphaMode.mask;
+    }
+    return s;
 }
 
 /// CPU-side OpenPBR material description extracted from glTF 2.0 + `KHR_materials_*`.
@@ -81,6 +109,8 @@ struct GltfMaterialDesc {
     string name;
     MaterialParams params;
     bool doubleSided = false;
+    /// `alphaMode` (`alphaCutoff` goes to `params.alphaCutoff`).
+    GltfAlphaMode alphaMode;
     bool hasBaseColorFactor = false;
     string baseColorUri;       // relative to glTF, empty if none
     string metallicRoughnessUri;
@@ -181,7 +211,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     }
 
     {
-        auto t = loadMap(matDesc.baseColorImage, colorDesc);
+        auto t = loadMap(matDesc.baseColorImage, gltfBaseColorDesc(matDesc, opts, true));
         if (t.valid) {
             model.albedo = move(t);
             model.hasAlbedo = true;
@@ -247,7 +277,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
 
     model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
                                      params, mrPtr, nrmPtr, aoPtr, emPtr, layers);
-    model.material.renderState.doubleSided = matDesc.doubleSided;
+    model.material.renderState = gltfRenderState(matDesc, opts);
 
     info("Loaded glTF OpenPBR: ", gltfPath, " (",
          meshCpu.vertices.length, " verts, metalness=", params.baseMetalness,
@@ -290,6 +320,11 @@ GltfMaterialDesc parseGltfMaterialAt(ref JSONValue root, size_t index) @trusted 
     if ("name" in mat && mat["name"].type == JSONType.string)
         desc.name = mat["name"].str;
     desc.doubleSided = jsonFlag(mat, "doubleSided");
+    if ("alphaMode" in mat && mat["alphaMode"].type == JSONType.string) {
+        if (mat["alphaMode"].str == "MASK") desc.alphaMode = GltfAlphaMode.mask;
+        else if (mat["alphaMode"].str == "BLEND") desc.alphaMode = GltfAlphaMode.blend;
+    }
+    if ("alphaCutoff" in mat) desc.params.alphaCutoff = jsonFloat(mat["alphaCutoff"]);
 
     if ("pbrMetallicRoughness" in mat) {
         auto pbr = mat["pbrMetallicRoughness"];
@@ -1736,6 +1771,30 @@ version (unittest) {
     float maxX = -1;
     foreach (v; g.vertices) if (v.pos[0] > maxX) maxX = v.pos[0];
     assert(maxX == 2.0f);
+}
+
+@("gltf.alphaMode") @safe unittest {
+    import std.json : parseJSON;
+    auto root = parseJSON(`{"materials": [
+        {"name": "leaf", "alphaMode": "MASK", "alphaCutoff": 0.3, "doubleSided": true},
+        {"name": "glass", "alphaMode": "BLEND"},
+        {"name": "wall"}
+    ]}`);
+    auto leaf = parseGltfMaterialAt(root, 0), glass = parseGltfMaterialAt(root, 1), wall = parseGltfMaterialAt(root, 2);
+    assert(leaf.alphaMode == GltfAlphaMode.mask && leaf.params.alphaCutoff == 0.3f);
+    assert(glass.alphaMode == GltfAlphaMode.blend && wall.alphaMode == GltfAlphaMode.opaque);
+    assert(wall.params.alphaCutoff == 0.5f);
+
+    // Off by default: only doubleSided applies.
+    GltfImportOptions off;
+    assert(gltfRenderState(leaf, off) == RenderState(BlendMode.alpha, true, true));
+    assert(gltfBaseColorDesc(leaf, off, true).alphaCoverage == 0);
+    GltfImportOptions on;
+    on.alphaModes = true;
+    assert(gltfRenderState(leaf, on) == RenderState(BlendMode.opaque, true, true, true));
+    assert(gltfRenderState(glass, on) == RenderState.init);
+    assert(gltfRenderState(wall, on) == RenderState(BlendMode.opaque));
+    assert(gltfBaseColorDesc(leaf, on, true).alphaCoverage == 0.3f);
 }
 
 @("gltf.doubleSidedAndName") @safe unittest {

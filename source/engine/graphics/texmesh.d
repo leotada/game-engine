@@ -188,9 +188,12 @@ struct TexMesh {
      * `useLodRange` selects `indexBuffer` at `first`. Otherwise the caller
      * keeps the position-welded shadow index buffer and `indexCount`.
      */
-    ShadowLodDraw shadowLodDraw(ubyte colorLod = ubyte.max) const pure nothrow @nogc {
+    /// `masked` casters need the full vertices (UVs), so they never use the
+    /// position-only shadow indices.
+    ShadowLodDraw shadowLodDraw(ubyte colorLod = ubyte.max, bool masked = false) const pure nothrow @nogc {
         ShadowLodDraw draw;
         draw.count = indexCount;
+        draw.useLodRange = masked;
         if (lodLevels <= 1)
             return draw;
         uint level = colorLod == ubyte.max ? 1 : cast(uint) colorLod + 1;
@@ -349,6 +352,10 @@ immutable ushort[6] texQuadIndices = [0, 2, 1,  0, 3, 2];
     assert(fromCurrent.first == 48 && fromCurrent.count == 9);
     ShadowLodDraw clamped = mesh.shadowLodDraw(2);
     assert(clamped.first == 48 && clamped.count == 9);
+    TexMesh plain;
+    plain.indexCount = 30;
+    immutable masked = plain.shadowLodDraw(0, true);
+    assert(masked.useLodRange && masked.first == 0 && masked.count == 30);
 }
 
 @("texmesh.colorLodRange") pure nothrow @nogc unittest {

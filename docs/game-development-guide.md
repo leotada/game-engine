@@ -215,6 +215,7 @@ auto bs = scene.batchStats(); // batches used this frame, peak, capacity, growth
 - **Culling:** frustum culling is on by default (`scene.setCulling(false)` to disable); add `scene.setDistanceCull(maxDistance, minPixelSize)` for small dynamic props and `StaticBuildOptions` / `sib.setMeshCull` for static ones.
 - **LOD:** `drawMatrix` defaults to `LOD_AUTO` (screen-space error, `scene.setLodScreenHeight(h)`, `setLodBias`); static buffers pick one LOD per 128 m cell.
 - **Textures:** `TextureDesc.mipped()`, `SamplerDesc.maxAnisotropy`, `TextureArray`, `Texture.fromR16` / `fromR32F`.
+- **Alpha mask (foliage, fences):** `mat.renderState.alphaMask = true` with `params.alphaCutoff`, textures uploaded with `TextureDesc.alphaCoverage`, or `GltfLoadOptions.gltf.alphaModes = true` for glTF `MASK`. Color and shadows are cut. See [graphics.md](graphics.md#alpha-mask).
 - **sRGB color textures:** `TextureDesc.mippedSrgb()` for albedo/emissive, `GltfLoadOptions.gltf.srgbColor = true` for glTF, and `app.post.outputTransfer = OutputTransfer.srgb` for the exact display curve. Off by default. See [graphics.md](graphics.md#textures-and-materials).
 - **Dynamic queries:** `SpatialGrid` (64 m loose grid) returns the entity ids inside a frustum and distance.
 

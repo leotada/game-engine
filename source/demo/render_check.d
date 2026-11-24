@@ -14,15 +14,19 @@ import std.stdio : writefln, writeln;
 
 import engine.app;
 import engine.graphics.material : Material, MaterialFlags, MaterialParams;
+import engine.gpu.skinned : SkinnedMesh;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
-import engine.graphics.types : Color4;
+import engine.graphics.types : Color4, SkinnedVertex;
+import engine.gpu.pipeline : BlendMode, RenderState;
 import engine.gpu.post : AaMode, OutputTransfer, PostSettings;
 import engine.gpu.renderer : FrameContext;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
+import engine.scene.light : GpuPointLight, GpuSpotLight, LightList;
 import engine.scene.scene3d_textured : Scene3DTextured;
+import engine.scene.static_instances : StaticInstanceBuffer, StaticInstanceDesc;
 
 @safe:
 
@@ -313,6 +317,168 @@ private bool checkAa(ref App app) {
     return ok;
 }
 
+/// Alpha mask: a striped quad floats over a lit ground. Stripes must be cut in
+/// the color image and in the cast shadow, on the dynamic, static and
+/// `displaceEx` paths, and the opaque control must cast a full shadow.
+private bool checkMask(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 32, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+
+    // Left half of every tile is transparent.
+    auto px = new ubyte[64 * 64 * 4];
+    foreach (y; 0 .. 64) foreach (x; 0 .. 64) {
+        px[(y * 64 + x) * 4 .. (y * 64 + x) * 4 + 4] = 255;
+        if (x < 32) px[(y * 64 + x) * 4 + 3] = 40;
+    }
+    auto stripes = Texture.fromPixels(app.gpu, px, 64, 64);
+    scope(exit) stripes.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    MaterialParams gp;
+    gp.baseColor = [0.6f, 0.6f, 0.6f];
+    auto layout = scene.materialLayout();
+    auto ground = Material.create(app.gpu, layout, sampler, white, gp, null, null, null, null);
+    scope(exit) ground.destroy();
+    enum kDisplaceEx = `
+fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }
+fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.0, 0.001, 0.0); }
+`;
+    immutable shader = scene.createSurfaceShader(kDisplaceEx);
+    if (shader == 0) return expect(false, "surface shader compiles");
+    Material make(uint sh, bool mask) {
+        MaterialParams mp;
+        mp.baseColor = [0.0f, 0.5f, 0.0f];
+        mp.emissionLuminance = 0;
+        auto m = Material.create(app.gpu, layout, sampler, stripes, mp, null, null, null, null);
+        m.surfaceShader = sh;
+        m.renderState = RenderState(BlendMode.opaque, true, true, mask);
+        return m;
+    }
+    auto maskMat = make(0, true);
+    scope(exit) maskMat.destroy();
+    auto exMat = make(shader, true);
+    scope(exit) exMat.destroy();
+    auto solidMat = make(0, false);
+    scope(exit) solidMat.destroy();
+
+    // Same quad, bound to one joint.
+    auto sv = new SkinnedVertex[4];
+    foreach (i, ref v; sv) {
+        immutable float u = (i == 1 || i == 2) ? 1 : 0, w = i >= 2 ? 1 : 0;
+        v.position = [u - 0.5f, 0, w - 0.5f];
+        v.normal = [0, 1, 0];
+        v.uv = [u, w];
+        v.tangent = [1, 0, 0, 1];
+        v.joints = [0, 0, 0, 0];
+        v.weights = [1, 0, 0, 0];
+    }
+    auto si = [0u, 2, 1, 0, 3, 2];
+    auto skinned = SkinnedMesh.fromData(app.gpu, sv, si);
+    scope(exit) skinned.destroy();
+    immutable Mat4[1] palette = [Mat4.identity()];
+
+    auto meshes = new TexMesh*[1];
+    auto mats = new Material*[1];
+    () @trusted { meshes[0] = &quad; mats[0] = &maskMat; }();
+    auto descs = new StaticInstanceDesc[1];
+    enum float H = 3;
+    descs[0].model = Mat4.translation(4, H, -4) * Mat4.scaling(4, 1, 4);
+    auto sib = StaticInstanceBuffer.build(app.gpu, meshes, mats, descs);
+    scope(exit) sib.destroy();
+
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 100.0f);
+    cam.lookAt(Vec3(0, 30, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    LightList lights;
+    scope(exit) lights.release();
+
+    Shot shoot(string name, bool spot) {
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = !spot;
+            lights.dir.direction = Vec3(1, 1, 0).normalized();
+            lights.dir.intensity = 3.0f;
+            lights.dir.castShadows = true;
+            lights.dir.cascades.maxDistance = 80;
+            if (spot) addLocalLights(lights);
+            scene.begin(cam);
+            scene.draw(quad, ground, Vec3(0, 0, 0), Vec3(60, 1, 60));
+            scene.drawMatrix(quad, maskMat, Mat4.translation(-4, H, -4) * Mat4.scaling(4, 1, 4), Color4.white);
+            scene.drawMatrix(quad, exMat, Mat4.translation(-4, H, 4) * Mat4.scaling(4, 1, 4), Color4.white);
+            scene.drawMatrix(quad, solidMat, Mat4.translation(4, H, 4) * Mat4.scaling(4, 1, 4), Color4.white);
+            scene.drawSkinned(skinned, maskMat, Mat4.translation(-4, H, 10) * Mat4.scaling(4, 1, 4), Color4.white, palette[]);
+            scene.submitStatic(sib);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    auto s = shoot("mask", false);
+    if (!s.valid) return expect(false, "frame captured");
+    import std.math : tan;
+    float lumaAt(ref Shot sh, float wx, float wy, float wz) {
+        immutable k = (sh.h * 0.5f) / (tan(0.45f) * (30 - wy));
+        return sh.luma(cast(uint)(sh.w * 0.5f + wx * k), cast(uint)(sh.h * 0.5f + wz * k));
+    }
+    float greenAt(ref Shot sh, float wx, float wy, float wz) {
+        immutable k = (sh.h * 0.5f) / (tan(0.45f) * (30 - wy));
+        immutable x = cast(uint)(sh.w * 0.5f + wx * k), y = cast(uint)(sh.h * 0.5f + wz * k);
+        return sh.at(x, y, 1) - sh.at(x, y, 0);
+    }
+    immutable lit = lumaAt(s, 0, 0, 0);
+    bool ok = expect(lit > 60, "ground is lit");
+    void probe(string name, float cx, float cz, bool masked) {
+        // Color: left half shows the ground (grey), right half the green quad.
+        immutable left = greenAt(s, cx - 1, H, cz), right = greenAt(s, cx + 1, H, cz);
+        ok &= expect(right > 20, name ~ ": kept half is drawn");
+        ok &= expect(masked ? left < 8 : left > 20, name ~ (masked ? ": masked half is cut" : ": control is not cut"));
+        // Shadow lands H units toward -X; the quad's right half covers x in (0, 2).
+        immutable shadowKept = lumaAt(s, cx + 1 - H, 0, cz + 1.0f);
+        immutable shadowCut = lumaAt(s, cx - 1 - H, 0, cz + 1.0f);
+        writefln("  %s: shadow kept %.0f cut %.0f lit %.0f", name, shadowKept, shadowCut, lit);
+        ok &= expect(masked ? shadowCut > lit * 0.9f : shadowCut < lit * 0.75f,
+                     name ~ (masked ? ": light passes the hole" : ": control casts a full shadow"));
+    }
+    probe("dynamic", -4, -4, true);
+    probe("displaceEx", -4, 4, true);
+    probe("skinned", -4, 10, true);
+    probe("static", 4, -4, true);
+    probe("control", 4, 4, false);
+
+    // Spot over the dynamic quad, point over the static one: light passes the
+    // cut half only (a shadow edge is 1.6x the quad: height 8 over height 3).
+    auto local = shoot("mask_local", true);
+    if (!local.valid) return expect(false, "frame captured");
+    foreach (i, cx; [-4.0f, 4.0f]) {
+        immutable kept = lumaAt(local, cx + 2.9f, 0, -4), cut = lumaAt(local, cx - 2.9f, 0, -4);
+        writefln("  %s: shadow kept %.0f cut %.0f", i == 0 ? "spot" : "point", kept, cut);
+        ok &= expect(cut - kept > 25, (i == 0 ? "spot" : "point") ~ " shadow is masked");
+    }
+    return ok;
+}
+
+private void addLocalLights(ref LightList lights) @safe {
+    GpuSpotLight s;
+    s.position = Vec3(-4, 8, -4);
+    s.direction = Vec3(0, -1, 0);
+    s.range = 20;
+    s.intensity = 200;
+    s.castShadows = true;
+    s.innerConeDeg = 45;
+    s.outerConeDeg = 50;
+    lights.addSpot(s);
+    GpuPointLight p;
+    p.position = Vec3(4, 8, -4);
+    p.range = 20;
+    p.intensity = 200;
+    p.castShadows = true;
+    lights.addPoint(p);
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -380,6 +546,7 @@ private immutable Check[] checks = [
     Check("unlit", &checkUnlit),
     Check("srgb", &checkSrgb),
     Check("aa", &checkAa),
+    Check("mask", &checkMask),
     Check("stars", &checkStars),
 ];
 

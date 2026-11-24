@@ -80,6 +80,9 @@ struct MaterialParams {
 @group(2) @binding(2) var brdfLut: texture_2d<f32>;
 @group(2) @binding(3) var iblSampler: sampler;
 
+/// `RenderState.alphaMask`: discard below `mat.alphaCutoff`, write alpha 1.
+override ALPHA_MASK: bool = false;
+
 const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
 const FLAG_AO: u32 = 4u;
@@ -515,6 +518,45 @@ fn vs_shadow(in: ShadowVertexInput) -> @builtin(position) vec4<f32> {
     let localPos = engineDisplace(in.position, in.normal, in.uv, in.custom, model);
     return shadowLight.viewProj * model * vec4<f32>(localPos, 1.0);
 }
+
+struct ShadowMaskInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) model0: vec4<f32>,
+    @location(4) model1: vec4<f32>,
+    @location(5) model2: vec4<f32>,
+    @location(6) model3: vec4<f32>,
+    @location(7) tint: vec4<f32>,
+    @location(9) custom: vec4<f32>,
+};
+
+struct ShadowMaskOutput {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) tintAlpha: f32,
+};
+
+/// `vs_shadow` for alpha-masked materials. The mask is the albedo alpha; the
+/// opacity computed by `surface` is not evaluated in shadow passes.
+@vertex
+fn vs_shadow_mask(in: ShadowMaskInput) -> ShadowMaskOutput {
+    let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+    let localPos = engineDisplace(in.position, in.normal, in.uv, in.custom, model);
+    var out: ShadowMaskOutput;
+    out.clipPos = shadowLight.viewProj * model * vec4<f32>(localPos, 1.0);
+    out.uv = in.uv;
+    out.tintAlpha = in.tint.a;
+    return out;
+}
+
+@fragment
+fn fs_shadow_mask(in: ShadowMaskOutput) {
+    let alpha = textureSample(albedoMap, texSampler, in.uv).a * mat.geometryOpacity * in.tintAlpha;
+    if (alpha < mat.alphaCutoff) {
+        discard;
+    }
+}
 #endif
 
 fn evalPointOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, pl: PointLight) -> vec3<f32> {
@@ -711,6 +753,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dissolveKill = n < dissolve;
         let edge = 1.0 - smoothstep(dissolve, dissolve + 0.08, n);
         emissive = emissive + mat.emissionColor * edge * 6.0;
+    }
+
+    if (ALPHA_MASK) {
+        dissolveKill = dissolveKill || surfaceOpacity < mat.alphaCutoff;
+        surfaceOpacity = 1.0;
     }
 
     if ((mat.flags & FLAG_UNLIT) != 0u) {

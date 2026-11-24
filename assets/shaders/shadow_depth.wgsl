@@ -6,6 +6,28 @@ struct LightUniforms {
 @group(1) @binding(0) var<storage, read> skinPalettes: array<mat4x4<f32>>;
 #endif
 
+#ifdef ALPHA_MASK
+/// `MaterialParams` as raw vec4s: opacity in `v[8].x`, alpha cutoff in `v[13].x`.
+struct MaskParams {
+    v: array<vec4<f32>, 15>,
+};
+#ifdef SKINNED
+@group(2) @binding(0) var<uniform> mask: MaskParams;
+@group(2) @binding(1) var maskSampler: sampler;
+@group(2) @binding(2) var maskAlbedo: texture_2d<f32>;
+#else
+@group(1) @binding(0) var<uniform> mask: MaskParams;
+@group(1) @binding(1) var maskSampler: sampler;
+@group(1) @binding(2) var maskAlbedo: texture_2d<f32>;
+#endif
+
+struct MaskVertexOutput {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) tintAlpha: f32,
+};
+#endif
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -21,8 +43,7 @@ struct VertexInput {
 #endif
 };
 
-@vertex
-fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
+fn shadowPosition(in: VertexInput) -> vec4<f32> {
 #ifdef SKINNED
     let palBase = bitcast<u32>(in.model0.w) & 0xFFFFu;
     let instModel = mat4x4<f32>(
@@ -41,3 +62,27 @@ fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
     return u.lightViewProj * model * vec4<f32>(in.position, 1.0);
 #endif
 }
+
+#ifdef ALPHA_MASK
+@vertex
+fn vs_main(in: VertexInput) -> MaskVertexOutput {
+    var out: MaskVertexOutput;
+    out.clipPos = shadowPosition(in);
+    out.uv = in.uv;
+    out.tintAlpha = in.tint.a;
+    return out;
+}
+
+@fragment
+fn fs_mask(in: MaskVertexOutput) {
+    let alpha = textureSample(maskAlbedo, maskSampler, in.uv).a * mask.v[8].x * in.tintAlpha;
+    if (alpha < mask.v[13].x) {
+        discard;
+    }
+}
+#else
+@vertex
+fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
+    return shadowPosition(in);
+}
+#endif

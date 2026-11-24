@@ -122,6 +122,9 @@ unittest {
 }
 
 immutable string shadowDepthShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl").code;
+/// Alpha-masked shadow casters (discard below the material cutoff).
+immutable string shadowDepthMaskShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["ALPHA_MASK"]).code;
+immutable string shadowDepthSkinnedMaskShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["ALPHA_MASK", "SKINNED"]).code;
 immutable string shadowDepthSkinnedShaderSource = preprocessShader(import("shadow_depth.wgsl"), "shadow_depth.wgsl", ["SKINNED"]).code;
 
 enum gizmoLineShaderSource = import("gizmo_line.wgsl");

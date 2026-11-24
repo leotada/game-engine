@@ -14,6 +14,9 @@
   the exact display curve. Defaults are unchanged.
 - **Quality FXAA and sharpening** (`PostSettings.aaMode = AaMode.fxaaQuality`, `fxaaSubpix`, `sharpness`): edge-end
   search FXAA (0.09 ms at 1080p) and contrast adaptive sharpening after any AA mode (0.05 ms). Defaults unchanged.
+- **Alpha mask** (`RenderState.alphaMask`, `MaterialParams.alphaCutoff`): discard in color and in every shadow map
+  (dynamic, skinned, static, `displaceEx`), coverage-preserving mips (`TextureDesc.alphaCoverage`) and glTF
+  `alphaMode` import (`GltfImportOptions.alphaModes`). Off by default.
 
 ### Engine bug fixes
 

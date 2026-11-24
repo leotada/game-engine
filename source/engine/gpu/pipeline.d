@@ -431,6 +431,9 @@ struct RenderState {
     BlendMode blend = BlendMode.alpha;
     bool depthWrite = true;
     bool doubleSided = false;
+    /// Discard pixels whose opacity is below `MaterialParams.alphaCutoff`, in
+    /// the color pass and in every shadow map. Surviving pixels are opaque.
+    bool alphaMask = false;
 
     bool isDefault() const pure nothrow @nogc { return this == RenderState.init; }
 }
@@ -725,6 +728,13 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     fragState.entryPoint = wgpuStringView("fs_main");
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
+    WGPUConstantEntry maskConstant;
+    if (state.alphaMask) {
+        maskConstant.key = wgpuStringView("ALPHA_MASK");
+        maskConstant.value = 1;
+        fragState.constantCount = 1;
+        fragState.constants = &maskConstant;
+    }
 
     WGPUDepthStencilState depthState;
     depthState.format = WGPUTextureFormat.depth24Plus;
@@ -757,11 +767,15 @@ struct SurfacePipelines {
     /// Depth-only `vs_shadow` pipelines, built lazily by the scene on first
     /// shadow use. Index: `(tangent ? 2 : 0) + (doubleSided ? 1 : 0)`.
     WGPURenderPipeline[4] shadowPipelines;
+    /// Same, for alpha-masked materials (`vs_shadow_mask` + `fs_shadow_mask`).
+    WGPURenderPipeline[4] shadowMaskPipelines;
 
     bool valid() const nothrow @nogc { return pipeline !is null && pipelineTangent !is null; }
 
     void release() nothrow @nogc @trusted {
         foreach (ref p; shadowPipelines)
+            if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
+        foreach (ref p; shadowMaskPipelines)
             if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
         if (pipeline !is null) { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
         if (pipelineTangent !is null) { wgpuRenderPipelineRelease(pipelineTangent); pipelineTangent = null; }

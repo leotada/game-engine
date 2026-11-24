@@ -208,6 +208,18 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> {
 
 Verification: `dub run --config=surface-shadow-check` renders a top-down scene at two times and asserts, from a frame capture, that shadows of dynamic, static and legacy `displace` casters move by the analytic amount, that `displaceEx` separates instances (phase from `custom.x`) and that a stock control stays still. Unit tests in `engine.gpu.shaders` cover the composition.
 
+### Alpha Mask
+
+`Material.renderState.alphaMask = true` discards pixels whose opacity (albedo alpha × `geometryOpacity` × tint alpha, or the `surface()` opacity) is below `MaterialParams.alphaCutoff`, and writes the rest as opaque. No sorting is needed, so `blend` can stay `BlendMode.opaque`.
+
+- **Color:** a pipeline variant with the WGSL constant `ALPHA_MASK` on; other materials compile it to false.
+- **Shadows:** masked casters get their own depth pipelines with a discard, for cascades, point and spot maps, on the dynamic, skinned, `StaticInstanceBuffer` and `displace` / `displaceEx` paths. Opaque casters keep the depth-only pipelines. Masked casters read the full vertices, not the position-only shadow indices.
+- **Limit:** shadow passes test the albedo alpha. Opacity computed by `surface()` is not evaluated there.
+- **Mips:** `TextureDesc.alphaCoverage = cutoff` rescales the alpha of every mip so the fraction of texels above the cutoff stays that of level 0. Distant foliage and fences do not thin out.
+- **glTF:** `GltfImportOptions.alphaModes` applies `alphaMode` and `alphaCutoff`: `MASK` sets the mask and coverage mips, `OPAQUE` sets `BlendMode.opaque`, `BLEND` keeps the default state.
+
+Verification: `dub run --config=render-check -- --check=mask`.
+
 ### ShadowMap (Depth-Only Pipeline)
 
 Depth map for directional shadows:

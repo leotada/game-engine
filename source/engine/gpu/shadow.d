@@ -38,7 +38,8 @@ import engine.core.log;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader  : createShaderModule;
 import engine.gpu.pipeline : FRAME_UNIFORMS_SIZE;
-import engine.gpu.shaders : shadowDepthShaderSource, shadowDepthSkinnedShaderSource;
+import engine.gpu.shaders : shadowDepthMaskShaderSource, shadowDepthShaderSource,
+    shadowDepthSkinnedMaskShaderSource, shadowDepthSkinnedShaderSource;
 import engine.graphics.texmesh : ShadowLodDraw, TexMesh;
 import engine.math.mat    : Mat4;
 import engine.math.vec    : Vec3;
@@ -46,6 +47,8 @@ import engine.math.vec    : Vec3;
 @safe:
 
 private immutable string kShadowDepthSkinnedWgsl = shadowDepthSkinnedShaderSource;
+private immutable string kShadowDepthMaskWgsl = shadowDepthMaskShaderSource;
+private immutable string kShadowDepthSkinnedMaskWgsl = shadowDepthSkinnedMaskShaderSource;
 
 /// Match `engine.scene.light.POINT_SHADOW_RESOLUTION`.
 enum uint DEFAULT_POINT_SHADOW_RESOLUTION = 512;
@@ -349,8 +352,50 @@ struct TexShadowPipeline {
     /// Group 0 = `surfaceBindGroupLayout`, group 1 = the material layout
     /// (`surfaceParams` at binding 7).
     WGPUPipelineLayout  surfacePipelineLayout;
+    /// Alpha-masked casters, built on first use. Index: vertex layout
+    /// (0 = stride 32, 1 = stride 48, 2 = skinned) * 2 + (doubleSided ? 1 : 0).
+    private WGPURenderPipeline[6] maskPipes;
+    private WGPUShaderModule maskModule, skinnedMaskModule;
+    private WGPUPipelineLayout maskLayout, skinnedMaskLayout;
 
     @disable this(this);
+
+    /// Pipeline for an alpha-masked static caster (group 1 = material), or null.
+    WGPURenderPipeline maskedPipelineFor(WGPUDevice device, uint vertexStride, bool doubleSided) nothrow @nogc @trusted {
+        if (maskLayout is null) return null;
+        immutable idx = (vertexStride == 48 ? 2 : 0) + (doubleSided ? 1 : 0);
+        if (maskPipes[idx] is null) {
+            if (maskModule is null) maskModule = createShaderModule(device, kShadowDepthMaskWgsl, "shadow_depth_mask");
+            WGPUVertexAttribute[3] attrs = [
+                { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+                { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+                { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+            ];
+            maskPipes[idx] = createTexShadowDrawPipeline(device, maskLayout, maskModule,
+                vertexStride == 48 ? 48 : 32, attrs[], doubleSided, true);
+        }
+        return maskPipes[idx];
+    }
+
+    /// Pipeline for an alpha-masked skinned caster (group 1 = palette, group 2 = material), or null.
+    WGPURenderPipeline maskedSkinnedPipelineFor(WGPUDevice device, bool doubleSided) nothrow @nogc @trusted {
+        if (skinnedMaskLayout is null) return null;
+        immutable idx = 4 + (doubleSided ? 1 : 0);
+        if (maskPipes[idx] is null) {
+            if (skinnedMaskModule is null)
+                skinnedMaskModule = createShaderModule(device, kShadowDepthSkinnedMaskWgsl, "shadow_depth_skinned_mask");
+            WGPUVertexAttribute[5] attrs = [
+                { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
+                { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
+                { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
+                { format: WGPUVertexFormat.uint32x4,  offset: 48, shaderLocation: 10 },
+                { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 11 },
+            ];
+            maskPipes[idx] = createTexShadowDrawPipeline(device, skinnedMaskLayout, skinnedMaskModule,
+                80, attrs[], doubleSided, true);
+        }
+        return maskPipes[idx];
+    }
 
     WGPURenderPipeline pipelineFor(uint vertexStride, bool doubleSided) pure nothrow @nogc {
         if (doubleSided)
@@ -368,6 +413,11 @@ struct TexShadowPipeline {
         }
         rel(pipe32Back); rel(pipe48Back); rel(pipe32None); rel(pipe48None);
         rel(pipeSkinnedBack); rel(pipeSkinnedNone);
+        foreach (ref p; maskPipes) rel(p);
+        if (maskModule !is null)        { wgpuShaderModuleRelease(maskModule); maskModule = null; }
+        if (skinnedMaskModule !is null) { wgpuShaderModuleRelease(skinnedMaskModule); skinnedMaskModule = null; }
+        if (maskLayout !is null)        { wgpuPipelineLayoutRelease(maskLayout); maskLayout = null; }
+        if (skinnedMaskLayout !is null) { wgpuPipelineLayoutRelease(skinnedMaskLayout); skinnedMaskLayout = null; }
         if (surfacePipelineLayout !is null)  { wgpuPipelineLayoutRelease(surfacePipelineLayout); surfacePipelineLayout = null; }
         if (surfaceBindGroupLayout !is null) { wgpuBindGroupLayoutRelease(surfaceBindGroupLayout); surfaceBindGroupLayout = null; }
         if (skinnedPipelineLayout !is null) { wgpuPipelineLayoutRelease(skinnedPipelineLayout); skinnedPipelineLayout = null; }
@@ -376,6 +426,52 @@ struct TexShadowPipeline {
         if (skinnedShaderModule !is null)   { wgpuShaderModuleRelease(skinnedShaderModule); skinnedShaderModule = null; }
         if (shaderModule !is null)          { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }
     }
+}
+
+/// Depth-only pipeline for `TexInstanceData` instances. `mask` adds the
+/// `fs_mask` fragment stage. Returns null on failure.
+private WGPURenderPipeline createTexShadowDrawPipeline(
+    WGPUDevice device, WGPUPipelineLayout layout, WGPUShaderModule mod, uint vStride,
+    scope const(WGPUVertexAttribute)[] vAttrs, bool doubleSided, bool mask) nothrow @nogc @trusted
+{
+    if (layout is null || mod is null) return null;
+    WGPUVertexAttribute[5] instanceAttrs = [
+        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
+        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
+        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
+        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
+    ];
+    WGPUVertexBufferLayout[2] bufferLayouts = [
+        { arrayStride: vStride, stepMode: WGPUVertexStepMode.vertex,
+          attributeCount: vAttrs.length, attributes: vAttrs.ptr },
+        { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
+          attributeCount: 5, attributes: instanceAttrs.ptr },
+    ];
+    WGPUDepthStencilState depthState;
+    depthState.format            = WGPUTextureFormat.depth32Float;
+    depthState.depthWriteEnabled = WGPUOptionalBool.true_;
+    depthState.depthCompare      = WGPUCompareFunction.less;
+    depthState.depthBias         = 1;
+    depthState.depthBiasSlopeScale = 1.75f;
+    depthState.depthBiasClamp    = 0.0f;
+
+    WGPUFragmentState fs;
+    fs.module_ = mod;
+    fs.entryPoint = wgpuStringView("fs_mask");
+
+    WGPURenderPipelineDescriptor pd;
+    pd.layout = layout;
+    pd.vertex.module_ = mod;
+    pd.vertex.entryPoint = wgpuStringView("vs_main");
+    pd.vertex.bufferCount = 2;
+    pd.vertex.buffers = bufferLayouts.ptr;
+    pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+    pd.primitive.frontFace = WGPUFrontFace.ccw;
+    pd.primitive.cullMode = doubleSided ? WGPUCullMode.none : WGPUCullMode.back;
+    pd.depthStencil = &depthState;
+    if (mask) pd.fragment = &fs;
+    return wgpuDeviceCreateRenderPipeline(device, &pd);
 }
 
 TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout skinBindGroupLayout = null,
@@ -406,42 +502,11 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout
         { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
         { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
     ];
-    WGPUVertexAttribute[5] instanceAttrs = [
-        { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
-        { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
-        { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
-        { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
-        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
-    ];
-
     WGPURenderPipeline buildPipe(WGPUPipelineLayout layout, WGPUShaderModule mod,
                                  uint vStride, const(WGPUVertexAttribute)* vAttrs, uint vAttrCount,
                                  bool doubleSided) {
-        WGPUVertexBufferLayout[2] bufferLayouts = [
-            { arrayStride: vStride, stepMode: WGPUVertexStepMode.vertex,
-              attributeCount: vAttrCount, attributes: vAttrs },
-            { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
-              attributeCount: 5, attributes: instanceAttrs.ptr },
-        ];
-        WGPUDepthStencilState depthState;
-        depthState.format            = WGPUTextureFormat.depth32Float;
-        depthState.depthWriteEnabled = WGPUOptionalBool.true_;
-        depthState.depthCompare      = WGPUCompareFunction.less;
-        depthState.depthBias         = 1;
-        depthState.depthBiasSlopeScale = 1.75f;
-        depthState.depthBiasClamp    = 0.0f;
-
-        WGPURenderPipelineDescriptor pd;
-        pd.layout = layout;
-        pd.vertex.module_ = mod;
-        pd.vertex.entryPoint = wgpuStringView("vs_main");
-        pd.vertex.bufferCount = 2;
-        pd.vertex.buffers = bufferLayouts.ptr;
-        pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
-        pd.primitive.frontFace = WGPUFrontFace.ccw;
-        pd.primitive.cullMode = doubleSided ? WGPUCullMode.none : WGPUCullMode.back;
-        pd.depthStencil = &depthState;
-        auto pipe = wgpuDeviceCreateRenderPipeline(device, &pd);
+        auto pipe = createTexShadowDrawPipeline(device, layout, mod, vStride, vAttrs[0 .. vAttrCount],
+                                                doubleSided, false);
         if (pipe is null) fatal("Tex shadow pipeline creation failed");
         return pipe;
     }
@@ -491,6 +556,17 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout
         spd.bindGroupLayoutCount = 2;
         spd.bindGroupLayouts = sl.ptr;
         r.surfacePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &spd);
+
+        WGPUBindGroupLayout[3] ml = [r.bindGroupLayout, materialBindGroupLayout, null];
+        WGPUPipelineLayoutDescriptor mpd;
+        mpd.bindGroupLayoutCount = 2;
+        mpd.bindGroupLayouts = ml.ptr;
+        r.maskLayout = wgpuDeviceCreatePipelineLayout(device, &mpd);
+        if (skinBindGroupLayout !is null) {
+            ml = [r.bindGroupLayout, skinBindGroupLayout, materialBindGroupLayout];
+            mpd.bindGroupLayoutCount = 3;
+            r.skinnedMaskLayout = wgpuDeviceCreatePipelineLayout(device, &mpd);
+        }
     }
     return r;
 }
@@ -503,27 +579,29 @@ enum uint SURFACE_SHADOW_LIGHT_BINDING = 20;
 /// move the cast shadow. Reads instance data (model matrix at 3..6, `custom`
 /// at location 9 from the same 96-byte instance stride, no extra bandwidth).
 /// Returns null on failure. `vertexStride` is 32 (`TexVert`) or 48 (`TexTanVert`).
+/// `mask` selects the alpha-masked entry points (`vs_shadow_mask` / `fs_shadow_mask`).
 WGPURenderPipeline createSurfaceShadowPipeline(WGPUDevice device, WGPUPipelineLayout surfaceLayout,
                                                WGPUShaderModule surfaceModule, uint vertexStride,
-                                               bool doubleSided) nothrow @nogc @trusted {
+                                               bool doubleSided, bool mask = false) nothrow @nogc @trusted {
     if (surfaceLayout is null || surfaceModule is null) return null;
     WGPUVertexAttribute[3] vertexAttrs = [
         { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
         { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
         { format: WGPUVertexFormat.float32x2, offset: 24, shaderLocation: 2 },
     ];
-    WGPUVertexAttribute[5] instanceAttrs = [
+    WGPUVertexAttribute[6] instanceAttrs = [
         { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
         { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
         { format: WGPUVertexFormat.float32x4, offset: 32, shaderLocation: 5 },
         { format: WGPUVertexFormat.float32x4, offset: 48, shaderLocation: 6 },
         { format: WGPUVertexFormat.float32x4, offset: 80, shaderLocation: 9 },
+        { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 }, // masked casters only
     ];
     WGPUVertexBufferLayout[2] bufferLayouts = [
         { arrayStride: vertexStride, stepMode: WGPUVertexStepMode.vertex,
           attributeCount: 3, attributes: vertexAttrs.ptr },
         { arrayStride: 96, stepMode: WGPUVertexStepMode.instance_,
-          attributeCount: 5, attributes: instanceAttrs.ptr },
+          attributeCount: mask ? 6 : 5, attributes: instanceAttrs.ptr },
     ];
     WGPUDepthStencilState depthState;
     depthState.format            = WGPUTextureFormat.depth32Float;
@@ -533,10 +611,15 @@ WGPURenderPipeline createSurfaceShadowPipeline(WGPUDevice device, WGPUPipelineLa
     depthState.depthBiasSlopeScale = 1.75f;
     depthState.depthBiasClamp    = 0.0f;
 
+    WGPUFragmentState fs;
+    fs.module_ = surfaceModule;
+    fs.entryPoint = wgpuStringView("fs_shadow_mask");
+
     WGPURenderPipelineDescriptor pd;
     pd.layout = surfaceLayout;
+    if (mask) pd.fragment = &fs;
     pd.vertex.module_ = surfaceModule;
-    pd.vertex.entryPoint = wgpuStringView("vs_shadow");
+    pd.vertex.entryPoint = wgpuStringView(mask ? "vs_shadow_mask" : "vs_shadow");
     pd.vertex.bufferCount = 2;
     pd.vertex.buffers = bufferLayouts.ptr;
     pd.primitive.topology = WGPUPrimitiveTopology.triangleList;

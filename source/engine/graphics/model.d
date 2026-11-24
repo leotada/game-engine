@@ -446,21 +446,22 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
     // Textures: one slot per (image, usage), one solid fallback per material, plus 5 layer slots per material.
     size_t imageCount = ("images" in doc.root) ? doc.root["images"].array.length : 0;
     immutable matCount = scene.materials.length;
-    immutable size_t layerTexBase = imageCount * 3 + matCount + 1;
+    immutable size_t layerTexBase = imageCount * 4 + matCount + 1;
     asset.textures = new Texture[layerTexBase + matCount * 5];
-    bool[] loaded = new bool[imageCount * 3];
+    bool[] loaded = new bool[imageCount * 4];
 
-    // One slot per (image, usage): data, normal map, sRGB color.
-    Texture* imageTexture(int image, bool normal, bool color = false) {
+    // One slot per (image, usage): data, normal map, sRGB color, masked base color.
+    Texture* imageTexture(int image, bool normal, bool color = false, float alphaCoverage = 0) {
         if (image < 0 || image >= cast(int) imageCount) return null;
         immutable srgb = color && opts.gltf.srgbColor;
-        immutable slot = image * 3 + (normal ? 1 : (srgb ? 2 : 0));
+        immutable slot = image * 4 + (normal ? 1 : (alphaCoverage > 0 ? 3 : (srgb ? 2 : 0)));
         if (!loaded[slot]) {
             loaded[slot] = true;
             TextureDesc d;
             d.generateMips = opts.generateMips;
             d.normalMap = normal;
             d.srgb = srgb;
+            d.alphaCoverage = alphaCoverage;
             auto t = loadGltfImage(gpu, doc, image, d);
             move(t, asset.textures[slot]);
         }
@@ -475,9 +476,10 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
             asset.materialNames[mi] = asset.names.intern(md.name);
         MaterialParams params = md.params;
         params.flags = md.params.flags & MaterialFlags.thinWalled;
-        Texture* albedo = imageTexture(md.baseColorImage, false, true);
+        Texture* albedo = imageTexture(md.baseColorImage, false, true,
+                                           gltfBaseColorDesc(md, opts.gltf, true).alphaCoverage);
         if (albedo is null) {
-            auto solidSlot = &asset.textures[imageCount * 3 + mi];
+            auto solidSlot = &asset.textures[imageCount * 4 + mi];
             auto t = Texture.solid(gpu, toU8(params.baseColor[0]), toU8(params.baseColor[1]),
                                    toU8(params.baseColor[2]), toU8(params.geometryOpacity));
             move(t, *solidSlot);
@@ -505,7 +507,7 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
                 gpu, doc, md, params, layerTexs, hasLayers, opts.generateMips, opts.gltf.srgbColor);
         }
         auto m = Material.create(gpu, materialLayout, sampler, *albedo, params, mr, nrm, ao, em, layers);
-        m.renderState.doubleSided = md.doubleSided;
+        m.renderState = gltfRenderState(md, opts.gltf);
         move(m, asset.materials[mi]);
         if (mi < matCount) {
             foreach (li; 0 .. 5)
