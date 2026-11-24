@@ -46,7 +46,7 @@ enum MaterialFlags : uint {
     ssr                = 1 << 15,
 }
 
-/// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (208 bytes = 13 × vec4<f32>).
+/// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).
 struct MaterialParams {
     // vec4 [0] (offset 0..16): Base color & weight
     float[3] baseColor = [1.0f, 1.0f, 1.0f];      // openpbr: base_color
@@ -109,6 +109,17 @@ struct MaterialParams {
     // vec4 [12] (offset 192..208): Subsurface RGB radius scale & scattering anisotropy
     float[3] subsurfaceRadiusScale = [1.0f, 0.35f, 0.15f]; // openpbr: subsurface_radius_scale (RGB MFP)
     float    subsurfaceAnisotropy = 0.0f;         // openpbr: subsurface_scatter_anisotropy [-1..1]
+
+    // vec4 [13] (offset 208..224): Surface options (each is ignored until its feature is enabled)
+    float    alphaCutoff = 0.5f;                  // alpha-mask threshold (`RenderState.alphaMask`)
+    float    softDistance = 0.0f;                 // soft-particle fade distance in meters (`MaterialFlags.soft`)
+    float    thinRadius = 0.0f;                   // world radius of thin tubes (`MaterialFlags.thin`)
+    float    specularAaStrength = 0.0f;           // geometric specular antialiasing (0 = off)
+
+    // vec4 [14] (offset 224..240): Flipbook atlas
+    float[2] flipbookGrid = [1.0f, 1.0f];         // atlas columns, rows (`MaterialFlags.flipbook`)
+    float    flipbookBlend = 1.0f;                // 1 = cross-fade consecutive frames, 0 = hard steps
+    float    _reserved = 0.0f;
 }
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);

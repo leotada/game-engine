@@ -52,6 +52,15 @@ struct MaterialParams {
 
     subsurfaceRadiusScale: vec3<f32>,
     subsurfaceAnisotropy: f32,
+
+    alphaCutoff: f32,
+    softDistance: f32,
+    thinRadius: f32,
+    specularAaStrength: f32,
+
+    flipbookGrid: vec2<f32>,
+    flipbookBlend: f32,
+    _reserved: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
 @group(1) @binding(1) var texSampler: sampler;

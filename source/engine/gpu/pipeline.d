@@ -399,8 +399,8 @@ enum FRAME_UNIFORMS_SIZE = 1024;
 /// opaque scene color pyramid (11), opaque scene depth (12),
 /// spot lights (13), cluster grid (14), and cluster light indices (15).
 enum uint FRAME_BINDING_COUNT = 16;
-/// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7/8 block, 13 × vec4<f32> = 208 bytes).
-enum MATERIAL_PARAMS_SIZE = 208;
+/// MaterialParams UBO size (OpenPBR v1.1 + OPBR-6/7/8 block + surface options, 15 × vec4<f32> = 240 bytes).
+enum MATERIAL_PARAMS_SIZE = 240;
 /// Entries in the material bind group (@group(1)): params UBO, sampler,
 /// albedo/MR/normal/AO/emissive maps (2..6), custom surfaceParams UBO (7),
 /// and OPBR-6/7 layer maps: coat, coatNormal, fuzz, anisoFilm, transmission (8..12).
@@ -526,7 +526,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
     // --- Group 1: Material ---
     WGPUBindGroupLayoutEntry[MATERIAL_BINDING_COUNT] matEntries;
     matEntries[0].binding = 0;
-    matEntries[0].visibility = WGPUShaderStage.fragment;
+    matEntries[0].visibility = WGPUShaderStage.vertex | WGPUShaderStage.fragment;
     matEntries[0].buffer.type = WGPUBufferBindingType.uniform;
     matEntries[0].buffer.minBindingSize = MATERIAL_PARAMS_SIZE;
 
