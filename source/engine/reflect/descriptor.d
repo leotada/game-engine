@@ -65,8 +65,10 @@ struct FieldDescriptor {
     uint offset = 0;
     uint size = 0;
     FieldKind kind = FieldKind.unknown;
-    uint typeIndex = 0; // TypeRegistry index if struct/enum
+    uint typeIndex = 0; // `TypeRegistry.nestedTypes` index + 1 for a struct (or an array of structs); 0 = none
     uint arrayLen = 1;
+    FieldKind elemKind = FieldKind.unknown; // element kind of a fixedArray
+    uint elemSize = 0;                      // element size of a fixedArray, in bytes
     FieldAttrs attrs;
 }
 
@@ -81,6 +83,7 @@ struct TypeDescriptor {
     uint defaultOffset = 0; // offset in TypeRegistry.defaultStorage
     uint defaultLength = 0;
     uint lifecycleMask = 0;
+    bool stale = false; // unregistered (script unload): hidden from `find`, replaced by the next `register`
 }
 
 static assert(isPod!TypeDescriptor);
@@ -92,11 +95,14 @@ enum ComponentTypeId invalidComponentTypeId = ComponentTypeId.max;
 struct TypeRegistry {
     TypeDescriptor[] types;
     FieldDescriptor[] fields;
+    // Structs used as field types. Kept apart from `types`: they are not components and have no store.
+    TypeDescriptor[] nestedTypes;
+    FieldDescriptor[] nestedFields;
     ubyte[] defaultStorage;
 
     ComponentTypeId find(scope const(char)[] qualifiedName, ref const StringTable strings) const nothrow @nogc {
         foreach (i, ref const t; types) {
-            if (strings.get(t.qualifiedName) == qualifiedName)
+            if (!t.stale && strings.get(t.qualifiedName) == qualifiedName)
                 return cast(ComponentTypeId) i;
         }
         return invalidComponentTypeId;
@@ -104,7 +110,7 @@ struct TypeRegistry {
 
     ComponentTypeId findById(StringId qualifiedNameId) const nothrow @nogc {
         foreach (i, ref const t; types) {
-            if (t.qualifiedName == qualifiedNameId)
+            if (!t.stale && t.qualifiedName == qualifiedNameId)
                 return cast(ComponentTypeId) i;
         }
         return invalidComponentTypeId;
@@ -119,6 +125,42 @@ struct TypeRegistry {
         if (t.firstField >= fields.length || t.firstField + t.fieldCount > fields.length)
             return null;
         return fields[t.firstField .. t.firstField + t.fieldCount];
+    }
+
+    /// Fields of a nested struct type (`FieldDescriptor.typeIndex`).
+    const(FieldDescriptor)[] getNestedFields(uint typeIndex) const nothrow @nogc {
+        if (typeIndex == 0 || typeIndex > nestedTypes.length)
+            return null;
+        const t = nestedTypes[typeIndex - 1];
+        return nestedFields[t.firstField .. t.firstField + t.fieldCount];
+    }
+
+    /// True when a nested struct or fixed array of `id` holds a `StringId` or an `@entityRef`: values that mean
+    /// something only in one world, so a raw byte copy of the component is not portable.
+    bool hasNestedReferences(ComponentTypeId id) const nothrow @nogc {
+        foreach (ref const f; getFields(id))
+            if (nestedReference(f))
+                return true;
+        return false;
+    }
+
+    private bool nestedReference(ref const FieldDescriptor f) const nothrow @nogc {
+        if (f.kind == FieldKind.fixedArray && (f.elemKind == FieldKind.stringId || f.elemKind == FieldKind.entityRef))
+            return true;
+        if (f.kind != FieldKind.struct_ && f.kind != FieldKind.fixedArray)
+            return false;
+        foreach (ref const n; getNestedFields(f.typeIndex)) {
+            if (n.kind == FieldKind.stringId || n.kind == FieldKind.entityRef || nestedReference(n))
+                return true;
+        }
+        return false;
+    }
+
+    /// Forget the layout of a type whose code was unloaded. Its id stays reserved: the next `register` of the same
+    /// name refills it with the new layout.
+    void markStale(ComponentTypeId id) nothrow @nogc {
+        if (id < types.length)
+            types[id].stale = true;
     }
 
     const(ubyte)[] getDefaults(ComponentTypeId id) const nothrow @nogc {
@@ -174,9 +216,20 @@ struct TypeRegistry {
         static assert(isPod!T, "Component struct must be POD (no GC indirections)");
 
         immutable name = fullyQualifiedName!T;
-        auto existing = find(name, strings);
-        if (existing != invalidComponentTypeId)
-            return existing;
+        ComponentTypeId slot = invalidComponentTypeId;
+        foreach (i, ref const t; types) {
+            if (strings.get(t.qualifiedName) == name) {
+                slot = cast(ComponentTypeId) i;
+                break;
+            }
+        }
+        if (slot != invalidComponentTypeId && !types[slot].stale) {
+            // Types are keyed by bare identifier: two different structs with the same name would share one store.
+            if (types[slot].size != T.sizeof)
+                throw new Exception("component type name collision: '" ~ name
+                    ~ "' is already registered with a different size");
+            return slot;
+        }
 
         TypeDescriptor desc;
         desc.qualifiedName = strings.intern(name);
@@ -200,9 +253,53 @@ struct TypeRegistry {
             }
         }
 
+        if (slot != invalidComponentTypeId) {
+            types[slot] = desc;
+            return slot;
+        }
         immutable typeId = cast(ComponentTypeId) types.length;
         types ~= desc;
         return typeId;
+    }
+
+    /// Describe struct `S` used as a field type; returns its `typeIndex`.
+    private uint registerNested(S)(ref StringTable strings) @trusted {
+        import std.traits : stdFullyQualifiedName = fullyQualifiedName;
+
+        // Describe the fields first: they may register their own nested types.
+        FieldDescriptor[] described;
+        static foreach (memberName; __traits(allMembers, S)) {
+            static if (isFieldAccessible!(S, memberName))
+                described ~= describeField!(S, memberName)(strings, this);
+        }
+        // A struct of the same name may have changed after a script reload: compare the layout, not only the name.
+        immutable sid = strings.intern(stdFullyQualifiedName!S);
+        foreach (i, ref const t; nestedTypes)
+            if (t.qualifiedName == sid && t.size == S.sizeof
+                    && sameFields(nestedFields[t.firstField .. t.firstField + t.fieldCount], described))
+                return cast(uint) i + 1;
+
+        TypeDescriptor desc;
+        desc.qualifiedName = sid;
+        desc.size = cast(uint) S.sizeof;
+        desc.alignment = cast(uint) S.alignof;
+        desc.firstField = cast(uint) nestedFields.length;
+        desc.fieldCount = cast(uint) described.length;
+        nestedFields ~= described;
+        nestedTypes ~= desc;
+        return cast(uint) nestedTypes.length;
+    }
+
+    private static bool sameFields(scope const(FieldDescriptor)[] a, scope const(FieldDescriptor)[] b) pure nothrow @nogc {
+        if (a.length != b.length)
+            return false;
+        foreach (i, ref const x; a) {
+            const y = &b[i];
+            if (x.name != y.name || x.offset != y.offset || x.size != y.size || x.kind != y.kind
+                    || x.typeIndex != y.typeIndex || x.elemKind != y.elemKind || x.elemSize != y.elemSize)
+                return false;
+        }
+        return true;
     }
 }
 
@@ -250,6 +347,16 @@ private FieldDescriptor describeField(T, string memberName)(ref StringTable stri
     fd.offset = cast(uint) __traits(getMember, T.init, memberName).offsetof;
     fd.size = cast(uint) FieldType.sizeof;
     fd.kind = deduceFieldKind!FieldType;
+    static if (deduceFieldKind!FieldType == FieldKind.struct_) {
+        fd.typeIndex = reg.registerNested!FieldType(strings);
+    } else static if (deduceFieldKind!FieldType == FieldKind.fixedArray) {
+        static if (is(FieldType : E[N], E, size_t N)) {
+            fd.elemKind = deduceFieldKind!E;
+            fd.elemSize = cast(uint) E.sizeof;
+            static if (deduceFieldKind!E == FieldKind.struct_)
+                fd.typeIndex = reg.registerNested!E(strings);
+        }
+    }
 
     // Inspect UDAs
     static foreach (attr; __traits(getAttributes, __traits(getMember, T, memberName))) {

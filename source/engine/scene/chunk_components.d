@@ -228,7 +228,8 @@ ubyte[] encodeChunkWithComponents(const ref SceneFile scene, ref TypeRegistry re
         SceneComponentData[] keep;
         foreach (ref c; e.customComponents) {
             immutable tid = reg.find(c.typeName, strings);
-            if (tid == invalidComponentTypeId) {
+            // Binary records only rewrite top-level StringId / @entityRef fields: types with nested ones stay JSON.
+            if (tid == invalidComponentTypeId || reg.hasNestedReferences(tid)) {
                 keep ~= c;
                 continue;
             }
@@ -924,4 +925,43 @@ version (unittest) {
     assert(decodeChunk(encodeChunkWithComponents(s, writer.types, writer.strings), c, err), err);
     assert(c.componentBlocks.length == 1 && c.scene.entities[0].customComponents.length == 0);
     assert(c.scene.entities[1].customComponents.length == 1);
+}
+
+@("chunkComponents.nestedReferencesStayJson") unittest {
+    static struct Slot { StringId item; uint count = 1; }
+    static struct Plain { float a = 1; int[2] b = [1, 2]; }
+    static struct Bag { Slot[2] slots; Slot extra; }
+    static struct Crate { Plain p; }
+    SceneWorld writer;
+    writer.ensureRegistered!Bag();
+    writer.ensureRegistered!Crate();
+    SceneFile s;
+    s.schemaVersion = sceneSchemaVersionV2;
+    SceneEntityData e;
+    e.id = 1;
+    e.parent = sceneNoParent;
+    e.transform.rot = [0, 0, 0, 1];
+    e.transform.scale = [1, 1, 1];
+    e.customComponents ~= SceneComponentData("Bag",
+        parseJSON(`{"slots":[{"item":"sword","count":2},{"item":"key"}],"extra":{"item":"map","count":9}}`));
+    e.customComponents ~= SceneComponentData("Crate", parseJSON(`{"p":{"a":4,"b":[5,6]}}`));
+    s.entities ~= e;
+    GescChunk c;
+    string err;
+    assert(decodeChunk(encodeChunkWithComponents(s, writer.types, writer.strings), c, err), err);
+    assert(c.componentBlocks.length == 1 && c.scene.entities[0].customComponents.length == 1);
+
+    SceneWorld w;
+    w.ensureRegistered!Bag();
+    w.ensureRegistered!Crate();
+    w.strings.intern("shift ids");
+    SceneLoadOptions opts;
+    opts.validate = false;
+    opts.checkAssetFiles = false;
+    GescApplyResult comps;
+    auto res = applyChunk(w, c, Vec3(0, 0, 0), opts, comps);
+    auto bag = w.get!Bag(res.spawnedEntities[0]);
+    assert(w.strings.get(bag.slots[0].item) == "sword" && bag.slots[0].count == 2);
+    assert(w.strings.get(bag.slots[1].item) == "key" && w.strings.get(bag.extra.item) == "map" && bag.extra.count == 9);
+    assert(w.get!Crate(res.spawnedEntities[0]).p == Plain(4, [5, 6]));
 }

@@ -16,6 +16,10 @@
   axis bindings add no second deadzone by default; `bindingAt` leaves its output untouched on failure.
 - **Input pumped before present** (`App.pumpEvents`): key/mouse/gamepad edges, motion, wheel and text are delivered by
   the next `pollEvents` instead of being dropped (`InputState.beginLateEvents`).
+- **Component serialization** (`engine.reflect.serialize`): enums are read/written with their real size (a `ubyte` enum
+  overwrote its neighbours), nested structs and fixed arrays are serialized (they were dropped, e.g.
+  `PrefabInstance.prefabGuid`), and unsigned integers above `long.max` load. Registering two different structs with the
+  same name is an error instead of silent memory corruption.
 
 ### Other changes
 

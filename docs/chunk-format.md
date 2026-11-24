@@ -73,7 +73,8 @@ component : str typeName | u32 count | u32 stringCount, stringCount x str |
   world's `StringTable` on load. **`@entityRef uint`** fields (`engine.reflect.attrs.entityRef`) hold the
   chunk-local entity id and are remapped to the live `EntityId` (`0` or an unknown id becomes `EntityId.max`).
 - JSON stays the editable source (`*.scene.json`); `.gesc` is the cooked artifact. A component whose JSON does not
-  fit its registered type stays in `customJson`. `gescMaterializeJson` turns binary components back into JSON
+  fit its registered type stays in `customJson`, and so does a type that holds a `StringId` or `@entityRef` inside a
+  nested struct or fixed array (binary records only rewrite top-level ones). `gescMaterializeJson` turns binary components back into JSON
   using the schemas stored in the file (no registry needed).
 
 ### Compatibility

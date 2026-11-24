@@ -10,6 +10,8 @@ This guide details the scripting API, component model, reflection attributes, li
 2. **Component Structs are POD:** Components must be plain old data (`isPod!T`).
    - No GC heap references (`string`, dynamic arrays, class references, or delegates).
    - Use `StringId` for interned strings and `Handle!T` / `AssetRef!T` for resource handles.
+   - Enums of any base size, nested POD structs and fixed arrays are serialized (scenes, Play Mode, hot reload).
+   - Components are keyed by struct name: two different structs with the same name cannot be registered together.
    - Component state is stored contiguously in engine memory (`SceneWorld`), allowing cache-efficient iteration and instantaneous serialization.
 3. **Gameplay Logic is Free:** Inside lifecycle methods and systems, game code can freely allocate temporary objects, use formatting, and query entities.
 
