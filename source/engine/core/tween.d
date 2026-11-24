@@ -296,13 +296,16 @@ struct Timers {
             if (s.remaining <= 0.0f) {
                 s.firedThisFrame = true;
                 if (s.callback !is null) {
+                    immutable gen = s.generation;
                     () @trusted { s.callback(s.userData); }();
+                    // The callback canceled this timer; the slot may already hold a new one.
+                    if (s.generation != gen) continue;
                 }
                 if (s.repeat) {
                     if (s.interval > 0.0f) {
-                        while (s.remaining <= 0.0f) {
-                            s.remaining += s.interval;
-                        }
+                        import core.stdc.math : fmodf;
+                        // Skip missed periods in O(1): a loop would stall when dt is much larger than interval.
+                        s.remaining = s.interval - fmodf(-s.remaining, s.interval);
                     } else {
                         s.remaining = 0.0f;
                     }
@@ -386,4 +389,35 @@ unittest {
     assert(!tm.isActive(tOnce));
     assert(tm.isActive(tRep));
     assert(!tm.fired(tRep));
+}
+
+@("timers: a timer created by the callback that cleared its own slot survives")
+unittest {
+    static Timers tm;
+    static TimerId created;
+    tm.after(0.1f, (void*) nothrow @nogc {
+        tm.clear();
+        created = tm.after(1.0f);
+    });
+    tm.update(0.2f);
+    assert(tm.isActive(created));
+    assert(!tm.fired(created));
+    tm.update(1.1f);
+    assert(tm.fired(created));
+}
+
+@("timers: tiny repeat interval does not stall on a large dt")
+unittest {
+    Timers tm;
+    immutable id = tm.every(1e-7f);
+    tm.update(10.0f);
+    assert(tm.fired(id) && tm.isActive(id));
+
+    immutable rep = tm.every(0.4f);
+    tm.update(1.0f); // two periods and a half
+    assert(tm.fired(rep));
+    tm.update(0.19f);
+    assert(!tm.fired(rep));
+    tm.update(0.02f);
+    assert(tm.fired(rep));
 }

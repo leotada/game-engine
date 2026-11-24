@@ -8,6 +8,8 @@
   literally); arguments without a placeholder are still appended. Floats, `bool`, `long.min` and `ensure()` messages
   print correctly.
 - **`FrameArena.fmt`** returns `null` on overflow instead of aborting with a `RangeError`.
+- **`Timers`**: a timer created by a callback that canceled its own timer is no longer deactivated, and a repeating
+  timer with a tiny interval no longer stalls on a large `dt`.
 
 ### Other changes
 
