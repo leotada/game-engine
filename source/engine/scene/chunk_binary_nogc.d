@@ -50,7 +50,7 @@ size_t gescNoGcLiveBytes() nothrow @nogc @trusted {
 }
 
 private struct Node {
-    Node* next;
+    align(16) Node* next; // pads to 16 bytes on 32-bit targets (wasm32) too
     size_t size;        /// payload bytes
 }
 static assert(Node.sizeof == 16, "payload must stay 16-byte aligned");

@@ -96,7 +96,7 @@ void main(string[] args) {
                 streamer.stopWorker();
         }
         info("Player: running %u headless frames...", headlessFrames);
-        size_t gcBefore = 0;
+        ulong gcBefore = 0;
         if (assertNoGc) {
             GC.collect();
             gcBefore = GC.stats().allocatedInCurrentThread;
@@ -109,8 +109,8 @@ void main(string[] args) {
         }
 
         if (assertNoGc) {
-            size_t gcAfter = GC.stats().allocatedInCurrentThread;
-            size_t delta = gcAfter - gcBefore;
+            immutable ulong gcAfter = GC.stats().allocatedInCurrentThread;
+            immutable ulong delta = gcAfter - gcBefore;
             writefln("GC allocations over %u frames in Standalone Player: %u bytes", headlessFrames, delta);
             assert(delta == 0, "GC allocations detected in standalone player frame loop!");
         }
@@ -223,7 +223,7 @@ void main(string[] args) {
         // after a short warm-up, then report GC growth and exit.
         enum WARMUP = 5;
         foreach (_; 0 .. WARMUP) frameFn(1.0f / 60.0f);
-        size_t gcBefore = 0;
+        ulong gcBefore = 0;
         if (assertNoGc) {
             GC.collect();
             gcBefore = GC.stats().allocatedInCurrentThread;

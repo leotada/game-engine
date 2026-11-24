@@ -21,7 +21,7 @@ private uint loadU32(ulong address) nothrow @nogc @trusted {
     return p[0] | (cast(uint) p[1] << 8) | (cast(uint) p[2] << 16) | (cast(uint) p[3] << 24);
 }
 
-private float loadFloat(ulong address, size_t floatIndex) nothrow @nogc {
+private float loadFloat(ulong address, ulong floatIndex) nothrow @nogc {
     return bitsFloat(loadU32(address + floatIndex * 4));
 }
 
