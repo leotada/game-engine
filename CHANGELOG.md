@@ -34,6 +34,8 @@
 - **Prefab overrides**: every field of Transform, Name, material, light, physics and custom components is diffed and
   re-applied on prefab hot reload (most were lost), and entities are matched by hierarchy and name, so recycled ids,
   deleted children or ids other than 1..n no longer move overrides to the wrong entity.
+- **`CharacterController`**: jumps reach their full height (the ground probe canceled them after one frame), falling near
+  the ground no longer hovers, and ground friction does not apply in the air.
 
 ### Other changes
 

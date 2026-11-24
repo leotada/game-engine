@@ -27,6 +27,9 @@ struct CharacterController {
     bool onGround;
     bool clipVelocity = true;
 
+    private bool rising;   // jumped and still going up: ground right below must not cancel the jump
+    private bool touching; // a walkable surface touched the capsule in the last move
+
     enum int planeCapacity = 16;
 
     this(Vec3 position, float height = 1.8f, float radius = 0.35f) pure nothrow @nogc {
@@ -50,7 +53,8 @@ struct CharacterController {
         if (dt <= 0.0f)
             return;
 
-        applyGroundFriction(dt);
+        if (onGround)
+            applyGroundFriction(dt);
 
         immutable wish = flatten(wishDir);
         immutable wishLenSq = wish.x * wish.x + wish.y * wish.y + wish.z * wish.z;
@@ -70,29 +74,37 @@ struct CharacterController {
             }
         }
 
-        if (onGround)
+        if (onGround && touching)
             velocity.y = 0.0f;
 
-        if (jump && onGround) {
+        immutable jumped = jump && onGround;
+        if (jumped) {
             velocity.y = jumpSpeed;
             onGround = false;
+            rising = true;
         }
 
         velocity.y -= gravity * dt;
 
         immutable start = position;
         immutable target = position + velocity * dt;
-        solveMove(world, target);
+        immutable landed = solveMove(world, target);
 
         if (!clipVelocity && dt > 0.0f)
             velocity = (position - start) * (1.0f / dt);
 
-        updateGroundState(world);
+        if (velocity.y <= 0.0f || (landed && !jumped))
+            rising = false;
+        if (rising)
+            onGround = false;
+        else
+            updateGroundState(world);
     }
 
     /// Direct kinematic displacement with collision resolution (no wish accel).
     void moveDelta(ref PhysicsWorld world, Vec3 desiredDelta) nothrow @nogc @trusted {
         immutable target = position + desiredDelta;
+        rising = false;
         solveMove(world, target);
         updateGroundState(world);
     }
@@ -118,7 +130,8 @@ private:
         velocity.z *= scale;
     }
 
-    void solveMove(ref PhysicsWorld world, Vec3 target) nothrow @nogc @trusted {
+    /// Returns true when the velocity was pointing into a walkable surface (before being clipped by it).
+    bool solveMove(ref PhysicsWorld world, Vec3 target) nothrow @nogc @trusted {
         auto filter = defaultPhysicsQueryFilter();
         b3Capsule mover = localCapsule();
         b3CollisionPlane[planeCapacity] planes;
@@ -151,16 +164,22 @@ private:
                 break;
         }
 
+        immutable unclipped = velocity;
         if (clipVelocity && gather.count > 0)
             velocity = toEngineVec3(b3ClipVectorD(toB3Vec3(velocity), planes.ptr, gather.count));
 
         onGround = false;
+        bool landed = false;
         foreach (i; 0 .. gather.count) {
-            if (planes[i].plane.normal.y >= maxSlopeY) {
+            immutable n = planes[i].plane.normal;
+            if (n.y >= maxSlopeY) {
                 onGround = true;
-                break;
+                if (unclipped.x * n.x + unclipped.y * n.y + unclipped.z * n.z <= 0.0f)
+                    landed = true;
             }
         }
+        touching = onGround;
+        return landed;
     }
 
     void updateGroundState(ref PhysicsWorld world) nothrow @nogc @trusted {
@@ -204,4 +223,37 @@ private Vec3 flatten(Vec3 v) pure nothrow @nogc {
 private float horizontalSpeed(Vec3 v) nothrow @nogc {
     import core.stdc.math : sqrtf;
     return sqrtf(v.x * v.x + v.z * v.z);
+}
+
+@("character: a jump reaches its full height and lands; no ground friction in the air")
+@safe unittest {
+    import engine.physics.body : createStaticBox;
+    auto world = PhysicsWorld.createDefault();
+    createStaticBox(world, Vec3(0, -0.5f, 0), Vec3(50, 0.5f, 50));
+    world.step(1.0f / 60.0f, 4);
+    auto c = CharacterController(Vec3(0, 1.0f, 0));
+    foreach (_; 0 .. 60) c.move(world, Vec3(0, 0, 0), 1.0f / 60.0f);
+    assert(c.onGround);
+    immutable base = c.position.y;
+
+    float apex = base;
+    int airFrames;
+    c.move(world, Vec3(1, 0, 0), 1.0f / 60.0f, true);
+    foreach (_; 0 .. 60) {
+        if (c.onGround) break;
+        airFrames++;
+        if (c.position.y > apex) apex = c.position.y;
+        c.move(world, Vec3(1, 0, 0), 1.0f / 60.0f);
+    }
+    assert(apex - base > 0.75f && apex - base < 0.9f); // v^2 / 2g = 0.83 m
+    assert(airFrames > 30 && airFrames < 45 && c.onGround);
+    foreach (_; 0 .. 30) c.move(world, Vec3(0, 0, 0), 1.0f / 60.0f);
+    import std.math : abs;
+    assert(c.onGround && abs(c.position.y - base) < 0.03f);
+
+    // Coasting in the air keeps its horizontal speed.
+    auto air = CharacterController(Vec3(0, 30, 0));
+    air.velocity = Vec3(4, 0, 0);
+    foreach (_; 0 .. 20) air.move(world, Vec3(0, 0, 0), 1.0f / 60.0f);
+    assert(abs(air.velocity.x - 4) < 1e-3f);
 }
