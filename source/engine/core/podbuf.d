@@ -72,9 +72,16 @@ struct PodBuffer(T) {
 
     /// Append one element (amortized O(1), allocation only on growth).
     ref T put()(auto ref const T value) return nothrow @nogc {
-        if (length_ == capacity_) reserve(length_ + 1);
-        length_++;
-        this[][length_ - 1] = value;
+        if (length_ == capacity_) {
+            // `value` may be an element of this buffer, which growing moves.
+            T copy = value;
+            reserve(length_ + 1);
+            length_++;
+            this[][length_ - 1] = copy;
+        } else {
+            length_++;
+            this[][length_ - 1] = value;
+        }
         return this[][length_ - 1];
     }
 
@@ -106,4 +113,15 @@ struct PodBuffer(T) {
     assert(buf[1 .. 3].length == 2);
     buf.release();
     assert(buf.capacity == 0);
+}
+
+@("podbuf: put of an own element while growing") nothrow @nogc unittest {
+    PodBuffer!int buf;
+    buf.put(7);
+    while (buf.length < buf.capacity)
+        buf.put(1);
+    foreach (_; 0 .. 5000) // enough growth for realloc to move the block
+        buf.put(buf[0]);
+    assert(buf[buf.length - 1] == 7);
+    buf.release();
 }

@@ -136,10 +136,10 @@ pure nothrow @nogc:
 
     /// General 4×4 inverse via cofactors. Returns identity if singular.
     Mat4 inverse() const {
-        immutable a00 = m[0],  a01 = m[4],  a02 = m[8],  a03 = m[12];
-        immutable a10 = m[1],  a11 = m[5],  a12 = m[9],  a13 = m[13];
-        immutable a20 = m[2],  a21 = m[6],  a22 = m[10], a23 = m[14];
-        immutable a30 = m[3],  a31 = m[7],  a32 = m[11], a33 = m[15];
+        immutable double a00 = m[0], a01 = m[4], a02 = m[8], a03 = m[12];
+        immutable double a10 = m[1], a11 = m[5], a12 = m[9], a13 = m[13];
+        immutable double a20 = m[2], a21 = m[6], a22 = m[10], a23 = m[14];
+        immutable double a30 = m[3], a31 = m[7], a32 = m[11], a33 = m[15];
 
         immutable b00 = a00 * a11 - a01 * a10;
         immutable b01 = a00 * a12 - a02 * a10;
@@ -156,27 +156,33 @@ pure nothrow @nogc:
 
         immutable det = b00 * b11 - b01 * b10 + b02 * b09
                       + b03 * b08 - b04 * b07 + b05 * b06;
-        if (det > -1e-20f && det < 1e-20f)
+        // Relative to the column lengths: a small but valid scale must not count as singular.
+        immutable double n0 = a00 * a00 + a10 * a10 + a20 * a20 + a30 * a30;
+        immutable double n1 = a01 * a01 + a11 * a11 + a21 * a21 + a31 * a31;
+        immutable double n2 = a02 * a02 + a12 * a12 + a22 * a22 + a32 * a32;
+        immutable double n3 = a03 * a03 + a13 * a13 + a23 * a23 + a33 * a33;
+        immutable double bound = n0 * n1 * n2 * n3; // squared Hadamard bound of the determinant
+        if (!(det * det > 1e-40 * bound))
             return Mat4.init;
 
-        immutable invDet = 1.0f / det;
+        immutable double invDet = 1.0 / det;
         Mat4 r;
-        r.m[0]  = ( a11 * b11 - a12 * b10 + a13 * b09) * invDet;
-        r.m[1]  = (-a10 * b11 + a12 * b08 - a13 * b07) * invDet;
-        r.m[2]  = ( a10 * b10 - a11 * b08 + a13 * b06) * invDet;
-        r.m[3]  = (-a10 * b09 + a11 * b07 - a12 * b06) * invDet;
-        r.m[4]  = (-a01 * b11 + a02 * b10 - a03 * b09) * invDet;
-        r.m[5]  = ( a00 * b11 - a02 * b08 + a03 * b07) * invDet;
-        r.m[6]  = (-a00 * b10 + a01 * b08 - a03 * b06) * invDet;
-        r.m[7]  = ( a00 * b09 - a01 * b07 + a02 * b06) * invDet;
-        r.m[8]  = ( a31 * b05 - a32 * b04 + a33 * b03) * invDet;
-        r.m[9]  = (-a30 * b05 + a32 * b02 - a33 * b01) * invDet;
-        r.m[10] = ( a30 * b04 - a31 * b02 + a33 * b00) * invDet;
-        r.m[11] = (-a30 * b03 + a31 * b01 - a32 * b00) * invDet;
-        r.m[12] = (-a21 * b05 + a22 * b04 - a23 * b03) * invDet;
-        r.m[13] = ( a20 * b05 - a22 * b02 + a23 * b01) * invDet;
-        r.m[14] = (-a20 * b04 + a21 * b02 - a23 * b00) * invDet;
-        r.m[15] = ( a20 * b03 - a21 * b01 + a22 * b00) * invDet;
+        r.m[0]  = cast(float) (( a11 * b11 - a12 * b10 + a13 * b09) * invDet);
+        r.m[1]  = cast(float) ((-a10 * b11 + a12 * b08 - a13 * b07) * invDet);
+        r.m[2]  = cast(float) (( a10 * b10 - a11 * b08 + a13 * b06) * invDet);
+        r.m[3]  = cast(float) ((-a10 * b09 + a11 * b07 - a12 * b06) * invDet);
+        r.m[4]  = cast(float) ((-a01 * b11 + a02 * b10 - a03 * b09) * invDet);
+        r.m[5]  = cast(float) (( a00 * b11 - a02 * b08 + a03 * b07) * invDet);
+        r.m[6]  = cast(float) ((-a00 * b10 + a01 * b08 - a03 * b06) * invDet);
+        r.m[7]  = cast(float) (( a00 * b09 - a01 * b07 + a02 * b06) * invDet);
+        r.m[8]  = cast(float) (( a31 * b05 - a32 * b04 + a33 * b03) * invDet);
+        r.m[9]  = cast(float) ((-a30 * b05 + a32 * b02 - a33 * b01) * invDet);
+        r.m[10] = cast(float) (( a30 * b04 - a31 * b02 + a33 * b00) * invDet);
+        r.m[11] = cast(float) ((-a30 * b03 + a31 * b01 - a32 * b00) * invDet);
+        r.m[12] = cast(float) ((-a21 * b05 + a22 * b04 - a23 * b03) * invDet);
+        r.m[13] = cast(float) (( a20 * b05 - a22 * b02 + a23 * b01) * invDet);
+        r.m[14] = cast(float) ((-a20 * b04 + a21 * b02 - a23 * b00) * invDet);
+        r.m[15] = cast(float) (( a20 * b03 - a21 * b01 + a22 * b00) * invDet);
         return r;
     }
 
@@ -295,4 +301,19 @@ unittest {
         assert(abs(nTrs.y - expectedWorld.y) < 1e-5f);
         assert(abs(nTrs.z - expectedWorld.z) < 1e-5f);
     }
+}
+
+@("mat4.inverse: tiny uniform scale is not singular")
+@safe unittest {
+    import std.math : abs;
+    foreach (s; [1e-3f, 1e-7f, 1e-12f, 1e7f]) {
+        Mat4 m = Mat4.identity();
+        m.m[0] = m.m[5] = m.m[10] = s;
+        m.m[12] = 5;
+        immutable inv = m.inverse();
+        assert(abs(inv.m[0] * s - 1) < 1e-4f && abs(inv.m[12] * s + 5) < 1e-3f);
+    }
+    Mat4 flat = Mat4.identity();
+    flat.m[5] = 0;
+    assert(flat.inverse() == Mat4.init);
 }

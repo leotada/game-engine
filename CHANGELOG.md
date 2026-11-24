@@ -52,6 +52,8 @@
 - **Renderer**: a screenshot requested on a frame that cannot be presented (or that is resized) waits for the next one
   instead of saving garbage, and `setViewport` keeps its scissor inside the target.
 - **Physics events**: contact/sensor end events of a destroyed body keep its entity id.
+- **Small fixes**: `PodBuffer.put` of one of its own elements while growing, `Mat4.inverse` of very small scales, and a
+  32-bit overflow in the BMP size check.
 
 ### Other changes
 

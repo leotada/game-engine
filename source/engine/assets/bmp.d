@@ -23,7 +23,7 @@ BmpImage decodeBmp(const(ubyte)[] data) @trusted {
     enforce(data.length > 54, "BMP too small");
     enforce(data[0] == 'B' && data[1] == 'M', "Not a BMP file");
 
-    immutable uint pixelOffset = readU32(data, 10);
+    immutable ulong pixelOffset = readU32(data, 10); // 64-bit: crafted headers must not wrap the size check
     immutable uint dibSize     = readU32(data, 14);
     enforce(dibSize >= 40, "Unsupported DIB header");
 
@@ -39,18 +39,19 @@ BmpImage decodeBmp(const(ubyte)[] data) @trusted {
     enforce(width > 0 && height > 0, "Invalid BMP dimensions");
 
     immutable uint bytesPerPixel = bpp / 8;
-    immutable uint rowUnpadded   = cast(uint) width * bytesPerPixel;
-    immutable uint rowStride     = (rowUnpadded + 3u) & ~3u; // 4-byte align
-    enforce(data.length >= pixelOffset + rowStride * height, "BMP pixel data truncated");
+    immutable ulong rowUnpadded  = cast(ulong) width * bytesPerPixel;
+    immutable ulong rowStride    = (rowUnpadded + 3u) & ~3UL; // 4-byte align
+    enforce(rowStride <= data.length && height <= data.length
+        && pixelOffset + rowStride * height <= data.length, "BMP pixel data truncated");
 
     auto dst = new ubyte[cast(size_t) width * height * 4];
     foreach (row; 0 .. height) {
         immutable srcRow = topDown ? row : (height - 1 - row);
         immutable srcBase = pixelOffset + srcRow * rowStride;
-        immutable dstBase = row * cast(uint) width * 4;
+        immutable dstBase = cast(size_t) row * width * 4;
         foreach (col; 0 .. cast(uint) width) {
-            immutable uint si = srcBase + col * bytesPerPixel;
-            immutable uint di = dstBase + col * 4;
+            immutable size_t si = cast(size_t) srcBase + col * bytesPerPixel;
+            immutable size_t di = dstBase + col * 4;
             dst[di + 0] = data[si + 2]; // R
             dst[di + 1] = data[si + 1]; // G
             dst[di + 2] = data[si + 0]; // B
@@ -76,4 +77,25 @@ private uint readU32(const(ubyte)[] b, size_t off) pure nothrow @nogc {
 
 private ushort readU16(const(ubyte)[] b, size_t off) pure nothrow @nogc {
     return cast(ushort)(cast(uint) b[off] | (cast(uint) b[off + 1] << 8));
+}
+
+@("bmp: a header whose size wraps 32 bits is rejected")
+@safe unittest {
+    import std.exception : assertThrown;
+    auto d = new ubyte[64];
+    static void put(ubyte[] b, size_t o, uint v) {
+        foreach (i; 0 .. 4) b[o + i] = cast(ubyte)(v >> (8 * i));
+    }
+    d[0] = 'B';
+    d[1] = 'M';
+    put(d, 10, 54);
+    put(d, 14, 40);
+    put(d, 18, 0x4000_0000); // width * 4 = 2^32
+    put(d, 22, 1);
+    d[28] = 32;
+    assertThrown(decodeBmp(d));
+    put(d, 18, 1);
+    put(d, 22, 2);
+    d[54] = 9;
+    assert(decodeBmp(d).pixels.length == 8);
 }
