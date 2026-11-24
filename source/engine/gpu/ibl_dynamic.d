@@ -6,7 +6,7 @@
 /// (sky, irradiance, or one specular mip) per `update()` call, written into
 /// a back set of cubes; the bind group swaps only when the whole set is
 /// complete, so shading never sees a half-updated environment. The BRDF LUT
-/// is generated once at creation and never rebuilt. No CPU allocation after
+/// is baked in the binary. No CPU allocation after
 /// `create`.
 ///
 ///   auto ibl = DynamicIbl.create(gpu, scene.iblLayout());
@@ -22,7 +22,7 @@ import std.math : abs;
 import bindings.wgpu;
 import engine.core.log;
 import engine.gpu.context : GpuContext;
-import engine.gpu.ibl : createLutTexture, generateBrdfLut, IBL_ENV_SIZE, IBL_IRRADIANCE_SIZE,
+import engine.gpu.ibl : brdfLutPixels, createLutTexture, IBL_ENV_SIZE, IBL_IRRADIANCE_SIZE,
     IBL_LUT_SIZE, IBL_SPECULAR_MIPS;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : iblSkyCsShaderSource;
@@ -116,7 +116,7 @@ struct DynamicIbl {
         d.dummyTex = createCube(dev, 1, 1, WGPUTextureUsage.textureBinding);
         d.dummyView = cubeView(d.dummyTex, 0, 1);
 
-        auto lutPixels = generateBrdfLut(IBL_LUT_SIZE);
+        auto lutPixels = brdfLutPixels();
         d.lutTex = createLutTexture(dev, d.queue, lutPixels, IBL_LUT_SIZE);
         WGPUTextureViewDescriptor lutVd;
         lutVd.format = WGPUTextureFormat.rgba8Unorm;
