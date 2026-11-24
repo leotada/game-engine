@@ -16,6 +16,13 @@
   vertex and index buffers once per (mesh × material) group instead of once per visible cell run, and the shared
   instance buffer once per pass. Same draw count, same image; in viatura-VI (~2,500 draws/frame)
   `renderer.submit.finish` dropped from 2.61 to 1.96 ms and the frame from 10.0 to 9.15 ms.
+- **Static props: cell-level culling.** `StaticInstanceBuffer` keeps per-cell bounds; each view (camera and every
+  shadow cascade) tests the cells first (`markVisibleCells`) and skips the ranges of invisible cells in
+  `collectVisibleRuns`. Same runs, same order. viatura-VI (25k ranges): `scene.shadows.encode` 1.08 → 0.49 ms,
+  `scene.end.opaque.static` 0.34 → 0.20 ms.
+- **Shadow diagnostics:** `RenderStats.shadowStaticInstancesDrawn` and per-cascade `cascadeDrawCalls` /
+  `cascadeDynamicInstances` / `cascadeStaticInstances`; profiler zones `scene.shadows.encode.cascadeN` and GPU scopes
+  `gpu.shadows.cascades.cN`.
 - **LDC 1.43.0 verified** (`docs/dmd-inline-crash.md` › Installing a newer LDC than the distro ships): release builds of
   `player` / `gesc`, `dub test --config=library` and `--assert-no-gc` pass. The editor must be linked against the shared
   druntime (`-link-defaultlib-shared`) because the static druntime of 1.43 has no `rt_loadLibrary` (hot reload).
