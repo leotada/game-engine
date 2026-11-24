@@ -121,13 +121,8 @@ struct FlyCamera {
     }
 
     Vec3 right() const pure nothrow @nogc {
-        // Right = cross(forward, worldUp) normalized; worldUp = (0,1,0).
-        // cross((fx,fy,fz),(0,1,0)) = (-fz, 0, fx); |cross| = |cos(pitch)|.
-        immutable f = forward();
-        immutable len = cast(float) (f.z * f.z + f.x * f.x);
-        if (len < EPS) return Vec3(1, 0, 0);
-        immutable invL = 1.0f / cast(float)(cos(pitch));
-        return Vec3(-f.z * invL, 0, f.x * invL);
+        // cross(forward, worldUp) normalized. It depends on yaw only, so it stays defined at the poles.
+        return Vec3(-sin(yaw), 0, cos(yaw));
     }
 
     void update(ref const InputState input, float dt, ref Camera camera) {
@@ -250,4 +245,17 @@ struct FirstPersonCamera {
     immutable float z0 = fly.position.z;
     fly.update(input, 0.5f, cam);
     assert(fly.position.z < z0);
+}
+
+@("flycamera: right vector follows yaw at any pitch")
+@safe unittest {
+    import std.math : abs;
+    FlyCamera c;
+    c.yaw = 0.7f;
+    immutable flat = c.right();
+    c.pitch = 1.55f;
+    immutable steep = c.right();
+    assert(abs(flat.x - steep.x) < 1e-6f && abs(flat.z - steep.z) < 1e-6f);
+    immutable f = c.forward();
+    assert(abs(f.x * steep.x + f.y * steep.y + f.z * steep.z) < 1e-6f);
 }

@@ -10,6 +10,7 @@
 - **`FrameArena.fmt`** returns `null` on overflow instead of aborting with a `RangeError`.
 - **`Timers`**: a timer created by a callback that canceled its own timer is no longer deactivated, and a repeating
   timer with a tiny interval no longer stalls on a large `dt`.
+- **`FlyCamera.right()`** follows yaw at any pitch (it jumped to +X near the poles).
 
 ### Other changes
 
