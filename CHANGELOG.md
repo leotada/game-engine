@@ -46,6 +46,9 @@
   fails validation on hot reload really keeps the running one.
 - **`AudioMixer`**: the `VoiceId` of a voice that ended no longer controls the next one in its slot, the last chunk of a
   voice with DSP is heard, a stream's last frames are not dropped at end of file, and DSP supports up to 8 channels.
+- **`WorldStreamer`**: a load canceled after its asset step releases its assets, internal arrays stay bounded while
+  travelling, unloading a chunk does not destroy entities that reuse its ids, and a released navmesh tile is loaded again
+  on the next visit.
 
 ### Other changes
 

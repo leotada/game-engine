@@ -15,7 +15,7 @@ import engine.core.log : info, warn;
 import engine.core.pod : isPod, Pod;
 import engine.core.strings : StringId, StringTable;
 import engine.ecs.scene_world : SceneWorld;
-import engine.ecs.store : EntityId;
+import engine.ecs.store : EntityHandle, EntityId;
 import engine.editor.scene_load : SceneLoadOptions;
 import engine.graphics.model : GltfAsset;
 import engine.graphics.texture : Texture;
@@ -172,7 +172,7 @@ struct WorldStreamer {
     StringTable strings;
     Pod!ChunkCell[] cells;
 
-    private Pod!EntityId[] _cellEntities;
+    private Pod!EntityHandle[] _cellEntities; // handles: gameplay may destroy a chunk's entities and reuse their ids
     private Pod!StreamedAssetRef[] _cellAssets;
 
     private Pod!StreamedGltfEntry[] _gltfCache;
@@ -313,6 +313,9 @@ struct WorldStreamer {
                     // Cancel pending load by bumping generation.
                     cell.loadGeneration++;
                     cell.state = ChunkState.unloaded;
+                    // The asset step may have run already.
+                    releaseCellAssets(cell);
+                    _decoded.remove(cast(uint) i);
                 }
             }
         }
@@ -424,6 +427,16 @@ struct WorldStreamer {
                 foreach (i; 0 .. remaining)
                     _uploadQueue[i] = _uploadQueue[head + i];
                 _uploadQueue.length = remaining;
+                // Jobs are queued in order: those before the first pending entry are finished.
+                immutable done = _uploadQueue[0].decodedJobIndex;
+                if (done > 0) {
+                    immutable left = _uploadJobs.length - done;
+                    foreach (i; 0 .. left)
+                        _uploadJobs[i] = _uploadJobs[done + i];
+                    _uploadJobs.length = left;
+                    foreach (ref q; _uploadQueue)
+                        q.decodedJobIndex -= done;
+                }
             }
         }
         return stepsProcessed;
@@ -440,9 +453,9 @@ struct WorldStreamer {
             immutable entEnd = cell.entityOffset + cell.entityCount;
             if (entEnd <= _cellEntities.length) {
                 foreach (idx; cell.entityOffset .. entEnd) {
-                    immutable eid = _cellEntities[idx];
-                    if (world.alive(eid))
-                        world.destroy(eid);
+                    immutable h = _cellEntities[idx];
+                    if (world.aliveHandle(h))
+                        world.destroy(h.id);
                 }
             }
             cell.entityOffset = 0;
@@ -453,14 +466,7 @@ struct WorldStreamer {
             _decoded.remove(cast(uint) i);
 
             // Release ref-counted assets owned by this cell.
-            immutable assetEnd = cell.assetOffset + cell.assetCount;
-            if (assetEnd <= _cellAssets.length) {
-                foreach (idx; cell.assetOffset .. assetEnd) {
-                    releaseAsset(_cellAssets[idx]);
-                }
-            }
-            cell.assetOffset = 0;
-            cell.assetCount = 0;
+            releaseCellAssets(cell);
 
             cell.state = ChunkState.unloaded;
             _totalUnloads++;
@@ -477,6 +483,50 @@ struct WorldStreamer {
         if (!anyLive) {
             _cellEntities.length = 0;
             _cellAssets.length = 0;
+        } else {
+            compactCellStorage();
+        }
+    }
+
+    private void releaseCellAssets(ref ChunkCell cell) @trusted {
+        immutable end = cell.assetOffset + cell.assetCount;
+        if (end <= _cellAssets.length) {
+            foreach (idx; cell.assetOffset .. end)
+                releaseAsset(_cellAssets[idx]);
+        }
+        cell.assetOffset = 0;
+        cell.assetCount = 0;
+    }
+
+    /// Cells append their entities and assets; drop the ranges of unloaded cells once they are most of the arrays, so
+    /// travelling without ever leaving every chunk does not grow them forever.
+    private void compactCellStorage() @trusted {
+        enum size_t minEntries = 256;
+        size_t liveEntities, liveAssets;
+        foreach (ref cell; cells) {
+            liveEntities += cell.entityCount;
+            liveAssets += cell.assetCount;
+        }
+        if (_cellEntities.length > minEntries && liveEntities * 2 < _cellEntities.length) {
+            auto packed = new Pod!EntityHandle[](liveEntities);
+            size_t at;
+            foreach (ref cell; cells) {
+                packed[at .. at + cell.entityCount] =
+                    _cellEntities[cell.entityOffset .. cell.entityOffset + cell.entityCount];
+                cell.entityOffset = cast(uint) at;
+                at += cell.entityCount;
+            }
+            _cellEntities = packed;
+        }
+        if (_cellAssets.length > minEntries && liveAssets * 2 < _cellAssets.length) {
+            auto packed = new Pod!StreamedAssetRef[](liveAssets);
+            size_t at;
+            foreach (ref cell; cells) {
+                packed[at .. at + cell.assetCount] = _cellAssets[cell.assetOffset .. cell.assetOffset + cell.assetCount];
+                cell.assetOffset = cast(uint) at;
+                at += cell.assetCount;
+            }
+            _cellAssets = packed;
         }
     }
 
@@ -556,6 +606,12 @@ struct WorldStreamer {
                 e.refCount++;
                 e.loaded = true;
                 if (_navMeshes[i] is null) _navMeshes[i] = new NavMesh;
+                // First use since the tile was released (its mesh was destroyed), or it had no data yet.
+                if (navBytes.length > 0 && !_navMeshes[i].isValid()) {
+                    import core.lifetime : move;
+                    auto nm = loadNavMeshFromBytes(navBytes);
+                    move(nm, *_navMeshes[i]);
+                }
                 return StreamedAssetRef(StreamAssetKind.navMeshTile, cast(uint) i);
             }
         }
@@ -691,6 +747,7 @@ struct WorldStreamer {
         foreach (ref j; _uploadJobs) freeDecodedBuffers(j);
         _uploadJobs.length = 0;
         _uploadQueue.length = 0;
+        _decoded = null;
 
         foreach (i, ref e; _gltfCache) {
             if (e.loaded && _gltfAssets[i] !is null) _gltfAssets[i].destroy();
@@ -833,7 +890,7 @@ struct WorldStreamer {
                     foreach (name; comps.unresolvedTypes)
                         warn("WorldStreamer: chunk component type not registered: ", name);
                     foreach (eid; res.spawnedEntities) {
-                        _cellEntities ~= eid;
+                        _cellEntities ~= world.handle(eid);
                         entCount++;
                     }
                     foreach (ref ub; job.gesc.user)
@@ -859,17 +916,17 @@ struct WorldStreamer {
                     foreach (name; comps.unresolvedTypes)
                         warn("WorldStreamer: chunk component type not registered: ", name);
                     foreach (eid; res.spawnedEntities) {
-                        _cellEntities ~= eid;
+                        _cellEntities ~= world.handle(eid);
                         entCount++;
                     }
                     foreach (ref ub; held.user)
                         foreach (ref h; _blockHandlers)
                             if (h.name == ub.name && h.onLoad !is null)
                                 h.onLoad(h.ctx, cell.coord.x, cell.coord.z, ub.data);
-                    _decoded.remove(cellIdx);
                 } catch (Exception ex) {
                     warn("WorldStreamer: failed to spawn chunk entities: ", ex.msg);
                 }
+                _decoded.remove(cellIdx);
             }
         }
 
@@ -1438,4 +1495,75 @@ version (unittest) {
         assert(gescNoGcLiveAllocations() > baseline);
     }
     assert(gescNoGcLiveAllocations() == baseline, "destroying the streamer released queued chunks");
+}
+
+@("streamer: a load canceled between steps releases its assets") @safe unittest {
+    SceneWorld world;
+    WorldStreamer s;
+    s.loadRadius = 300.0f;
+    s.unloadRadius = 450.0f;
+    s.allowVirtualChunks = true;
+    s.addCell(ChunkCoord(0, 0), Aabb(Vec3(0, 0, 0), Vec3(256, 64, 256)), "", "a.navmesh");
+    s.addCell(ChunkCoord(1, 0), Aabb(Vec3(0, 0, 0), Vec3(256, 64, 256)), "", "b.navmesh");
+    s.evaluateHysteresis(Vec3(128, 0, 128));
+    s.pumpDecodeJobs();
+    s.drainCompletedDecodes();
+    s.processUploadQueue(world, 0.0f); // one step: cell 0 acquired its assets, nothing spawned yet
+    assert(s.stats().activeNavTileCount == 1 && s.stats().loadingCount == 2);
+    s.evaluateHysteresis(Vec3(9000, 0, 0));
+    assert(s.stats().activeNavTileCount == 0 && s.stats().loadingCount == 0);
+
+    // The next visit loads and unloads both cells normally.
+    s.update(world, Vec3(128, 0, 128), 50.0f);
+    assert(s.stats().activeCount == 2 && s.stats().activeNavTileCount == 2);
+    s.update(world, Vec3(9000, 0, 0), 50.0f);
+    s.update(world, Vec3(9000, 0, 0), 50.0f);
+    assert(s.stats().activeCount == 0 && s.stats().activeNavTileCount == 0);
+}
+
+@("streamer: storage stays bounded, recycled ids survive an unload, released nav tiles reload") @trusted unittest {
+    import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+    import std.conv : to;
+    import engine.nav.bake : saveNavMeshToBytes;
+
+    immutable dir = "build/test_streamer_storage";
+    mkdirRecurse(dir);
+    scope (exit) if (exists(dir)) rmdirRecurse(dir);
+    string ents;
+    foreach (i; 1 .. 101)
+        ents ~= (i > 1 ? "," : "") ~ `{"id":` ~ i.to!string ~ `,"parent":0,"transform":{"pos":[0,0,0],"rot":[0,0,0,1],"scale":[1,1,1]}}`;
+    immutable json = `{"format":"game-engine.scene","version":2,"meta":{"name":"c","units":"meters"},"strings":[],"settings":{"gravity":[0,-9.81,0],"iblPreset":"studio"},"entities":[` ~ ents ~ `]}`;
+    write(dir ~ "/c.scene.json", json);
+
+    SceneWorld world;
+    WorldStreamer s;
+    s.loadRadius = 130.0f;
+    s.unloadRadius = 150.0f;
+    foreach (i; 0 .. 2)
+        s.addCell(ChunkCoord(i, 0), Aabb(Vec3(i * 220.0f, 0, 0), Vec3(i * 220.0f + 1, 1, 1)), dir ~ "/c.scene.json");
+    // A third cell that never unloads keeps the arrays alive.
+    s.addCell(ChunkCoord(9, 0), Aabb(Vec3(0, 0, 0), Vec3(221, 1, 1)), dir ~ "/c.scene.json");
+    foreach (i; 0 .. 60)
+        s.update(world, Vec3(i % 2 ? 230.0f : -10.0f, 0, 0), 50.0f);
+    assert(s.stats().activeCount == 2 && world.entityCount() == 200);
+    assert(s._cellEntities.length <= 600);
+
+    // Gameplay destroys a chunk entity and its id goes to something else.
+    auto victim = s._cellEntities[s.cells[1].entityOffset].id;
+    world.destroy(victim);
+    auto keeper = world.spawn();
+    assert(keeper == victim);
+    s.update(world, Vec3(9000, 0, 0), 50.0f);
+    assert(world.alive(keeper) && world.entityCount() == 1);
+
+    auto nm = NavMesh.createTiled(Vec3(0, 0, 0), 10, 10, 4, 16);
+    ubyte[] bytes;
+    if (nm.isValid() && saveNavMeshToBytes(nm, bytes)) {
+        auto r = s.acquireNavTile(AssetGuid.init, "n.navmesh", ChunkCoord(0, 0), bytes);
+        immutable had = s._navMeshes[r.slotIndex].isValid();
+        s.releaseAsset(r);
+        assert(!s._navMeshes[r.slotIndex].isValid());
+        auto r2 = s.acquireNavTile(AssetGuid.init, "n.navmesh", ChunkCoord(0, 0), bytes);
+        assert(r2.slotIndex == r.slotIndex && s._navMeshes[r2.slotIndex].isValid() == had);
+    }
 }
