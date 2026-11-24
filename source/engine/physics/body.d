@@ -255,42 +255,50 @@ b3BodyId createCapsuleBody(ref PhysicsWorld world, const BodyDesc desc, float he
     return bodyId;
 }
 
-/// Create a cylinder hull rigid body configured by `BodyDesc`.
+/// Create a Y-axis cylinder hull rigid body, centered on the body origin. `sides` is clamped to 3 .. 32.
 b3BodyId createCylinderBody(ref PhysicsWorld world,
                             const BodyDesc desc,
                             float height,
                             float radius,
                             int sides = 12) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, desc);
-    if (!isBodyValid(bodyId))
+    if (!(height > 0.0f) || !(radius > 0.0f))
         return b3BodyId.init;
-    immutable sideCount = sides < 3 ? 3 : sides;
-    b3HullData* hull = b3CreateCylinderD(height, radius, 0.0f, sideCount);
+    immutable sideCount = sides < 3 ? 3 : (sides > 32 ? 32 : sides);
+    // Box3D puts the base at `yOffset`.
+    b3HullData* hull = b3CreateCylinderD(height, radius, -0.5f * height, sideCount);
     if (hull is null)
-        return bodyId;
+        return b3BodyId.init;
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId)) {
+        b3DestroyHullD(hull);
+        return b3BodyId.init;
+    }
     b3ShapeDef shapeDef = makeShapeDef(desc);
     b3CreateHullShapeD(bodyId, &shapeDef, hull);
     b3DestroyHullD(hull);
     return bodyId;
 }
 
-/// Create a convex hull rigid body from local points configured by `BodyDesc`.
+/// Create a convex hull rigid body from local points configured by `BodyDesc`. Returns a null body when the points do
+/// not make a hull.
 b3BodyId createHullBody(ref PhysicsWorld world,
                         const BodyDesc desc,
                         scope const(Vec3)[] points,
                         int maxVertexCount = 64) nothrow @nogc @trusted {
-    b3BodyId bodyId = createBodyShell(world, desc);
-    if (!isBodyValid(bodyId))
+    if (points.length < 4 || maxVertexCount < 4)
         return b3BodyId.init;
-    if (points.length < 3 || maxVertexCount < 3)
-        return bodyId;
 
     immutable pointCount = cast(int) points.length;
     immutable maxVerts = maxVertexCount < pointCount ? maxVertexCount : pointCount;
     b3HullData* hull = b3CreateHullD(cast(const(b3Vec3)*) points.ptr, pointCount, maxVerts);
     if (hull is null)
-        return bodyId;
+        return b3BodyId.init;
 
+    b3BodyId bodyId = createBodyShell(world, desc);
+    if (!isBodyValid(bodyId)) {
+        b3DestroyHullD(hull);
+        return b3BodyId.init;
+    }
     b3ShapeDef shapeDef = makeShapeDef(desc);
     b3CreateHullShapeD(bodyId, &shapeDef, hull);
     b3DestroyHullD(hull);
@@ -617,23 +625,26 @@ b3BodyId createHeightField(ref PhysicsWorld world,
 // --- Runtime body and shape manipulation ---
 
 void setLinearVelocity(const b3BodyId bodyId, Vec3 velocity) nothrow @nogc @trusted {
-    b3Body_SetLinearVelocityD(bodyId, toB3Vec3(velocity));
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetLinearVelocityD(bodyId, toB3Vec3(velocity));
 }
 
 Vec3 getLinearVelocity(const b3BodyId bodyId) nothrow @nogc @trusted {
-    return toEngineVec3(b3Body_GetLinearVelocityD(bodyId));
+    return b3Body_IsValidD(bodyId) ? toEngineVec3(b3Body_GetLinearVelocityD(bodyId)) : Vec3.init;
 }
 
 void setAngularVelocity(const b3BodyId bodyId, Vec3 velocity) nothrow @nogc @trusted {
-    b3Body_SetAngularVelocityD(bodyId, toB3Vec3(velocity));
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetAngularVelocityD(bodyId, toB3Vec3(velocity));
 }
 
 Vec3 getAngularVelocity(const b3BodyId bodyId) nothrow @nogc @trusted {
-    return toEngineVec3(b3Body_GetAngularVelocityD(bodyId));
+    return b3Body_IsValidD(bodyId) ? toEngineVec3(b3Body_GetAngularVelocityD(bodyId)) : Vec3.init;
 }
 
 void applyForceToCenter(const b3BodyId bodyId, Vec3 force, bool wake = true) nothrow @nogc @trusted {
-    b3Body_ApplyForceToCenterD(bodyId, toB3Vec3(force), wake);
+    if (b3Body_IsValidD(bodyId))
+        b3Body_ApplyForceToCenterD(bodyId, toB3Vec3(force), wake);
 }
 
 /// Force (N) at a world point: also produces torque around the center of mass.
@@ -718,7 +729,7 @@ Vec3 getLocalInertiaDiagonal(const b3BodyId bodyId) nothrow @nogc @trusted {
 
 /// Body orientation.
 Quat getRotation(const b3BodyId bodyId) nothrow @nogc @trusted {
-    return toEngineQuat(b3Body_GetRotationD(bodyId));
+    return b3Body_IsValidD(bodyId) ? toEngineQuat(b3Body_GetRotationD(bodyId)) : Quat.init;
 }
 
 void applyLinearImpulse(const b3BodyId bodyId, Vec3 impulse, Vec3 worldPoint, bool wake = true) nothrow @nogc @trusted {
@@ -727,7 +738,8 @@ void applyLinearImpulse(const b3BodyId bodyId, Vec3 impulse, Vec3 worldPoint, bo
 }
 
 void applyLinearImpulseToCenter(const b3BodyId bodyId, Vec3 impulse, bool wake = true) nothrow @nogc @trusted {
-    b3Body_ApplyLinearImpulseToCenterD(bodyId, toB3Vec3(impulse), wake);
+    if (b3Body_IsValidD(bodyId))
+        b3Body_ApplyLinearImpulseToCenterD(bodyId, toB3Vec3(impulse), wake);
 }
 
 void applyAngularImpulse(const b3BodyId bodyId, Vec3 impulse, bool wake = true) nothrow @nogc @trusted {
@@ -736,11 +748,13 @@ void applyAngularImpulse(const b3BodyId bodyId, Vec3 impulse, bool wake = true) 
 }
 
 void setLinearDamping(const b3BodyId bodyId, float damping) nothrow @nogc @trusted {
-    b3Body_SetLinearDampingD(bodyId, damping);
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetLinearDampingD(bodyId, damping);
 }
 
 void setAngularDamping(const b3BodyId bodyId, float damping) nothrow @nogc @trusted {
-    b3Body_SetAngularDampingD(bodyId, damping);
+    if (b3Body_IsValidD(bodyId))
+        b3Body_SetAngularDampingD(bodyId, damping);
 }
 
 void enableBodyHitEvents(const b3BodyId bodyId, bool enabled) nothrow @nogc @trusted {
@@ -877,6 +891,8 @@ void destroyBody(const b3BodyId bodyId) nothrow @nogc @trusted {
 }
 
 Vec3 getPosition(const b3BodyId bodyId) nothrow @nogc @trusted {
+    if (!b3Body_IsValidD(bodyId))
+        return Vec3.init;
     immutable p = b3Body_GetPositionD(bodyId);
     return Vec3(cast(float) p.x, cast(float) p.y, cast(float) p.z);
 }
@@ -1128,4 +1144,23 @@ unittest {
     destroyBody(box);
     // Invalid body: harmless defaults.
     assert(getMassData(box).mass == 0.0f);
+}
+
+@("physics: cylinders are centered; bad hulls and stale body ids are safe")
+@safe unittest {
+    import engine.physics.queries : castRayClosest;
+    import std.math : abs;
+    auto world = PhysicsWorld.createDefault();
+    auto cyl = createStaticCylinder(world, Vec3(0, 5, 0), 2.0f, 0.5f);
+    world.step(1.0f / 60.0f, 4);
+    auto down = castRayClosest(world, Vec3(0, 20, 0), Vec3(0, -1, 0), 40.0f);
+    assert(down.hit && abs(down.point.y - 6.0f) < 0.01f);
+
+    assert(!isBodyValid(createStaticHull(world, Vec3(0, 0, 0), [Vec3(0, 0, 0), Vec3(1, 0, 0)])));
+    destroyBody(cyl);
+    setLinearVelocity(cyl, Vec3(1, 0, 0));
+    applyForceToCenter(cyl, Vec3(1, 0, 0));
+    applyLinearImpulseToCenter(cyl, Vec3(1, 0, 0));
+    setLinearDamping(cyl, 1);
+    assert(getLinearVelocity(cyl) == Vec3.init && getPosition(cyl) == Vec3.init && getRotation(cyl) == Quat.init);
 }

@@ -36,6 +36,8 @@
   deleted children or ids other than 1..n no longer move overrides to the wrong entity.
 - **`CharacterController`**: jumps reach their full height (the ground probe canceled them after one frame), falling near
   the ground no longer hovers, and ground friction does not apply in the air.
+- **Physics bodies**: cylinder bodies are centered on their position (the base was there), hull/cylinder bodies with
+  unusable input return a null body instead of one without shapes, and body getters/setters accept destroyed bodies.
 
 ### Other changes
 
