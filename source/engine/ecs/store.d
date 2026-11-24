@@ -32,7 +32,12 @@ struct ComponentStore(T) if (is(T == struct)) {
             sparse.length = entityCapacity;
     }
 
+    /// Insert `component` for `id`, overwriting the one it already has.
     void add(EntityId id, T component) nothrow @trusted {
+        if (has(id)) {
+            dense[sparse[id]] = component;
+            return;
+        }
         if (id >= sparse.length)
             sparse.length = id + 1;
 
@@ -131,4 +136,14 @@ struct ComponentStore(T) if (is(T == struct)) {
     assert(st.length == 4 && st.get(2).a == 20 && st.has(100) && st.sparseLength >= 101);
     st.remove(5);
     assert(!st.has(5) && st.length == 3 && st.get(100).a == 100);
+}
+
+@("componentStore.add overwrites an existing entry") @safe unittest {
+    static struct V { int x; }
+    ComponentStore!V st;
+    st.add(3, V(1));
+    st.add(3, V(2));
+    assert(st.length == 1 && st.get(3).x == 2);
+    st.remove(3);
+    assert(!st.has(3) && st.length == 0);
 }

@@ -95,9 +95,12 @@ struct World(Components...) if (Components.length > 0 && allSatisfy!(isValidComp
         _freeCount = 0;
     }
 
+    /// Add or replace a component. Ignored when `id` is not alive: its id would leak the component into the next
+    /// entity that reuses it.
     void set(C)(EntityId id, C component) nothrow @trusted {
         enum idx = indexOf!(C, Components);
         static assert(idx != -1, "Component type not registered in World");
+        if (!alive(id)) return;
         auto store = &_stores[idx];
         if (store.has(id))
             store.get(id) = component;
@@ -264,4 +267,13 @@ private template indexOfImpl(size_t i, T, List...) {
     }
     assert(w.capacity() == 32);
     assert(w.store!Pos().sparseLength() == 32);
+}
+
+@("world.set on a dead entity is ignored") @safe unittest {
+    static struct A { int x; }
+    World!A w;
+    auto e = w.spawn();
+    w.destroy(e);
+    w.set(e, A(7));
+    assert(w.spawn() == e && !w.has!A(e));
 }

@@ -40,6 +40,8 @@
   unusable input return a null body instead of one without shapes, and body getters/setters accept destroyed bodies.
 - **Scene physics** (`PhysicsSimSession`, player and Simulate): colliders use the entity's world pose and scale (parents
   and scale were ignored), and the body of a destroyed entity is removed instead of driving whoever reuses its id.
+- **Static ECS `World`**: `set` on a dead entity is ignored (the component leaked into the next entity with that id) and
+  `ComponentStore.add` overwrites instead of adding a duplicate entry.
 
 ### Other changes
 
