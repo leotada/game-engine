@@ -59,6 +59,7 @@ source/
 │   ├── export_main.d      # Multiplatform release exporter CLI (`--config=export`)
 │   ├── gesc_main.d        # `game-engine-gesc`: encode/decode/info/verify/split/bench for `.gesc` chunks (`--config=gesc`)
 │   ├── player/            # Standalone runtime player (`--config=player` / `player-static`)
+│   ├── web/engine_web.js # Web frame pacing (JSPI)
 │   └── web/shell.html     # HTML5 WebGPU Emscripten shell template
 └── demo/
     ├── main.d             # Minimal clear-screen demo

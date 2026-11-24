@@ -232,6 +232,7 @@ tools/
 ├── lint.d              # GC-safe storage lint
 ├── gesc_main.d         # `game-engine-gesc` CLI for `.gesc` chunks (`--config=gesc`; vendor/zipd = pure-D zstd codec)
 ├── web/shell.html      # Emscripten WebGPU HTML shell template
+├── web/engine_web.js   # Emscripten JS library (JSPI frame pacing)
 └── player/             # Standalone player entrypoint (player_main.d)
 └── demo/               # Executable demos
     ├── main.d          # Clear-screen demo

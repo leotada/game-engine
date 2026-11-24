@@ -243,6 +243,59 @@ dub run --config=export -- --target=<id> [options]
   - D and C++ exceptions cannot share a module, so link only C++ code built with `-fno-exceptions`.
   - Writes to the virtual filesystem are lost on reload.
 
+#### Setting up and testing a web export
+
+1. **LDC and its Emscripten addon** (the addon unpacks over the compiler directory):
+   ```bash
+   mkdir -p ~/toolchains && cd ~/toolchains
+   base=https://github.com/ldc-developers/ldc/releases/download/v1.43.0
+   curl -LO $base/ldc2-1.43.0-linux-x86_64.tar.xz
+   curl -LO $base/ldc2-1.43.0-addon-emscripten.tar.xz
+   tar xf ldc2-1.43.0-linux-x86_64.tar.xz
+   tar tf ldc2-1.43.0-addon-emscripten.tar.xz | head   # look at the layout first
+   tar xf ldc2-1.43.0-addon-emscripten.tar.xz -C ldc2-1.43.0-linux-x86_64
+   ```
+   The addon's files must end up inside the compiler's own `lib*` and `etc` directories. If the listing shows a
+   top-level directory around them, add `--strip-components=1` to the last command.
+2. **Emscripten SDK:**
+   ```bash
+   git clone https://github.com/emscripten-core/emsdk.git ~/toolchains/emsdk
+   cd ~/toolchains/emsdk && ./emsdk install latest && ./emsdk activate latest
+   ```
+3. **Environment** (in each new shell):
+   ```bash
+   source ~/toolchains/emsdk/emsdk_env.sh
+   export PATH=~/toolchains/ldc2-1.43.0-linux-x86_64/bin:$PATH
+   ```
+4. **Smoke test the toolchain** without the engine:
+   ```bash
+   mkdir -p /tmp/webhello && cd /tmp/webhello
+   cat > hello.d <<'EOF'
+   import std.stdio;
+   void main() { try throw new Exception("eh"); catch (Exception e) writeln("ok ", e.msg); }
+   EOF
+   ldc2 -mtriple=wasm32-unknown-emscripten -of=hello.js hello.d && node hello.js   # prints: ok eh
+   ```
+5. **Build the dependencies and export**, from the engine root:
+   ```bash
+   ./tools/build_sdl3_deps.sh web-wasm32
+   dub run --config=export --compiler=dmd -- --check-toolchains
+   dub run --config=export --compiler=dmd -- --target=web
+   python3 -m http.server 8080 --directory build/web-wasm32
+   ```
+   Without `--release` the build keeps `-sASSERTIONS=1`, which gives readable errors.
+6. **Browser:** open `http://localhost:8080` with the developer console open. Expect `App ready`, then the scene.
+   Check keyboard, mouse, resize and audio. Chromium on Linux may need `--enable-unsafe-webgpu --enable-features=Vulkan`.
+
+| Symptom | What to try |
+|:---|:---|
+| `[MISSING] web-wasm32` | `ldc2` and `emcc` in `PATH`; archives in `libs/web-wasm32/` |
+| druntime or Phobos not found | Emscripten addon not unpacked into the compiler directory |
+| Undefined `_Unwind_*` or `__cpp_exception` | `--link-flag=-fwasm-exceptions` |
+| `memory access out of bounds` at startup | `--link-flag=-sSTACK_SIZE=16777216` |
+| `trying to suspend JS frames` | A suspension crossed a JS callback: save the stack trace |
+| WGSL or pipeline validation error | Save the full message: Chrome validates more strictly than wgpu-native |
+
 ---
 
 ## 5. Supported Image & Font Formats (`SDL3_image` & `SDL3_ttf`)
