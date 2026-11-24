@@ -20,6 +20,28 @@ import engine.core.pod : isPod;
 
 @safe:
 
+/// Output range over a fixed buffer; remembers overflow instead of failing.
+private struct BoundedSink
+{
+    char[] dest;
+    size_t used;
+    bool overflow;
+
+    void put(char c) pure nothrow @nogc
+    {
+        if (used < dest.length)
+            dest[used++] = c;
+        else
+            overflow = true;
+    }
+
+    void put(scope const(char)[] s) pure nothrow @nogc
+    {
+        foreach (char c; s)
+            put(c);
+    }
+}
+
 struct FrameArena
 {
     private ubyte[] buffer;
@@ -61,22 +83,23 @@ struct FrameArena
      */
     char[] fmt(Args...)(string pattern, Args args) @trusted
     {
-        import std.format : sformat;
+        import std.format : formattedWrite;
 
-        immutable mask    = char.alignof - 1;
-        immutable aligned = (cursor + mask) & ~mask;
-        immutable avail   = buffer.length > aligned ? buffer.length - aligned : 0;
-
+        immutable avail = buffer.length > cursor ? buffer.length - cursor : 0;
         if (avail == 0) return null;
 
-        auto dest = cast(char[])(buffer[aligned .. aligned + avail]);
-        char[] result;
+        // A counting sink instead of `sformat`: `sformat` reports overflow with a `RangeError`, which is not an
+        // `Exception` and would abort the program.
+        auto sink = BoundedSink(cast(char[]) buffer[cursor .. cursor + avail]);
         try
-            result = sformat(dest, pattern, args);
+            formattedWrite(sink, pattern, args);
         catch (Exception)
-            return null;  // pattern overflows available space
+            return null;  // malformed pattern
+        if (sink.overflow)
+            return null;
 
-        cursor = aligned + result.length;
+        auto result = sink.dest[0 .. sink.used];
+        cursor += sink.used;
         return result;
     }
 
@@ -110,4 +133,17 @@ struct FrameArena
     assert(arena.used > 0);
     arena.reset();
     assert(arena.used == 0);
+}
+
+@("arena.fmt: overflow returns null and leaves the arena usable")
+@safe unittest
+{
+    auto arena = FrameArena(16);
+    assert(arena.fmt("%s", "this text is longer than sixteen bytes") is null);
+    assert(arena.used == 0);
+    assert(arena.fmt("%08.3f", 1.5) == "0001.500");
+    assert(arena.fmt("%s", "12345678") == "12345678"); // exactly full
+    assert(arena.fmt("%d", 1) is null);
+    arena.reset();
+    assert(arena.fmt("%s é", 'x') == "x é");
 }

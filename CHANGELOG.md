@@ -7,6 +7,7 @@
 - **Log formatting** (`engine.core.log`): `%s`/`%d`/`%08x`/`%.3f` placeholders are now substituted (they were printed
   literally); arguments without a placeholder are still appended. Floats, `bool`, `long.min` and `ensure()` messages
   print correctly.
+- **`FrameArena.fmt`** returns `null` on overflow instead of aborting with a `RangeError`.
 
 ### Other changes
 
