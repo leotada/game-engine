@@ -12,10 +12,16 @@ import engine.project.asset_ref : AssetGuid;
 import engine.reflect.attrs : component, export_;
 import engine.editor.components : MaterialOverride, Name, Parent, PhysicsBody, Visual, noParent;
 import engine.editor.scene_load :
-    SceneLoadOptions, collectSubtreeEntities, loadSceneAdditive, subtreeToSceneFile;
+    SceneLoadOptions, collectSubtreeEntities, lightFromData, lightToData, loadSceneAdditive, materialFromData,
+    materialToData, physicsFromData, physicsToData, subtreeToSceneFile;
+import engine.math.quat : Quat;
+import engine.reflect.descriptor : FieldKind, invalidComponentTypeId;
+import engine.reflect.serialize : deserializeComponent, serializeComponent;
 import engine.scene.graph : Transform;
 import engine.scene.light : Light;
-import engine.scene.scene_file : SceneEntityData, SceneFile, SceneMeta, loadSceneFile, saveSceneFile;
+import engine.scene.scene_file :
+    SceneComponentData, SceneEntityData, SceneFile, SceneLightData, SceneMaterialData, SceneMeta, ScenePhysicsData,
+    SceneTransformData, loadSceneFile, saveSceneFile;
 import engine.core.log : info, warn, err;
 
 @safe:
@@ -57,6 +63,7 @@ EntityId instantiatePrefab(
     if (prefab.entities.length == 0) return EntityId.max;
 
     SceneFile copy = cast(SceneFile) prefab;
+    copy.entities = copy.entities.dup; // loading clamps shadow flags in place
     SceneLoadOptions opts;
     opts.checkAssetFiles = false;
 
@@ -140,51 +147,72 @@ PrefabPropertyOverride[] diffPrefabOverrides(
 
     immutable inst = world.get!PrefabInstance(instanceRoot);
     auto liveScene = subtreeToSceneFile(world, instanceRoot, inst.spawnOffset);
-    immutable count = liveScene.entities.length < prefab.entities.length
-        ? liveScene.entities.length : prefab.entities.length;
+    auto match = matchPrefabEntities(prefab, liveScene);
 
-    void addOverride(uint localId, string comp, string field, JSONValue val) {
-        overrides ~= PrefabPropertyOverride(
-            localId, strings.intern(comp), strings.intern(field), val);
+    uint toPrefabId(uint liveFileId) @safe {
+        foreach (pi, li; match)
+            if (li >= 0 && liveScene.entities[li].id == liveFileId)
+                return prefab.entities[pi].id;
+        return 0;
     }
 
-    foreach (i; 0 .. count) {
-        const liveE = liveScene.entities[i];
-        const baseE = prefab.entities[i];
+    foreach (pi, ref const baseE; prefab.entities) {
+        if (match[pi] < 0)
+            continue;
+        const liveE = &liveScene.entities[match[pi]];
         immutable localId = baseE.id;
 
-        if (liveE.transform.pos != baseE.transform.pos)
-            addOverride(localId, "Transform", "pos", JSONValue(liveE.transform.pos[]));
-        if (liveE.transform.rot != baseE.transform.rot)
-            addOverride(localId, "Transform", "rot", JSONValue(liveE.transform.rot[]));
-        if (liveE.transform.scale != baseE.transform.scale)
-            addOverride(localId, "Transform", "scale", JSONValue(liveE.transform.scale[]));
-
-        string liveName = liveE.hasName && liveE.name >= 0 && liveE.name < cast(int) liveScene.strings.length
-            ? liveScene.strings[liveE.name] : "";
-        string baseName = baseE.hasName && baseE.name >= 0 && baseE.name < cast(int) prefab.strings.length
-            ? prefab.strings[baseE.name] : "";
-        if (liveName != baseName)
-            addOverride(localId, "Name", "name", JSONValue(liveName));
-
-        if (liveE.hasMaterial != baseE.hasMaterial ||
-            (liveE.hasMaterial && liveE.material.baseColor != baseE.material.baseColor)) {
-            addOverride(localId, "MaterialOverride", "baseColor",
-                JSONValue(liveE.material.baseColor[]));
+        void add(string comp, string field, JSONValue val) {
+            overrides ~= PrefabPropertyOverride(localId, strings.intern(comp), strings.intern(field), val);
         }
-        if (liveE.hasMaterial && (!baseE.hasMaterial ||
-            liveE.material.geometryOpacity != baseE.material.geometryOpacity)) {
-            addOverride(localId, "MaterialOverride", "geometryOpacity",
-                JSONValue(liveE.material.geometryOpacity));
+        // Every field of one data section that differs. A section only the instance has differs in all its fields.
+        void section(T)(string comp, ref const T live, ref const T base, bool baseHas) {
+            static foreach (i; 0 .. T.tupleof.length) {
+                if (!baseHas || live.tupleof[i] != base.tupleof[i])
+                    add(comp, __traits(identifier, T.tupleof[i]), toJson(live.tupleof[i]));
+            }
         }
 
-        if (liveE.hasLight && (!baseE.hasLight || liveE.light.intensity != baseE.light.intensity))
-            addOverride(localId, "Light", "intensity", JSONValue(liveE.light.intensity));
-        if (liveE.hasLight && (!baseE.hasLight || liveE.light.color != baseE.light.color))
-            addOverride(localId, "Light", "color", JSONValue(liveE.light.color[]));
+        section("Transform", liveE.transform, baseE.transform, true);
+        immutable liveName = entityName(liveScene, *liveE);
+        if (liveName != entityName(prefab, baseE))
+            add("Name", "name", JSONValue(liveName));
+        if (liveE.hasMaterial)
+            section("MaterialOverride", liveE.material, baseE.material, baseE.hasMaterial);
+        if (liveE.hasLight)
+            section("Light", liveE.light, baseE.light, baseE.hasLight);
+        if (liveE.hasPhysics)
+            section("PhysicsBody", liveE.physics, baseE.physics, baseE.hasPhysics);
 
-        if (liveE.hasPhysics && (!baseE.hasPhysics || liveE.physics.mass != baseE.physics.mass))
-            addOverride(localId, "PhysicsBody", "mass", JSONValue(liveE.physics.mass));
+        foreach (ref const lc; liveE.customComponents) {
+            immutable tid = world.types.find(lc.typeName, world.strings);
+            if (tid == invalidComponentTypeId || lc.data.type != JSONType.object)
+                continue;
+            // The prefab file may omit fields at their default: compare complete components.
+            auto bytes = new ubyte[world.types.getType(tid).size];
+            bool baseHas;
+            foreach (ref const bc; baseE.customComponents) {
+                if (bc.typeName == lc.typeName) {
+                    deserializeComponent(world.types, tid, bc.data, bytes, world.strings, (uint id) => id);
+                    baseHas = true;
+                }
+            }
+            JSONValue baseJson;
+            if (baseHas)
+                baseJson = serializeComponent(world.types, tid, bytes, world.strings, (uint id) => id);
+            foreach (ref const fd; world.types.getFields(tid)) {
+                string field = world.strings.get(fd.name).idup;
+                auto lv = field in lc.data.object;
+                if (lv is null)
+                    continue;
+                JSONValue v = *lv;
+                if (fd.kind == FieldKind.entityRef)
+                    v = JSONValue(cast(long) toPrefabId(cast(uint) jsonNum(v)));
+                if (baseHas && field in baseJson.object && baseJson[field] == v)
+                    continue;
+                add(lc.typeName, field, v);
+            }
+        }
     }
 
     return overrides;
@@ -206,105 +234,226 @@ void applyPropertyOverridesToSceneFile(
         }
         if (target is null) continue;
 
-        auto comp = strings.get(ov.componentName);
-        auto field = strings.get(ov.fieldName);
-        if (comp == "Transform") {
-            if (field == "pos" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                foreach (k; 0 .. 3)
-                    target.transform.pos[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            } else if (field == "rot" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 4) {
-                foreach (k; 0 .. 4)
-                    target.transform.rot[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            } else if (field == "scale" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                foreach (k; 0 .. 3)
-                    target.transform.scale[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            }
-        } else if (comp == "MaterialOverride") {
-            target.hasMaterial = true;
-            if (field == "baseColor" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                foreach (k; 0 .. 3)
-                    target.material.baseColor[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            } else if (field == "geometryOpacity") {
-                target.material.geometryOpacity = cast(float) jsonNum(ov.overrideValue);
-            }
-        } else if (comp == "Light") {
-            target.hasLight = true;
-            if (field == "intensity") {
-                target.light.intensity = cast(float) jsonNum(ov.overrideValue);
-            } else if (field == "color" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                foreach (k; 0 .. 3)
-                    target.light.color[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            }
-        } else if (comp == "PhysicsBody") {
-            target.hasPhysics = true;
-            if (field == "mass")
-                target.physics.mass = cast(float) jsonNum(ov.overrideValue);
+        string comp = strings.get(ov.componentName).idup;
+        string field = strings.get(ov.fieldName).idup;
+        switch (comp) {
+            case "Transform":
+                setField(target.transform, field, ov.overrideValue);
+                break;
+            case "Name":
+                if (ov.overrideValue.type == JSONType.string) {
+                    target.hasName = ov.overrideValue.str.length > 0;
+                    if (target.hasName) {
+                        target.name = cast(int) prefab.strings.length;
+                        prefab.strings ~= ov.overrideValue.str;
+                    }
+                }
+                break;
+            case "MaterialOverride":
+                target.hasMaterial = true;
+                setField(target.material, field, ov.overrideValue);
+                break;
+            case "Light":
+                target.hasLight = true;
+                setField(target.light, field, ov.overrideValue);
+                break;
+            case "PhysicsBody":
+                target.hasPhysics = true;
+                setField(target.physics, field, ov.overrideValue);
+                break;
+            default:
+                SceneComponentData* c;
+                foreach (ref cc; target.customComponents)
+                    if (cc.typeName == comp) c = &cc;
+                if (c is null) {
+                    target.customComponents ~= SceneComponentData(comp, JSONValue(string[string].init));
+                    c = &target.customComponents[$ - 1];
+                }
+                JSONValue value = ov.overrideValue;
+                c.data[field] = value;
+                break;
         }
     }
 }
 
 /// Apply `PrefabPropertyOverride` entries directly to a live prefab instance subtree.
+/// `prefab` is the definition the overrides' entity ids belong to; without it, the ids are taken as 1-based positions
+/// in `collectSubtreeEntities` order.
 bool applyPropertyOverrides(
     ref SceneWorld world,
     EntityId instanceRoot,
     scope const(PrefabPropertyOverride)[] overrides,
-    ref StringTable strings
+    ref StringTable strings,
+    scope const(SceneFile)* prefab = null
 ) @trusted {
     if (!world.alive(instanceRoot) || !world.has!PrefabInstance(instanceRoot))
         return false;
 
     auto subtree = collectSubtreeEntities(world, instanceRoot);
-    foreach (ref const ov; overrides) {
-        if (ov.entityLocalId == 0 || ov.entityLocalId > subtree.length)
-            continue;
-        immutable target = subtree[ov.entityLocalId - 1];
-        if (!world.alive(target)) continue;
+    EntityId[uint] liveOf;
+    if (prefab is null) {
+        foreach (i, id; subtree)
+            liveOf[cast(uint) i + 1] = id;
+    } else {
+        auto liveScene = subtreeToSceneFile(world, instanceRoot);
+        foreach (pi, li; matchPrefabEntities(*prefab, liveScene))
+            if (li >= 0)
+                liveOf[prefab.entities[pi].id] = subtree[li];
+    }
 
-        auto comp = strings.get(ov.componentName);
-        auto field = strings.get(ov.fieldName);
-        if (comp == "Transform" && world.has!Transform(target)) {
-            auto t = world.get!Transform(target);
-            if (field == "pos" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                t.position = Vec3(
-                    cast(float) jsonNum(ov.overrideValue.array[0]),
-                    cast(float) jsonNum(ov.overrideValue.array[1]),
-                    cast(float) jsonNum(ov.overrideValue.array[2]));
-                if (target == instanceRoot)
+    foreach (ref const ov; overrides) {
+        auto pt = ov.entityLocalId in liveOf;
+        if (pt is null || !world.alive(*pt)) continue;
+        immutable target = *pt;
+
+        string comp = strings.get(ov.componentName).idup;
+        string field = strings.get(ov.fieldName).idup;
+        switch (comp) {
+            case "Transform":
+                if (!world.has!Transform(target)) break;
+                auto t = world.get!Transform(target);
+                SceneTransformData d;
+                d.pos = [t.position.x, t.position.y, t.position.z];
+                d.rot = [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w];
+                d.scale = [t.scale.x, t.scale.y, t.scale.z];
+                if (!setField(d, field, ov.overrideValue)) break;
+                t.position = Vec3(d.pos[0], d.pos[1], d.pos[2]);
+                if (field == "pos" && target == instanceRoot)
                     t.position = t.position + world.get!PrefabInstance(instanceRoot).spawnOffset;
-            } else if (field == "rot" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 4) {
-                t.rotation.x = cast(float) jsonNum(ov.overrideValue.array[0]);
-                t.rotation.y = cast(float) jsonNum(ov.overrideValue.array[1]);
-                t.rotation.z = cast(float) jsonNum(ov.overrideValue.array[2]);
-                t.rotation.w = cast(float) jsonNum(ov.overrideValue.array[3]);
-            } else if (field == "scale" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                t.scale = Vec3(
-                    cast(float) jsonNum(ov.overrideValue.array[0]),
-                    cast(float) jsonNum(ov.overrideValue.array[1]),
-                    cast(float) jsonNum(ov.overrideValue.array[2]));
-            }
-            world.set(target, t);
-        } else if (comp == "MaterialOverride") {
-            MaterialOverride mat;
-            if (world.has!MaterialOverride(target))
-                mat = world.get!MaterialOverride(target);
-            if (field == "baseColor" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3) {
-                foreach (k; 0 .. 3)
-                    mat.baseColor[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            } else if (field == "geometryOpacity") {
-                mat.geometryOpacity = cast(float) jsonNum(ov.overrideValue);
-            }
-            world.set(target, mat);
-        } else if (comp == "Light" && world.has!Light(target)) {
-            auto l = world.get!Light(target);
-            if (field == "intensity")
-                l.intensity = cast(float) jsonNum(ov.overrideValue);
-            else if (field == "color" && ov.overrideValue.type == JSONType.array && ov.overrideValue.array.length >= 3)
-                foreach (k; 0 .. 3)
-                    l.color[k] = cast(float) jsonNum(ov.overrideValue.array[k]);
-            world.set(target, l);
+                t.rotation = Quat(d.rot[0], d.rot[1], d.rot[2], d.rot[3]);
+                t.scale = Vec3(d.scale[0], d.scale[1], d.scale[2]);
+                world.set(target, t);
+                break;
+            case "Name":
+                if (ov.overrideValue.type != JSONType.string) break;
+                world.set(target, Name(ov.overrideValue.str.length
+                    ? world.strings.intern(ov.overrideValue.str) : StringId.init));
+                break;
+            case "MaterialOverride":
+                SceneMaterialData m;
+                if (world.has!MaterialOverride(target))
+                    m = materialToData(world.get!MaterialOverride(target));
+                if (setField(m, field, ov.overrideValue))
+                    world.set(target, materialFromData(m));
+                break;
+            case "Light":
+                SceneLightData l;
+                if (world.has!Light(target))
+                    l = lightToData(world.get!Light(target));
+                if (setField(l, field, ov.overrideValue))
+                    world.set(target, lightFromData(l));
+                break;
+            case "PhysicsBody":
+                ScenePhysicsData p;
+                StringId asset;
+                if (world.has!PhysicsBody(target)) {
+                    p = physicsToData(world.get!PhysicsBody(target));
+                    asset = world.get!PhysicsBody(target).assetPath;
+                }
+                if (setField(p, field, ov.overrideValue)) {
+                    auto pb = physicsFromData(p, asset);
+                    if (world.has!PhysicsBody(target)) {
+                        pb.halfExtents = world.get!PhysicsBody(target).halfExtents;
+                        pb.showCollider = world.get!PhysicsBody(target).showCollider;
+                    }
+                    world.set(target, pb);
+                }
+                break;
+            default:
+                immutable tid = world.types.find(comp, world.strings);
+                if (tid == invalidComponentTypeId) break;
+                auto bytes = new ubyte[world.types.getType(tid).size];
+                auto cur = world.rawGet(tid, target);
+                JSONValue json = JSONValue(string[string].init);
+                if (cur !is null)
+                    json = serializeComponent(world.types, tid, cur, world.strings);
+                JSONValue value = ov.overrideValue;
+                foreach (ref const fd; world.types.getFields(tid)) {
+                    if (fd.kind != FieldKind.entityRef || world.strings.get(fd.name) != field) continue;
+                    auto r = cast(uint) jsonNum(value) in liveOf;
+                    value = JSONValue(cast(long)(r is null ? EntityId.max : *r));
+                }
+                json[field] = value;
+                deserializeComponent(world.types, tid, json, bytes, world.strings);
+                world.rawAdd(tid, target, bytes);
+                break;
         }
     }
     return true;
+}
+
+/// For every prefab entity, the index in `live.entities` of the entity it corresponds to, or -1. Roots pair up;
+/// children of paired entities pair by name first, then by order, so a child deleted from (or added to) an instance
+/// does not shift its siblings.
+private int[] matchPrefabEntities(ref const SceneFile prefab, ref const SceneFile live) {
+    auto result = new int[](prefab.entities.length);
+    result[] = -1;
+    if (prefab.entities.length == 0 || live.entities.length == 0)
+        return result;
+    auto taken = new bool[](live.entities.length);
+    result[0] = 0;
+    taken[0] = true;
+
+    size_t[] queue = [0];
+    while (queue.length) {
+        immutable pi = queue[0];
+        queue = queue[1 .. $];
+        immutable pid = prefab.entities[pi].id, lid = live.entities[result[pi]].id;
+        foreach (byName; [true, false]) {
+            foreach (ci, ref const pc; prefab.entities) {
+                if (ci == 0 || pc.parent != pid || result[ci] >= 0)
+                    continue;
+                immutable name = entityName(prefab, pc);
+                foreach (li, ref const lc; live.entities) {
+                    if (taken[li] || lc.parent != lid || (byName && entityName(live, lc) != name))
+                        continue;
+                    result[ci] = cast(int) li;
+                    taken[li] = true;
+                    queue ~= ci;
+                    break;
+                }
+            }
+        }
+    }
+    return result;
+}
+
+private string entityName(ref const SceneFile scene, ref const SceneEntityData e) {
+    return e.hasName && e.name >= 0 && e.name < cast(int) scene.strings.length ? scene.strings[e.name] : "";
+}
+
+private JSONValue toJson(T)(const T v) {
+    static if (is(T : E[N], E, size_t N) && !is(T == string))
+        return JSONValue(v[].dup);
+    else
+        return JSONValue(v);
+}
+
+/// Set the member `field` of a scene data section from JSON. False when it does not exist or the value does not fit.
+private bool setField(T)(ref T data, string field, ref const JSONValue v) @trusted {
+    static foreach (i; 0 .. T.tupleof.length) {
+        if (field == __traits(identifier, T.tupleof[i])) {
+            alias M = typeof(T.tupleof[i]);
+            static if (is(M == bool)) {
+                if (v.type != JSONType.true_ && v.type != JSONType.false_) return false;
+                data.tupleof[i] = v.type == JSONType.true_;
+                return true;
+            } else static if (is(M == string)) {
+                if (v.type != JSONType.string) return false;
+                data.tupleof[i] = v.str;
+                return true;
+            } else static if (is(M : E[N], E, size_t N)) {
+                if (v.type != JSONType.array || v.array.length < N) return false;
+                foreach (k; 0 .. N)
+                    data.tupleof[i][k] = cast(E) jsonNum(v.array[k]);
+                return true;
+            } else {
+                data.tupleof[i] = cast(M) jsonNum(v);
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /**
@@ -341,7 +490,7 @@ uint reloadPrefabInstances(
         auto overrides = diffPrefabOverrides(world, root, oldPrefab, world.strings);
         immutable fresh = revertPrefab(world, root, newPrefab, world.strings);
         if (fresh == EntityId.max) continue;
-        applyPropertyOverrides(world, fresh, overrides, world.strings);
+        applyPropertyOverrides(world, fresh, overrides, world.strings, &newPrefab);
         rebuilt++;
     }
     if (rebuilt) info("Prefab hot-reload: rebuilt ", rebuilt, " instance(s)");
@@ -499,4 +648,86 @@ unittest {
     // Instances of other prefabs are left alone.
     assert(world.alive(unrelated));
     assert(world.get!Transform(collectSubtreeEntities(world, unrelated)[1]).position == Vec3(0, 1, 0));
+}
+
+@("prefab: reload keeps every kind of override, with recycled ids, odd entity ids and deleted children")
+unittest {
+    import engine.reflect.attrs : entityRef;
+    import engine.scene.scene_file : sceneNoParent;
+    import std.json : parseJSON;
+
+    @component static struct Gun { int ammo = 10; float spread = 1; @entityRef uint barrel = uint.max; }
+
+    SceneFile v1;
+    v1.strings = ["Tank", "Turret", "Wheel", "Antenna"];
+    static SceneEntityData ent(uint id, uint parent, int name) {
+        SceneEntityData e;
+        e.id = id;
+        e.parent = parent;
+        e.hasName = true;
+        e.name = name;
+        return e;
+    }
+    auto root = ent(10, sceneNoParent, 0);
+    root.hasPhysics = true;
+    auto turret = ent(25, 10, 1);
+    turret.customComponents ~= SceneComponentData("Gun", parseJSON(`{"ammo": 30, "barrel": 40}`));
+    auto antenna = ent(40, 25, 3);          // depth first: not the breadth-first order
+    auto wheel = ent(30, 10, 2);
+    wheel.transform.pos = [0, 1, 0];
+    v1.entities = [root, turret, antenna, wheel];
+
+    SceneWorld w;
+    w.ensureRegistered!Gun();
+    EntityId[] holes;
+    foreach (_; 0 .. 6) holes ~= w.spawn();
+    foreach (h; holes) w.destroy(h); // recycled ids come back in reverse
+    auto g = AssetGuid.generate();
+    auto id = instantiatePrefab(w, v1, w.strings, g, Vec3(0, 0, 0));
+    EntityId find(string name) {
+        foreach (e; w.query!Name())
+            if (w.strings.get(w.get!Name(e).id) == name) return e;
+        return EntityId.max;
+    }
+    assert(w.get!Gun(find("Turret")).barrel == find("Antenna"));
+    assert(diffPrefabOverrides(w, id, v1, w.strings).length == 0);
+
+    w.set(id, Name(w.strings.intern("Boss")));
+    auto pb = w.get!PhysicsBody(id);
+    pb.mass = 50;
+    pb.friction = 0.9f;
+    w.set(id, pb);
+    MaterialOverride mo;
+    mo.active = true;
+    mo.baseMetalness = 1;
+    w.set(find("Wheel"), mo);
+    auto gun = w.get!Gun(find("Turret"));
+    gun.spread = 4;
+    w.set(find("Turret"), gun);
+    Light light;
+    light.range = 33;
+    w.set(find("Antenna"), light);
+    w.get!Transform(find("Wheel")).position = Vec3(7, 1, 0);
+
+    SceneFile v2 = v1;
+    v2.entities = v1.entities.dup;
+    v2.entities[1].customComponents = [SceneComponentData("Gun", parseJSON(`{"ammo": 99, "barrel": 40}`))];
+    assert(reloadPrefabInstances(w, g, v1, v2) == 1);
+
+    auto boss = find("Boss");
+    assert(boss != EntityId.max && w.get!PhysicsBody(boss).mass == 50 && w.get!PhysicsBody(boss).friction == 0.9f);
+    assert(w.get!MaterialOverride(find("Wheel")).baseMetalness == 1);
+    assert(w.get!Transform(find("Wheel")).position == Vec3(7, 1, 0));
+    assert(w.get!Light(find("Antenna")).range == 33);
+    assert(w.get!Gun(find("Turret")) == Gun(99, 4, find("Antenna")));
+
+    // Deleting a child must not hand its siblings' overrides to the wrong entity.
+    w.destroy(find("Antenna"));
+    w.destroy(find("Turret"));
+    auto diffs = diffPrefabOverrides(w, boss, v2, w.strings);
+    foreach (ref d; diffs)
+        assert(d.entityLocalId == 10 || d.entityLocalId == 30);
+    applyPropertyOverridesToSceneFile(v2, diffs, w.strings);
+    assert(v2.strings[v2.entities[0].name] == "Boss" && v2.entities[0].physics.mass == 50);
+    assert(v2.entities[3].material.baseMetalness == 1 && v2.entities[3].transform.pos == [7.0f, 1.0f, 0.0f]);
 }

@@ -31,6 +31,9 @@
 - **Scene save/load**: `@entityRef` fields are stored as file ids and remapped on load (they kept the ids of the saving
   session); `PrefabInstance` is no longer dropped in a fresh world; a load that fails midway leaves no entities behind;
   loaded entities get ascending ids in file order.
+- **Prefab overrides**: every field of Transform, Name, material, light, physics and custom components is diffed and
+  re-applied on prefab hot reload (most were lost), and entities are matched by hierarchy and name, so recycled ids,
+  deleted children or ids other than 1..n no longer move overrides to the wrong entity.
 
 ### Other changes
 
