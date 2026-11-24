@@ -187,7 +187,16 @@ fn sampleDirShadowBackAndThickness(worldPos: vec3<f32>, N: vec3<f32>, L: vec3<f3
     var layer: i32 = 0;
     var lightVP = frame.dirLight.viewProj;
     var invDepthRange: f32 = 1.0 / 32.0;
+    var fade = 0.0;
     if (count > 0) {
+        // Past the shadow range the last cascade only covers whatever its light box happens to
+        // reach (and the engine culls casters whose shadows cannot land in range): fade the
+        // thickness out with the shadow, so it never depends on that coverage.
+        let viewDepth = dot(worldPos - frame.cameraPos, frame.cameraForward);
+        if (viewDepth >= frame.cascadeParams.w) {
+            return vec2<f32>(backShadow, 0.05);
+        }
+        fade = smoothstep(frame.cascadeParams.z, frame.cascadeParams.w, viewDepth);
         layer = dirCascadeIndex(worldPos);
         lightVP = frame.cascadeViewProj[layer];
         invDepthRange = max(frame.cascadeTexel[layer].y, 1e-4);
@@ -203,7 +212,7 @@ fn sampleDirShadowBackAndThickness(worldPos: vec3<f32>, N: vec3<f32>, L: vec3<f3
     let blockerZ = textureLoad(dirShadowMap, coord, layer, 0);
     let dz = max(ndc.z - blockerZ, 0.0);
     let thicknessMeters = clamp(dz / invDepthRange, 0.0, 10.0);
-    return vec2<f32>(backShadow, thicknessMeters);
+    return vec2<f32>(backShadow, mix(thicknessMeters, 0.05, fade));
 }
 
 /// Debug tint per cascade (identity unless `frame.debugFlags & 1`).
