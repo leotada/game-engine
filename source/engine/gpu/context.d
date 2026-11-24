@@ -147,6 +147,13 @@ struct GpuContext {
             reqLimits.maxComputeWorkgroupsPerDimension = clampLimit(adapterLimits.maxComputeWorkgroupsPerDimension, 64);
             devDesc.requiredLimits = &reqLimits;
         }
+        // Optional features: requested only when the adapter has them, so the device never fails to
+        // open because of one. Query them with `hasFeature`.
+        WGPUFeatureName[5] features;
+        size_t featureCount = 0;
+        foreach (f; [WGPUFeatureName.textureCompressionBC, WGPUFeatureName.indirectFirstInstance])
+            if (wgpuAdapterHasFeature(ctx.adapter, f) != 0) features[featureCount++] = f;
+
         // GPU timestamps for the profiler (engine.gpu.gpu_profiler): only when the adapter has
         // all three features; `ENGINE_NO_GPU_TIMESTAMPS=1` opts out (fallback testing).
         WGPUFeatureName[3] tsFeatures = [WGPUFeatureName.timestampQuery,
@@ -157,10 +164,12 @@ struct GpuContext {
             bool all = optOut is null || optOut[0] == '0';
             foreach (f; tsFeatures)
                 all = all && wgpuAdapterHasFeature(ctx.adapter, f) != 0;
-            if (all) {
-                devDesc.requiredFeatureCount = tsFeatures.length;
-                devDesc.requiredFeatures = cast(void*) tsFeatures.ptr;
-            }
+            if (all)
+                foreach (f; tsFeatures) features[featureCount++] = f;
+        }
+        if (featureCount > 0) {
+            devDesc.requiredFeatureCount = featureCount;
+            devDesc.requiredFeatures = cast(void*) features.ptr;
         }
         WGPURequestDeviceCallbackInfo devCb;
         devCb.mode      = WGPUCallbackMode.allowProcessEvents;
@@ -307,6 +316,10 @@ struct GpuContext {
     WGPUQueue    getQueue()   nothrow @nogc { return queue; }
     /// True when GPU timestamp queries (between and inside passes) are enabled on the device.
     bool timestampsSupported() const nothrow @nogc { return timestamps; }
+    /// True when the device was opened with the optional feature `f`.
+    bool hasFeature(WGPUFeatureName f) nothrow @nogc @trusted {
+        return device !is null && wgpuDeviceHasFeature(device, f) != 0;
+    }
     WGPUSurface  getSurface() nothrow @nogc { return surface; }
     WGPUTextureFormat getFormat() const nothrow @nogc { return surfaceFormat; }
     uint width()  const nothrow @nogc { return surfW; }

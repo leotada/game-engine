@@ -135,6 +135,7 @@ enum WGPUTextureFormat : uint {
     rg8Snorm        = 0x0000_000B,
     /// Not filterable without the `float32-filterable` feature.
     r32Float        = 0x0000_000E,
+    r32Uint         = 0x0000_000F,
     rg16Float       = 0x0000_0015,
     rgba8Unorm      = 0x0000_0016,
     rgba8UnormSrgb  = 0x0000_0017,
@@ -147,6 +148,10 @@ enum WGPUTextureFormat : uint {
     depth24PlusStencil8    = 0x0000_002F,
     depth32Float           = 0x0000_0030,
     depth32FloatStencil8   = 0x0000_0031,
+    /// BC formats need `WGPUFeatureName.textureCompressionBC`.
+    bc5RgUnorm             = 0x0000_003A,
+    bc7RgbaUnorm           = 0x0000_003E,
+    bc7RgbaUnormSrgb       = 0x0000_003F,
 }
 
 enum WGPUTextureUsage : WGPUFlags {
@@ -175,7 +180,10 @@ enum WGPUBufferUsage : WGPUFlags {
 /// Subset of `WGPUFeatureName` (webgpu.h) plus the wgpu-native timestamp extensions (wgpu.h,
 /// `WGPUNativeFeature`). Values checked against wgpu-native v29.0.1.1.
 enum WGPUFeatureName : uint {
+    textureCompressionBC = 0x0000_0004,
     timestampQuery = 0x0000_0009,
+    /// Lets indirect draws use a `firstInstance` other than 0.
+    indirectFirstInstance = 0x0000_000A,
     /// wgpu-native: `wgpuCommandEncoderWriteTimestamp` between passes.
     timestampQueryInsideEncoders = 0x0003_0024,
     /// wgpu-native: `wgpuRenderPassEncoderWriteTimestamp` / `wgpuComputePassEncoderWriteTimestamp`.
@@ -780,12 +788,19 @@ struct WGPUColorTargetState {
     WGPUColorWriteMask writeMask = WGPUColorWriteMask.all;
 }
 
+/// Value for a pipeline-overridable WGSL `override` constant.
+struct WGPUConstantEntry {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView key;
+    double value = 0;
+}
+
 struct WGPUFragmentState {
     WGPUChainedStruct* nextInChain;
     WGPUShaderModule module_;
     WGPUStringView entryPoint;
     size_t constantCount = 0;
-    void* constants;
+    const(WGPUConstantEntry)* constants;
     size_t targetCount = 0;
     const(WGPUColorTargetState)* targets;
 }
@@ -810,7 +825,7 @@ struct WGPUVertexState {
     WGPUShaderModule module_;
     WGPUStringView entryPoint;
     size_t constantCount = 0;
-    void* constants;
+    const(WGPUConstantEntry)* constants;
     size_t bufferCount = 0;
     const(WGPUVertexBufferLayout)* buffers;
 }
@@ -820,7 +835,7 @@ struct WGPUProgrammableStageDescriptor {
     WGPUShaderModule module_;
     WGPUStringView entryPoint;
     size_t constantCount = 0;
-    const(void)* constants;
+    const(WGPUConstantEntry)* constants;
 }
 
 struct WGPUComputePipelineDescriptor {
@@ -1134,6 +1149,17 @@ void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder encoder, WGPUBuff
 void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder encoder, uint groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const(uint)* dynamicOffsets);
 void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder encoder, uint vertexCount, uint instanceCount, uint firstVertex, uint firstInstance);
 void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder encoder, uint indexCount, uint instanceCount, uint firstIndex, int baseVertex, uint firstInstance);
+void wgpuRenderPassEncoderDrawIndexedIndirect(WGPURenderPassEncoder encoder, WGPUBuffer indirectBuffer, ulong indirectOffset);
+version (WebAssembly) {
+    /// Web stand-in for the wgpu-native extension: one indirect draw per record (20 bytes each).
+    extern (D) void wgpuRenderPassEncoderMultiDrawIndexedIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, ulong offset, uint count) {
+        foreach (i; 0 .. count)
+            wgpuRenderPassEncoderDrawIndexedIndirect(encoder, buffer, offset + i * 20);
+    }
+} else {
+    /// wgpu-native extension (wgpu.h): `count` tightly packed indexed indirect records.
+    void wgpuRenderPassEncoderMultiDrawIndexedIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, ulong offset, uint count);
+}
 void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder encoder, uint x, uint y, uint width, uint height);
 void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder encoder, float x, float y, float width, float height, float minDepth, float maxDepth);
 void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder);
@@ -1202,6 +1228,7 @@ void wgpuComputePipelineRelease(WGPUComputePipeline pipeline);
 void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder encoder, WGPUComputePipeline pipeline);
 void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder encoder, uint groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const(uint)* dynamicOffsets);
 void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder encoder, uint workgroupCountX, uint workgroupCountY, uint workgroupCountZ);
+void wgpuComputePassEncoderDispatchWorkgroupsIndirect(WGPUComputePassEncoder encoder, WGPUBuffer indirectBuffer, ulong indirectOffset);
 void wgpuComputePassEncoderEnd(WGPUComputePassEncoder encoder);
 void wgpuComputePassEncoderRelease(WGPUComputePassEncoder encoder);
 
