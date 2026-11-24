@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Rendering features (opt-in, `docs/plan-viatura-rendering.md`)
+
+- **Foundation**: bindings for indirect / multi-draw-indirect draws, indirect dispatch, BC formats and WGSL override
+  constants; optional device features requested only when available (`GpuContext.hasFeature`); `MaterialParams` grows
+  to 240 bytes (surface options block); new `render-check` config with GPU pixel checks.
+
 ### Engine bug fixes
 
 - **Log formatting** (`engine.core.log`): `%s`/`%d`/`%08x`/`%.3f` placeholders are now substituted (they were printed

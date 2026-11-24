@@ -221,6 +221,12 @@
             "mainSourceFile": "source/demo/surface_shadow_check.d"
         },
         {
+            "name": "render-check",
+            "targetType": "executable",
+            "targetName": "game-engine-render-check",
+            "mainSourceFile": "source/demo/render_check.d"
+        },
+        {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
