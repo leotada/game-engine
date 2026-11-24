@@ -227,7 +227,7 @@ b3BodyId createBoxBody(ref PhysicsWorld world, const BodyDesc desc, Vec3 halfExt
         return b3BodyId.init;
     b3BoxHull hull = b3MakeBoxHullD(halfExtent.x, halfExtent.y, halfExtent.z);
     b3ShapeDef shapeDef = makeShapeDef(desc);
-    b3CreateHullShapeD(bodyId, &shapeDef, &hull.base);
+    world.rememberShape(b3CreateHullShapeD(bodyId, &shapeDef, &hull.base), desc.entityId);
     return bodyId;
 }
 
@@ -240,7 +240,7 @@ b3BodyId createSphereBody(ref PhysicsWorld world, const BodyDesc desc, float rad
     sphere.center = b3Vec3(0.0f, 0.0f, 0.0f);
     sphere.radius = radius;
     b3ShapeDef shapeDef = makeShapeDef(desc);
-    b3CreateSphereShapeD(bodyId, &shapeDef, &sphere);
+    world.rememberShape(b3CreateSphereShapeD(bodyId, &shapeDef, &sphere), desc.entityId);
     return bodyId;
 }
 
@@ -251,7 +251,7 @@ b3BodyId createCapsuleBody(ref PhysicsWorld world, const BodyDesc desc, float he
         return b3BodyId.init;
     b3Capsule capsule = makeYAxisCapsule(height, radius);
     b3ShapeDef shapeDef = makeShapeDef(desc);
-    b3CreateCapsuleShapeD(bodyId, &shapeDef, &capsule);
+    world.rememberShape(b3CreateCapsuleShapeD(bodyId, &shapeDef, &capsule), desc.entityId);
     return bodyId;
 }
 
@@ -274,7 +274,7 @@ b3BodyId createCylinderBody(ref PhysicsWorld world,
         return b3BodyId.init;
     }
     b3ShapeDef shapeDef = makeShapeDef(desc);
-    b3CreateHullShapeD(bodyId, &shapeDef, hull);
+    world.rememberShape(b3CreateHullShapeD(bodyId, &shapeDef, hull), desc.entityId);
     b3DestroyHullD(hull);
     return bodyId;
 }
@@ -300,7 +300,7 @@ b3BodyId createHullBody(ref PhysicsWorld world,
         return b3BodyId.init;
     }
     b3ShapeDef shapeDef = makeShapeDef(desc);
-    b3CreateHullShapeD(bodyId, &shapeDef, hull);
+    world.rememberShape(b3CreateHullShapeD(bodyId, &shapeDef, hull), desc.entityId);
     b3DestroyHullD(hull);
     return bodyId;
 }
@@ -983,6 +983,7 @@ private b3BodyId createStaticMeshShapeBody(ref PhysicsWorld world,
     populateShapeMaterials(shapeDef, b3Mats, materials);
 
     immutable shapeId = b3CreateMeshShapeD(bodyId, &shapeDef, mesh, toB3Vec3(scale));
+    world.rememberShape(shapeId, desc.entityId);
     if (!b3Shape_IsValidD(shapeId)) {
         destroyBody(bodyId);
         return b3BodyId.init;
@@ -1009,6 +1010,7 @@ private b3BodyId createHeightFieldShapeBody(ref PhysicsWorld world,
     populateShapeMaterials(shapeDef, b3Mats, materials);
 
     immutable shapeId = b3CreateHeightFieldShapeD(bodyId, &shapeDef, hf);
+    world.rememberShape(shapeId, desc.entityId);
     if (!b3Shape_IsValidD(shapeId)) {
         destroyBody(bodyId);
         return b3BodyId.init;

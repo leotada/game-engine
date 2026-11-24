@@ -51,6 +51,7 @@
   on the next visit.
 - **Renderer**: a screenshot requested on a frame that cannot be presented (or that is resized) waits for the next one
   instead of saving garbage, and `setViewport` keeps its scissor inside the target.
+- **Physics events**: contact/sensor end events of a destroyed body keep its entity id.
 
 ### Other changes
 

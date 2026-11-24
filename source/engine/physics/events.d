@@ -86,20 +86,20 @@ void drainPhysicsEvents(ref PhysicsWorld world, scope ref ContactListener listen
         if (listener.onContactAdded is null)
             break;
         const event = contacts.beginEvents[i];
-        listener.onContactAdded(makeContactEvent(event.shapeIdA, event.shapeIdB), listener.context);
+        listener.onContactAdded(makeContactEvent(world, event.shapeIdA, event.shapeIdB), listener.context);
     }
 
     foreach (i; 0 .. contacts.endCount) {
         if (listener.onContactRemoved is null)
             break;
         const event = contacts.endEvents[i];
-        listener.onContactRemoved(makeContactEvent(event.shapeIdA, event.shapeIdB), listener.context);
+        listener.onContactRemoved(makeContactEvent(world, event.shapeIdA, event.shapeIdB), listener.context);
     }
 
     if (listener.onContactHit !is null) {
         foreach (i; 0 .. contacts.hitCount) {
             const event = contacts.hitEvents[i];
-            listener.onContactHit(makeHitEvent(event), listener.context);
+            listener.onContactHit(makeHitEvent(world, event), listener.context);
         }
     }
 
@@ -108,18 +108,18 @@ void drainPhysicsEvents(ref PhysicsWorld world, scope ref ContactListener listen
         if (listener.onSensorEnter is null)
             break;
         const event = sensors.beginEvents[i];
-        listener.onSensorEnter(makeSensorEvent(event.sensorShapeId, event.visitorShapeId), listener.context);
+        listener.onSensorEnter(makeSensorEvent(world, event.sensorShapeId, event.visitorShapeId), listener.context);
     }
 
     foreach (i; 0 .. sensors.endCount) {
         if (listener.onSensorExit is null)
             break;
         const event = sensors.endEvents[i];
-        listener.onSensorExit(makeSensorEvent(event.sensorShapeId, event.visitorShapeId), listener.context);
+        listener.onSensorExit(makeSensorEvent(world, event.sensorShapeId, event.visitorShapeId), listener.context);
     }
 }
 
-private PhysicsContactEvent makeContactEvent(const b3ShapeId shapeA, const b3ShapeId shapeB) nothrow @nogc @trusted {
+private PhysicsContactEvent makeContactEvent(ref const PhysicsWorld world, const b3ShapeId shapeA, const b3ShapeId shapeB) nothrow @nogc @trusted {
     PhysicsContactEvent event;
     event.shapeA = shapeA;
     event.shapeB = shapeB;
@@ -127,17 +127,21 @@ private PhysicsContactEvent makeContactEvent(const b3ShapeId shapeA, const b3Sha
     if (b3Shape_IsValidD(shapeA)) {
         event.bodyA = b3Shape_GetBodyD(shapeA);
         event.entityA = getBodyEntity(event.bodyA);
+    } else {
+        event.entityA = world.shapeOwner(shapeA);
     }
 
     if (b3Shape_IsValidD(shapeB)) {
         event.bodyB = b3Shape_GetBodyD(shapeB);
         event.entityB = getBodyEntity(event.bodyB);
+    } else {
+        event.entityB = world.shapeOwner(shapeB);
     }
 
     return event;
 }
 
-private PhysicsSensorEvent makeSensorEvent(const b3ShapeId sensorShape, const b3ShapeId visitorShape) nothrow @nogc @trusted {
+private PhysicsSensorEvent makeSensorEvent(ref const PhysicsWorld world, const b3ShapeId sensorShape, const b3ShapeId visitorShape) nothrow @nogc @trusted {
     PhysicsSensorEvent event;
     event.sensorShape = sensorShape;
     event.visitorShape = visitorShape;
@@ -145,17 +149,21 @@ private PhysicsSensorEvent makeSensorEvent(const b3ShapeId sensorShape, const b3
     if (b3Shape_IsValidD(sensorShape)) {
         event.sensorBody = b3Shape_GetBodyD(sensorShape);
         event.sensorEntity = getShapeEntity(sensorShape);
+    } else {
+        event.sensorEntity = world.shapeOwner(sensorShape);
     }
 
     if (b3Shape_IsValidD(visitorShape)) {
         event.visitorBody = b3Shape_GetBodyD(visitorShape);
         event.visitorEntity = getShapeEntity(visitorShape);
+    } else {
+        event.visitorEntity = world.shapeOwner(visitorShape);
     }
 
     return event;
 }
 
-private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc @trusted {
+private PhysicsHitEvent makeHitEvent(ref const PhysicsWorld world, const b3ContactHitEvent raw) nothrow @nogc @trusted {
     PhysicsHitEvent event;
     event.shapeA = raw.shapeIdA;
     event.shapeB = raw.shapeIdB;
@@ -168,11 +176,15 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
     if (b3Shape_IsValidD(raw.shapeIdA)) {
         event.bodyA = b3Shape_GetBodyD(raw.shapeIdA);
         event.entityA = getBodyEntity(event.bodyA);
+    } else {
+        event.entityA = world.shapeOwner(raw.shapeIdA);
     }
 
     if (b3Shape_IsValidD(raw.shapeIdB)) {
         event.bodyB = b3Shape_GetBodyD(raw.shapeIdB);
         event.entityB = getBodyEntity(event.bodyB);
+    } else {
+        event.entityB = world.shapeOwner(raw.shapeIdB);
     }
 
     event.approachImpulse = raw.approachSpeed * reducedMass(getMass(event.bodyA), getMass(event.bodyB));
@@ -206,4 +218,36 @@ private PhysicsHitEvent makeHitEvent(const b3ContactHitEvent raw) nothrow @nogc 
     assert(reducedMass(800.0f, 0.0f) == 800.0f);
     assert(reducedMass(0.0f, 0.0f) == 0.0f);
     assert(fabs(reducedMass(1.0f, 1.0e6f) - 1.0f) < 1e-3f);
+}
+
+@("physics events: end events of a destroyed body keep its entity id")
+@safe unittest {
+    import engine.physics.body : createDynamicBox, createStaticBox, destroyBody;
+    static struct Seen { uint begins, ends; EntityId a, b; }
+    static void onBegin(PhysicsContactEvent e, void* ctx) nothrow @nogc @trusted { (cast(Seen*) ctx).begins++; }
+    static void onEnd(PhysicsContactEvent e, void* ctx) nothrow @nogc @trusted {
+        auto s = cast(Seen*) ctx;
+        s.ends++;
+        s.a = e.entityA;
+        s.b = e.entityB;
+    }
+    auto world = PhysicsWorld.createDefault();
+    createStaticBox(world, Vec3(0, -0.5f, 0), Vec3(5, 0.5f, 5), 11u);
+    auto crate = createDynamicBox(world, Vec3(0, 0.5f, 0), Vec3(0.5f, 0.5f, 0.5f), 1.0f, 22u);
+    Seen seen;
+    ContactListener l;
+    l.onContactAdded = &onBegin;
+    l.onContactRemoved = &onEnd;
+    () @trusted { l.context = &seen; }();
+    foreach (_; 0 .. 10) {
+        world.step(1.0f / 60.0f);
+        drainPhysicsEvents(world, l);
+    }
+    assert(seen.begins == 1);
+    destroyBody(crate);
+    world.step(1.0f / 60.0f);
+    drainPhysicsEvents(world, l);
+    if (seen.ends) // Box3D may report the end on this step
+        assert((seen.a == 11 && seen.b == 22) || (seen.a == 22 && seen.b == 11));
+    assert(seen.ends == 1);
 }

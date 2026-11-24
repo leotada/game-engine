@@ -3,11 +3,18 @@ module engine.physics.world;
 import bindings.box3d;
 import bindings.box3d.ids : b3IsNonNull;
 import core.stdc.stdlib : free, realloc;
+import engine.core.podbuf : PodBuffer;
+import engine.ecs.store : EntityId;
 import engine.math.vec : Vec3;
 import engine.physics.convert : toB3Vec3;
 import engine.devtools.profiler : profileSample, profileZone, profilerEnabled;
 
 @safe:
+
+private struct ShapeOwner {
+    EntityId entity = EntityId.max;
+    uint generation = uint.max; // of the shape slot; a Box3D generation is 16 bits
+}
 
 struct PhysicsWorld {
     @disable this(this);
@@ -19,6 +26,7 @@ struct PhysicsWorld {
     private b3HeightFieldData** _ownedHeightFields;
     private size_t _ownedHeightFieldCount;
     private size_t _ownedHeightFieldCap;
+    private PodBuffer!ShapeOwner _shapeOwners; // by shape index: end events arrive after their shape is destroyed
 
     this(Vec3 gravity,
          bool enableSleep = true,
@@ -37,6 +45,7 @@ struct PhysicsWorld {
     }
 
     ~this() nothrow @nogc @trusted {
+        _shapeOwners.release();
         // Destroy world first so shapes release references before cooked geometry is freed.
         if (b3IsNonNull(_world)) {
             b3DestroyWorldD(_world);
@@ -132,6 +141,23 @@ struct PhysicsWorld {
         if (!valid())
             return 0;
         return b3World_GetAwakeBodyCountD(_world);
+    }
+
+    /// Remember which entity a new shape belongs to.
+    package void rememberShape(b3ShapeId shape, EntityId entity) nothrow @nogc @trusted {
+        if (shape.index1 <= 0) return;
+        immutable size_t i = shape.index1 - 1;
+        if (i >= _shapeOwners.length)
+            _shapeOwners.resize(i + 1);
+        _shapeOwners[i] = ShapeOwner(entity, shape.generation);
+    }
+
+    /// Entity of a shape that may have been destroyed already (`EntityId.max` when unknown).
+    package EntityId shapeOwner(b3ShapeId shape) const nothrow @nogc @trusted {
+        immutable i = cast(size_t) shape.index1 - 1;
+        if (shape.index1 <= 0 || i >= _shapeOwners.length || _shapeOwners[i].generation != shape.generation)
+            return EntityId.max;
+        return _shapeOwners[i].entity;
     }
 
     /// Transfer ownership of convenience cooked mesh data to this world.
