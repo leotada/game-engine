@@ -535,7 +535,7 @@ private int decodeVertexBlock(ref size_t data, const(ubyte)[] src, ubyte[] verte
  * `destination` must hold `vertexCount * vertexSize` bytes.
  */
 int decodeVertexBuffer(scope ubyte[] destination, size_t vertexCount, size_t vertexSize, scope const(ubyte)[] buffer) nothrow @nogc {
-    version (LDC) {
+    version (LDC) version (X86_64) {
         version (MeshoptForceScalar) {
         } else {
             import engine.meshopt.codec.vertex_simd : decodeVertexBufferSimd, vertexSimdReady;

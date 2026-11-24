@@ -6,7 +6,7 @@ module engine.meshopt.codec.vertex_simd;
 
 @safe:
 
-version (LDC):
+version (LDC) version (X86_64):
 
 import core.simd : byte16, int4, long2, short8;
 import ldc.attributes : target;
