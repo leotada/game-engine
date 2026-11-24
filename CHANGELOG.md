@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Engine bug fixes
+
+- **Log formatting** (`engine.core.log`): `%s`/`%d`/`%08x`/`%.3f` placeholders are now substituted (they were printed
+  literally); arguments without a placeholder are still appended. Floats, `bool`, `long.min` and `ensure()` messages
+  print correctly.
+
+### Other changes
+
 - **Web export rework** (`docs/export-guide.md` 4.7): `--target=web` now builds with one LDC 1.43+ command linking
   through `emcc` (emdawnwebgpu, JSPI), supports `--project`, asset paks, `--scene` and `--link-flag`, and writes
   `index.html`. `App.pollEvents` paces frames on web, streaming decodes without threads, and the player sources

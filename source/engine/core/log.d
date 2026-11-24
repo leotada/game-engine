@@ -82,38 +82,109 @@ private void logImpl(Args...)(LogLevel level, string fmt, Args args) nothrow @no
         foreach (c; s) putChar(c);
     }
 
-    void putInt(long v) nothrow @nogc {
-        if (v == 0) { putChar('0'); return; }
-        if (v < 0) { putChar('-'); v = -v; }
+    void putUnsigned(ulong v, uint base, uint width, bool zeroPad, bool negative) nothrow @nogc {
         char[20] digits = void;
         size_t d = 0;
-        while (v > 0) {
-            digits[d++] = cast(char)('0' + (v % 10));
-            v /= 10;
-        }
+        do {
+            digits[d++] = "0123456789abcdef"[cast(size_t)(v % base)];
+            v /= base;
+        } while (v > 0);
+        immutable size_t used = d + (negative ? 1 : 0);
+        immutable size_t pad = width > used ? width - used : 0;
+        if (!zeroPad) foreach (_; 0 .. pad) putChar(' ');
+        if (negative) putChar('-');
+        if (zeroPad) foreach (_; 0 .. pad) putChar('0');
         foreach_reverse (i; 0 .. d) putChar(digits[i]);
     }
 
-    putString(fmt);
+    void putFloat(double v, int precision) nothrow @nogc {
+        import core.stdc.stdio : snprintf;
+        char[64] tmp = void;
+        // Huge magnitudes would not fit in fixed notation: fall back to %g.
+        immutable bool huge = v > 1e30 || v < -1e30;
+        immutable n = huge
+            ? snprintf(tmp.ptr, tmp.length, "%g", v)
+            : snprintf(tmp.ptr, tmp.length, "%.*f", precision, v);
+        if (n > 0)
+            putString(tmp[0 .. n < cast(int) tmp.length ? n : tmp.length - 1]);
+    }
 
-    static foreach (arg; args) {{
-        alias T = typeof(arg);
+    /// One argument; `conv` is the placeholder conversion ('s' when the argument is appended).
+    void putArg(T)(T arg, char conv, uint width, bool zeroPad, int precision) nothrow @nogc {
         static if (is(T : const(char)[])) {
             putString(arg);
-        } else static if (is(T : long)) {
-            putInt(arg);
-        } else static if (is(T : double) || is(T : float)) {
-            // Simple float formatting
-            long whole = cast(long) arg;
-            putInt(whole);
-            putChar('.');
-            double frac = arg - cast(double) whole;
-            if (frac < 0) frac = -frac;
-            putInt(cast(long)(frac * 100.0) % 100);
-        } else static if (is(T == bool)) {
+        } else static if (is(immutable T == immutable bool)) {
             putString(arg ? "true" : "false");
+        } else static if (is(immutable T == immutable char)) {
+            putChar(arg);
+        } else static if (is(T : long)) {
+            if (conv == 'x' || conv == 'X') {
+                static if (T.sizeof <= 4)
+                    putUnsigned(cast(uint) arg, 16, width, zeroPad, false);
+                else
+                    putUnsigned(cast(ulong) arg, 16, width, zeroPad, false);
+            } else if (arg < 0) {
+                // Negate through ulong: `-long.min` overflows.
+                putUnsigned(-cast(ulong) cast(long) arg, 10, width, zeroPad, true);
+            } else {
+                putUnsigned(cast(ulong) arg, 10, width, zeroPad, false);
+            }
+        } else static if (is(T : double)) {
+            putFloat(arg, precision >= 0 ? precision : 2);
         }
-    }}
+    }
+
+    // `fmt` may hold printf-style placeholders (%s %d %i %u %x %f %g with optional zero flag, width and precision,
+    // and %%). Arguments without a placeholder are appended. A '%' that is not a placeholder is printed as is.
+    size_t used = 0;
+    size_t i = 0;
+    while (i < fmt.length) {
+        if (fmt[i] != '%' || Args.length == 0) {
+            putChar(fmt[i++]);
+            continue;
+        }
+        size_t j = i + 1;
+        if (j < fmt.length && fmt[j] == '%') {
+            putChar('%');
+            i = j + 1;
+            continue;
+        }
+        bool zeroPad = false;
+        uint width = 0;
+        int precision = -1;
+        if (j < fmt.length && fmt[j] == '0') { zeroPad = true; j++; }
+        while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9' && width < 100)
+            width = width * 10 + (fmt[j++] - '0');
+        if (j < fmt.length && fmt[j] == '.') {
+            j++;
+            precision = 0;
+            while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9' && precision < 10)
+                precision = precision * 10 + (fmt[j++] - '0');
+            if (precision > 20) precision = 20;
+        }
+        bool isConv = false;
+        if (j < fmt.length) {
+            switch (fmt[j]) {
+                case 's', 'd', 'i', 'u', 'x', 'X', 'f', 'g': isConv = true; break;
+                default: break;
+            }
+        }
+        if (!isConv || used >= Args.length) {
+            putChar(fmt[i++]);
+            continue;
+        }
+        immutable char conv = fmt[j];
+        static foreach (ai, arg; args) {
+            if (used == ai)
+                putArg(arg, conv, width, zeroPad, precision);
+        }
+        used++;
+        i = j + 1;
+    }
+    static foreach (ai, arg; args) {
+        if (ai >= used)
+            putArg(arg, 's', 0, false, -1);
+    }
 
     // Output to stderr
     fprintf(stderr, "[%.*s] %.*s\n", cast(int) tags[level].length, tags[level].ptr, cast(int) p, buf.ptr);
@@ -132,7 +203,7 @@ private void logImpl(Args...)(LogLevel level, string fmt, Args args) nothrow @no
 
 /// Assertion that always runs (debug + release).
 void ensure(bool cond, string msg = "assertion failed") nothrow @nogc @trusted {
-    if (!cond) fatal("%.*s", cast(int) msg.length, msg.ptr);
+    if (!cond) fatal("", msg);
 }
 
 @safe unittest {
@@ -144,4 +215,27 @@ void ensure(bool cond, string msg = "assertion failed") nothrow @nogc @trusted {
     assert(count == 1);
     assert(entries[0].text() == "Test message 42 extra");
     assert(entries[0].level == LogLevel.info);
+}
+
+@("log: printf placeholders, appended arguments and number formatting")
+@safe unittest {
+    static string last(Args...)(string fmt, Args args) {
+        clearLogHistory();
+        info(fmt, args);
+        LogEntry[1] e;
+        copyLogHistory(e);
+        return e[0].text().idup;
+    }
+    assert(last("loaded %s (%d entities)", "a.json", 3) == "loaded a.json (3 entities)");
+    assert(last("0x%08x", 0xABCDu) == "0x0000abcd");
+    assert(last("%.3f|%5d|%%", 1.5, 42) == "1.500|   42|%");
+    assert(last("half %d", 1, " tail ", 2) == "half 1 tail 2");
+    // No placeholder / no argument left: printed as is.
+    assert(last("100% of ", 5) == "100% of 5");
+    assert(last("%s and %s", "x") == "x and %s");
+    assert(last("raw %s") == "raw %s");
+    assert(last("f=", 1.05f, " n=", -0.5f, " b=", true) == "f=1.05 n=-0.50 b=true");
+    assert(last("", long.min) == "-9223372036854775808");
+    assert(last("", ulong.max) == "18446744073709551615");
+    assert(last("", 'c', float.infinity) == "cinf");
 }
