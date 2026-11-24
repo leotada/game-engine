@@ -692,3 +692,20 @@ dub run --config=editor
 dub build --config=demo --build=release
 dub build --config=benchmark --build=release
 ```
+
+## Antialiasing and Sharpening
+
+`PostSettings.aaMode` selects the filter applied to the tone-mapped image. Every mode is a single-frame
+filter: nothing accumulates between frames. Pipelines and targets are created on first use.
+
+| `AaMode` | Filter | Cost at 1920x1080 (RX 6600) |
+|---|---|---|
+| `legacy` (default) | `fxaa` when `PostSettings.fxaa` is on, otherwise `off` | — |
+| `off` | None: tone map writes the display target | 0 |
+| `fxaa` | Original short-blur FXAA | 0.05 ms |
+| `fxaaQuality` | FXAA with edge-end search (12 steps each way). `fxaaSubpix` (0..1) sets the smoothing of thin features, `fxaaEdgeThreshold` the minimum relative contrast | 0.09 ms |
+
+`PostSettings.sharpness` (0..1) runs contrast adaptive sharpening (`post_cas.wgsl`) after any mode, including
+`off`; 0 skips the pass and 0.05 ms. Profiler zones: `gpu.post.fxaa`, `gpu.post.fxaaQuality`,
+`gpu.post.sharpen` (CPU: `post.*`). In the `render-check` scene the edge error is 0.31 px without AA, 0.10 px
+with `fxaa` and 0.05 px with `fxaaQuality`.

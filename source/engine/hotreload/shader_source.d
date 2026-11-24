@@ -298,6 +298,10 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("post_tonemap.wgsl");
         case "post_fxaa.wgsl":
             return import("post_fxaa.wgsl");
+        case "post_fxaa_hq.wgsl":
+            return import("post_fxaa_hq.wgsl");
+        case "post_cas.wgsl":
+            return import("post_cas.wgsl");
         case "post_blit.wgsl":
             return import("post_blit.wgsl");
         case "common/water_env.wgsl":

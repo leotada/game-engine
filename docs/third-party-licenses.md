@@ -108,3 +108,9 @@ is **FastLZ** by Ariya Hidayat, licensed under the **MIT License**.
   the project is owned by the engine author. The shipped text is `vendor/zipd/LICENSE`.
 - Used by: `engine.assets.zstd` (chunk and pack compression). Replaces the former C zstd 1.5.7 (BSD-3-Clause), which
   is no longer vendored or linked.
+
+## Post-processing algorithms
+
+`assets/shaders/post_cas.wgsl` follows the formulation of AMD FidelityFX Contrast Adaptive Sharpening
+(Copyright (c) 2019 Advanced Micro Devices, Inc., MIT license). `assets/shaders/post_fxaa_hq.wgsl` is an
+independent implementation of the published FXAA 3.x description by Timothy Lottes; no NVIDIA source is included.

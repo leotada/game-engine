@@ -175,6 +175,12 @@ struct ShaderHotReloader {
                         ok = renderer.reloadPostShader("fxaa", res.code);
                     }
                     break;
+                case "post_fxaa_hq.wgsl":
+                    if (renderer !is null) ok = renderer.reloadPostShader("post_fxaa_hq", res.code);
+                    break;
+                case "post_cas.wgsl":
+                    if (renderer !is null) ok = renderer.reloadPostShader("post_cas", res.code);
+                    break;
                 case "post_blit.wgsl":
                     if (renderer !is null) {
                         ok = renderer.reloadPostShader("blit", res.code);
@@ -206,6 +212,8 @@ struct ShaderHotReloader {
                 "post_bloom_up.wgsl",
                 "post_tonemap.wgsl",
                 "post_fxaa.wgsl",
+                "post_fxaa_hq.wgsl",
+                "post_cas.wgsl",
                 "post_blit.wgsl",
             ];
             foreach (rel; allShaders) {

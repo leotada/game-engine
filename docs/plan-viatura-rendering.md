@@ -18,7 +18,7 @@ features below. This file keeps the requests and their status.
 | Item | Request | Acceptance | Status |
 |---|---|---|---|
 | E1 | sRGB color textures (`Texture`, `TextureArray`, terrain, glTF), mips averaged in linear | Unlit sRGB grey 128 with linear tone map returns 128 | done |
-| E12 | Quality FXAA (edge search, subpixel blend) and adaptive sharpening after any AA mode | Sharper high-contrast texture, fewer steps, timings | planned |
+| E12 | Quality FXAA (edge search, subpixel blend) and adaptive sharpening after any AA mode | Sharper high-contrast texture, fewer steps, timings | done |
 | E2 | Alpha mask in color and shadows (skinned, static, `displaceEx`), coverage-preserving mips, glTF `MASK` | No cost for opaque users | planned |
 | E11 | GPU culling and indirect draws for `StaticInstanceBuffer`, scene and shadows | Same image, much lower submit, no dropped instance | planned |
 | E3 | Depth, normals (or documented reconstruction), camera matrices and intermediate targets in `addPass` | — | planned |

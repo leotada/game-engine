@@ -4,6 +4,7 @@
 ///   dub run --config=render-check                  # every check
 ///   dub run --config=render-check -- --check=unlit # one check
 ///   dub run --config=render-check -- --dump=DIR    # also write the frames as PNG
+///   dub run --config=render-check -- --bench --size=1920x1080  # profiler zones of each feature
 ///
 /// Exit code 0 = every selected check passed.
 module demo.render_check;
@@ -16,7 +17,7 @@ import engine.graphics.material : Material, MaterialFlags, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4;
-import engine.gpu.post : OutputTransfer, PostSettings;
+import engine.gpu.post : AaMode, OutputTransfer, PostSettings;
 import engine.gpu.renderer : FrameContext;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
@@ -25,8 +26,9 @@ import engine.scene.scene3d_textured : Scene3DTextured;
 
 @safe:
 
-private enum uint WIN_W = 640;
-private enum uint WIN_H = 480;
+private uint WIN_W = 640;
+private uint WIN_H = 480;
+private bool bench;
 
 /// One captured frame (tightly packed RGBA8).
 private struct Shot {
@@ -63,7 +65,38 @@ private Shot capture(ref App app, string name, scope void delegate(ref FrameCont
     return s;
 }
 
+/// Print the profiler zones whose name starts with one of `prefixes`, averaged
+/// over 240 frames. Only with `--bench`.
+private void timeZones(ref App app, string label, scope const(string)[] prefixes,
+                       scope void delegate(ref FrameContext) @safe draw) {
+    import engine.devtools.profiler : enableProfiler, profilerReport, resetProfilerStats;
+    import std.algorithm.searching : startsWith;
+    if (!bench) return;
+    void frames(uint n) {
+        foreach (_; 0 .. n) {
+            app.pollEvents();
+            auto frame = app.beginFrame(Color4(0, 0, 0, 1));
+            if (!frame.valid) return;
+            draw(frame);
+            app.resolvePost(frame);
+            app.endFrame(frame);
+        }
+    }
+    enableProfiler(true);
+    frames(30);
+    resetProfilerStats();
+    frames(240);
+    writefln("  bench %s (%sx%s)", label, app.window.width(), app.window.height());
+    foreach (ref r; profilerReport()) {
+        if (r.meanMs <= 0) continue;
+        foreach (p; prefixes)
+            if (r.name.startsWith(p)) { writefln("    %-36s mean %.3f ms  p95 %.3f", r.name, r.meanMs, r.p95); break; }
+    }
+    enableProfiler(false);
+}
+
 private bool expect(bool ok, string what) {
+    if (bench) return true; // pixel checks assume the default window size
     writeln("  ", ok ? "ok   " : "FAIL ", what);
     return ok;
 }
@@ -180,6 +213,106 @@ private bool checkSrgb(ref App app) {
     return ok;
 }
 
+/// Scene for the AA check: a near-horizontal edge on the left and a
+/// high-contrast detail texture on the right.
+private struct AaScores {
+    float stairs;  // RMS deviation (px) of the edge from a straight line
+    float detail;  // mean neighbor contrast of the texture
+}
+
+private bool checkAa(ref App app) {
+    import std.math : PI, sqrt;
+    auto rig = QuadRig.create(app);
+    scope(exit) rig.destroy();
+    MaterialParams mp;
+    mp.flags = MaterialFlags.unlit;
+    auto white = Texture.solid(app.gpu, 220, 220, 220);
+    scope(exit) white.destroy();
+    auto px = new ubyte[64 * 64 * 4];
+    uint rng = 0x9E3779B9;
+    foreach (i; 0 .. 64 * 64) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        px[i * 4 .. i * 4 + 4] = (rng & 0x100) ? 190 : 40;
+        px[i * 4 + 3] = 255;
+    }
+    auto noise = Texture.fromPixels(app.gpu, px, 64, 64);
+    scope(exit) noise.destroy();
+    auto linear = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.clamp);
+    scope(exit) linear.destroy();
+    auto edgeMat = Material.create(app.gpu, rig.scene.materialLayout(), rig.sampler, white, mp, null, null, null, null);
+    scope(exit) edgeMat.destroy();
+    auto texMat = Material.create(app.gpu, rig.scene.materialLayout(), linear, noise, mp, null, null, null, null);
+    scope(exit) texMat.destroy();
+
+    AaScores run(string name, AaMode mode, float sharpness) {
+        auto post = neutralPost();
+        post.aaMode = mode;
+        post.sharpness = sharpness;
+        app.renderer.postSettings() = post;
+        auto s = capture(app, name, (ref FrameContext f) {
+            rig.scene.begin(rig.camera);
+            rig.scene.drawMatrix(rig.quad, edgeMat, Mat4.translation(-3.5f, 0, 5) * Mat4.rotationY(0.07f)
+                                 * Mat4.scaling(5.0f, 1, 10), Color4.white);
+            rig.scene.draw(rig.quad, texMat, Vec3(3.4f, 0, 0), Vec3(4.0f, 1, 4.0f));
+            rig.scene.end(f);
+        });
+        AaScores r = AaScores(1e9f, 0);
+        if (!s.valid) return r;
+        // Edge position per column from coverage, then a least-squares line.
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        uint n;
+        float[] pos;
+        foreach (x; 60 .. 220) {
+            float cov = 0;
+            foreach (y; s.h / 2 - 60 .. s.h / 2 + 60) cov += s.luma(x, y) / 220.0f;
+            pos ~= cov;
+            sx += x; sy += cov; sxx += cast(double) x * x; sxy += x * cov;
+            n++;
+        }
+        immutable slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+        immutable icept = (sy - slope * sx) / n;
+        double acc = 0;
+        foreach (i, c; pos) { immutable d = c - (icept + slope * (60 + i)); acc += d * d; }
+        r.stairs = cast(float) sqrt(acc / n);
+        double det = 0;
+        uint dn;
+        foreach (y; s.h / 2 - 60 .. s.h / 2 + 60) foreach (x; s.w / 2 + 100 .. s.w / 2 + 220) {
+            det += abs(s.luma(x, y) - s.luma(x + 1, y)) + abs(s.luma(x, y) - s.luma(x, y + 1));
+            dn += 2;
+        }
+        r.detail = cast(float)(det / dn);
+        writefln("  %-14s stairs %.3f px, texture contrast %.2f", name, r.stairs, r.detail);
+        return r;
+    }
+
+    immutable off = run("aa_off", AaMode.off, 0);
+    immutable old = run("aa_fxaa", AaMode.fxaa, 0);
+    immutable hq = run("aa_fxaaQuality", AaMode.fxaaQuality, 0);
+    immutable sharp = run("aa_fxaaQ_cas", AaMode.fxaaQuality, 0.6f);
+    immutable offSharp = run("aa_off_cas", AaMode.off, 0.6f);
+    immutable oldSharp = run("aa_fxaa_cas", AaMode.fxaa, 0.6f);
+    foreach (i, mode; [AaMode.off, AaMode.fxaa, AaMode.fxaaQuality]) {
+        foreach (sh; [0.0f, 0.6f]) {
+            auto post = neutralPost();
+            post.aaMode = mode;
+            post.sharpness = sh;
+            app.renderer.postSettings() = post;
+            string[3] names = ["off", "fxaa", "fxaaQuality"];
+            timeZones(app, names[i] ~ (sh > 0 ? " + sharpening" : ""), ["gpu.post.", "post."], (ref FrameContext f) {
+                rig.scene.begin(rig.camera);
+                rig.scene.draw(rig.quad, texMat, Vec3(0, 0, 0), Vec3(20, 1, 12));
+                rig.scene.end(f);
+            });
+        }
+    }
+
+    bool ok = expect(hq.stairs < old.stairs && hq.stairs < off.stairs * 0.6f, "fewer stair steps than FXAA");
+    ok &= expect(hq.detail > old.detail, "textures are sharper than FXAA");
+    ok &= expect(sharp.detail > hq.detail * 1.05f && sharp.stairs < old.stairs, "sharpening after quality FXAA");
+    ok &= expect(offSharp.detail > off.detail && oldSharp.detail > old.detail, "sharpening after any AA mode");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -246,6 +379,7 @@ private struct Check {
 private immutable Check[] checks = [
     Check("unlit", &checkUnlit),
     Check("srgb", &checkSrgb),
+    Check("aa", &checkAa),
     Check("stars", &checkStars),
 ];
 
@@ -254,6 +388,13 @@ int main(string[] args) {
     string only;
     foreach (a; args[1 .. $]) {
         if (a.startsWith("--check=")) only = a["--check=".length .. $];
+        else if (a == "--bench") bench = true;
+        else if (a.startsWith("--size=")) {
+            import std.conv : to;
+            import std.string : split;
+            auto wh = a["--size=".length .. $].split("x");
+            if (wh.length == 2) { WIN_W = wh[0].to!uint; WIN_H = wh[1].to!uint; }
+        }
         else if (a.startsWith("--dump=")) dumpDir = a["--dump=".length .. $];
     }
     auto app = App.create("Render check", WIN_W, WIN_H);

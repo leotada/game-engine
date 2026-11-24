@@ -329,6 +329,7 @@ Scenes render into `rgba16Float` HDR and resolve into the swapchain inside `app.
 
 - **Tone mapping (`tonemapMode`):** `0` = ACES, `1` = Reinhard, `2` = Linear, `3` = AgX, plus `exposure`, `saturation`, and `contrast`.
 - **Bloom & AA:** `bloom` (`bool`), `bloomThreshold`, `bloomKnee`, `bloomStrength`, `bloomClamp`, `bloomRadius` (`3..7` mip levels), `bloomScreen` (`bool`), and `fxaa` (`bool`).
+- **Quality AA & sharpening:** `app.post.aaMode = AaMode.fxaaQuality` (edge search, `fxaaSubpix`, `fxaaEdgeThreshold`) and `app.post.sharpness = 0.5f` (contrast adaptive sharpening after any AA mode, 0 = off). See [graphics.md](graphics.md#antialiasing-and-sharpening).
 - **Custom fullscreen WGSL passes:** Inject passes at `PostStage.beforeTonemap` (HDR), `PostStage.afterTonemap` (LDR pre-UI), or `PostStage.afterUi`:
 
 ```d

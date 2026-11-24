@@ -100,6 +100,8 @@ assets/shaders/
 ├── post_bloom_up.wgsl        # 9-tap tent filter upsampling
 ├── post_tonemap.wgsl         # ACES / Reinhard tone mapping + exposure
 ├── post_fxaa.wgsl            # Fast LDR edge anti-aliasing
+├── post_fxaa_hq.wgsl         # Quality FXAA (edge-end search)
+├── post_cas.wgsl             # Contrast adaptive sharpening
 └── post_blit.wgsl            # Direct swapchain blit
 ```
 

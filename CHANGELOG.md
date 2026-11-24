@@ -12,6 +12,8 @@
 - **sRGB color textures** (`TextureDesc.srgb`, `TextureDesc.mippedSrgb()`, `GltfImportOptions.srgbColor`, `srgbAlbedo` for
   terrain and decals): hardware decode and mips averaged in linear light. `PostSettings.outputTransfer = srgb` selects
   the exact display curve. Defaults are unchanged.
+- **Quality FXAA and sharpening** (`PostSettings.aaMode = AaMode.fxaaQuality`, `fxaaSubpix`, `sharpness`): edge-end
+  search FXAA (0.09 ms at 1080p) and contrast adaptive sharpening after any AA mode (0.05 ms). Defaults unchanged.
 
 ### Engine bug fixes
 

@@ -142,6 +142,9 @@ immutable string tonemapShaderSource = preprocessShader(import("post_tonemap.wgs
 
 immutable string fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
 
+immutable string fxaaHqShaderSource = preprocessShader(import("post_fxaa_hq.wgsl"), "post_fxaa_hq.wgsl").code;
+immutable string casShaderSource = preprocessShader(import("post_cas.wgsl"), "post_cas.wgsl").code;
+
 immutable string blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;
 
 enum skinnedShaderSource = import("skinned.wgsl");
