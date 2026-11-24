@@ -121,6 +121,14 @@ struct RenderStats {
     uint shadowDrawCalls;
     /// Dynamic caster instances drawn over every shadow view (after culling).
     uint shadowInstancesDrawn;
+    /// Static caster instances (`StaticInstanceBuffer`) drawn over every shadow view.
+    uint shadowStaticInstancesDrawn;
+    /// Per directional cascade: draw calls (dynamic + static; hooks such as the terrain not counted).
+    uint[MAX_CASCADES] cascadeDrawCalls;
+    /// Per directional cascade: dynamic caster instances drawn.
+    uint[MAX_CASCADES] cascadeDynamicInstances;
+    /// Per directional cascade: static caster instances drawn.
+    uint[MAX_CASCADES] cascadeStaticInstances;
     /// Dynamic instances submitted through `draw` / `drawMatrix`.
     uint instancesSubmitted;
     /// Dynamic instances that survived frustum / distance culling.
@@ -1387,9 +1395,15 @@ struct Scene3DTextured {
         immutable bool anyGeometry = casterBatches > 0 || staticCount > 0;
         if (cascadeCount > 0) {
             auto g = gpuScope!"gpu.shadows.cascades"(frame.encoder);
-            foreach (c; 0 .. cascadeCount)
-                encodeShadowView(frame.encoder, dirShadow.layerViews[c], c, anyGeometry,
-                                 ShadowViewKind.cascade);
+            static foreach (c; 0 .. MAX_CASCADES) {{
+                if (c < cascadeCount) {
+                    enum string idx = "0123456789"[c .. c + 1];
+                    auto zc = profileZone!("scene.shadows.encode.cascade" ~ idx)();
+                    auto gc = gpuScope!("gpu.shadows.cascades.c" ~ idx)(frame.encoder);
+                    encodeShadowView(frame.encoder, dirShadow.layerViews[c], c, anyGeometry,
+                                     ShadowViewKind.cascade);
+                }
+            }}
         } else if (dirEnabled && dirLight.castShadows && dirShadow !is null) {
             auto g = gpuScope!"gpu.shadows.directional"(frame.encoder);
             encodeShadowView(frame.encoder, dirShadow.depthView, 0, anyGeometry, ShadowViewKind.fixedDir);
@@ -1493,6 +1507,14 @@ struct Scene3DTextured {
     private void encodeShadowView(WGPUCommandEncoder encoder, WGPUTextureView targetView,
                                   uint vpSlot, bool drawBatches, ShadowViewKind kind) nothrow @nogc @trusted {
         auto pass = beginShadowPassView(encoder, targetView, /*clear=*/true);
+        immutable uint draws0 = frameStats.shadowDrawCalls;
+        immutable uint dyn0 = frameStats.shadowInstancesDrawn;
+        immutable uint stat0 = frameStats.shadowStaticInstancesDrawn;
+        scope (exit) if (kind == ShadowViewKind.cascade && vpSlot < MAX_CASCADES) {
+            frameStats.cascadeDrawCalls[vpSlot] += frameStats.shadowDrawCalls - draws0;
+            frameStats.cascadeDynamicInstances[vpSlot] += frameStats.shadowInstancesDrawn - dyn0;
+            frameStats.cascadeStaticInstances[vpSlot] += frameStats.shadowStaticInstancesDrawn - stat0;
+        }
         immutable bool dirView = kind == ShadowViewKind.fixedDir;
         immutable bool distanceCull = kind != ShadowViewKind.local;
         immutable uint dynOffset = vpSlot * SHADOW_VP_STRIDE;
@@ -1666,6 +1688,7 @@ struct Scene3DTextured {
                 }
                 wgpuRenderPassEncoderDrawIndexed(pass, lodSame.count, run.count, lodSame.first, 0, run.firstInstance);
                 frameStats.shadowDrawCalls++;
+                frameStats.shadowStaticInstancesDrawn += run.count;
                 continue;
             }
             boundGroup = run.group;
@@ -1694,6 +1717,7 @@ struct Scene3DTextured {
             boundIndex = indexBuf;
             wgpuRenderPassEncoderDrawIndexed(pass, lod.count, run.count, lod.first, 0, run.firstInstance);
             frameStats.shadowDrawCalls++;
+            frameStats.shadowStaticInstancesDrawn += run.count;
         }
     }
 
