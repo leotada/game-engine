@@ -370,6 +370,8 @@ struct SceneWorld {
             _stores[tid].clear();
             _stores[tid] = null;
         }
+        // The next module may define this component with another layout.
+        types.markStale(tid);
     }
 
     // -----------------------------------------------------------------------
@@ -383,6 +385,9 @@ struct SceneWorld {
         auto tid = types.find(name, strings);
         if (tid == invalidComponentTypeId) {
             tid = types.register!C(strings);
+        } else if (types.getType(tid).size != C.sizeof) {
+            throw new Exception("component type name collision: '" ~ name
+                ~ "' is already registered with a different size");
         }
         return tid;
     }
@@ -400,6 +405,7 @@ struct SceneWorld {
         assert(tid < _stores.length && _stores[tid] !is null, "No store for component");
         auto slice = _stores[tid].get(id);
         assert(slice !is null, "Entity does not have component");
+        assert(slice.length == C.sizeof, "Component type name collision");
         return *cast(C*) slice.ptr;
     }
 
@@ -410,6 +416,7 @@ struct SceneWorld {
             return null;
         auto slice = _stores[tid].get(id);
         if (slice is null) return null;
+        assert(slice.length == C.sizeof, "Component type name collision");
         return cast(C*) slice.ptr;
     }
 
@@ -640,4 +647,23 @@ struct SceneWorld {
     w2.destroy(big[4001]);
     w2.setBatch(big[4000 .. 4003], [P(1, 0, 0), P(2, 0, 0), P(3, 0, 0)]);
     assert(!w2.has!P(big[4001]) && w2.get!P(big[4002]).x == 3);
+}
+
+@("sceneWorld.unregisterType: a re-registered component uses its new layout")
+@safe unittest {
+    static struct A { @component static struct Health { int hp = 100; } }
+    static struct B { @component static struct Health { int hp = 100; int shield = 7; } }
+    SceneWorld w;
+    auto e = w.spawn();
+    w.set(e, A.Health(42));
+    bool threw;
+    try w.set(e, B.Health(1, 2));
+    catch (Exception) threw = true;
+    assert(threw && w.get!(A.Health)(e).hp == 42);
+
+    w.unregisterType(w.ensureRegistered!(A.Health)());
+    assert(!w.has!(A.Health)(e));
+    w.set(e, B.Health(1, 2));
+    assert(w.get!(B.Health)(e) == B.Health(1, 2));
+    assert(w.getStore(w.ensureRegistered!(B.Health)()).itemSize == B.Health.sizeof);
 }

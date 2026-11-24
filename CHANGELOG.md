@@ -20,6 +20,8 @@
   overwrote its neighbours), nested structs and fixed arrays are serialized (they were dropped, e.g.
   `PrefabInstance.prefabGuid`), and unsigned integers above `long.max` load. Registering two different structs with the
   same name is an error instead of silent memory corruption.
+- **Hot reload with a changed component layout**: `SceneWorld.unregisterType` forgets the old layout, so a reloaded
+  component gets its new size, fields and defaults (they stayed those of the first load).
 
 ### Other changes
 
