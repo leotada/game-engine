@@ -1,5 +1,5 @@
 /// GPU texture + sampler wrappers and a minimal in-engine TGA loader.
-/// Textures are RGBA8Unorm by default, the standard for material albedo maps.
+/// Textures are RGBA8Unorm by default; `TextureDesc.srgb` selects RGBA8UnormSrgb for color maps.
 module engine.graphics.texture;
 
 import bindings.wgpu;
@@ -28,7 +28,7 @@ enum TextureWrap : uint {
     mirror,
 }
 
-/// Owned GPU texture + view. Always RGBA8 Unorm sRGB-linear (format rgba8Unorm).
+/// Owned GPU texture + view (RGBA8, `TextureDesc.srgb` decides whether the GPU decodes sRGB on read).
 /// Non-copyable, deterministic release.
 struct Texture {
     package(engine) WGPUTexture     texture;
@@ -58,16 +58,15 @@ struct Texture {
         Texture t;
         t.width  = width;
         t.height = height;
-        t.format = WGPUTextureFormat.rgba8Unorm;
+        t.format = desc.format;
         t.mipLevels = desc.generateMips ? mipCount(width, height) : 1;
 
-        t.texture = createTexture2D(gpu, WGPUTextureFormat.rgba8Unorm, width, height, 1, t.mipLevels);
+        t.texture = createTexture2D(gpu, t.format, width, height, 1, t.mipLevels);
         if (t.texture is null)
             fatal("Failed to create WGPU texture");
 
-        uploadRgba8WithMips(gpu, t.texture, 0, rgba, width, height, t.mipLevels, desc.normalMap);
-        t.view = createView(t.texture, WGPUTextureFormat.rgba8Unorm,
-                            WGPUTextureViewDimension.dim2D, 1);
+        uploadRgba8WithMips(gpu, t.texture, 0, rgba, width, height, t.mipLevels, desc);
+        t.view = createView(t.texture, t.format, WGPUTextureViewDimension.dim2D, 1);
         return t;
     }
 
@@ -317,8 +316,19 @@ struct TextureDesc {
     bool generateMips = false;
     /// Treat RGB as a tangent-space normal and re-normalize every mip texel.
     bool normalMap = false;
+    /// RGB is sRGB-encoded color: the GPU decodes it to linear on read and mips
+    /// are averaged in linear light. Alpha is always linear. Leave it off for
+    /// data (normal, ORM, masks). Off by default: RGB is read as linear.
+    bool srgb = false;
 
-    /// Mipmapped color texture (albedo, ORM, emissive).
+    /// GPU format of the uploaded pixels.
+    WGPUTextureFormat format() const pure nothrow @nogc {
+        return srgb ? WGPUTextureFormat.rgba8UnormSrgb : WGPUTextureFormat.rgba8Unorm;
+    }
+
+    /// Mipmapped sRGB color texture (albedo, emissive).
+    static TextureDesc mippedSrgb() pure nothrow @nogc { return TextureDesc(true, false, true); }
+    /// Mipmapped color texture read as linear (albedo, ORM, emissive).
     static TextureDesc mipped() pure nothrow @nogc { return TextureDesc(true, false); }
     /// Mipmapped normal map.
     static TextureDesc mippedNormal() pure nothrow @nogc { return TextureDesc(true, true); }
@@ -353,10 +363,11 @@ size_t mipTailBytesRgba8(uint width, uint height, uint levels) pure nothrow @nog
  * Downsample one RGBA8 level with a 2×2 box filter. Odd source sizes clamp
  * the second tap to the edge, so non-power-of-two images work. When
  * `normalMap` is set, RGB is decoded as a unit vector, averaged and
- * re-normalized; alpha is always averaged.
+ * re-normalized. When `srgb` is set, RGB is averaged in linear light. Alpha is
+ * always averaged as is.
  */
 void downsampleRgba8(scope const(ubyte)[] src, uint sw, uint sh,
-                     scope ubyte[] dst, uint dw, uint dh, bool normalMap) pure nothrow @nogc {
+                     scope ubyte[] dst, uint dw, uint dh, bool normalMap, bool srgb = false) pure nothrow @nogc {
     assert(src.length >= cast(size_t) sw * sh * 4 && dst.length >= cast(size_t) dw * dh * 4);
     foreach (y; 0 .. dh) {
         immutable y0 = y * 2 < sh ? y * 2 : sh - 1;
@@ -387,6 +398,10 @@ void downsampleRgba8(scope const(ubyte)[] src, uint sw, uint sh,
                     float v = (n[ch] * 0.5f + 0.5f) * 255.0f + 0.5f;
                     dst[o + ch] = cast(ubyte)(v < 0 ? 0 : (v > 255 ? 255 : v));
                 }
+            } else if (srgb) {
+                foreach (ch; 0 .. 3)
+                    dst[o + ch] = linearToSrgb8((srgb8ToLinear[src[a + ch]] + srgb8ToLinear[src[b + ch]]
+                                               + srgb8ToLinear[src[c + ch]] + srgb8ToLinear[src[d + ch]]) * 0.25f);
             } else {
                 foreach (ch; 0 .. 3)
                     dst[o + ch] = cast(ubyte)((src[a + ch] + src[b + ch] + src[c + ch] + src[d + ch] + 2) / 4);
@@ -399,7 +414,8 @@ void downsampleRgba8(scope const(ubyte)[] src, uint sw, uint sh,
 /// Fill `dst` with RGBA8 levels `1 .. levels` packed back to back
 /// (`mipTailBytesRgba8` bytes). Level 0 is `src` itself.
 void generateMipChainRgba8(scope const(ubyte)[] src, uint width, uint height,
-                           scope ubyte[] dst, uint levels, bool normalMap = false) pure nothrow @nogc {
+                           scope ubyte[] dst, uint levels, bool normalMap = false,
+                           bool srgb = false) pure nothrow @nogc {
     assert(dst.length >= mipTailBytesRgba8(width, height, levels));
     const(ubyte)[] prev = src;
     uint pw = width, ph = height;
@@ -407,12 +423,42 @@ void generateMipChainRgba8(scope const(ubyte)[] src, uint width, uint height,
     foreach (l; 1 .. levels) {
         immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
         immutable bytes = cast(size_t) lw * lh * 4;
-        downsampleRgba8(prev, pw, ph, dst[off .. off + bytes], lw, lh, normalMap);
+        downsampleRgba8(prev, pw, ph, dst[off .. off + bytes], lw, lh, normalMap, srgb);
         prev = dst[off .. off + bytes];
         pw = lw;
         ph = lh;
         off += bytes;
     }
+}
+
+/// sRGB transfer function of one 8-bit code, decoded to linear light.
+immutable float[256] srgb8ToLinear = () {
+    float[256] t;
+    foreach (i; 0 .. 256) t[i] = srgbToLinear(i / 255.0);
+    return t;
+}();
+
+/// Linear value where code `i` ends and code `i + 1` begins.
+private immutable float[255] srgb8Thresholds = () {
+    float[255] t;
+    foreach (i; 0 .. 255) t[i] = srgbToLinear((i + 0.5) / 255.0);
+    return t;
+}();
+
+private float srgbToLinear(double v) pure nothrow @nogc {
+    import std.math : pow;
+    return cast(float)(v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4));
+}
+
+/// Encode a linear value as the nearest 8-bit sRGB code.
+ubyte linearToSrgb8(float v) pure nothrow @nogc {
+    uint lo = 0, hi = 255;
+    while (lo < hi) {
+        immutable mid = (lo + hi) / 2;
+        if (v >= srgb8Thresholds[mid]) lo = mid + 1;
+        else hi = mid;
+    }
+    return cast(ubyte) lo;
 }
 
 private float sqrtF(float v) pure nothrow @nogc {
@@ -462,11 +508,11 @@ package(engine) void writeLevel(ref GpuContext gpu, WGPUTexture tex, uint layer,
 /// Upload level 0 plus a CPU-generated mip tail into `layer`.
 private void uploadRgba8WithMips(ref GpuContext gpu, WGPUTexture tex, uint layer,
                                  const(ubyte)[] rgba, uint width, uint height,
-                                 uint levels, bool normalMap) {
+                                 uint levels, TextureDesc desc) {
     writeLevel(gpu, tex, layer, 0, rgba, width, height, 4);
     if (levels <= 1) return;
     auto tail = new ubyte[mipTailBytesRgba8(width, height, levels)];
-    generateMipChainRgba8(rgba, width, height, tail, levels, normalMap);
+    generateMipChainRgba8(rgba, width, height, tail, levels, desc.normalMap, desc.srgb);
     size_t off = 0;
     foreach (l; 1 .. levels) {
         immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
@@ -487,6 +533,8 @@ struct TextureArray {
     uint height;
     uint layers;
     uint mipLevels = 1;
+    /// Storage format of `texture`.
+    WGPUTextureFormat format = WGPUTextureFormat.rgba8Unorm;
 
     @disable this(this);
 
@@ -502,7 +550,8 @@ struct TextureArray {
         a.height = height;
         a.layers = cast(uint) layersRgba.length;
         a.mipLevels = desc.generateMips ? mipCount(width, height) : 1;
-        a.texture = createTexture2D(gpu, WGPUTextureFormat.rgba8Unorm, width, height, a.layers, a.mipLevels);
+        a.format = desc.format;
+        a.texture = createTexture2D(gpu, a.format, width, height, a.layers, a.mipLevels);
         if (a.texture is null) {
             err("TextureArray: failed to create texture");
             return a;
@@ -510,10 +559,9 @@ struct TextureArray {
         foreach (i, layer; layersRgba) {
             assert(layer.length == cast(size_t) width * height * 4,
                    "TextureArray.fromLayers: layer size mismatch");
-            uploadRgba8WithMips(gpu, a.texture, cast(uint) i, layer, width, height, a.mipLevels, desc.normalMap);
+            uploadRgba8WithMips(gpu, a.texture, cast(uint) i, layer, width, height, a.mipLevels, desc);
         }
-        a.view = createView(a.texture, WGPUTextureFormat.rgba8Unorm,
-                            WGPUTextureViewDimension.dim2DArray, a.layers);
+        a.view = createView(a.texture, a.format, WGPUTextureViewDimension.dim2DArray, a.layers);
         return a;
     }
 
@@ -653,6 +701,32 @@ unittest {
     generateMipChainRgba8(src[], 2, 2, tail[], 2, true);
     assert(tail[0] >= 126 && tail[0] <= 129);
     assert(tail[2] >= 253);
+}
+
+@("texture.srgbRoundTrip") pure nothrow @nogc unittest {
+    foreach (i; 0 .. 256)
+        assert(linearToSrgb8(srgb8ToLinear[i]) == i);
+    assert(linearToSrgb8(-1) == 0 && linearToSrgb8(2) == 255);
+    assert(srgb8ToLinear[128] > 0.2158f && srgb8ToLinear[128] < 0.2159f);
+}
+
+@("texture.mipChainSrgb") @safe unittest {
+    // Black/white checker: half the light is sRGB 188, not 128. Alpha stays linear.
+    ubyte[2 * 2 * 4] src = [0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0];
+    ubyte[4] tail;
+    generateMipChainRgba8(src[], 2, 2, tail[], 2, false, true);
+    assert(tail == [188, 188, 188, 128]);
+    // Constant color stays constant.
+    foreach (i; 0 .. 4) src[i * 4 .. i * 4 + 4] = [10, 128, 250, 40];
+    generateMipChainRgba8(src[], 2, 2, tail[], 2, false, true);
+    assert(tail == [10, 128, 250, 40]);
+}
+
+@("texture.descFormat") pure nothrow @nogc unittest {
+    assert(TextureDesc.init.format == WGPUTextureFormat.rgba8Unorm);
+    assert(TextureDesc.mipped().format == WGPUTextureFormat.rgba8Unorm);
+    assert(TextureDesc.mippedNormal().format == WGPUTextureFormat.rgba8Unorm);
+    assert(TextureDesc.mippedSrgb().format == WGPUTextureFormat.rgba8UnormSrgb);
 }
 
 @("texture.samplerDesc") pure nothrow @nogc unittest {

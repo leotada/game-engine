@@ -318,6 +318,8 @@ Phase 2 of [plan-open-world-readiness.md](plan-open-world-readiness.md). Everyth
 | API | Purpose |
 |:---|:---|
 | `TextureDesc{generateMips, normalMap}` (`TextureDesc.mipped()`, `.mippedNormal()`) | Opt-in CPU 2×2 box-filter mip chains, generated at load time (non-power-of-two safe; normal maps are renormalized per level). Passed to `fromPixels`, `fromImageFile`, `fromImageBytes`, `fromTgaFile`, `loadBmpTexture`. |
+| `TextureDesc.srgb` (`TextureDesc.mippedSrgb()`) | Opt-in sRGB color texture (`rgba8UnormSrgb`) for `Texture` and `TextureArray`: the GPU decodes RGB on read and mips are averaged in linear light; alpha stays linear. Use it for albedo and emissive, never for normal, ORM or masks. glTF: `GltfImportOptions.srgbColor` (base color, emissive, sheen color). Terrain and decals: the `srgbAlbedo` argument of `TerrainMaterial.create` / `DecalRenderer.create`. sRGB textures drawn by the UI look darker, so keep UI images linear. |
+| `PostSettings.outputTransfer` | `gamma22` (default, `pow(1/2.2)`) or `srgb` (exact curve). With `srgb`, an unlit sRGB texture and the linear tone mapper return the texture codes; `gamma22` is within 1 code for mid greys but lifts darks (10 becomes 18). |
 | `Texture.fromR16` / `Texture.fromR32F` | Single-channel heightmaps (`r16Unorm`, `r32Float`). `r32Float` is not filterable without `float32-filterable`: use nearest sampling or `textureLoad`. |
 | `TextureArray.fromLayers(gpu, layers, w, h, mips)` | `texture_2d_array` (`dim2DArray` view) for terrain splat layers. |
 | `SamplerDesc{filter, wrap, maxAnisotropy}` + `Sampler.create(gpu, desc)` | Anisotropy is clamped to 1..16 and forced to 1 for nearest filtering (WebGPU rule). |

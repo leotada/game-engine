@@ -16,7 +16,7 @@ import engine.graphics.material : Material, MaterialFlags, MaterialParams;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4;
-import engine.gpu.post : PostSettings;
+import engine.gpu.post : OutputTransfer, PostSettings;
 import engine.gpu.renderer : FrameContext;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
@@ -126,6 +126,60 @@ private bool checkUnlit(ref App app) {
     return expect(abs(v - 186) <= 1, "unlit 0.5 is gamma encoded on output");
 }
 
+/// An unlit sRGB texture through the linear tone mapper returns its own codes,
+/// for `Texture` and for minified mips (averaged in linear light).
+private bool checkSrgb(ref App app) {
+    auto rig = QuadRig.create(app);
+    scope(exit) rig.destroy();
+    bool ok = true;
+
+    ubyte render(string name, ref Texture tex, OutputTransfer transfer, float size) {
+        auto post = neutralPost();
+        post.outputTransfer = transfer;
+        app.renderer.postSettings() = post;
+        MaterialParams mp;
+        mp.flags = MaterialFlags.unlit;
+        auto smp = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+        scope(exit) smp.destroy();
+        auto mat = Material.create(app.gpu, rig.scene.materialLayout(), smp, tex, mp, null, null, null, null);
+        scope(exit) mat.destroy();
+        auto s = capture(app, name, (ref FrameContext f) {
+            rig.scene.begin(rig.camera);
+            rig.scene.draw(rig.quad, mat, Vec3(0, 0, 0), Vec3(size, 1, size));
+            rig.scene.end(f);
+        });
+        return s.valid ? s.at(s.w / 2, s.h / 2, 0) : 0;
+    }
+
+    foreach (code; [cast(ubyte) 10, cast(ubyte) 64, cast(ubyte) 128, cast(ubyte) 200, cast(ubyte) 250]) {
+        auto px = new ubyte[4];
+        px[] = code;
+        px[3] = 255;
+        TextureDesc d;
+        d.srgb = true;
+        auto tex = Texture.fromPixels(app.gpu, px, 1, 1, d);
+        scope(exit) tex.destroy();
+        immutable exact = render("srgb_exact", tex, OutputTransfer.srgb, 40);
+        immutable gamma = render("srgb_gamma", tex, OutputTransfer.gamma22, 40);
+        writefln("  code %s: srgb transfer %s, gamma22 %s", code, exact, gamma);
+        ok &= expect(abs(exact - code) <= 1, "sRGB transfer returns the texture code");
+        if (code == 128) ok &= expect(abs(gamma - code) <= 1, "gamma22 returns grey 128");
+    }
+
+    // Black/white checker seen through the last mips: half the light = code 188.
+    auto checker = new ubyte[64 * 64 * 4];
+    foreach (y; 0 .. 64) foreach (x; 0 .. 64) {
+        immutable v = cast(ubyte)(((x ^ y) & 1) ? 255 : 0);
+        checker[(y * 64 + x) * 4 .. (y * 64 + x) * 4 + 4] = [v, v, v, 255];
+    }
+    auto mipped = Texture.fromPixels(app.gpu, checker, 64, 64, TextureDesc.mippedSrgb());
+    scope(exit) mipped.destroy();
+    immutable m = render("srgb_mips", mipped, OutputTransfer.srgb, 0.3f);
+    writefln("  minified checker %s (expected 188)", m);
+    ok &= expect(abs(m - 188) <= 2, "mips are averaged in linear light");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -191,6 +245,7 @@ private struct Check {
 
 private immutable Check[] checks = [
     Check("unlit", &checkUnlit),
+    Check("srgb", &checkSrgb),
     Check("stars", &checkStars),
 ];
 

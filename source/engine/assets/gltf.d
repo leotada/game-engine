@@ -67,6 +67,15 @@ struct GltfMesh {
     float[4][] tangents;
 }
 
+/// Opt-in glTF material features shared by `loadGltfPbr`, `loadGltfAsset` and
+/// `loadGltfSkinnedCharacter`. Everything is off by default, so existing
+/// assets keep their look.
+struct GltfImportOptions {
+    /// Read base color, emissive and sheen color textures as sRGB (the glTF
+    /// rule). Normal, ORM and factor colors stay linear.
+    bool srgbColor = false;
+}
+
 /// CPU-side OpenPBR material description extracted from glTF 2.0 + `KHR_materials_*`.
 struct GltfMaterialDesc {
     string name;
@@ -144,7 +153,8 @@ struct GltfModel {
 /// to MaterialDefaults via Material.create.
 GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
                       WGPUBindGroupLayout materialLayout,
-                      ref Sampler sampler) @trusted {
+                      ref Sampler sampler,
+                      GltfImportOptions opts = GltfImportOptions.init) @trusted {
     import core.lifetime : move;
 
     auto doc = parseGltfDocument(gltfPath);
@@ -164,12 +174,14 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     MaterialParams params = matDesc.params;
     params.flags = matDesc.params.flags & MaterialFlags.thinWalled;
 
+    TextureDesc colorDesc = TextureDesc.mipped();
+    colorDesc.srgb = opts.srgbColor;
     Texture loadMap(int image, TextureDesc d) {
         return image >= 0 ? loadGltfImage(gpu, doc, image, d) : Texture.init;
     }
 
     {
-        auto t = loadMap(matDesc.baseColorImage, TextureDesc.mipped());
+        auto t = loadMap(matDesc.baseColorImage, colorDesc);
         if (t.valid) {
             model.albedo = move(t);
             model.hasAlbedo = true;
@@ -219,7 +231,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
         }
     }
     {
-        auto t = loadMap(matDesc.emissiveImage, TextureDesc.mipped());
+        auto t = loadMap(matDesc.emissiveImage, colorDesc);
         if (t.valid) {
             model.emissive = move(t);
             model.hasEmissive = true;
@@ -231,7 +243,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     }
 
     auto layers = buildGltfLayerMaps(
-        gpu, doc, matDesc, params, model.layerTextures, model.hasLayerTextures, true);
+        gpu, doc, matDesc, params, model.layerTextures, model.hasLayerTextures, true, opts.srgbColor);
 
     model.material = Material.create(gpu, materialLayout, sampler, model.albedo,
                                      params, mrPtr, nrmPtr, aoPtr, emPtr, layers);
@@ -897,7 +909,7 @@ private enum LayerPackMode : ubyte {
 private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
                                  int imgIdxA, int imgIdxB, LayerPackMode mode,
                                  bool generateMips, out bool okA, out bool okB,
-                                 int imgIdxC, out bool okC) @trusted {
+                                 int imgIdxC, out bool okC, bool srgb = false) @trusted {
     auto a = decodeGltfImagePixels(doc, imgIdxA);
     auto b = (imgIdxB == imgIdxA) ? a : decodeGltfImagePixels(doc, imgIdxB);
     auto c = (imgIdxC == imgIdxA) ? a : ((imgIdxC == imgIdxB) ? b : decodeGltfImagePixels(doc, imgIdxC));
@@ -943,14 +955,14 @@ private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
             }
         }
     }
-    return Texture.fromPixels(gpu, pixels, w, h, TextureDesc(generateMips, false));
+    return Texture.fromPixels(gpu, pixels, w, h, TextureDesc(generateMips, false, srgb));
 }
 
 private Texture packLayerTexture(ref GpuContext gpu, ref GltfDocument doc,
                                  int imgIdxA, int imgIdxB, LayerPackMode mode,
-                                 bool generateMips, out bool okA, out bool okB) @trusted {
+                                 bool generateMips, out bool okA, out bool okB, bool srgb = false) @trusted {
     bool okC;
-    return packLayerTexture(gpu, doc, imgIdxA, imgIdxB, mode, generateMips, okA, okB, -1, okC);
+    return packLayerTexture(gpu, doc, imgIdxA, imgIdxB, mode, generateMips, okA, okB, -1, okC, srgb);
 }
 
 /**
@@ -966,7 +978,8 @@ MaterialLayerMaps buildGltfLayerMaps(
     ref MaterialParams params,
     out Texture[5] outTextures,
     out bool[5] outHas,
-    bool generateMips = true
+    bool generateMips = true,
+    bool srgbColor = false
 ) @trusted {
     import core.lifetime : move;
     MaterialLayerMaps maps;
@@ -997,7 +1010,7 @@ MaterialLayerMaps buildGltfLayerMaps(
         bool okA, okB;
         auto t = packLayerTexture(gpu, doc, matDesc.sheenColorImage,
                                   matDesc.sheenRoughnessImage, LayerPackMode.fuzz,
-                                  generateMips, okA, okB);
+                                  generateMips, okA, okB, srgbColor);
         if (t.valid) {
             move(t, outTextures[2]);
             outHas[2] = true;

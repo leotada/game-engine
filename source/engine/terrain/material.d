@@ -1,5 +1,5 @@
 /// Terrain layers and their GPU texture arrays. Each layer has an albedo
-/// (linear RGB + height in alpha), a tangent-space normal and an ORM map, all
+/// (RGB + height in alpha, linear unless `srgbAlbedo`), a tangent-space normal and an ORM map, all
 /// the same size; layer `i` is array slice `i` of each `TextureArray`.
 module engine.terrain.material;
 
@@ -36,9 +36,10 @@ struct TerrainMaterial {
     @disable this(this);
 
     /// Upload `layerCount` layers (`size²` RGBA8 each, mipmapped). Load time.
+    /// `srgbAlbedo` marks the albedo RGB as sRGB color (height alpha stays linear).
     static TerrainMaterial create(ref GpuContext gpu, scope const(TerrainLayer)[] layers,
                                   scope const(ubyte)[][] albedo, scope const(ubyte)[][] normal,
-                                  scope const(ubyte)[][] orm, uint size) {
+                                  scope const(ubyte)[][] orm, uint size, bool srgbAlbedo = false) {
         assert(layers.length >= 1 && layers.length <= MAX_TERRAIN_LAYERS);
         assert(albedo.length == layers.length && normal.length == layers.length && orm.length == layers.length);
         TerrainMaterial m;
@@ -48,7 +49,9 @@ struct TerrainMaterial {
         color.generateMips = true;
         TextureDesc nrm = color;
         nrm.normalMap = true;
-        m.albedo = TextureArray.fromLayers(gpu, albedo, size, size, color);
+        TextureDesc alb = color;
+        alb.srgb = srgbAlbedo;
+        m.albedo = TextureArray.fromLayers(gpu, albedo, size, size, alb);
         m.normal = TextureArray.fromLayers(gpu, normal, size, size, nrm);
         m.orm = TextureArray.fromLayers(gpu, orm, size, size, color);
         return m;

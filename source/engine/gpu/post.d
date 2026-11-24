@@ -25,6 +25,14 @@ enum PostStage : ubyte {
     afterUi,
 }
 
+/// Encoding of the tone-mapped image for the display.
+enum OutputTransfer : ubyte {
+    /// `pow(x, 1 / 2.2)`.
+    gamma22,
+    /// Exact sRGB curve: an unlit sRGB texture returns its own codes.
+    srgb,
+}
+
 /// Runtime toggles for the post stack. Owned by `Renderer`.
 struct PostSettings {
     float exposure = 1.0f;
@@ -45,6 +53,8 @@ struct PostSettings {
     /// Post-tonemap color adjustments (1.0 = neutral).
     float saturation = 1.0f;
     float contrast = 1.0f;
+    /// Display encoding. Use `srgb` together with sRGB color textures.
+    OutputTransfer outputTransfer = OutputTransfer.gamma22;
 }
 
 private enum MAX_BLOOM_MIPS = 7;
@@ -447,7 +457,7 @@ struct PostProcessor {
             settings.bloomScreen ? 1.0f : 0.0f,
             settings.saturation,
             settings.contrast,
-            0.0f,
+            cast(float) settings.outputTransfer,
             0.0f,
         ];
         updateBuffer(queue, tonemapUBO, tm[]);

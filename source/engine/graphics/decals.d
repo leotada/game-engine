@@ -213,9 +213,10 @@ struct DecalRenderer {
 
     /// `albedoLayers` (RGBA, alpha = coverage) and `normalLayers` are
     /// `size²` RGBA8 each. `capacity` must be ≥ the system capacity.
+    /// `srgbAlbedo` marks the albedo RGB as sRGB color (coverage alpha stays linear).
     static DecalRenderer create(ref GpuContext gpu, ref Scene3DTextured scene,
                                 scope const(ubyte)[][] albedoLayers, scope const(ubyte)[][] normalLayers,
-                                uint size, uint capacity) @trusted {
+                                uint size, uint capacity, bool srgbAlbedo = false) @trusted {
         DecalRenderer r;
         r.device = gpu.getDevice();
         r.queue = gpu.getQueue();
@@ -223,6 +224,7 @@ struct DecalRenderer {
         cd.generateMips = true;
         TextureDesc nd = cd;
         nd.normalMap = true;
+        cd.srgb = srgbAlbedo;
         r.albedo = TextureArray.fromLayers(gpu, albedoLayers, size, size, cd);
         r.normal = TextureArray.fromLayers(gpu, normalLayers, size, size, nd);
         r.sampler = Sampler.create(gpu, SamplerDesc(TextureFilter.linear, TextureWrap.clamp, 4));

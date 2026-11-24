@@ -7,7 +7,7 @@ struct Params {
     bloomScreen: f32,
     saturation: f32,
     contrast: f32,
-    _pad0: f32,
+    outputTransfer: f32,
     _pad1: f32,
 };
 @group(0) @binding(0) var<uniform> p: Params;
@@ -86,7 +86,11 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     ldr = clamp((ldr - vec3<f32>(0.5)) * p.contrast + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
     let luma = dot(ldr, vec3<f32>(0.2126, 0.7152, 0.0722));
     ldr = clamp(mix(vec3<f32>(luma), ldr, p.saturation), vec3<f32>(0.0), vec3<f32>(1.0));
-    // Approximate linear → sRGB
-    ldr = pow(max(ldr, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    if (p.outputTransfer > 0.5) {
+        ldr = select(1.055 * pow(ldr, vec3<f32>(1.0 / 2.4)) - 0.055, ldr * 12.92, ldr <= vec3<f32>(0.0031308));
+    } else {
+        // Approximate linear → sRGB
+        ldr = pow(max(ldr, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    }
     return vec4<f32>(ldr, 1.0);
 }

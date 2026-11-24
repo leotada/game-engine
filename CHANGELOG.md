@@ -9,6 +9,9 @@
   to 240 bytes (surface options block); new `render-check` config with GPU pixel checks.
 - **Stars** (default on): the night sky draws round stars with a jittered center and a smooth falloff, at least one
   pixel wide (`SkyInputs.pixelAngle`). They were hard-edged voxel slivers.
+- **sRGB color textures** (`TextureDesc.srgb`, `TextureDesc.mippedSrgb()`, `GltfImportOptions.srgbColor`, `srgbAlbedo` for
+  terrain and decals): hardware decode and mips averaged in linear light. `PostSettings.outputTransfer = srgb` selects
+  the exact display curve. Defaults are unchanged.
 
 ### Engine bug fixes
 
