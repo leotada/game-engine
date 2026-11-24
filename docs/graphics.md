@@ -215,7 +215,7 @@ Verification: `dub run --config=surface-shadow-check` renders a top-down scene a
 - **Color:** a pipeline variant with the WGSL constant `ALPHA_MASK` on; other materials compile it to false.
 - **Shadows:** masked casters get their own depth pipelines with a discard, for cascades, point and spot maps, on the dynamic, skinned, `StaticInstanceBuffer` and `displace` / `displaceEx` paths. Opaque casters keep the depth-only pipelines. Masked casters read the full vertices, not the position-only shadow indices.
 - **Limit:** shadow passes test the albedo alpha. Opacity computed by `surface()` is not evaluated there.
-- **Mips:** `TextureDesc.alphaCoverage = cutoff` rescales the alpha of every mip so the fraction of texels above the cutoff stays that of level 0. Distant foliage and fences do not thin out.
+- **Mips:** `TextureDesc.alphaCoverage = cutoff` rescales the alpha of every mip so the fraction of the surface kept by the alpha test stays that of level 0. The fraction is measured with bilinear filtering and wrapped addressing (`alphaCoverageOf`), so thin shapes such as wire grids also keep their coverage. Distant foliage and fences do not thin out. Measured far away (512x512 mask, mip 2 to 3): noise 0.258 of 0.267, grid 0.171 of 0.179; plain mips give 0.002 and 0.113.
 - **glTF:** `GltfImportOptions.alphaModes` applies `alphaMode` and `alphaCutoff`: `MASK` sets the mask and coverage mips, `OPAQUE` sets `BlendMode.opaque`, `BLEND` keeps the default state.
 
 Verification: `dub run --config=render-check -- --check=mask`.

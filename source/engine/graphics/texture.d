@@ -449,47 +449,63 @@ private immutable float[255] srgb8Thresholds = () {
     return t;
 }();
 
-/// Alpha (0..255) at which the fraction of texels `>= alpha` is closest to
-/// `coverage`. 256 means no texel should pass.
-private uint alphaAtCoverage(scope const(ubyte)[] rgba, float coverage) pure nothrow @nogc {
-    uint[256] histogram;
-    immutable texels = rgba.length / 4;
-    foreach (i; 0 .. texels) histogram[rgba[i * 4 + 3]]++;
-    immutable float want = coverage * texels;
-    uint best = 256;
-    float bestErr = want;
-    size_t above = 0;
-    foreach_reverse (a; 1 .. 256) {
-        above += histogram[a];
-        if (histogram[a] == 0) continue;
-        immutable e = above > want ? above - want : want - above;
-        if (e < bestErr) { bestErr = e; best = a; }
+/// Fraction of the surface that an alpha test at `cutoff` (0..1) keeps when the
+/// level is read with bilinear filtering (wrapped), alpha multiplied by `scale`
+/// first. Texels alone are not enough: thin shapes such as a wire grid can keep
+/// their texel count and still vanish once filtered.
+/// Uses a fixed low-discrepancy sample set, so the cost does not grow with size.
+float alphaCoverageOf(scope const(ubyte)[] rgba, uint width, uint height, float cutoff,
+                      float scale = 1) pure nothrow @nogc {
+    if (width == 0 || height == 0) return 0;
+    assert(rgba.length == cast(size_t) width * height * 4, "alphaCoverageOf: pixel buffer size mismatch");
+    enum uint SAMPLES = 32_768;
+    immutable float threshold = cutoff * 255.0f;
+    float alphaAt(uint x, uint y) {
+        // Same rounding and clamp as the stored texel.
+        immutable v = rgba[(cast(size_t) y * width + x) * 4 + 3] * scale + 0.5f;
+        return cast(uint)(v > 255.0f ? 255.0f : v);
     }
-    return best;
-}
-
-/// Fraction of texels with alpha at or above `cutoff` (0..1).
-float alphaCoverageOf(scope const(ubyte)[] rgba, float cutoff) pure nothrow @nogc {
-    immutable texels = rgba.length / 4;
-    if (texels == 0) return 0;
-    size_t pass = 0;
-    foreach (i; 0 .. texels)
-        if (rgba[i * 4 + 3] >= cutoff * 255.0f) pass++;
-    return cast(float) pass / texels;
+    uint pass = 0;
+    foreach (i; 0 .. SAMPLES) {
+        // R2 sequence in 32-bit fixed point.
+        immutable uint u = 0xC13F_A9A9u * (i + 1), v = 0x91E1_0DA5u * (i + 1);
+        immutable ulong px = cast(ulong) u * width, py = cast(ulong) v * height;
+        immutable uint x0 = cast(uint)(px >> 32), y0 = cast(uint)(py >> 32);
+        immutable float fx = cast(uint) px * (1.0f / 4_294_967_296.0f);
+        immutable float fy = cast(uint) py * (1.0f / 4_294_967_296.0f);
+        immutable uint x1 = x0 + 1 == width ? 0 : x0 + 1, y1 = y0 + 1 == height ? 0 : y0 + 1;
+        immutable float top = alphaAt(x0, y0) * (1 - fx) + alphaAt(x1, y0) * fx;
+        immutable float bottom = alphaAt(x0, y1) * (1 - fx) + alphaAt(x1, y1) * fx;
+        if (top * (1 - fy) + bottom * fy >= threshold) pass++;
+    }
+    return cast(float) pass / SAMPLES;
 }
 
 /// Rescale the alpha of every level of a packed mip tail so each level keeps
-/// `coverage` at `cutoff`. RGB is untouched.
+/// `coverage` (`alphaCoverageOf` of level 0) at `cutoff`. RGB is untouched.
 void preserveAlphaCoverage(scope ubyte[] tail, uint width, uint height, uint levels,
                            float cutoff, float coverage) pure nothrow @nogc {
     size_t off = 0;
     foreach (l; 1 .. levels) {
-        immutable bytes = cast(size_t) mipExtent(width, l) * mipExtent(height, l) * 4;
+        immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
+        immutable bytes = cast(size_t) lw * lh * 4;
         auto level = tail[off .. off + bytes];
         off += bytes;
-        immutable a = alphaAtCoverage(level, coverage);
-        // Put the chosen alpha on the cutoff (a little above, against rounding).
-        immutable scale = (cutoff * 255.0f + 0.5f) / a;
+        float errorAt(float scale) {
+            return alphaCoverageOf(level, lw, lh, cutoff, scale) - coverage;
+        }
+        immutable now = errorAt(1);
+        // Close enough already (opaque and empty levels end here unchanged).
+        if (now > -0.002f && now < 0.002f) continue;
+        // Coverage grows with the scale: bisect.
+        float lo = now > 0 ? 0 : 1, hi = now > 0 ? 1 : 64;
+        foreach (_; 0 .. 12) {
+            immutable mid = (lo + hi) * 0.5f;
+            if (errorAt(mid) < 0) lo = mid;
+            else hi = mid;
+        }
+        immutable float eLo = errorAt(lo), eHi = errorAt(hi);
+        immutable scale = -eLo < eHi ? lo : hi;
         for (size_t i = 3; i < level.length; i += 4) {
             immutable v = level[i] * scale + 0.5f;
             level[i] = cast(ubyte)(v > 255.0f ? 255.0f : v);
@@ -567,7 +583,7 @@ private void uploadRgba8WithMips(ref GpuContext gpu, WGPUTexture tex, uint layer
     generateMipChainRgba8(rgba, width, height, tail, levels, desc.normalMap, desc.srgb);
     if (desc.alphaCoverage > 0)
         preserveAlphaCoverage(tail, width, height, levels, desc.alphaCoverage,
-                              alphaCoverageOf(rgba, desc.alphaCoverage));
+                              alphaCoverageOf(rgba, width, height, desc.alphaCoverage));
     size_t off = 0;
     foreach (l; 1 .. levels) {
         immutable lw = mipExtent(width, l), lh = mipExtent(height, l);
@@ -778,32 +794,42 @@ unittest {
 }
 
 @("texture.alphaCoverage") @safe unittest {
-    // Sparse random mask: plain box mips lose nearly all coverage at 0.5.
     enum N = 64;
     auto src = new ubyte[N * N * 4];
+    auto tail = new ubyte[mipTailBytesRgba8(N, N, 7)];
+    void check(float cutoff) {
+        immutable base = alphaCoverageOf(src, N, N, cutoff);
+        generateMipChainRgba8(src, N, N, tail, 7);
+        auto kept = tail.dup;
+        preserveAlphaCoverage(kept, N, N, 7, cutoff, base);
+        size_t off = 0;
+        foreach (l; 1 .. 4) {
+            immutable e = N >> l;
+            immutable c = alphaCoverageOf(kept[off .. off + e * e * 4], e, e, cutoff);
+            assert(c > base - 0.05f && c < base + 0.05f);
+            off += e * e * 4;
+        }
+        // Control: plain box mips lose it by 8x8.
+        assert(alphaCoverageOf(tail[off - 8 * 8 * 4 .. off], 8, 8, cutoff) < base * 0.5f);
+    }
+    // Sparse random mask.
     uint rng = 0x12345678;
     foreach (i; 0 .. N * N) {
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
         src[i * 4 + 3] = (rng >> 8) % 100 < 30 ? 255 : 0;
     }
-    immutable base = alphaCoverageOf(src, 0.5f);
-    assert(base > 0.25f && base < 0.35f);
-    auto tail = new ubyte[mipTailBytesRgba8(N, N, 7)];
-    generateMipChainRgba8(src, N, N, tail, 7);
-    auto kept = tail.dup;
-    preserveAlphaCoverage(kept, N, N, 7, 0.5f, base);
-    // Levels 2 and 3 (16x16, 8x8).
-    immutable size_t l1 = 32 * 32 * 4, l2 = 16 * 16 * 4, l3 = 8 * 8 * 4;
-    assert(alphaCoverageOf(tail[l1 + l2 .. l1 + l2 + l3], 0.5f) < 0.1f);
-    foreach (range; [[0, l1], [l1, l1 + l2], [l1 + l2, l1 + l2 + l3]]) {
-        immutable c = alphaCoverageOf(kept[range[0] .. range[1]], 0.5f);
-        assert(c > base - 0.1f && c < base + 0.1f);
+    check(0.5f);
+    // Wire grid (fence): thin lines that a per-texel measure gets wrong.
+    foreach (y; 0 .. N) foreach (x; 0 .. N)
+        src[(y * N + x) * 4 + 3] = (x % 32 < 4 || y % 32 < 4) ? 255 : 0;
+    check(0.6f);
+    // Opaque and empty textures stay as they are.
+    foreach (fill; [255, 0]) {
+        src[] = cast(ubyte) fill;
+        generateMipChainRgba8(src, N, N, tail, 7);
+        preserveAlphaCoverage(tail, N, N, 7, 0.5f, alphaCoverageOf(src, N, N, 0.5f));
+        foreach (v; tail) assert(v == fill);
     }
-    // An opaque texture stays opaque.
-    src[] = 255;
-    generateMipChainRgba8(src, N, N, tail, 7);
-    preserveAlphaCoverage(tail, N, N, 7, 0.5f, 1.0f);
-    assert(alphaCoverageOf(tail, 0.5f) == 1.0f);
 }
 
 @("texture.descFormat") pure nothrow @nogc unittest {
