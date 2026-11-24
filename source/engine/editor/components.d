@@ -304,18 +304,19 @@ void refuseMeshDynamic(ref PhysicsBody body) pure nothrow @nogc {
 Mat4 worldMatrix(W)(ref W world, EntityId id)
 if (is(typeof(world.get!Transform(id))) && is(typeof(world.has!Parent(id))))
 {
-    Mat4 local = world.has!Transform(id)
-        ? world.get!Transform(id).localMatrix()
-        : Mat4.identity();
-
-    if (!world.has!Parent(id))
-        return local;
-
-    immutable p = world.get!Parent(id).entity;
-    if (p == noParent || p == id || !world.alive(p))
-        return local;
-
-    return worldMatrix(world, p) * local;
+    Mat4 result = world.has!Transform(id) ? world.get!Transform(id).localMatrix() : Mat4.identity();
+    // Parent links made at run time may form a cycle; no real hierarchy is this deep.
+    foreach (_; 0 .. 1024) {
+        if (!world.has!Parent(id))
+            break;
+        immutable p = world.get!Parent(id).entity;
+        if (p == noParent || p == id || !world.alive(p))
+            break;
+        if (world.has!Transform(p))
+            result = world.get!Transform(p).localMatrix() * result;
+        id = p;
+    }
+    return result;
 }
 
 /// World-space translation of an entity (from composed matrix).

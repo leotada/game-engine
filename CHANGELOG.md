@@ -26,6 +26,8 @@
   unsupported signatures do not compile, exceptions are logged); `onLateUpdate` runs; `onStart` runs for components added
   during play; systems run by `order`; spawning or destroying entities inside a callback no longer skips or corrupts
   components; a module that fails to load no longer loses the script state. Script ABI bumped: rebuild game modules.
+- **Parent cycles** in a scene file are a validation error (`parentCycle`), and `worldMatrix` no longer recurses forever
+  on a cycle made at run time.
 
 ### Other changes
 

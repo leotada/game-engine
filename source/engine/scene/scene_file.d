@@ -222,6 +222,7 @@ enum SceneValidationCode : uint {
     badStringIndex = 6,
     shadowBudgetExceeded = 7,
     duplicateEntityId = 8,
+    parentCycle = 9,
 }
 
 struct SceneValidationIssue {
@@ -236,6 +237,32 @@ struct SceneValidationResult {
 
     bool ok() const pure nothrow @nogc {
         return errors.length == 0;
+    }
+}
+
+private void checkParentCycles(const ref SceneFile scene, ref SceneValidationResult result) {
+    uint[uint] parentOf;
+    foreach (ref e; scene.entities)
+        parentOf[e.id] = e.parent;
+    // 1 = on the current chain, 2 = known to reach a root.
+    ubyte[uint] state;
+    foreach (ref e; scene.entities) {
+        uint id = e.id;
+        uint[] chain;
+        while (id != sceneNoParent && id in parentOf && id !in state) {
+            state[id] = 1;
+            chain ~= id;
+            id = parentOf[id];
+        }
+        if (auto st = id in state) {
+            if (*st == 1)
+                result.errors ~= SceneValidationIssue(
+                    SceneValidationCode.parentCycle,
+                    "entity " ~ id.to!string ~ " is its own ancestor",
+                    id);
+        }
+        foreach (c; chain)
+            state[c] = 2;
     }
 }
 
@@ -258,10 +285,6 @@ SceneValidationResult validateScene(const ref SceneFile scene, bool checkAssetFi
 
         if (e.hasName)
             checkStringIndex(scene, e.name, e.id, "name", result);
-        if (e.parent != sceneNoParent) {
-            // Parent must exist (checked after loop would be ideal; soft-check index).
-        }
-
         if (e.hasVisual) {
             if (e.visual.hasAsset)
                 checkStringIndex(scene, e.visual.asset, e.id, "visual.asset", result);
@@ -305,6 +328,8 @@ SceneValidationResult validateScene(const ref SceneFile scene, bool checkAssetFi
             }
         }
     }
+
+    checkParentCycles(scene, result);
 
     if (dir > SCENE_MAX_DIR_LIGHTS) {
         result.errors ~= SceneValidationIssue(
@@ -1519,4 +1544,26 @@ private float[4] jsonFloat4(ref JSONValue v, string ctx) {
     assert(parsed.entities[0].material.subsurfaceRadiusScale[2] == 0.2f);
     assert(parsed.entities[0].material.subsurfaceAnisotropy == 0.25f);
     assert(sceneToMinifiedJson(parsed) == json);
+}
+
+@("scene: parent cycles are rejected")
+unittest {
+    static SceneFile make(uint[] parents) {
+        SceneFile s;
+        foreach (i, p; parents) {
+            SceneEntityData e;
+            e.id = cast(uint) i + 1;
+            e.parent = p;
+            s.entities ~= e;
+        }
+        return s;
+    }
+    auto ok = make([0, 1, 2, 1]);
+    assert(validateScene(ok, false).ok);
+    auto self = make([1]);
+    auto loop = make([0, 4, 2, 3]);
+    foreach (bad; [self, loop]) {
+        auto v = validateScene(bad, false);
+        assert(v.errors.length == 1 && v.errors[0].code == SceneValidationCode.parentCycle);
+    }
 }
