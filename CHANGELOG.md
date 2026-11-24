@@ -57,6 +57,13 @@
 
 ### Other changes
 
+- **`Font.loadFromFileCached`**: keeps the pre-baked glyph atlas in a file, so later loads skip the ~0.85 s of SDF
+  rasterization. The cache is keyed by font bytes, size, mode, hinting and SDL3_ttf version, and rebuilt when damaged.
+- **Baked BRDF LUT**: the 128² IBL lookup table is embedded (`assets/shaders/common/brdf_lut_128.bin`) instead of
+  integrated on the CPU by every `IblEnvironment` and `DynamicIbl` (~0.9 s each in a debug build). A unittest compares
+  it with the integrator; rebake with `dub test --config=library --d-version=BakeBrdfLut`.
+- **`optimizeMesh` no longer measures by default**: the `before`/`after` ratios (ACMR, ATVR, overfetch, overdraw) are
+  filled only with `MeshOptSettings.stats`. The overdraw figure rasterized every imported mesh twice.
 - **Web export rework** (`docs/export-guide.md` 4.7): `--target=web` now builds with one LDC 1.43+ command linking
   through `emcc` (emdawnwebgpu, JSPI), supports `--project`, asset paks, `--scene` and `--link-flag`, and writes
   `index.html`. `App.pollEvents` paces frames on web, streaming decodes without threads, and the player sources

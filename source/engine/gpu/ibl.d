@@ -96,7 +96,7 @@ struct IblEnvironment {
     private static void finalizeBindGroup(WGPUDevice device, WGPUQueue queue,
                                           WGPUBindGroupLayout layout, ref IblEnvironment env,
                                           uint maxLod) @trusted {
-        auto lutPixels = generateBrdfLut(IBL_LUT_SIZE);
+        auto lutPixels = brdfLutPixels();
         env.brdfLutTex = createLutTexture(device, queue, lutPixels, IBL_LUT_SIZE);
         WGPUTextureViewDescriptor lutVd;
         lutVd.format = WGPUTextureFormat.rgba8Unorm;
@@ -341,7 +341,24 @@ private ubyte[][] prefilterSpecular(const ubyte[][] env, uint envSize,
     return faces;
 }
 
-package(engine) ubyte[] generateBrdfLut(uint size) {
+/// `generateBrdfLut(IBL_LUT_SIZE)` without its alpha channel, baked because integrating it takes
+/// ~0.9 s in a debug build. Regenerate after changing the integrator (a unittest compares them):
+/// `dub test --config=library --d-version=BakeBrdfLut`.
+private enum string BRDF_LUT_FILE = "assets/shaders/common/brdf_lut_128.bin";
+private immutable ubyte[] bakedBrdfLut = cast(immutable(ubyte)[]) import("common/brdf_lut_128.bin");
+static assert(bakedBrdfLut.length == IBL_LUT_SIZE * IBL_LUT_SIZE * 3);
+
+/// RGBA8 pixels of the `IBL_LUT_SIZE`² BRDF LUT.
+package(engine) ubyte[] brdfLutPixels() {
+    auto pixels = new ubyte[IBL_LUT_SIZE * IBL_LUT_SIZE * 4];
+    foreach (i; 0 .. IBL_LUT_SIZE * IBL_LUT_SIZE) {
+        pixels[i * 4 .. i * 4 + 3] = bakedBrdfLut[i * 3 .. i * 3 + 3];
+        pixels[i * 4 + 3] = 255;
+    }
+    return pixels;
+}
+
+private ubyte[] generateBrdfLut(uint size) {
     auto pixels = new ubyte[size * size * 4];
     enum uint samples = 64;
     foreach (y; 0 .. size) foreach (x; 0 .. size) {
@@ -601,4 +618,20 @@ package(engine) WGPUTexture createLutTexture(WGPUDevice device, WGPUQueue queue,
     immutable mid = sampleGradientSky(Vec3(1, 0, 0), z, h, g);
     immutable down = sampleGradientSky(Vec3(0, -1, 0), z, h, g);
     assert(abs(up.b - 0.8f) < 1e-4f && abs(mid.r - 0.6f) < 1e-4f && abs(down.r - 0.1f) < 1e-4f);
+}
+
+version (BakeBrdfLut) @safe unittest {
+    import std.file : write;
+    auto lut = generateBrdfLut(IBL_LUT_SIZE);
+    ubyte[] rgb;
+    foreach (i; 0 .. IBL_LUT_SIZE * IBL_LUT_SIZE)
+        rgb ~= lut[i * 4 .. i * 4 + 3];
+    write(BRDF_LUT_FILE, rgb);
+} else @safe unittest {
+    auto lut = generateBrdfLut(IBL_LUT_SIZE);
+    auto baked = brdfLutPixels();
+    assert(baked.length == lut.length);
+    // Floating point differs between compilers: one step of rounding is fine.
+    foreach (i; 0 .. lut.length)
+        assert(abs(cast(int) lut[i] - cast(int) baked[i]) <= 1, "stale BRDF LUT: rebake it");
 }

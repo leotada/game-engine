@@ -388,7 +388,7 @@ This phase makes the M1/M2 work immediately visible in every demo and in the edi
        V[] vertices;
        I[] indices;
        I[] shadowIndices;           // empty when disabled
-       MeshStats before, after;     // ACMR/ATVR/overfetch/overdraw
+       MeshStats before, after;     // ACMR/ATVR/overfetch/overdraw (only with `settings.stats`)
    }
 
    OptimizedMesh!(V, I) optimizeMesh(V, I)(const(V)[] verts, const(I)[] indices,

@@ -509,7 +509,7 @@ Everything stays zero-GC in the frame loop. The reference scene is `dub run --co
 
 - `DynamicIbl.create(gpu, scene.iblLayout())` renders the sky into a 64² `rgba16Float` environment cube with a compute shader (`ibl_sky_cs.wgsl`). It then convolves irradiance (16²) and 5 GGX specular mips.
 - Work is amortized: `request(params)` starts a cycle when the sky changed visibly (`SkyIblParams.differsFrom`), and `update()` runs at most one step per frame. The cubes are double-buffered and the bind group swaps only when a cycle completes.
-- `bakeNow` is for start-up. The BRDF LUT is built once.
+- `bakeNow` is for start-up. The BRDF LUT is baked into the binary (`assets/shaders/common/brdf_lut_128.bin`); after changing the integrator in `ibl.d`, rebake it with `dub test --config=library --d-version=BakeBrdfLut`.
 - Call `scene.setEnvironmentBindGroup(ibl.bindGroup())` every frame.
 - The CPU-prefiltered `IblEnvironment` paths remain `rgba8Unorm`.
 
