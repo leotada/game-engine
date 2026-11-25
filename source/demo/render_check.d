@@ -1606,6 +1606,236 @@ private TexMesh* lodSphereColored(ref App app, bool colored) @trusted {
     return m;
 }
 
+/// Volumetric light: analytic brightness, sun and local shadows in the air, no
+/// visible jitter, no halo around foreground objects, off = same image.
+private bool checkVolumetric(ref App app) {
+    import engine.gpu.volumetric : VolumetricQuality, VolumetricSettings;
+    import std.math : exp, PI, pow, sqrt, tan;
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    MaterialParams mp;
+    mp.baseColor = [0, 0, 0];
+    mp.specularWeight = 0;
+    auto black = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) black.destroy();
+    black.renderState.blend = BlendMode.opaque;
+    app.renderer.postSettings() = neutralPost();
+    scope(exit) app.renderer.volumetrics() = VolumetricSettings.init;
+    LightList lights;
+    scope(exit) lights.release();
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.1f, 200.0f);
+    cam.lookAt(Vec3(0, 0, 0), Vec3(0, 0, -1));
+    enum E = 8.0f;
+
+    struct Setup {
+        bool sun, blocker, nearBox, spot, spotBlocker, point;
+    }
+    Shot shoot(string name, VolumetricSettings v, Setup u) {
+        app.renderer.volumetrics() = v;
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = u.sun;
+            lights.dir.direction = Vec3(0, 1, 0);
+            lights.dir.color = Vec3(1, 1, 1);
+            lights.dir.intensity = E;
+            lights.dir.castShadows = u.blocker;
+            lights.dir.cascades.maxDistance = 60;
+            if (u.spot) {
+                GpuSpotLight sl;
+                sl.position = Vec3(0, 5, -15);
+                sl.direction = Vec3(0, -1, 0);
+                sl.range = 20;
+                sl.intensity = 300;
+                sl.innerConeDeg = 14;
+                sl.outerConeDeg = 16;
+                sl.castShadows = true;
+                lights.addSpot(sl);
+            }
+            if (u.point) {
+                GpuPointLight pl;
+                pl.position = Vec3(0, 0, -15);
+                pl.range = 6;
+                pl.intensity = 300;
+                lights.addPoint(pl);
+            }
+            scene.setIblIntensity(0);
+            scene.begin(cam);
+            // A roof over the right half of the view.
+            if (u.blocker) scene.drawMatrix(cube, black, Mat4.translation(30, 20, -30) * Mat4.scaling(60, 1, 100), Color4.white);
+            if (u.nearBox) scene.drawMatrix(cube, black, Mat4.translation(0, 0, -10.5f) * Mat4.scaling(3, 3, 1), Color4.white);
+            if (u.spotBlocker) scene.drawMatrix(cube, black, Mat4.translation(0, 1.5f, -15) * Mat4.scaling(6, 0.2f, 6), Color4.white);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        }, 2, Color4(0, 0, 0, 1));
+    }
+    float linear(ref Shot s, uint x, uint y) { return pow(s.luma(x, y) / 255.0f, 2.2f); }
+    float mean(ref Shot s, int cx, int cy, int r) {
+        double sum = 0;
+        uint n;
+        foreach (y; cy - r .. cy + r) foreach (x; cx - r .. cx + r) { sum += linear(s, x, y); n++; }
+        return cast(float)(sum / n);
+    }
+    // Largest difference inside a square (jitter that the blur left).
+    float spread(ref Shot s, int cx, int cy, int r) {
+        float lo = 255, hi = 0;
+        foreach (y; cy - r .. cy + r) foreach (x; cx - r .. cx + r) {
+            immutable l = s.luma(x, y);
+            if (l < lo) lo = l;
+            if (l > hi) hi = l;
+        }
+        return hi - lo;
+    }
+    if (bench) {
+        Vec3[64] at;
+        foreach (i, ref a; at) a = Vec3((i % 8 - 4.0f) * 5, (i / 8 % 4) * 2.0f - 3, -10 - (i / 8) * 8.0f);
+        foreach (withLocals; [false, true]) foreach (quarter; [false, true])
+            foreach (q; [VolumetricQuality.low, VolumetricQuality.medium, VolumetricQuality.high, VolumetricQuality.ultra]) {
+                VolumetricSettings v;
+                v.enabled = true;
+                v.quality = q;
+                v.quarterResolution = quarter;
+                app.renderer.volumetrics() = v;
+                import std.conv : to;
+                timeZones(app, (withLocals ? "sun + 64 lights " : "sun ") ~ (quarter ? "quarter " : "half ") ~ q.to!string,
+                          ["gpu.volumetric", "scene.volumetric"], (ref FrameContext f) {
+                    lights.clear();
+                    lights.dirEnabled = true;
+                    lights.dir.direction = Vec3(0.3f, 1, 0.2f).normalized();
+                    lights.dir.castShadows = true;
+                    lights.dir.cascades.maxDistance = 100;
+                    if (withLocals) foreach (i, a; at) {
+                        if (i % 2) {
+                            GpuPointLight pl;
+                            pl.position = a;
+                            pl.range = 8;
+                            lights.addPoint(pl);
+                        } else {
+                            GpuSpotLight sl;
+                            sl.position = a;
+                            sl.direction = Vec3(0, -1, 0);
+                            sl.range = 10;
+                            lights.addSpot(sl);
+                        }
+                    }
+                    scene.begin(cam);
+                    scene.drawMatrix(cube, black, Mat4.translation(0, -5, -50) * Mat4.scaling(100, 1, 100), Color4.white);
+                    foreach (i; 0 .. 20)
+                        scene.drawMatrix(cube, black, Mat4.translation((i % 5 - 2.0f) * 6, -2, -12 - (i / 5) * 12.0f) * Mat4.scaling(2, 6, 2), Color4.white);
+                    scene.renderShadows(f, lights);
+                    scene.end(f);
+                });
+            }
+        return true;
+    }
+
+    bool ok = true;
+    VolumetricSettings v;
+    v.enabled = true;
+    v.density = 0.03f;
+    v.anisotropy = 0;
+    v.maxDistance = 40;
+    Setup sunOnly;
+    sunOnly.sun = true;
+    float expected(float distance) { return E / (4 * PI) * (1 - exp(-0.03f * distance)); }
+    immutable cx = WIN_W / 2, cy = WIN_H / 2;
+    foreach (quarter; [false, true]) {
+        v.quarterResolution = quarter;
+        immutable tag = quarter ? "quarter: " : "half: ";
+        auto sky = shoot("vol_sky", v, sunOnly);
+        if (!sky.valid) return expect(false, "frame captured");
+        immutable a = mean(sky, cx, cy, 20), want = expected(40);
+        writefln("    %sopen air %.4f, exact %.4f, spread %.1f", tag, a, want, spread(sky, cx, cy, 40));
+        ok &= expect(abs(a - want) < want * 0.04f, tag ~ "open air matches the exact integral");
+        ok &= expect(spread(sky, cx, cy, 40) <= 3, tag ~ "no visible jitter in open air");
+
+        Setup box = sunOnly;
+        box.nearBox = true;
+        auto b = shoot("vol_box", v, box);
+        // Box front face at z = -10: 3x3 units.
+        immutable k = (WIN_H * 0.5f) / tan(0.45f) / 10.0f;
+        immutable edge = cast(int)(1.5f * k);
+        immutable inside = mean(b, cx, cy, 10), wantBox = expected(10);
+        writefln("    %sbox %.4f, exact %.4f", tag, inside, wantBox);
+        ok &= expect(abs(inside - wantBox) < wantBox * 0.06f, tag ~ "surfaces stop the light at their depth");
+        // Halo: rows crossing the silhouette, compared with both sides.
+        float inErr = 0, outErr = 0;
+        foreach (dy; [-20, 0, 20]) {
+            foreach (d; 2 .. 8) {
+                immutable i = abs(b.luma(cx + edge - d, cy + dy) - b.luma(cx, cy + dy));
+                immutable o = abs(b.luma(cx + edge + d, cy + dy) - b.luma(cx + edge + 40, cy + dy));
+                if (i > inErr) inErr = i;
+                if (o > outErr) outErr = o;
+            }
+        }
+        writefln("    %ssilhouette error inside %.0f outside %.0f", tag, inErr, outErr);
+        ok &= expect(inErr <= 4 && outErr <= 4, tag ~ "no halo at silhouettes");
+
+        Setup roof = sunOnly;
+        roof.blocker = true;
+        auto r = shoot("vol_roof", v, roof);
+        immutable litSide = mean(r, cx / 2, cy, 15), darkSide = mean(r, cx + cx / 2, cy, 15);
+        writefln("    %sunder the open sky %.4f, under the roof %.4f", tag, litSide, darkSide);
+        ok &= expect(litSide > want * 0.8f && darkSide < want * 0.1f, tag ~ "the roof shadows the air");
+        ok &= expect(spread(r, cx / 2, cy, 25) <= 5, tag ~ "no visible jitter beside the shadow");
+
+        Setup spot;
+        spot.spot = true;
+        auto c = shoot("vol_spot", v, spot);
+        // At z = -15: cone half width at 4 units below the light is 1.1.
+        immutable ks = (WIN_H * 0.5f) / tan(0.45f) / 15.0f;
+        immutable inCone = mean(c, cx, cy - cast(int)(1 * ks), 4), outCone = mean(c, cx + cast(int)(3.5f * ks), cy - cast(int)(1 * ks), 4);
+        spot.spotBlocker = true;
+        auto cb = shoot("vol_spot_shadow", v, spot);
+        immutable above = mean(cb, cx, cy - cast(int)(3 * ks), 4), below = mean(cb, cx, cy + cast(int)(1 * ks), 4);
+        immutable belowLit = mean(c, cx, cy + cast(int)(1 * ks), 4);
+        writefln("    %sspot cone %.4f beside %.5f; blocked: above %.4f below %.5f (open %.4f)", tag, inCone, outCone, above, below, belowLit);
+        ok &= expect(inCone > 0.01f && outCone < inCone * 0.02f, tag ~ "the spot draws a cone");
+        ok &= expect(above > 0.01f && below < belowLit * 0.1f, tag ~ "the spot cone is shadowed");
+        Setup point;
+        point.point = true;
+        auto pt = shoot("vol_point", v, point);
+        immutable core_ = mean(pt, cx, cy, 4), rim = mean(pt, cx + cast(int)(4 * ks), cy, 4), outside = mean(pt, cx + cast(int)(6.8f * ks), cy, 4);
+        writefln("    %spoint core %.4f, 4 units away %.4f, outside the range %.5f", tag, core_, rim, outside);
+        ok &= expect(core_ > rim && rim > outside && outside < 0.0005f, tag ~ "the point light glows within its range");
+    }
+    // Attenuation and off.
+    v.quarterResolution = false;
+    v.attenuate = true;
+    Setup none;
+    MaterialParams em;
+    em.baseColor = [0, 0, 0];
+    em.emissionColor = [1, 1, 1];
+    em.emissionLuminance = 0.8f;
+    auto glow = Material.create(app.gpu, scene.materialLayout(), sampler, white, em, null, null, null, null);
+    scope(exit) glow.destroy();
+    glow.renderState.blend = BlendMode.opaque;
+    Shot wall(string name, VolumetricSettings vs) {
+        app.renderer.volumetrics() = vs;
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            scene.begin(cam);
+            scene.drawMatrix(cube, glow, Mat4.translation(0, 0, -20.5f) * Mat4.scaling(60, 60, 1), Color4.white);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        }, 2, Color4(0, 0, 0, 1));
+    }
+    auto off = wall("vol_off", VolumetricSettings.init);
+    auto on = wall("vol_attenuate", v);
+    v.attenuate = false;
+    auto additive = wall("vol_additive", v);
+    immutable ratio = mean(on, cx, cy, 10) / mean(off, cx, cy, 10);
+    writefln("    transmittance %.3f, exact %.3f", ratio, exp(-0.03f * 20));
+    ok &= expect(abs(ratio - exp(-0.03f * 20)) < 0.02f, "attenuation matches the exact transmittance");
+    ok &= expect(abs(mean(additive, cx, cy, 10) - mean(off, cx, cy, 10)) < 0.003f, "without lights or attenuation nothing changes");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -1679,6 +1909,7 @@ private immutable Check[] checks = [
     Check("ao", &checkAo),
     Check("specaa", &checkSpecularAa),
     Check("vcolor", &checkVertexColor),
+    Check("volumetric", &checkVolumetric),
     Check("stars", &checkStars),
 ];
 

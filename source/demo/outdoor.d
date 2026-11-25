@@ -18,6 +18,7 @@
  *   --rain            start in a storm (clouds, rain, wet surfaces)
  *   --debug-cascades  tint the shadow cascades
  *   --ao              ambient occlusion (GTAO) on terrain, rocks and props
+ *   --volumetric      volumetric light of the sun and the lamps
  *   --view=N          camera preset (0 = orbit path, 1 = low over a ridge, 2 = high overview)
  *   --headless-frames=N --assert-no-gc --screenshot=PATH
  */
@@ -29,6 +30,7 @@ import std.conv : to;
 import std.math : sin, cos, PI;
 import std.stdio : writefln;
 
+import engine.gpu.volumetric : VolumetricQuality;
 import engine.app;
 import engine.core.log;
 import engine.gpu.ibl_dynamic : DynamicIbl;
@@ -69,6 +71,7 @@ private struct Options {
     bool rain = false;
     bool debugCascades = false;
     bool ao = false;
+    bool volumetric;
     uint view = 0;
     uint headlessFrames = 0;
     bool assertNoGc = false;
@@ -89,6 +92,7 @@ private Options parseArgs(string[] args) {
         else if (a == "--rain") o.rain = true;
         else if (a == "--debug-cascades") o.debugCascades = true;
         else if (a == "--ao") o.ao = true;
+        else if (a == "--volumetric") o.volumetric = true;
         else if (a.startsWith("--view=")) o.view = v("--view=").to!uint;
         else if (a.startsWith("--headless-frames=")) o.headlessFrames = v("--headless-frames=").to!uint;
         else if (a == "--assert-no-gc") o.assertNoGc = true;
@@ -122,6 +126,15 @@ void main(string[] args) @trusted {
     if (opts.ao) {
         app.renderer.ambientOcclusion().enabled = true;
         app.renderer.ambientOcclusion().treatDefaultBlendAsOpaque = true;
+    }
+
+    if (opts.volumetric) {
+        auto v = &app.renderer.volumetrics();
+        v.enabled = true;
+        v.density = 0.015f;
+        v.heightFalloff = 0.03f;
+        v.maxDistance = 150;
+        v.quality = VolumetricQuality.high;
     }
 
     // ---- Terrain -------------------------------------------------------
