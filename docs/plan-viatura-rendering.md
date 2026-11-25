@@ -21,7 +21,7 @@ features below. This file keeps the requests and their status.
 | E12 | Quality FXAA (edge search, subpixel blend) and adaptive sharpening after any AA mode | Sharper high-contrast texture, fewer steps, timings | done |
 | E2 | Alpha mask in color and shadows (skinned, static, `displaceEx`), coverage-preserving mips, glTF `MASK` | No cost for opaque users | done |
 | E11 | GPU culling and indirect draws for `StaticInstanceBuffer`, scene and shadows | Same image, much lower submit, no dropped instance | done |
-| E3 | Depth, normals (or documented reconstruction), camera matrices and intermediate targets in `addPass` | — | planned |
+| E3 | Depth, normals (or documented reconstruction), camera matrices and intermediate targets in `addPass` | — | done |
 | E4 | GTAO applied to ambient light only, half-resolution option | — | planned |
 | E5 | SMAA 1x and CMAA2 modes, specular antialiasing, license check | — | planned |
 | E6 | Volumetric light: sun with cascades, clustered spots and points | — | planned |

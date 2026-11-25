@@ -347,6 +347,7 @@ immutable passId = app.renderer.addPostPass(q{
         return vec4<f32>(c.rgb * params.p0.xyz, c.a);
     }
 }, 64, PostStage.afterTonemap);
+// PostPassDesc adds scene depth, camera, normals and named targets (graphics.md, "Post pass inputs").
 app.renderer.updatePostPassParams(passId, tintValues); // e.g. float[4] tintValues = [1, 0.95f, 0.9f, 1];
 ```
 

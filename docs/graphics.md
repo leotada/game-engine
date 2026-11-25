@@ -746,3 +746,40 @@ filter: nothing accumulates between frames. Pipelines and targets are created on
 `off`; 0 skips the pass and 0.05 ms. Profiler zones: `gpu.post.fxaa`, `gpu.post.fxaaQuality`,
 `gpu.post.sharpen` (CPU: `post.*`). In the `render-check` scene the edge error is 0.31 px without AA, 0.10 px
 with `fxaa` and 0.05 px with `fxaaQuality`.
+
+## Post pass inputs (`PostPassDesc`)
+
+`Renderer.addPostPass(PostPassDesc)` adds a fullscreen pass that can read the scene and write intermediate targets. The older `addPostPass(wgsl, uniformBytes, stage)` is unchanged.
+
+```d
+PostPassDesc fog;
+fog.wgsl = fogWgsl;                 // fs_main; helpers below are in scope
+fog.stage = PostStage.beforeTonemap;
+fog.sceneInputs = true;
+fog.output = "fog"; fog.scale = 2;  // half resolution, rgba16Float
+app.renderer.addPostPass(fog);
+
+PostPassDesc composite;
+composite.wgsl = compositeWgsl;     // reads input0 and srcTex
+composite.stage = PostStage.beforeTonemap;
+composite.inputs[0] = "fog";
+app.renderer.addPostPass(composite);
+```
+
+| Available with `sceneInputs` (`common/post_scene.wgsl`, `@group(1)`) | |
+|:---|:---|
+| `sceneCamera` | `view`, `proj`, `viewProj` and their inverses, `position` (w = `setTime` seconds), `planes` (near, far, z = 1 when a scene was drawn this frame), `viewport` |
+| `sceneDepthTex`, `sceneDepth(uv)`, `sceneDepthAt(pixel)` | scene depth, 1 = nothing drawn |
+| `sceneLinearDepth(depth)` | distance along the view axis |
+| `sceneViewPosition(pixel)`, `sceneWorldPosition(pixel)` | position of a depth texel (`scenePixel(uv)`) |
+| `sceneViewNormal(pixel)`, `sceneWorldNormal(pixel)` | normal rebuilt from depth: on each axis the neighbor closest in depth. Geometric only, flat per triangle, no normal maps |
+| `input0` to `input3` | named targets, in the order of `inputs` |
+
+- Passes of a stage run in insertion order. A pass with `output` does not touch the picture.
+- `inputs` must be written by a pass added earlier; otherwise `addPostPass` returns 0. A disabled writer leaves its last content, and a removed one reads as black.
+- Target formats: `r8Unorm`, `rg8Unorm`, `rgba8Unorm`, `r16Float`, `rg16Float`, `rgba16Float`. Up to 8 targets, created on first use and recreated on resize.
+- The depth is the final scene depth: transparent surfaces that do not write depth are not in it. In `afterUi` it is still the 3D scene's.
+- With several scenes in a frame, the camera is the last one ended. World positions lose precision far from the origin (32-bit matrices, 24-bit depth).
+- Cost when unused: none. `gpu.post.customBeforeTonemap`, `gpu.post.customAfterTonemap` and `gpu.post.afterUi` time the passes.
+
+Verification: `dub run --config=render-check -- --check=passinputs`.

@@ -20,6 +20,8 @@
 - **GPU culling for static instances** (`StaticBuildOptions.gpuCull`): per-instance culling and LOD in compute, indirect
   multi-draws for the camera and the directional shadows, CPU fallback. `Material.displacementBound`. Off by default.
   16-bit index buffers with an odd index count are now padded on upload.
+- **Post pass inputs** (`PostPassDesc`): custom passes can read scene depth, camera matrices, rebuilt normals and named
+  targets at reduced resolution. Custom passes keep insertion order after a removal. Existing `addPostPass` is unchanged.
 
 ### Engine bug fixes
 
