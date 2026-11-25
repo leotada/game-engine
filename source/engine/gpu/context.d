@@ -144,14 +144,15 @@ struct GpuContext {
             reqLimits.maxStorageBuffersPerShaderStage  = clampLimit(adapterLimits.maxStorageBuffersPerShaderStage, 8);
             reqLimits.maxComputeWorkgroupStorageSize   = clampLimit(adapterLimits.maxComputeWorkgroupStorageSize, 16384);
             reqLimits.maxComputeInvocationsPerWorkgroup = clampLimit(adapterLimits.maxComputeInvocationsPerWorkgroup, 64);
-            reqLimits.maxComputeWorkgroupsPerDimension = clampLimit(adapterLimits.maxComputeWorkgroupsPerDimension, 64);
+            reqLimits.maxComputeWorkgroupsPerDimension = clampLimit(adapterLimits.maxComputeWorkgroupsPerDimension, 65_535);
             devDesc.requiredLimits = &reqLimits;
         }
         // Optional features: requested only when the adapter has them, so the device never fails to
         // open because of one. Query them with `hasFeature`.
-        WGPUFeatureName[5] features;
+        WGPUFeatureName[6] features;
         size_t featureCount = 0;
-        foreach (f; [WGPUFeatureName.textureCompressionBC, WGPUFeatureName.indirectFirstInstance])
+        foreach (f; [WGPUFeatureName.textureCompressionBC, WGPUFeatureName.indirectFirstInstance,
+                   WGPUFeatureName.multiDrawIndirectCount])
             if (wgpuAdapterHasFeature(ctx.adapter, f) != 0) features[featureCount++] = f;
 
         // GPU timestamps for the profiler (engine.gpu.gpu_profiler): only when the adapter has

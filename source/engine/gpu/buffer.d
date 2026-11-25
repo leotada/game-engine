@@ -8,7 +8,8 @@ import engine.core.log;
 
 WGPUBuffer createVertexBuffer(WGPUDevice device, WGPUQueue queue, const(void)* data, ulong size) nothrow @nogc @trusted {
     WGPUBufferDescriptor desc;
-    desc.usage = WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst;
+    // copySrc: static instance buffers copy meshes into shared pools.
+    desc.usage = WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst | WGPUBufferUsage.copySrc;
     desc.size  = size;
     auto buf = wgpuDeviceCreateBuffer(device, &desc);
     if (buf is null) {
@@ -21,14 +22,32 @@ WGPUBuffer createVertexBuffer(WGPUDevice device, WGPUQueue queue, const(void)* d
 
 WGPUBuffer createIndexBuffer(WGPUDevice device, WGPUQueue queue, const(void)* data, ulong size) nothrow @nogc @trusted {
     WGPUBufferDescriptor desc;
-    desc.usage = WGPUBufferUsage.index | WGPUBufferUsage.copyDst;
-    desc.size  = size;
+    desc.usage = WGPUBufferUsage.index | WGPUBufferUsage.copyDst | WGPUBufferUsage.copySrc;
+    desc.size  = (size + 3) & ~3UL;
     auto buf = wgpuDeviceCreateBuffer(device, &desc);
     if (buf is null) {
         err("Failed to create index buffer");
         return null;
     }
-    wgpuQueueWriteBuffer(queue, buf, 0, data, cast(size_t) size);
+    // Writes must be 4-byte multiples: an odd count of 16-bit indices gets a padded tail.
+    immutable size_t whole = cast(size_t) size & ~cast(size_t) 3;
+    if (whole) wgpuQueueWriteBuffer(queue, buf, 0, data, whole);
+    if (whole != size) {
+        ubyte[4] tail;
+        immutable rest = cast(size_t) size - whole;
+        tail[0 .. rest] = (cast(const(ubyte)*) data)[whole .. whole + rest];
+        wgpuQueueWriteBuffer(queue, buf, whole, tail.ptr, 4);
+    }
+    return buf;
+}
+
+/// Buffer with an explicit usage mask and no initial data.
+WGPUBuffer createBufferWithUsage(WGPUDevice device, ulong size, WGPUBufferUsage usage) nothrow @nogc @trusted {
+    WGPUBufferDescriptor desc;
+    desc.usage = usage;
+    desc.size  = size;
+    auto buf = wgpuDeviceCreateBuffer(device, &desc);
+    if (buf is null) err("Failed to create buffer");
     return buf;
 }
 

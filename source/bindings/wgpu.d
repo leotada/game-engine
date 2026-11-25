@@ -184,6 +184,8 @@ enum WGPUFeatureName : uint {
     timestampQuery = 0x0000_0009,
     /// Lets indirect draws use a `firstInstance` other than 0.
     indirectFirstInstance = 0x0000_000A,
+    /// wgpu-native: multi-draw-indirect runs as one native command instead of a loop of draws.
+    multiDrawIndirectCount = 0x0003_0004,
     /// wgpu-native: `wgpuCommandEncoderWriteTimestamp` between passes.
     timestampQueryInsideEncoders = 0x0003_0024,
     /// wgpu-native: `wgpuRenderPassEncoderWriteTimestamp` / `wgpuComputePassEncoderWriteTimestamp`.
