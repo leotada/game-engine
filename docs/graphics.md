@@ -951,3 +951,44 @@ Cost at 1920x1080 on an RX 6600, 2000 large particles (about 8 full-screen layer
 the depth copy, lit by the sun with shadows 1.98 ms, lit by the sun and 16 overlapping point lights 5.1 ms. Lit particles
 cost per covered pixel and light: prefer few, small or low-alpha sprites. The depth copy allocates the opaque snapshot
 (color pyramid and depth) on first use. Verification: `dub run --config=render-check -- --check=particles`.
+
+## Block-Compressed Textures (BC7, BC5)
+
+KTX2 files with BC7 (color, data, alpha) and BC5 (normal maps) take a quarter of the memory of RGBA8 and need no decoding at
+load. Write them with the conversion tool (pure D encoder, every core):
+
+```bash
+dub build --config=texc --compiler=ldc2 --build=release
+./game-engine-texc encode wall.png wall.ktx2 --srgb            # color, mips averaged in linear light
+./game-engine-texc encode leaf.png leaf.ktx2 --srgb --alpha-cutoff=0.5   # coverage-preserving mips
+./game-engine-texc encode wall_n.png wall_n.ktx2 --normal      # BC5
+./game-engine-texc gltf car.glb --specular-aa --zstd=3         # every image of a model
+./game-engine-texc info wall.ktx2
+./game-engine-texc verify wall.ktx2 wall.png                   # PSNR
+```
+
+```d
+auto t = Texture.fromKtx2Bytes(gpu, bytes);      // the file says whether it is sRGB
+TextureDesc d = TextureDesc.mippedSrgb();
+d.compressed = true;                             // use wall.ktx2 beside wall.png when it exists
+auto wall = Texture.fromImageFile(gpu, "wall.png", d);
+GltfImportOptions opts;
+opts.compressedTextures = true;                  // the files written by `texc gltf`
+```
+
+- `gltf` writes `<image>.ktx2` beside each image, `<model>.image<N>.ktx2` for embedded ones and, with `--specular-aa`,
+  `<model>.material<N>.specaa.ktx2` (read when `GltfImportOptions.specularAa` is on). Images used both as color and as data are
+  skipped. `--linear-color` averages color mips without sRGB, for projects that leave `srgbColor` off. The combined
+  layer maps (clearcoat, transmission, sheen...) are still built from the source images.
+- `fromImageFile` and glTF keep their own choice of sRGB or linear; the file only supplies the blocks and the mips.
+- **BC5 normals** have no blue channel: `Material.create` sets `MaterialFlags.normalXy` and the shader rebuilds Z. Materials
+  without it compile the previous shader. Read `normalMap` of a BC5 material in a surface shader as X and Y only. Not for decals, terrain arrays or the coat normal.
+- **Fallback:** without the `textureCompressionBC` feature (some web and mobile GPUs), or when the size is not a multiple of 4
+  (a WebGPU rule), the levels are decoded to RGBA8 on the CPU with a warning. BC5 decodes to a normal RGBA8 normal map.
+- `--zstd=N` (0 off, 1 to 9) shrinks the file; `--quality=fast|normal|high` trades encoding time (1024x1024 with mips: 0.14, 0.29 and
+  0.54 s here). Only 2D textures; KTX2 features such as BasisU, arrays and cube maps are refused.
+- Exported bundles and `.pak` files carry `.ktx2` like any other asset. The source image is not read when its `.ktx2` loads.
+
+Measured on an RX 6600, 2048x2048 color map with mips, LDC release: PNG 117.3 ms and 21.33 MiB on the GPU; KTX2 2.4 ms and
+5.33 MiB (5.33 MiB file); KTX2 with zstd 46.6 ms and 5.33 MiB (3.30 MiB file); decoding to RGBA8 on the CPU 91.3 ms. The BC7 decoder
+is bit-identical to the GPU in every mode. Verification: `dub run --config=render-check -- --check=bc`.

@@ -31,6 +31,9 @@
 - **Volumetric light** of the sun and the clustered lights (`Renderer.volumetrics`, `VolumetricSettings`). Off by default.
 - **Auto exposure** (`PostSettings.autoExposure`) and **3D color tables** (`Renderer.setColorLut`, `loadCubeLut`, `PostSettings.lutStrength`). Off by default.
 - **Soft, lit and animated particles** (`MaterialFlags.soft`, `litParticle`, `flipbook`, `ParticleDesc.flipbookFrames`). Off by default.
+- **BC7 / BC5 textures** (`game-engine-texc`, `Texture.fromKtx2Bytes`, `TextureDesc.compressed`,
+  `GltfImportOptions.compressedTextures`): KTX2 files with mips and optional zstd, a quarter of the memory, RGBA8 fallback on the
+  CPU. BC5 normal maps rebuild Z (`MaterialFlags.normalXy`). Off by default.
 
 ### Engine bug fixes
 

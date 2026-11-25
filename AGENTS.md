@@ -258,6 +258,7 @@ dub run --config=outdoor -- --headless-frames=600 --assert-no-gc # OW-3 outdoor 
 dub run --config=ui-gallery          # UI widget & docking testbed
 dub run --config=lint                # Run GC-safe storage lint
 dub build --config=gesc              # Build the `game-engine-gesc` chunk tool (debug or release)
+dub build --config=texc --compiler=ldc2 --build=release # Build the `game-engine-texc` texture compressor (PNG → KTX2 BC7/BC5)
 dub run --config=surface-shadow-check # GPU check: surface-shader displace animates shadows (needs a window/GPU)
 dub test --config=library            # Run all unit tests
 dub build --config=demo              # Debug build (clear-screen demo)
