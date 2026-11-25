@@ -17,7 +17,7 @@ import engine.graphics.material : Material, MaterialFlags, MaterialParams;
 import engine.gpu.skinned : SkinnedMesh;
 import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : alphaCoverageOf, Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
-import engine.graphics.types : Color4, SkinnedVertex;
+import engine.graphics.types : Color4, SkinnedVertex, TexTanVert, TexVert;
 import engine.gpu.pipeline : BlendMode, RenderState;
 import engine.gpu.gtao : AoQuality, AoSettings;
 import engine.gpu.post : AaMode, OutputTransfer, PostPassDesc, PostSettings, PostStage;
@@ -1423,6 +1423,189 @@ private bool checkSpecularAa(ref App app) {
     return ok;
 }
 
+/// Vertex colors on dynamic, tangent, skinned, surface-shader and static (CPU
+/// and GPU) draws; meshes without colors next to them keep their look.
+private bool checkVertexColor(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    app.renderer.postSettings() = neutralPost();
+
+    // Unit quad on XZ: red on -X, blue on +X, alpha 1 on -Z, 0 on +Z.
+    TexVert[] tv;
+    TexTanVert[] ttv;
+    SkinnedVertex[] sv;
+    ubyte[4][] colors;
+    foreach (i; 0 .. 4) {
+        immutable float u = (i == 1 || i == 2) ? 1 : 0, w = i >= 2 ? 1 : 0;
+        tv ~= TexVert([u - 0.5f, 0, w - 0.5f], [0, 1, 0], [u, w]);
+        ttv ~= TexTanVert([u - 0.5f, 0, w - 0.5f], [0, 1, 0], [u, w], [1, 0, 0, 1]);
+        SkinnedVertex v;
+        v.position = [u - 0.5f, 0, w - 0.5f];
+        v.uv = [u, w];
+        sv ~= v;
+        colors ~= [cast(ubyte)(u > 0 ? 0 : 255), ubyte(0), cast(ubyte)(u > 0 ? 255 : 0), cast(ubyte)(w > 0 ? 0 : 255)];
+    }
+    auto idx = [0u, 2, 1, 0, 3, 2];
+    auto plain = TexMesh.fromData(app.gpu, tv, idx);
+    scope(exit) plain.destroy();
+    auto colored = TexMesh.fromData(app.gpu, tv, idx);
+    scope(exit) colored.destroy();
+    colored.setVertexColors(app.gpu, colors);
+    auto tangent = TexMesh.fromData(app.gpu, ttv, idx);
+    scope(exit) tangent.destroy();
+    tangent.setVertexColors(app.gpu, colors);
+    auto plainTangent = TexMesh.fromData(app.gpu, ttv, idx);
+    scope(exit) plainTangent.destroy();
+    auto skinned = SkinnedMesh.fromData(app.gpu, sv, idx);
+    scope(exit) skinned.destroy();
+    skinned.setVertexColors(app.gpu, colors);
+    auto plainSkinned = SkinnedMesh.fromData(app.gpu, sv, idx);
+    scope(exit) plainSkinned.destroy();
+
+    enum kSurface = `
+fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut {
+    var o = base;
+    // Show the color as emission: the hook sees the vertex color, white without one.
+    o.emission = in.vertexColor.rgb * 0.2;
+    o.baseColor = vec3<f32>(0.0);
+    return o;
+}
+`;
+    immutable shader = scene.createSurfaceShader(kSurface);
+    if (shader == 0) return expect(false, "surface shader compiles");
+    MaterialParams mp;
+    mp.baseColor = [1, 1, 1];
+    mp.specularWeight = 0;
+    auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    mat.renderState.blend = BlendMode.opaque;
+    auto surf = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) surf.destroy();
+    surf.renderState.blend = BlendMode.opaque;
+    surf.surfaceShader = shader;
+    auto masked = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) masked.destroy();
+    masked.renderState = RenderState(BlendMode.opaque, true, true, true);
+    auto blended = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) blended.destroy();
+
+    auto meshes = new TexMesh*[4];
+    auto mats = new Material*[2];
+    () @trusted {
+        meshes[0] = &plain; meshes[1] = &colored; meshes[2] = &tangent; meshes[3] = &plainTangent;
+        mats[0] = &mat; mats[1] = &surf;
+    }();
+    auto descs = new StaticInstanceDesc[8];
+    foreach (i, ref d; descs) {
+        d.mesh = cast(uint)(i % 4);
+        d.material = cast(uint)(i / 4);
+        d.model = Mat4.translation(-10.5f + i * 3, 0, 4) * Mat4.scaling(2.5f, 1, 2.5f);
+    }
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 100.0f);
+    cam.lookAt(Vec3(0, 30, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    LightList lights;
+    scope(exit) lights.release();
+    immutable Mat4[1] palette = [Mat4.identity()];
+    if (bench) {
+        // 400 spheres of 3.2k triangles each, all on screen.
+        auto balls = [lodSphereColored(app, false), lodSphereColored(app, true)];
+        scope(exit) foreach (b; balls) { b.destroy(); }
+        foreach (c, b; balls)
+            timeZones(app, c == 0 ? "400 spheres, plain" : "400 spheres, vertex color", ["gpu.scene", "gpu.frame", "renderer.submit"],
+                      (ref FrameContext f) {
+                scene.begin(cam);
+                foreach (n; 0 .. 400)
+                    scene.draw(*b, mat, Vec3(-19 + (n % 20) * 2, 0, -14 + (n / 20) * 1.4f), Vec3(1, 1, 1));
+                scene.end(f);
+            });
+        return true;
+    }
+    bool ok = true;
+    foreach (gpu; [false, true]) {
+        import engine.gpu.static_cull : StaticGpuData;
+        if (gpu && !StaticGpuData.supported(app.gpu)) continue;
+        StaticBuildOptions o;
+        o.gpuCull = gpu;
+        auto sib = StaticInstanceBuffer.build(app.gpu, meshes, mats, descs, o);
+        scope(exit) sib.destroy();
+        auto s = capture(app, gpu ? "vcolor_gpu" : "vcolor_cpu", (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = true;
+            lights.dir.direction = Vec3(0, 1, 0);
+            lights.dir.intensity = 1.0f;
+            lights.dir.color = Vec3(1, 1, 1);
+            scene.setIblIntensity(0);
+            scene.begin(cam);
+            Mat4 at(float x, float z) { return Mat4.translation(x, 0, z) * Mat4.scaling(2.5f, 1, 2.5f); }
+            scene.drawMatrix(plain, mat, at(-10.5f, -4), Color4.white);
+            scene.drawMatrix(colored, mat, at(-7.5f, -4), Color4.white);
+            scene.drawMatrix(tangent, mat, at(-4.5f, -4), Color4.white);
+            scene.drawMatrix(colored, surf, at(-1.5f, -4), Color4.white);
+            scene.drawMatrix(plain, surf, at(1.5f, -4), Color4.white);
+            scene.drawSkinned(skinned, mat, at(4.5f, -4), Color4.white, palette[]);
+            scene.drawSkinned(plainSkinned, mat, at(7.5f, -4), Color4.white, palette[]);
+            scene.drawMatrix(colored, masked, at(10.5f, -4), Color4.white);
+            scene.drawMatrix(colored, blended, at(0, 0), Color4.white);
+            scene.submitStatic(sib);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+        if (!s.valid) return expect(false, "frame captured");
+        import std.math : tan;
+        immutable k = (s.h * 0.5f) / (tan(0.45f) * 30);
+        ubyte[3] px(float x, float z) {
+            immutable ix = cast(uint)(s.w * 0.5f + x * k), iy = cast(uint)(s.h * 0.5f + z * k);
+            return [s.at(ix, iy, 0), s.at(ix, iy, 1), s.at(ix, iy, 2)];
+        }
+        // `kind`: 0 = white, 1 = red to blue.
+        void probe(string name, float x, float z, bool isColored) {
+            immutable l = px(x - 1, z - 0.3f), r = px(x + 1, z - 0.3f);
+            immutable good = isColored
+                ? l[0] > 60 && l[0] > l[2] * 1.5f && r[2] > 60 && r[2] > r[0] * 1.5f && l[1] < 12 && r[1] < 12
+                : l[0] > 60 && abs(l[0] - l[1]) < 3 && abs(l[0] - l[2]) < 3 && abs(l[0] - r[0]) < 4;
+            if (!good) writefln("    %s: left %s right %s", name, l, r);
+            ok &= expect(good, name ~ (isColored ? " is colored" : " stays white"));
+        }
+        immutable tag = gpu ? "gpu " : "cpu ";
+        probe(tag ~ "plain", -10.5f, -4, false);
+        probe(tag ~ "colored", -7.5f, -4, true);
+        probe(tag ~ "tangent", -4.5f, -4, true);
+        probe(tag ~ "surface", -1.5f, -4, true);
+        probe(tag ~ "surface without colors", 1.5f, -4, false);
+        probe(tag ~ "skinned", 4.5f, -4, true);
+        probe(tag ~ "skinned without colors", 7.5f, -4, false);
+        foreach (i; 0 .. 8) {
+            immutable c = i % 4 == 1 || i % 4 == 2;
+            probe(tag ~ "static " ~ cast(char)('0' + i), -10.5f + i * 3, 4, c);
+        }
+        // Alpha: the mask cuts at 0.5, blending fades.
+        immutable keep = px(10.5f, -4.8f), cut = px(10.5f, -3.2f);
+        ok &= expect(keep[0] + keep[2] > 60 && cut[0] + cut[2] < 10, tag ~ "vertex alpha drives the mask");
+        immutable a = px(-0.9f, -0.9f), b = px(-0.9f, 0), c = px(-0.9f, 0.9f);
+        ok &= expect(a[0] > b[0] && b[0] > c[0], tag ~ "vertex alpha blends");
+    }
+    return ok;
+}
+
+/// 64x32 sphere on the heap (bench only).
+private TexMesh* lodSphereColored(ref App app, bool colored) @trusted {
+    import core.lifetime : move;
+    auto m = new TexMesh;
+    auto src = TexMesh.sphere(app.gpu, 64, 25);
+    move(src, *m);
+    if (colored) {
+        auto c = new ubyte[4][65 * 26];
+        foreach (ref x; c) x = [255, 128, 64, 255];
+        m.setVertexColors(app.gpu, c);
+    }
+    return m;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -1495,6 +1678,7 @@ private immutable Check[] checks = [
     Check("passinputs", &checkPassInputs),
     Check("ao", &checkAo),
     Check("specaa", &checkSpecularAa),
+    Check("vcolor", &checkVertexColor),
     Check("stars", &checkStars),
 ];
 
