@@ -9,11 +9,29 @@ struct Params {
     contrast: f32,
     outputTransfer: f32,
     _pad1: f32,
+#ifdef GRADED
+    // color table: domain min, strength | 1 / domain size, entries per side
+    lutMin: vec4<f32>,
+    lutScale: vec4<f32>,
+#endif
 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var srcSamp: sampler;
 @group(0) @binding(2) var sceneTex: texture_2d<f32>;
 @group(0) @binding(3) var bloomTex: texture_2d<f32>;
+#ifdef GRADED
+// [0] = auto exposure (`auto_exposure.wgsl`)
+@group(0) @binding(4) var<storage, read> autoExposure: array<f32>;
+@group(0) @binding(5) var lutTex: texture_3d<f32>;
+
+fn colorTable(c: vec3<f32>) -> vec3<f32> {
+    if (p.lutMin.w <= 0.0) { return c; }
+    let n = p.lutScale.w;
+    let t = clamp((c - p.lutMin.xyz) * p.lutScale.xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    let v = textureSampleLevel(lutTex, srcSamp, (t * (n - 1.0) + 0.5) / n, 0.0).rgb;
+    return clamp(mix(c, v, p.lutMin.w), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+#endif
 
 fn acesNarkowicz(x: vec3<f32>) -> vec3<f32> {
     let a = 2.51;
@@ -69,6 +87,9 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         hdr = hdr + bloom * p.bloomStrength;
     }
     hdr = hdr * p.exposure;
+#ifdef GRADED
+    hdr = hdr * autoExposure[0];
+#endif
     var ldr: vec3<f32>;
     if (p.tonemapMode < 0.5) {
         ldr = acesNarkowicz(hdr);
@@ -92,5 +113,8 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         // Approximate linear → sRGB
         ldr = pow(max(ldr, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
     }
+#ifdef GRADED
+    ldr = colorTable(ldr);
+#endif
     return vec4<f32>(ldr, 1.0);
 }

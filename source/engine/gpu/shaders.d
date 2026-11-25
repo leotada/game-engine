@@ -158,6 +158,11 @@ immutable string bloomDownsampleShaderSource = preprocessShader(import("post_blo
 immutable string bloomUpsampleShaderSource = preprocessShader(import("post_bloom_up.wgsl"), "post_bloom_up.wgsl").code;
 
 immutable string tonemapShaderSource = preprocessShader(import("post_tonemap.wgsl"), "post_tonemap.wgsl").code;
+/// Tone map with auto exposure and the 3D color table.
+immutable string tonemapGradedShaderSource = preprocessShader(import("post_tonemap.wgsl"), "post_tonemap.wgsl", ["GRADED"]).code;
+
+/// Auto exposure — `engine.gpu.auto_exposure.AutoExposurePass`.
+enum autoExposureShaderSource = import("auto_exposure.wgsl");
 
 immutable string fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
 

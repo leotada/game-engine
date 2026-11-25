@@ -11,6 +11,7 @@ import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : depthCopyShaderSource, bloomDownsampleShaderSource;
 import engine.graphics.texture : mipCount;
 import engine.graphics.types : Color4;
+import engine.assets.cube_lut : CubeLut;
 import engine.core.log;
 import engine.devtools.profiler : profileZone;
 import engine.gpu.gpu_profiler;
@@ -98,6 +99,16 @@ struct Renderer {
     /// Mutable post-processing settings (exposure, bloom, FXAA, …).
     ref PostSettings postSettings() return nothrow @nogc {
         return post.settings;
+    }
+
+    /// Jump to the metered exposure in the next frame (camera cut, teleport).
+    void resetAutoExposure() nothrow @nogc { post.resetAutoExposure(); }
+
+    /// 3D color table applied to the display-encoded image (`loadCubeLut`).
+    void setColorLut(scope ref const CubeLut lut) { post.setColorLut(lut); }
+    void clearColorLut() {
+        const CubeLut none;
+        post.setColorLut(none);
     }
 
     /// Ambient occlusion of opaque surfaces (off by default).

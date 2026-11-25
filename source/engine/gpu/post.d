@@ -3,8 +3,11 @@
 module engine.gpu.post;
 
 import bindings.wgpu;
+import engine.assets.cube_lut : CubeLut;
 import engine.core.log;
-import engine.gpu.buffer : createUniformBuffer, destroyBuffer, updateBuffer;
+public import engine.gpu.auto_exposure : AutoExposureSettings;
+import engine.gpu.auto_exposure : AutoExposurePass, EXPOSURE_STATE_BYTES;
+import engine.gpu.buffer : createStorageBuffer, createUniformBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.shader : createShaderModule, isValidUniformStruct;
 public import engine.gpu.post_aa : AaMode;
@@ -14,6 +17,7 @@ import engine.gpu.shaders;
 import engine.gpu.gpu_profiler : gpuScope;
 import engine.math.mat : Mat4;
 import engine.scene.camera : Camera;
+import std.array : staticArray;
 
 @safe:
 
@@ -72,6 +76,10 @@ struct PostSettings {
     float cmaa2Threshold = 0.07f;
     /// Contrast adaptive sharpening after any AA mode (0 = pass skipped, 1 = strongest).
     float sharpness = 0.0f;
+    /// Exposure metered from the image. `exposure` still multiplies the result.
+    AutoExposureSettings autoExposure;
+    /// Weight of the 3D color table (`Renderer.setColorLut`).
+    float lutStrength = 1.0f;
 
     /// AA filter in effect.
     AaMode effectiveAa() const pure nothrow @nogc {
@@ -80,6 +88,7 @@ struct PostSettings {
 }
 
 private enum MAX_BLOOM_MIPS = 7;
+private enum TONEMAP_GRADED_BYTES = 64;
 private enum MAX_CUSTOM_POST_PASSES = 16;
 private enum MAX_POST_TARGETS = 8;
 /// Named targets one pass can read.
@@ -234,6 +243,16 @@ struct PostProcessor {
     private TexRT ldrRT; // tonemap output when AA or sharpening is on
     private TexRT aaRT;  // AA output when sharpening follows
     private PostAa aa;
+    private AutoExposurePass autoExposure;
+    // Tone map variant with auto exposure and the color table, created on first use.
+    private WGPUShaderModule gradedSM;
+    private WGPUBindGroupLayout gradedBGL;
+    private WGPUPipelineLayout gradedPL;
+    private WGPURenderPipeline gradedPipe, gradedToSurfacePipe;
+    private WGPUBuffer unitExposure;
+    private WGPUTexture lutTex, noLutTex;
+    private WGPUTextureView lutView, noLutView;
+    private float[4] lutMin, lutScale;
     private TexRT[2] hdrScratchRT;
     private TexRT[2] ldrScratchRT;
     private TexRT uiTargetRT;
@@ -277,7 +296,8 @@ struct PostProcessor {
         p.linearSampler = wgpuDeviceCreateSampler(device, &sd);
 
         p.thresholdUBO = createUniformBuffer(device, 16);
-        p.tonemapUBO = createUniformBuffer(device, 32);
+        p.tonemapUBO = createUniformBuffer(device, TONEMAP_GRADED_BYTES);
+        p.autoExposure.setup(device, p.queue);
 
         p.threshSM = createShaderModule(device, bloomThresholdShaderSource);
         p.downKarisSM = createShaderModule(device, bloomDownsampleKarisShaderSource);
@@ -360,6 +380,106 @@ struct PostProcessor {
         uiTargetRT.release();
         foreach (ref t; targets) t.rt.release();
         bloomLevels = 0;
+    }
+
+    /// Jump to the metered exposure in the next frame.
+    void resetAutoExposure() nothrow @nogc { autoExposure.reset(); }
+
+    /// Set the 3D color table, or remove it when `lut` is not valid.
+    void setColorLut(scope ref const CubeLut lut) @trusted {
+        import engine.meshopt.quantize : quantizeHalf;
+        releaseTexture(lutTex, lutView);
+        if (!lut.valid || device is null) return;
+        immutable n = lut.size;
+        auto texels = new ushort[cast(size_t) n * n * n * 4];
+        foreach (i; 0 .. cast(size_t) n * n * n) {
+            foreach (c; 0 .. 3) texels[i * 4 + c] = quantizeHalf(lut.rgb[i * 3 + c]);
+            texels[i * 4 + 3] = 0x3C00;
+        }
+        makeLutTexture(n, texels, lutTex, lutView);
+        foreach (c; 0 .. 3) {
+            lutMin[c] = lut.domainMin[c];
+            lutScale[c] = 1 / (lut.domainMax[c] - lut.domainMin[c]);
+        }
+        lutScale[3] = n;
+    }
+
+    private void makeLutTexture(uint n, scope const(ushort)[] texels, ref WGPUTexture tex, ref WGPUTextureView view)
+    nothrow @nogc @trusted {
+        WGPUTextureDescriptor td;
+        td.usage = WGPUTextureUsage.textureBinding | WGPUTextureUsage.copyDst;
+        td.dimension = WGPUTextureDimension.dim3D;
+        td.size = WGPUExtent3D(n, n, n);
+        td.format = WGPUTextureFormat.rgba16Float;
+        td.mipLevelCount = 1;
+        td.sampleCount = 1;
+        tex = wgpuDeviceCreateTexture(device, &td);
+        if (tex is null) fatal("Failed to create the color table");
+        WGPUTextureViewDescriptor vd;
+        vd.format = td.format;
+        vd.dimension = WGPUTextureViewDimension.dim3D;
+        vd.mipLevelCount = 1;
+        vd.arrayLayerCount = 1;
+        view = wgpuTextureCreateView(tex, &vd);
+        WGPUImageCopyTexture dst;
+        dst.texture = tex;
+        WGPUTextureDataLayout layout;
+        layout.bytesPerRow = n * 8;
+        layout.rowsPerImage = n;
+        immutable extent = WGPUExtent3D(n, n, n);
+        wgpuQueueWriteTexture(queue, &dst, texels.ptr, texels.length * 2, &layout, &extent);
+    }
+
+    private static void releaseTexture(ref WGPUTexture tex, ref WGPUTextureView view) nothrow @nogc @trusted {
+        if (view !is null) { wgpuTextureViewRelease(view); view = null; }
+        if (tex !is null) { wgpuTextureRelease(tex); tex = null; }
+    }
+
+    private void ensureGraded() nothrow @nogc @trusted {
+        if (gradedSM !is null) return;
+        gradedSM = createShaderModule(device, tonemapGradedShaderSource, "tonemap_graded");
+        if (gradedSM is null) fatal("Failed to create the graded tone map shader module");
+        WGPUBindGroupLayoutEntry[6] e;
+        foreach (i, ref x; e) {
+            x.binding = cast(uint) i;
+            x.visibility = WGPUShaderStage.fragment;
+        }
+        e[0].buffer.type = WGPUBufferBindingType.uniform;
+        e[0].buffer.minBindingSize = TONEMAP_GRADED_BYTES;
+        e[1].sampler.type = WGPUSamplerBindingType.filtering;
+        foreach (i; [2, 3, 5].staticArray) {
+            e[i].texture.sampleType = WGPUTextureSampleType.float_;
+            e[i].texture.viewDimension = i == 5 ? WGPUTextureViewDimension.dim3D : WGPUTextureViewDimension.dim2D;
+        }
+        e[4].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+        e[4].buffer.minBindingSize = 4;
+        WGPUBindGroupLayoutDescriptor d;
+        d.entryCount = e.length;
+        d.entries = e.ptr;
+        gradedBGL = wgpuDeviceCreateBindGroupLayout(device, &d);
+        gradedPL = makePL(device, gradedBGL);
+        gradedPipe = makeFSPipeline(device, gradedPL, gradedSM, WGPUTextureFormat.rgba8Unorm, false);
+        gradedToSurfacePipe = makeFSPipeline(device, gradedPL, gradedSM, surfaceFormat, false);
+        unitExposure = createStorageBuffer(device, EXPOSURE_STATE_BYTES);
+        immutable float[4] one = [1, 0, 0, 1];
+        updateBuffer(queue, unitExposure, one[]);
+        immutable ushort[8 * 4] black;
+        makeLutTexture(2, black[], noLutTex, noLutView);
+    }
+
+    private WGPUBindGroup makeGradedBG(WGPUTextureView scene, WGPUTextureView bloom) nothrow @nogc @trusted {
+        WGPUBindGroupEntry[6] e;
+        foreach (i, ref x; e) x.binding = cast(uint) i;
+        e[0].buffer = tonemapUBO; e[0].size = TONEMAP_GRADED_BYTES;
+        e[1].sampler = linearSampler;
+        e[2].textureView = scene;
+        e[3].textureView = bloom;
+        e[4].buffer = settings.autoExposure.enabled ? autoExposure.stateBuffer : unitExposure;
+        e[4].size = EXPOSURE_STATE_BYTES;
+        e[5].textureView = lutView !is null ? lutView : noLutView;
+        WGPUBindGroupDescriptor d;
+        d.layout = gradedBGL; d.entryCount = e.length; d.entries = e.ptr;
+        return wgpuDeviceCreateBindGroup(device, &d);
     }
 
     /// Add a custom fullscreen post pass at `stage`. Returns a 1-based pass id
@@ -751,7 +871,12 @@ struct PostProcessor {
         }
 
         float strength = useBloom ? settings.bloomStrength : 0.0f;
-        float[8] tm = [
+        immutable bool useLut = lutView !is null && settings.lutStrength > 0;
+        immutable bool graded = settings.autoExposure.enabled || useLut;
+        if (settings.autoExposure.enabled) autoExposure.run(encoder, sceneHdrIn, width, height, settings.autoExposure);
+        else autoExposure.reset();
+
+        float[TONEMAP_GRADED_BYTES / 4] tm = [
             settings.exposure,
             strength,
             cast(float) settings.tonemapMode,
@@ -760,11 +885,15 @@ struct PostProcessor {
             settings.contrast,
             cast(float) settings.outputTransfer,
             0.0f,
+            lutMin[0], lutMin[1], lutMin[2], useLut ? settings.lutStrength : 0.0f,
+            lutScale[0], lutScale[1], lutScale[2], lutScale[3],
         ];
         updateBuffer(queue, tonemapUBO, tm[]);
 
         auto bloomView = bloomLevels > 0 ? bloomMips[0].view : sceneHdrIn;
-        auto tmBG = makeTonemapBG(tonemapBGL, tonemapUBO, sceneHdrIn, bloomView);
+        if (graded) ensureGraded();
+        auto tmBG = graded ? makeGradedBG(sceneHdrIn, bloomView)
+            : makeTonemapBG(tonemapBGL, tonemapUBO, sceneHdrIn, bloomView);
         scope(exit) wgpuBindGroupRelease(tmBG);
 
         immutable uint nAfter = countActivePasses(PostStage.afterTonemap);
@@ -784,11 +913,11 @@ struct PostProcessor {
         if (mode == AaMode.off && !sharpen) {
             ensureTonemapSurfacePipe();
             auto g = gpuScope!"gpu.post.tonemap"(encoder);
-            drawPass(encoder, ldrTarget, tonemapToSurfacePipe, tmBG, true);
+            drawPass(encoder, ldrTarget, graded ? gradedToSurfacePipe : tonemapToSurfacePipe, tmBG, true);
         } else {
             {
                 auto g = gpuScope!"gpu.post.tonemap"(encoder);
-                drawPass(encoder, ldrRT.view, tonemapPipe, tmBG, true);
+                drawPass(encoder, ldrRT.view, graded ? gradedPipe : tonemapPipe, tmBG, true);
             }
             runAa(encoder, mode, sharpen, ldrTarget);
         }
@@ -866,13 +995,19 @@ struct PostProcessor {
         relPipe(threshPipe); relPipe(downKarisPipe); relPipe(downPipe); relPipe(upPipe); relPipe(upAddPipe);
         relPipe(tonemapPipe); relPipe(fxaaPipe); relPipe(fxaaLdrPipe);
         relPipe(blitPipe); relPipe(tonemapToSurfacePipe);
+        relPipe(gradedPipe); relPipe(gradedToSurfacePipe);
+        releaseTexture(lutTex, lutView);
+        releaseTexture(noLutTex, noLutView);
+        autoExposure.destroy();
+        destroyBuffer(unitExposure);
+        unitExposure = null;
         aa.destroy();
 
         void relPL(ref WGPUPipelineLayout p) {
             if (p !is null) { wgpuPipelineLayoutRelease(p); p = null; }
         }
         relPL(scenePL);
-        relPL(threshPL); relPL(samplePL); relPL(tonemapPL);
+        relPL(threshPL); relPL(samplePL); relPL(tonemapPL); relPL(gradedPL);
 
         void relBGL(ref WGPUBindGroupLayout p) {
             if (p !is null) { wgpuBindGroupLayoutRelease(p); p = null; }
@@ -881,13 +1016,13 @@ struct PostProcessor {
         blackRT.release();
         destroyBuffer(sceneUBO);
         sceneUBO = null;
-        relBGL(threshBGL); relBGL(sampleBGL); relBGL(tonemapBGL);
+        relBGL(threshBGL); relBGL(sampleBGL); relBGL(tonemapBGL); relBGL(gradedBGL);
 
         void relSM(ref WGPUShaderModule p) {
             if (p !is null) { wgpuShaderModuleRelease(p); p = null; }
         }
         relSM(threshSM); relSM(downKarisSM); relSM(downSM); relSM(upSM);
-        relSM(tonemapSM); relSM(fxaaSM); relSM(blitSM);
+        relSM(tonemapSM); relSM(gradedSM); relSM(fxaaSM); relSM(blitSM);
     }
 
     // --- helpers ---
@@ -1047,6 +1182,17 @@ struct PostProcessor {
             }
             relPipe(tonemapPipe); relPipe(tonemapToSurfacePipe); relSM(tonemapSM);
             tonemapPipe = pipe; tonemapToSurfacePipe = pipeSurf; tonemapSM = newModule;
+            return true;
+        } else if (shaderName == "tonemap_graded") {
+            if (gradedSM is null) { relSM(newModule); return true; } // not in use yet
+            auto pipe = tryMakeFSPipeline(device, gradedPL, newModule, WGPUTextureFormat.rgba8Unorm, false);
+            auto pipeSurf = tryMakeFSPipeline(device, gradedPL, newModule, surfaceFormat, false);
+            if (pipe is null || pipeSurf is null) {
+                relPipe(pipe); relPipe(pipeSurf); relSM(newModule);
+                return false;
+            }
+            relPipe(gradedPipe); relPipe(gradedToSurfacePipe); relSM(gradedSM);
+            gradedPipe = pipe; gradedToSurfacePipe = pipeSurf; gradedSM = newModule;
             return true;
         } else if (shaderName == "fxaa" || shaderName == "post_fxaa") {
             auto pipe = tryMakeFSPipeline(device, samplePL, newModule, surfaceFormat, false);

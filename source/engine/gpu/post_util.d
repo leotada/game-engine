@@ -69,7 +69,7 @@ void drawPass(WGPUCommandEncoder encoder, WGPUTextureView target,
     wgpuRenderPassEncoderRelease(pass);
 }
 
-WGPUPipelineLayout makePL(WGPUDevice device, WGPUBindGroupLayout bgl) @trusted {
+WGPUPipelineLayout makePL(WGPUDevice device, WGPUBindGroupLayout bgl) nothrow @nogc @trusted {
     WGPUPipelineLayoutDescriptor d;
     d.bindGroupLayoutCount = 1;
     d.bindGroupLayouts = &bgl;

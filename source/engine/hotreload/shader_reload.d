@@ -168,6 +168,8 @@ struct ShaderHotReloader {
                 case "post_tonemap.wgsl":
                     if (renderer !is null) {
                         ok = renderer.reloadPostShader("tonemap", res.code);
+                        auto graded = loadAndPreprocessShader(rel, ["GRADED"], shadersDir);
+                        if (graded.success) renderer.reloadPostShader("tonemap_graded", graded.code);
                     }
                     break;
                 case "post_fxaa.wgsl":
@@ -196,7 +198,7 @@ struct ShaderHotReloader {
             } else if (name != "fullscreen_vs.wgsl" && name != "pbr_brdf.wgsl"
                        && name != "shadows.wgsl" && name != "light_types.wgsl"
                        && name != "clustered_cull_cs.wgsl" && name != "static_cull_cs.wgsl"
-                       && name != "gtao.wgsl" && name != "volumetric.wgsl" && name != "post_smaa.wgsl" && name != "post_cmaa2.wgsl") {
+                       && name != "gtao.wgsl" && name != "volumetric.wgsl" && name != "auto_exposure.wgsl" && name != "post_smaa.wgsl" && name != "post_cmaa2.wgsl") {
                 warn("ShaderHotReloader: failed or skipped reloading '%s'", name);
             }
             return ok;
