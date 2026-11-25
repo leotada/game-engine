@@ -56,7 +56,7 @@ struct MaterialParams {
     alphaCutoff: f32,
     softDistance: f32,
     thinRadius: f32,
-    specularAaStrength: f32,
+    thinPixels: f32,
 
     flipbookGrid: vec2<f32>,
     flipbookBlend: f32,
@@ -88,6 +88,8 @@ override AMBIENT_ALPHA: bool = false;
 override SPRITE_FEATURES: bool = false;
 /// The normal map holds X and Y only (BC5).
 override NORMAL_XY: bool = false;
+/// Minimum screen width of thin geometry: 0 off, 1 dithered coverage, 2 alpha.
+override THIN: u32 = 0u;
 
 const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
@@ -544,6 +546,17 @@ struct VertexOutput {
     //#VC @location(11) vertexColor: vec4<f32>,
 };
 
+/// World radius that covers half of `thinPixels` at clip `w`.
+fn thinMinRadius(w: f32) -> f32 {
+    let focal = length(vec3<f32>(frame.viewProj[0].y, frame.viewProj[1].y, frame.viewProj[2].y));
+    return mat.thinPixels * max(w, 0.0) / max(focal * frame.viewportRect.w, 1e-6);
+}
+
+/// Screen-fixed noise in 0..1 with even runs along rows and columns (Jimenez 2014).
+fn thinNoise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(floor(pixel), vec2<f32>(0.06711056, 0.00583715))));
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
 #ifdef SKINNED
@@ -566,7 +579,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 #ifdef CUSTOM_SURFACE
     localPos = engineDisplace(localPos, in.normal, in.uv, in.custom, model);
 #endif
-    let worldPos4 = model * vec4<f32>(localPos, 1.0);
+    var worldPos4 = model * vec4<f32>(localPos, 1.0);
     let c0 = model[0].xyz;
     let c1 = model[1].xyz;
     let c2 = model[2].xyz;
@@ -583,8 +596,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     }
     var out: VertexOutput;
     out.clipPos = frame.viewProj * worldPos4;
-    out.worldPos = worldPos4.xyz;
     let N = normalize(normalMat * in.normal);
+    if (THIN != 0u) {
+        worldPos4 += vec4<f32>(N * max(thinMinRadius(out.clipPos.w) - mat.thinRadius, 0.0), 0.0);
+        out.clipPos = frame.viewProj * worldPos4;
+    }
+    out.worldPos = worldPos4.xyz;
     out.worldNormal = N;
 #ifdef MESH_TANGENT
     let rawT = modelMat3 * in.tangent.xyz;
@@ -920,6 +937,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (ALPHA_MASK) {
         dissolveKill = dissolveKill || surfaceOpacity < mat.alphaCutoff;
         surfaceOpacity = 1.0;
+    }
+
+    if (THIN != 0u) {
+        // The geometry was widened to `thinPixels`: keep the light it covers.
+        let coverage = clamp(mat.thinRadius / max(thinMinRadius(1.0 / in.clipPos.w), 1e-6), 0.0, 1.0);
+        if (THIN == 2u) {
+            surfaceOpacity *= coverage;
+        } else {
+            dissolveKill = dissolveKill || coverage <= thinNoise(in.clipPos.xy);
+        }
     }
 
     if ((mat.flags & FLAG_UNLIT) != 0u) {

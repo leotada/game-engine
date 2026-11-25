@@ -441,6 +441,8 @@ struct RenderState {
     package(engine) bool sprite = false;
     /// Set by the engine for materials whose normal map holds X and Y only.
     package(engine) bool normalXy = false;
+    /// Set by the engine for `MaterialFlags.thin`: 1 = dithered coverage, 2 = alpha.
+    package(engine) ubyte thin = 0;
 
     bool isDefault() const pure nothrow @nogc { return this == RenderState.init; }
 }
@@ -743,12 +745,18 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     fragState.entryPoint = wgpuStringView("fs_main");
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
-    WGPUConstantEntry[4] constants;
+    WGPUConstantEntry[5] constants;
     if (state.alphaMask) constants[fragState.constantCount++].key = wgpuStringView("ALPHA_MASK");
     if (state.ambientAlpha) constants[fragState.constantCount++].key = wgpuStringView("AMBIENT_ALPHA");
     if (state.sprite) constants[fragState.constantCount++].key = wgpuStringView("SPRITE_FEATURES");
     if (state.normalXy) constants[fragState.constantCount++].key = wgpuStringView("NORMAL_XY");
     foreach (ref c; constants) c.value = 1;
+    WGPUConstantEntry thin;
+    if (state.thin) {
+        thin.key = wgpuStringView("THIN");
+        thin.value = state.thin;
+        constants[fragState.constantCount++] = thin;
+    }
     if (fragState.constantCount > 0) fragState.constants = constants.ptr;
 
     WGPUDepthStencilState depthState;
@@ -762,6 +770,10 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     pipeDesc.vertex.entryPoint = wgpuStringView("vs_main");
     pipeDesc.vertex.bufferCount = colored ? 3 : 2;
     pipeDesc.vertex.buffers = bufferLayouts.ptr;
+    if (state.thin) {
+        pipeDesc.vertex.constantCount = 1;
+        pipeDesc.vertex.constants = &thin;
+    }
     pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
     pipeDesc.primitive.frontFace = WGPUFrontFace.ccw;
     pipeDesc.primitive.cullMode = state.doubleSided ? WGPUCullMode.none : WGPUCullMode.back;

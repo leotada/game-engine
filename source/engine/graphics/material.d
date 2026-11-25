@@ -59,6 +59,9 @@ enum MaterialFlags : uint {
     flipbook           = 1 << 19,
     /// The normal map holds X and Y only; Z is rebuilt. Set by `Material.create` for BC5 textures.
     normalXy           = 1 << 20,
+    /// Tubes of `thinRadius` never get narrower than `thinPixels` on screen: vertices move along
+    /// their normals and coverage drops (dither, or alpha when `RenderState.depthWrite` is off).
+    thin               = 1 << 21,
 }
 
 /// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).
@@ -129,7 +132,7 @@ struct MaterialParams {
     float    alphaCutoff = 0.5f;                  // alpha-mask threshold (`RenderState.alphaMask`)
     float    softDistance = 0.0f;                 // soft-particle fade distance in meters (`MaterialFlags.soft`)
     float    thinRadius = 0.0f;                   // world radius of thin tubes (`MaterialFlags.thin`)
-    float    specularAaStrength = 0.0f;           // geometric specular antialiasing (0 = off)
+    float    thinPixels = 1.0f;                   // smallest drawn width in pixels (`MaterialFlags.thin`)
 
     // vec4 [14] (offset 224..240): Flipbook atlas
     float[2] flipbookGrid = [1.0f, 1.0f];         // atlas columns, rows (`MaterialFlags.flipbook`)
@@ -202,6 +205,8 @@ struct Material {
     package(engine) bool sprite = false;
     /// True when the normal map holds X and Y only.
     package(engine) bool normalXy = false;
+    /// True for `MaterialFlags.thin`.
+    package(engine) bool thin = false;
     /// Blend mode, depth write and culling. Non-default states get their own
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
@@ -248,6 +253,7 @@ struct Material {
         if (nrm.normalXy) params.flags |= MaterialFlags.normalXy;
         Material m;
         m.normalXy = (params.flags & MaterialFlags.normalXy) != 0;
+        m.thin = (params.flags & MaterialFlags.thin) != 0;
         m.transmissive = params.transmissionWeight > 0.0f
                       || (params.flags & MaterialFlags.transmission) != 0;
         m.ssr = (params.flags & MaterialFlags.ssr) != 0;

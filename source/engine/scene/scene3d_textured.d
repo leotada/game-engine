@@ -2431,6 +2431,7 @@ struct Scene3DTextured {
         RenderState s = m.renderState;
         s.sprite = m.sprite;
         s.normalXy = m.normalXy;
+        s.thin = !m.thin ? 0 : s.depthWrite ? 1 : 2;
         if (ambientAlphaPass != 0 && !m.transmissive && s.depthWrite
                 && (s.blend == BlendMode.opaque || s.alphaMask
                     || (s.blend == BlendMode.alpha && ambientAlphaPass == 2)))
