@@ -63,3 +63,33 @@ cost nothing measurable here. E7, E9 (lit, flipbook), E10 and E13 need game cont
 
 With everything off, the engine before this work (c54cf83) and after it give the same game image (0 pixels differ) and the
 same cost (four interleaved runs at 1080p: 7.07 to 7.41 against 7.17 to 7.36 ms; GPU 5.00 to 5.32 against 4.98 to 5.11 ms).
+
+## Commits
+
+| Item | Commits |
+|:---|:---|
+| Foundation | 1eac0ad, fd264f8, 08b4c55 |
+| S1 | b012147 |
+| E1 | b736e43 |
+| E2 | a9dbf8f, 4842ea6, daf94c1 |
+| E3 | 9380984, 491eef0, 434d2c9 |
+| E4 | f32576b, a53b8b2, 54df578 |
+| E5 | a2eecb4, f98182d, 74b97a5, f2e58ac |
+| E6 | f8a2d1e, 0e0357a, 14ecce4 |
+| E7 | cf1bc76, 964fbc5, 2ff5596 |
+| E8 | 2490cbb, 5bcd064, a58e5c9, 72f6983 |
+| E9 | d6add4d, b9e5f2a, 49405b3, a15cc9d |
+| E10 | 4b77412, 4bb2cb8, 9ee82b3, 52be662, 5cf4fac |
+| E11 | b8412a6, 8dd1f2d, fd86180, 52f0957, 86db433 |
+| E12 | f72adac |
+| E13 | b63b0e6, 34fe46e, 7f28ec2 |
+| E14 | 275eb20 on `feat/hiz`, unmerged; numbers in ee4829c |
+
+## Deviations and open items
+
+- **E13:** the optional expansion in shadow passes is not implemented.
+- **E14:** built without history instead of two-phase, measured, not merged. Terrain was not an occluder.
+- **E5:** specular antialiasing is checked over five light angles, because one angle was unstable.
+- **E11:** point and spot shadows stay on the CPU path; visible instance counts are not read back.
+- **Not verified:** external KTX2 validator, a complete export with `.ktx2`, game timings of E7, E9 (lit, flipbook), E10 and E13.
+- **Recommendation:** `smaa` over `cmaa2` (smaller error in `render-check`, cheaper CPU in the game).
