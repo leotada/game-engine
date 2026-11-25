@@ -36,6 +36,9 @@
   CPU. BC5 normal maps rebuild Z (`MaterialFlags.normalXy`). Off by default.
 - **Thin geometry** (`MaterialFlags.thin`, `MaterialParams.thinRadius`, `thinPixels`): wires keep a minimum width on screen, with
   dithered or blended coverage. Off by default; replaces the unused `specularAaStrength` field.
+- **GPU culling** splits groups above 1,024 instances, so `gpu.staticCull` no longer grows with the largest group
+  (0.81 to 0.30 ms in a city with 205,000 instances). Hi-Z occlusion was built and measured, and left out because it cost more
+  than it saved (`docs/graphics.md`).
 
 ### Engine bug fixes
 

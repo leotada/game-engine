@@ -403,6 +403,7 @@ Off by default. With `gpuCull = true` a compute shader (`static_cull_cs.wgsl`) c
 - **Displacement:** set `Material.displacementBound` to the largest movement of a `displace` / `displaceEx` hook, or instances can vanish at the screen border while their displaced vertices are still visible.
 - **Memory:** each active view keeps `instances × 100` bytes plus about 32 bytes per 64 instances. 40,000 instances with the camera and three cascades take about 16 MB. The meshes are copied into shared pools at build, so later `TexMesh.updateVertices` calls are not seen.
 - **Stats:** `drawCalls`, `shadowDrawCalls` and `staticRangesDrawn` (indirect records) are filled. Instance counts (`staticInstancesVisible`, `shadowStaticInstancesDrawn`, `lodHistogram`) stay on the GPU and are not counted.
+- **Large groups** are cut into parts of 16 blocks (1,024 instances), each with its own indirect records, because one invocation sums the blocks of a part in order.
 - **`rangeLodParity`** takes the CPU path's per-range decisions, for comparisons.
 - **Zones:** CPU `scene.staticCull`, GPU `gpu.staticCull`.
 
@@ -417,7 +418,22 @@ Measured (RX 6600, 1080p, LDC release, 40,000 instances, 3 cascades, two runs):
 
 The gain follows the number of draws the CPU path issues. With few materials it is small.
 
+In an external city game (153,543 building instances plus 51,719 tree instances, 1080p, three interleaved runs): frame 7.13 to 7.41 ms → 6.76 to 6.85 ms, GPU frame 4.99 to 5.10 → 5.12 to 5.14 ms, `gpu.staticCull` 0.30 ms (0.81 ms before large groups were split), `gpu.scene.opaque.static` 2.32 to 2.39 → 2.16 to 2.18 ms. The gain is on the CPU.
+
 Verification: `dub run --config=render-check -- --check=gpucull` (same image as the CPU path, and the same instances with `rangeLodParity`).
+
+#### Occlusion culling (Hi-Z): evaluated, not included
+
+A history-free Hi-Z test was built on top of `gpuCull` (occluders depth-only, max-depth pyramid, test of every instance). The image was identical on and off in `render-check` (120 camera jumps, a drive, split viewports), but the cost was not recovered, so it is not part of the engine:
+
+| Scene (1080p) | Occluded / tested | `gpu.scene.opaque.static` | Occlusion passes | `renderer.submit` | GPU frame |
+|:---|:---|:---|:---|:---|:---|
+| City game, patrol (3 runs) | about 15,000 / 30,000 (sampled at 900p) | 2.17 → 2.16 ms | 0.34 ms | 2.22 → 2.45 ms | 5.12 → 5.39 ms |
+| Test street | 16,146 / 19,889 | 1.31 → 1.35 ms | 0.11 ms | 0.35 → 0.47 ms | 1.56 → 1.68 ms |
+| Test crossing | 7,231 / 8,636 | 1.57 → 1.12 ms | 0.11 ms | 0.33 → 0.43 ms | 1.81 → 1.45 ms |
+| Test roof (nearly everything hidden) | 17,738 / 22,062 | 0.76 → 0.90 ms | 0.11 ms | 0.33 → 0.45 ms | 0.98 → 1.20 ms |
+
+Hardware depth testing already rejects the hidden pixels, and the remaining vertex cost is small. A likely reason for the slower opaque pass is that removing hidden instances also removes the depth they wrote early, so more of what is behind them gets shaded (not confirmed with a capture). Terrain was not registered as an occluder in these runs, and scenes where hidden instances are vertex heavy were not measured.
 
 ### `SpatialGrid` (`engine.scene.spatial_grid`)
 
