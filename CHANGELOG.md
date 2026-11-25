@@ -24,6 +24,8 @@
   targets at reduced resolution. Custom passes keep insertion order after a removal. Existing `addPostPass` is unchanged.
 - **Ambient occlusion (GTAO)**: `Renderer.ambientOcclusion()`, off by default. Ambient light only, no depth prepass, no
   temporal data; radius, intensity, quality and half resolution. Outdoor demo: `--ao`.
+- **SMAA 1x and CMAA2** (`AaMode.smaa`, `AaMode.cmaa2`) and **specular antialiasing** (`GltfImportOptions.specularAa`,
+  `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
 
 ### Engine bug fixes
 

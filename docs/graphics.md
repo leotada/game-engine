@@ -741,11 +741,33 @@ filter: nothing accumulates between frames. Pipelines and targets are created on
 | `off` | None: tone map writes the display target | 0 |
 | `fxaa` | Original short-blur FXAA | 0.05 ms |
 | `fxaaQuality` | FXAA with edge-end search (12 steps each way). `fxaaSubpix` (0..1) sets the smoothing of thin features, `fxaaEdgeThreshold` the minimum relative contrast | 0.09 ms |
+| `smaa` | SMAA 1x, preset high: pattern-based, diagonals and corners. `smaaThreshold` (0.05 to 0.15) | 0.10 ms |
+| `cmaa2` | CMAA2, preset high (compute): changes the fewest pixels. `cmaa2Threshold` (0.05 to 0.15) | 0.06 ms + 0.03 copy |
 
 `PostSettings.sharpness` (0..1) runs contrast adaptive sharpening (`post_cas.wgsl`) after any mode, including
 `off`; 0 skips the pass and 0.05 ms. Profiler zones: `gpu.post.fxaa`, `gpu.post.fxaaQuality`,
 `gpu.post.sharpen` (CPU: `post.*`). In the `render-check` scene the edge error is 0.31 px without AA, 0.10 px
-with `fxaa` and 0.05 px with `fxaaQuality`.
+with `fxaa`, 0.05 px with `fxaaQuality`, 0.06 px with `smaa` and 0.08 px with `cmaa2`. Error against exact coverage over nine
+edge angles (RMS): 0.39, 0.24, 0.19, 0.14 and 0.17. Texture contrast kept (14.5 without AA): 13.1, 13.8, 14.1 and 14.2.
+
+`smaa` and `cmaa2` blend in approximately linear light. Their cost grows with the number of edges; the numbers above are
+for a simple scene. CMAA2 keeps about 14 MB of buffers at 1080p, created on first use, and its LDR target is writable by
+compute. Zones: `gpu.post.smaa` (`edges`, `weights`, `blend`), `gpu.post.cmaa2` (`edges`, `shapes`, `apply`, `copy`).
+Licenses: [third-party-licenses.md](third-party-licenses.md).
+
+### Specular antialiasing
+
+Post filters cannot fix sparkling highlights: those come from shading. Two opt-in sources:
+
+- **Normal maps:** `GltfImportOptions.specularAa` (or `specularAaTexture` in `engine.graphics.specular_aa`) adds the normal
+  variation lost in each mip to the roughness of that mip, at load time. No runtime cost; one metallic-roughness texture
+  per normal-mapped material. In `render-check` a bumpy plane 16 pixels wide has the brightness of the same plane up close
+  within 15% (plain mips: off by 211%, too bright in the mirror direction and too dark elsewhere).
+- **Geometry:** `MaterialFlags.geometricSpecularAa` raises the roughness where the vertex normal turns fast on screen.
+  A shiny ball a few pixels wide sliding by fractions of a pixel: brightness deviation 2.55 → 0.05. Two derivatives per
+  pixel. It slightly widens highlights on curved surfaces.
+
+Verification: `dub run --config=render-check -- --check=aa` and `--check=specaa`.
 
 ## Post pass inputs (`PostPassDesc`)
 

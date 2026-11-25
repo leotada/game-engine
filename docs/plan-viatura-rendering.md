@@ -23,7 +23,7 @@ features below. This file keeps the requests and their status.
 | E11 | GPU culling and indirect draws for `StaticInstanceBuffer`, scene and shadows | Same image, much lower submit, no dropped instance | done |
 | E3 | Depth, normals (or documented reconstruction), camera matrices and intermediate targets in `addPass` | — | done |
 | E4 | GTAO applied to ambient light only, half-resolution option | — | done |
-| E5 | SMAA 1x and CMAA2 modes, specular antialiasing, license check | — | planned |
+| E5 | SMAA 1x and CMAA2 modes, specular antialiasing, license check | — | done |
 | E6 | Volumetric light: sun with cascades, clustered spots and points | — | planned |
 | E7 | Optional vertex color (glTF `COLOR_0`): static, instanced, skinned | No larger vertex for other meshes | planned |
 | E8 | Auto exposure and 3D color LUT | Only the exposure value persists between frames | planned |

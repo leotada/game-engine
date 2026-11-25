@@ -114,3 +114,41 @@ is **FastLZ** by Ariya Hidayat, licensed under the **MIT License**.
 `assets/shaders/post_cas.wgsl` follows the formulation of AMD FidelityFX Contrast Adaptive Sharpening
 (Copyright (c) 2019 Advanced Micro Devices, Inc., MIT license). `assets/shaders/post_fxaa_hq.wgsl` is an
 independent implementation of the published FXAA 3.x description by Timothy Lottes; no NVIDIA source is included.
+
+## SMAA
+
+`assets/shaders/post_smaa.wgsl` is a WGSL port of [SMAA](https://github.com/iryoku/smaa) (`SMAA.hlsl`), and
+`assets/shaders/smaa_tables.bin` holds its precomputed area (subtexture 0) and search tables. MIT license:
+
+```
+Copyright (C) 2013 Jorge Jimenez (jorge@iryoku.com)
+Copyright (C) 2013 Jose I. Echevarria (joseignacioechevarria@gmail.com)
+Copyright (C) 2013 Belen Masia (bmasia@unizar.es)
+Copyright (C) 2013 Fernando Navarro (fernandn@microsoft.com)
+Copyright (C) 2013 Diego Gutierrez (diegog@unizar.es)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software. As clarification, there is no
+requirement that the copyright notice and permission be included in binary
+distributions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## CMAA2
+
+`assets/shaders/post_cmaa2.wgsl` is a modified WGSL port of
+[CMAA2](https://github.com/GameTechDev/CMAA2) v2.3 (`CMAA2.hlsl`), Copyright (c) 2018, Intel Corporation, Apache License 2.0
+([full text](licenses/Apache-2.0.txt)). The file header lists the changes.

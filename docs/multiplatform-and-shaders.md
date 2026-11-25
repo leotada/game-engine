@@ -103,6 +103,8 @@ assets/shaders/
 ├── post_tonemap.wgsl         # ACES / Reinhard tone mapping + exposure
 ├── post_fxaa.wgsl            # Fast LDR edge anti-aliasing
 ├── post_fxaa_hq.wgsl         # Quality FXAA (edge-end search)
+├── post_smaa.wgsl            # SMAA 1x (MIT port)
+├── post_cmaa2.wgsl           # CMAA2 (Apache-2.0 port, compute)
 ├── post_cas.wgsl             # Contrast adaptive sharpening
 └── post_blit.wgsl            # Direct swapchain blit
 ```
