@@ -165,4 +165,6 @@ immutable string waterSurfaceShaderSource = preprocessShader(import("water_surfa
 immutable string depthCopyShaderSource = preprocessShader(import("depth_copy.wgsl"), "depth_copy.wgsl").code;
 immutable string waterSimCsShaderSource = preprocessShader(import("water_sim_cs.wgsl"), "water_sim_cs.wgsl").code;
 /// Clustered Forward compute light culling — `engine.gpu.clustered.ClusteredLightCuller`.
+/// GPU culling of `StaticInstanceBuffer` — `engine.gpu.static_cull.StaticCuller`.
+immutable string staticCullCsShaderSource = preprocessShader(import("static_cull_cs.wgsl"), "static_cull_cs.wgsl").code;
 immutable string clusterCullCsShaderSource = preprocessShader(import("clustered_cull_cs.wgsl"), "clustered_cull_cs.wgsl").code;

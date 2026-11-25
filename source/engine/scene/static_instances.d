@@ -26,7 +26,7 @@ module engine.scene.static_instances;
 
 import engine.core.log;
 import engine.core.pod : isPod, Pod;
-import engine.gpu.buffer : createVertexBuffer, destroyBuffer, updateBuffer;
+import engine.gpu.buffer : createBufferWithUsage, createVertexBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.context : GpuContext;
 import engine.gpu.pipeline : TexInstanceData;
 import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
@@ -38,7 +38,8 @@ import engine.math.frustum : Frustum;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
 import engine.scene.cascades : ReceiverCull;
-import bindings.wgpu : WGPUBuffer, WGPUQueue;
+import engine.gpu.static_cull : CullGroup, CullMeta, cullMetaOf, MeshPool, StaticGpuData;
+import bindings.wgpu : WGPUBuffer, WGPUBufferUsage, WGPUQueue;
 
 @safe:
 
@@ -59,6 +60,18 @@ struct StaticBuildOptions {
     /// Default culling for every group (0 = off); see `setGroupCull`.
     float maxDistance = 0;
     float minPixelSize = 0;
+    /**
+     * Cull, pick LODs and build the draws on the GPU: per instance instead of
+     * per cell range, with a handful of indirect multi-draws instead of one
+     * draw per range. Camera and directional shadow views only; point and spot
+     * shadows keep the CPU path. Needs the `indirectFirstInstance` and
+     * `multiDrawIndirectCount` features (otherwise the CPU path is used).
+     * Meshes are copied at build: later `TexMesh.updateVertices` are not seen.
+     */
+    bool gpuCull = false;
+    /// With `gpuCull`: take every decision from the bounds of the instance's cell
+    /// range, like the CPU path. For comparisons; draws more instances.
+    bool rangeLodParity = false;
 }
 
 /// One (mesh, material) group with its culling and LOD parameters.
@@ -285,6 +298,9 @@ struct StaticInstanceBuffer {
     package(engine) uint instanceCount;
     private Pod!uint[] slotOf;
     private WGPUQueue queue;
+    /// GPU culling state; inactive on the CPU path.
+    StaticGpuData gpuData;
+    private bool rangeParity;
 
     @disable this(this);
 
@@ -319,11 +335,95 @@ struct StaticInstanceBuffer {
         sib.cellBounds = layout.cellBounds;
         sib.slotOf = layout.slotOf;
         sib.instanceCount = cast(uint) layout.instances.length;
-        if (layout.instances.length)
+        immutable useGpu = opts.gpuCull && layout.instances.length > 0 && StaticGpuData.supported(gpu)
+            // One compute workgroup per block, at most 65535 per dispatch.
+            && layout.instances.length / 64 + layout.groups.length <= 65_535;
+        if (opts.gpuCull && !useGpu)
+            info("StaticInstanceBuffer: GPU culling not supported here, using the CPU path");
+        if (useGpu) {
+            sib.rangeParity = opts.rangeLodParity;
+            sib.instanceBuf = createBufferWithUsage(gpu.getDevice(), layout.instances.length * TexInstanceData.sizeof,
+                WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst | WGPUBufferUsage.storage);
+            updateBuffer(sib.queue, sib.instanceBuf, layout.instances);
+            sib.buildGpu(gpu, layout);
+        } else if (layout.instances.length) {
             sib.instanceBuf = createVertexBuffer(gpu.getDevice(), sib.queue, layout.instances);
+        }
         info("StaticInstanceBuffer: ", sib.instanceCount, " instances, ", sib.groups.length,
              " groups, ", sib.ranges.length, " ranges, ", sib.cellBounds.length, " cells");
         return sib;
+    }
+
+    /// Build the GPU culling tables (load time).
+    private void buildGpu(ref GpuContext gpu, ref StaticLayout layout) {
+        import std.algorithm.sorting : sort;
+        auto metas = new CullMeta[layout.instances.length];
+        auto table = new CullGroup[groups.length];
+        foreach (ref r; ranges) {
+            auto g = &table[r.group];
+            if (g.count == 0) g.first = r.firstInstance;
+            g.count += r.count;
+            immutable c = r.bounds.min * 0.5f + r.bounds.max * 0.5f, e = r.bounds.max * 0.5f - r.bounds.min * 0.5f;
+            foreach (slot; r.firstInstance .. r.firstInstance + r.count) {
+                if (rangeParity) {
+                    metas[slot] = CullMeta([c.x, c.y, c.z], r.maxScale, [e.x, e.y, e.z], r.maxRadius);
+                } else {
+                    Mat4 m;
+                    m.m = layout.instances[slot].model;
+                    metas[slot] = cullMetaOf(meshes[groups[r.group].mesh].localSphere.transformed(m), maxAxisScale(m));
+                }
+            }
+        }
+        gpuData.pool = MeshPool.build(gpu, meshes);
+        auto order = new uint[groups.length];
+        foreach (i, ref o; order) o = cast(uint) i;
+        // Neighbors in this order share pool buffers, then the shadow state, then the material.
+        ulong key(uint gi) {
+            auto mesh = meshes[groups[gi].mesh];
+            auto mat = materials[groups[gi].material];
+            immutable ulong cls = (mat.surfaceShader != 0 || mat.renderState.alphaMask) ? 1 : 0;
+            return (cast(ulong) MeshPool.strideIndex(mesh.vertexStride) << 63)
+                 | (cast(ulong) MeshPool.formatIndex(mesh.indexFormat) << 62)
+                 | (cls << 61) | (cast(ulong) mat.renderState.depthWrite << 60)
+                 | (cast(ulong) mat.renderState.doubleSided << 59)
+                 | (cast(ulong) groups[gi].material << 28) | gi;
+        }
+        order.sort!((a, b) => key(a) < key(b));
+        foreach (i, ref t; table) fillGroup(t, cast(uint) i);
+        gpuData.build(gpu, table, order, metas, instanceBuf);
+    }
+
+    /// Copy the culling, LOD and index ranges of group `gi` into its GPU record.
+    private void fillGroup(ref CullGroup t, uint gi) nothrow @nogc {
+        auto g = &groups[gi];
+        auto mesh = meshes[g.mesh];
+        auto mat = materials[g.material];
+        auto slot = gpuData.pool.slots[g.mesh];
+        t.lodLevels = g.lodLevels;
+        t.baseVertex = slot.baseVertex;
+        t.maxDistance = g.maxDistance;
+        t.minPixels = g.minPixelSize;
+        t.meshScale = g.lodMeshScale;
+        t.displacement = mat.displacementBound;
+        foreach (l; 0 .. 8) {
+            t.errors[l] = l < g.lodLevels ? g.lodErrors[l] : 0;
+            immutable c = mesh.colorLodRange(cast(ubyte) l);
+            immutable s = mesh.shadowLodDraw(cast(ubyte) l, mat.renderState.alphaMask);
+            t.color[l] = [slot.firstIndex + c.first, c.count];
+            t.shadow[l] = [(s.useLodRange ? slot.firstIndex : slot.firstShadowIndex) + s.first, s.count];
+        }
+    }
+
+    /// Pick up material and culling changes made since the last frame.
+    package(engine) void refreshGpuGroups() nothrow @nogc {
+        foreach (i; 0 .. gpuData.groups.length) {
+            CullGroup t = gpuData.groups[i];
+            fillGroup(t, cast(uint) i);
+            if (t != gpuData.groups[i]) {
+                gpuData.groups[i] = t;
+                gpuData.dirty = true;
+            }
+        }
     }
 
     /// Culling for every group of `meshIndex` (0 disables either test).
@@ -354,6 +454,14 @@ struct StaticInstanceBuffer {
         import bindings.wgpu : wgpuQueueWriteBuffer;
         wgpuQueueWriteBuffer(queue, instanceBuf, slotOf[descIndex] * TexInstanceData.sizeof,
                              &data, TexInstanceData.sizeof);
+        if (gpuData.active && !rangeParity) {
+            foreach (ref r; ranges)
+                if (slotOf[descIndex] >= r.firstInstance && slotOf[descIndex] < r.firstInstance + r.count) {
+                    auto sphere = meshes[groups[r.group].mesh].localSphere.transformed(model);
+                    gpuData.setMeta(queue, slotOf[descIndex], cullMetaOf(sphere, maxAxisScale(model)));
+                    break;
+                }
+        }
     }
 
     /// Hide one instance (zero scale) — e.g. a prop replaced by a physics debris entity.
@@ -367,7 +475,11 @@ struct StaticInstanceBuffer {
     size_t rangeCount() const nothrow @nogc { return ranges.length; }
     uint length() const nothrow @nogc { return instanceCount; }
 
+    /// True when this buffer is culled on the GPU (`StaticBuildOptions.gpuCull`).
+    bool gpuCulled() const nothrow @nogc { return gpuData.active; }
+
     void destroy() nothrow @nogc {
+        gpuData.destroy();
         destroyBuffer(instanceBuf);
         instanceBuf = null;
         instanceCount = 0;

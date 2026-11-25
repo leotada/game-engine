@@ -185,6 +185,9 @@ struct Material {
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
     RenderState renderState;
+    /// Largest distance (world units) a `displace` / `displaceEx` hook moves a
+    /// vertex. GPU culling (`StaticBuildOptions.gpuCull`) grows the bounds by it.
+    float displacementBound = 0;
 
     @disable this(this);
 

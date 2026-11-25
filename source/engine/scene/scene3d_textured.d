@@ -32,6 +32,8 @@ import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
 import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
 import engine.meshopt.internal.bits : bitsFloat, floatBits;
+import engine.gpu.static_cull : CULL_DISTANCE, CULL_SHADOW, CullViewUbo, INDIRECT_STRIDE, MeshPool,
+    StaticCuller, StaticGpuData;
 import engine.scene.static_instances : collectVisibleRuns, markVisibleCells, StaticInstanceBuffer, StaticRun, StaticViewParams;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
@@ -413,6 +415,9 @@ struct Scene3DTextured {
     // Retained static instance buffers submitted this frame.
     private StaticInstanceBuffer*[MAX_STATIC_SUBMISSIONS] staticBufs;
     private uint staticCount;
+    private StaticCuller staticCuller;
+    /// Submissions `[0, gpuCameraCulled)` already have this frame's camera culling recorded.
+    private uint gpuCameraCulled;
     private PodBuffer!StaticRun staticRuns;
     private PodBuffer!bool staticCellVisible;
 
@@ -1152,6 +1157,7 @@ struct Scene3DTextured {
         batchCount = 0;
         batchMap.reset();
         staticCount = 0;
+        gpuCameraCulled = 0;
         skinPaletteStaging.clear();
         skinPalettesUploaded = false;
     }
@@ -1170,6 +1176,7 @@ struct Scene3DTextured {
             warn("Scene3DTextured: too many static submissions this frame");
             return;
         }
+        if (sib.gpuCulled) sib.refreshGpuGroups();
         staticBufs[staticCount++] = &sib;
     }
 
@@ -1423,6 +1430,8 @@ struct Scene3DTextured {
         auto zEncode = profileZone!"scene.shadows.encode"();
         frame.suspendScenePass();
         scope(exit) frame.resumeScenePass();
+        cullStaticGpu(frame.encoder, /*camera=*/true, cascadeCount > 0 ? cascadeCount
+            : (dirEnabled && dirLight.castShadows && dirShadow !is null ? 1 : 0), cascadeCount > 0);
         auto gShadows = gpuScope!"gpu.shadows"(frame.encoder); // ends before the resume (LIFO)
 
         immutable bool anyGeometry = casterBatches > 0 || staticCount > 0;
@@ -1646,7 +1655,9 @@ struct Scene3DTextured {
             }
             if (staticCount > 0) {
                 foreach (sib; staticBufs[0 .. staticCount])
-                    encodeStaticShadow(pass, *sib, lightFrustum, distanceCull, dynOffset,
+                    if (sib.gpuCulled && kind != ShadowViewKind.local)
+                        encodeStaticShadowGpu(pass, *sib, 1 + vpSlot, dynOffset);
+                    else encodeStaticShadow(pass, *sib, lightFrustum, distanceCull, dynOffset,
                         kind == ShadowViewKind.cascade && cascadeReceiverCulling && vpSlot < MAX_CASCADES
                             ? &cascadeReceivers[vpSlot] : null);
             }
@@ -1776,6 +1787,121 @@ struct Scene3DTextured {
             wgpuRenderPassEncoderDrawIndexed(pass, lod.count, run.count, lod.first, 0, run.firstInstance);
             frameStats.shadowDrawCalls++;
             frameStats.shadowStaticInstancesDrawn += run.count;
+        }
+    }
+
+    /// Record GPU culling of the queued `gpuCull` buffers: the camera view (for
+    /// submissions not culled yet this frame) and `shadowViews` directional
+    /// views. Must run outside a render pass.
+    private void cullStaticGpu(WGPUCommandEncoder encoder, bool camera, uint shadowViews, bool cascaded) nothrow @nogc @trusted {
+        import core.stdc.string : memcpy;
+        StaticGpuData*[MAX_STATIC_SUBMISSIONS] data;
+        uint n = 0, pending = 0;
+        foreach (i, sib; staticBufs[0 .. staticCount]) {
+            if (!sib.gpuCulled) continue;
+            if (i >= gpuCameraCulled) pending++;
+            data[n++] = &sib.gpuData;
+        }
+        if (n == 0) return;
+        auto zCull = profileZone!"scene.staticCull"();
+        auto gCull = gpuScope!"gpu.staticCull"(encoder);
+        if (!staticCuller.ready) staticCuller.init(device, queue);
+        if (camera && pending > 0) {
+            auto u = CullViewUbo.make(cameraFrustum, lodCameraPos, lodBias, lodFovY, lodScreenHeight,
+                                      CULL_DISTANCE, null);
+            staticCuller.setView(0, u);
+            staticCuller.encode(encoder, data[n - pending .. n], 0, 1);
+            gpuCameraCulled = staticCount;
+        }
+        if (shadowViews == 0) return;
+        foreach (v; 0 .. shadowViews) {
+            Mat4 vp;
+            memcpy(vp.m.ptr, shadowVpStaging.ptr + v * SHADOW_VP_STRIDE, 64);
+            immutable f = Frustum.fromViewProj(vp);
+            auto u = CullViewUbo.make(f, lodCameraPos, lodBias, lodFovY, lodScreenHeight,
+                CULL_DISTANCE | CULL_SHADOW,
+                cascaded && cascadeReceiverCulling ? &cascadeReceivers[v] : null);
+            staticCuller.setView(1 + v, u);
+        }
+        staticCuller.encode(encoder, data[0 .. n], 1, shadowViews);
+    }
+
+    /// Shadow draws of a GPU-culled buffer: one multi-draw per run of groups with equal state.
+    private void encodeStaticShadowGpu(WGPURenderPassEncoder pass, ref StaticInstanceBuffer sib,
+                                       uint view, uint dynOffset) nothrow @nogc @trusted {
+        auto d = &sib.gpuData;
+        bool groupZeroIsSurface = false;
+        scope(exit) if (groupZeroIsSurface)
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowVpBg, 1, &dynOffset);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 1, d.views[view].visible, 0,
+            sib.instanceCount * TexInstanceData.sizeof);
+        uint boundStride = uint.max, boundFormat = uint.max;
+        size_t i = 0;
+        while (i < d.order.length) {
+            immutable gi = d.order[i];
+            auto mesh = sib.meshes[sib.groups[gi].mesh];
+            auto mat = sib.materials[sib.groups[gi].material];
+            if (!mat.renderState.depthWrite) { i++; continue; }
+            // Plain opaque casters only differ by stride and culling; the others bind their material.
+            immutable plain = !mat.renderState.alphaMask && mat.surfaceShader == 0;
+            immutable first = d.groups[gi].firstArg;
+            uint count = 0;
+            for (; i < d.order.length; i++) {
+                immutable gj = d.order[i];
+                auto mj = sib.meshes[sib.groups[gj].mesh];
+                auto tj = sib.materials[sib.groups[gj].material];
+                if (mj.vertexStride != mesh.vertexStride || mj.indexFormat != mesh.indexFormat
+                        || !tj.renderState.depthWrite || tj.renderState.doubleSided != mat.renderState.doubleSided)
+                    break;
+                if (plain ? (tj.renderState.alphaMask || tj.surfaceShader != 0) : tj !is mat) break;
+                count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
+            }
+            bindShadowCaster(pass, mesh.vertexStride, *mat, dynOffset, groupZeroIsSurface);
+            immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
+            if (si != boundStride) {
+                wgpuRenderPassEncoderSetVertexBuffer(pass, 0, d.pool.vertices[si], 0, d.pool.vertexBytes[si]);
+                boundStride = si;
+            }
+            if (fi != boundFormat) {
+                wgpuRenderPassEncoderSetIndexBuffer(pass, d.pool.indices[fi], mesh.indexFormat, 0, d.pool.indexBytes[fi]);
+                boundFormat = fi;
+            }
+            wgpuRenderPassEncoderMultiDrawIndexedIndirect(pass, d.views[view].args,
+                first * cast(ulong) INDIRECT_STRIDE, count);
+            frameStats.shadowDrawCalls++;
+        }
+    }
+
+    /// Color draws of a GPU-culled buffer: one multi-draw per (material, stride, index format).
+    private void drawStaticGpu(ref FrameContext frame, ref StaticInstanceBuffer sib) @trusted {
+        auto d = &sib.gpuData;
+        frame.setVertexBuffer(1, d.views[0].visible, sib.instanceCount * TexInstanceData.sizeof);
+        size_t i = 0;
+        while (i < d.order.length) {
+            immutable gi = d.order[i];
+            auto mesh = sib.meshes[sib.groups[gi].mesh];
+            auto mat = sib.materials[sib.groups[gi].material];
+            immutable first = d.groups[gi].firstArg;
+            uint count = 0;
+            for (; i < d.order.length; i++) {
+                immutable gj = d.order[i];
+                auto mj = sib.meshes[sib.groups[gj].mesh];
+                if (sib.materials[sib.groups[gj].material] !is mat || mj.vertexStride != mesh.vertexStride
+                        || mj.indexFormat != mesh.indexFormat)
+                    break;
+                count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
+            }
+            auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, mesh.vertexStride == 48);
+            if (pipe is null) continue;
+            immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
+            frame.setPipeline(pipe);
+            frame.setBindGroup(1, mat.bindGroup);
+            frame.setVertexBuffer(0, d.pool.vertices[si], d.pool.vertexBytes[si]);
+            frame.setIndexBuffer(d.pool.indices[fi], mesh.indexFormat, d.pool.indexBytes[fi]);
+            wgpuRenderPassEncoderMultiDrawIndexedIndirect(frame.pass, d.views[0].args,
+                first * cast(ulong) INDIRECT_STRIDE, count);
+            frameStats.drawCalls++;
+            frameStats.staticRangesDrawn += count;
         }
     }
 
@@ -1933,6 +2059,15 @@ struct Scene3DTextured {
             frame.resumeScenePass();
         }
 
+        bool cullPending = false;
+        foreach (i, sib; staticBufs[0 .. staticCount])
+            if (i >= gpuCameraCulled && sib.gpuCulled) cullPending = true;
+        if (cullPending) {
+            frame.suspendScenePass();
+            cullStaticGpu(frame.encoder, /*camera=*/true, 0, false);
+            frame.resumeScenePass();
+        }
+
         auto zSkin = profileZone!"scene.end.skinUpload"();
         ensureSkinPalettesUploaded();
         zSkin.close();
@@ -2022,7 +2157,8 @@ struct Scene3DTextured {
                     auto zStatic = profileZone!"scene.end.opaque.static"();
                     auto gStatic = gpuFrameScope!"gpu.scene.opaque.static"(frame);
                     foreach (sib; staticBufs[0 .. staticCount]) {
-                        drawStatic(frame, *sib);
+                        if (sib.gpuCulled) drawStaticGpu(frame, *sib);
+                        else drawStatic(frame, *sib);
                         sceneDirtySinceSnapshot = true;
                     }
                 }
@@ -2336,6 +2472,7 @@ struct Scene3DTextured {
         pointLightsStaging.release();
         spotLightsStaging.release();
         clusterCuller.destroy();
+        staticCuller.destroy();
         destroyBuffer(waterDataBuf);
         waterDataBuf = null;
         if (ownsIbl) ownedIbl.destroy();
