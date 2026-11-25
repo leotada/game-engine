@@ -38,6 +38,7 @@ TerrainLayer[4] layers;
 layers[1].triplanarSharpness = 6;               // rock: triplanar on cliffs
 foreach (i, ref l; layers) l.physicsMaterial = cast(ubyte)(i + 1);
 auto mat = TerrainMaterial.create(app.gpu, layers[], albedo[], normal[], orm[], 512);
+// Albedo stored as sRGB color: pass srgbAlbedo = true as the last argument (the height in alpha stays linear).
 
 // 3. Rendering: create, then attach once the struct is at its final address.
 auto tr = TerrainRenderer.create(app.gpu, scene, terrain, mat);

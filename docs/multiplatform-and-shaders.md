@@ -85,6 +85,7 @@ Shaders previously existed as monolithic string literals in D source code (`shad
 assets/shaders/
 ├── common/
 │   ├── fullscreen_vs.wgsl    # Fullscreen triangle vertex shader (post-processing)
+│   ├── post_scene.wgsl       # Scene depth, camera and normals for custom post passes
 │   ├── pbr_brdf.wgsl         # OpenPBR v1.1 BRDF stack: Oren-Nayar, F82, GGX aniso, Airy film, Coat, Charlie fuzz
 │   └── shadows.wgsl          # Directional, point, and spot PCF shadow filtering
 ├── colored3d.wgsl            # 3D instanced pipeline with per-vertex/instance colors
@@ -106,6 +107,7 @@ assets/shaders/
 ├── post_fxaa.wgsl            # Fast LDR edge anti-aliasing
 ├── post_fxaa_hq.wgsl         # Quality FXAA (edge-end search)
 ├── post_smaa.wgsl            # SMAA 1x (MIT port)
+├── smaa_tables.bin           # SMAA area and search tables
 ├── post_cmaa2.wgsl           # CMAA2 (Apache-2.0 port, compute)
 ├── post_cas.wgsl             # Contrast adaptive sharpening
 └── post_blit.wgsl            # Direct swapchain blit

@@ -167,7 +167,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Vertex buffer 1** — instances: `TexInstanceData` (4×`float32x4` model + `vec4f` tint + `vec4f` custom, stride=96); vertex shaders transform normals with the $3 \times 3$ adjugate (cofactor transpose, `Mat4.transformNormal`) so non-uniform scaling preserves correct lighting
 - **Bind groups:**
   - `@group(0) Frame` (`FRAME_BINDING_COUNT` = 16 entries, one layout shared by every scene-space pipeline) — 1024-byte `FrameUniforms` (viewProj, dirLight, cascades, SSR params, `ReflectionProbeData[4]`, atmosphere/sky, `viewportRect`, `clusterZParams`) at 0, comparison sampler at 1, directional/point/spot shadow maps at 2–8, point-light storage at 9, shared water data at 10 (`GpuWaterData`, `common/waves.wgsl`; see [Water](#water-enginewater)), 5-mip opaque HDR scene pyramid (`opaqueSceneColorMap`) at 11, resolved opaque scene depth (`opaqueSceneDepthMap`) at 12, spot-light storage at 13, cluster grid records (`16 × 9 × 24` clusters) at 14, and compacted per-cluster light index pool at 15
-  - `@group(1) Material` (`MATERIAL_BINDING_COUNT` = 13 entries) — 208-byte `MaterialParams` UBO (`13 × vec4f`: Base, Specular/IOR/Anisotropy, `anisotropyRotation`, Coat, Fuzz, Thin-Film min/max thickness, Emission, Geometry Opacity, Transmission color/weight/depth/dispersion/thickness, Subsurface weight/color/radius/radiusScale/anisotropy), filtering sampler, albedo + MR/normal/occlusion/emissive maps (`2..6`), surface params UBO (`7`), and optional `MaterialLayerMaps` (`8..12`: `coat`, `coatNormal`, `fuzz`, `anisoFilm`, `transmission`, bound with 1×1 defaults when omitted)
+  - `@group(1) Material` (`MATERIAL_BINDING_COUNT` = 13 entries) — 240-byte `MaterialParams` UBO (`15 × vec4f`: Base, Specular/IOR/Anisotropy, `anisotropyRotation`, Coat, Fuzz, Thin-Film min/max thickness, Emission, Geometry Opacity, Transmission color/weight/depth/dispersion/thickness, Subsurface weight/color/radius/radiusScale/anisotropy, and the surface options `alphaCutoff`, `softDistance`, `thinRadius`, `thinPixels`, `lightWrap`, `flipbookGrid`, `flipbookBlend`), filtering sampler, albedo + MR/normal/occlusion/emissive maps (`2..6`), surface params UBO (`7`), and optional `MaterialLayerMaps` (`8..12`: `coat`, `coatNormal`, `fuzz`, `anisoFilm`, `transmission`, bound with 1×1 defaults when omitted)
   - `@group(2) IBL` — irradiance cubemap, prefiltered specular (mips), 3-channel BRDF LUT (`R`: GGX scale, `G`: GGX bias, `B`: Charlie sheen directional albedo), sampler
   - `@group(3) Skin` *(skinned variant only)* — read-only storage buffer of concatenated `mat4x4<f32>` joint palettes (`Scene3DTextured.drawSkinned`)
 - **Fragment (`assets/shaders/common/pbr_brdf.wgsl`, `assets/shaders/textured3d_pbr.wgsl`)** — Complete OpenPBR v1.1 slabs (`OPBR-1`–`9`):
@@ -311,7 +311,7 @@ struct SpriteUniforms { viewProj: mat4x4<f32> };
 
 `engine/graphics/texture.d` encapsulates GPU RGBA8 texture creation, configurable samplers, and uncompressed TGA loading. It also provides procedural helpers (`checker`, `solid`) for testing.
 
-`engine/graphics/material.d` creates a `@group(1)` bind group with the 208-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, Transmission/Volume/Dispersion, Subsurface/Thin-Walled Translucency, `flags`) + sampler + albedo, optional standard maps (`2..6`), surface params (`7`), and optional `MaterialLayerMaps` (`8..12`). Missing maps use default 1×1 textures (`MaterialDefaults`).
+`engine/graphics/material.d` creates a `@group(1)` bind group with the 240-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, Transmission/Volume/Dispersion, Subsurface/Thin-Walled Translucency, `flags`, surface options) + sampler + albedo, optional standard maps (`2..6`), surface params (`7`), and optional `MaterialLayerMaps` (`8..12`). Missing maps use default 1×1 textures (`MaterialDefaults`).
 
 ### Supported Image Formats
 
@@ -400,6 +400,7 @@ Off by default. With `gpuCull = true` a compute shader (`static_cull_cs.wgsl`) c
 
 - **Views:** camera and directional shadows (cascades or the fixed map). Point and spot shadows keep the CPU path.
 - **Needs** the `indirectFirstInstance` and `multiDrawIndirectCount` features; otherwise (web included) the CPU path is used. `sib.gpuCulled` tells which one is active.
+- **Image:** by default distance and LOD are decided per instance instead of per range, so far objects can differ from the CPU path (681 pixels of 1600x900 in a city game).
 - **Displacement:** set `Material.displacementBound` to the largest movement of a `displace` / `displaceEx` hook, or instances can vanish at the screen border while their displaced vertices are still visible.
 - **Memory:** each active view keeps `instances × 100` bytes plus about 32 bytes per 64 instances. 40,000 instances with the camera and three cascades take about 16 MB. The meshes are copied into shared pools at build, so later `TexMesh.updateVertices` calls are not seen.
 - **Stats:** `drawCalls`, `shadowDrawCalls` and `staticRangesDrawn` (indirect records) are filled. Instance counts (`staticInstancesVisible`, `shadowStaticInstancesDrawn`, `lodHistogram`) stay on the GPU and are not counted.
@@ -434,6 +435,8 @@ A history-free Hi-Z test was built on top of `gpuCull` (occluders depth-only, ma
 | Test roof (nearly everything hidden) | 17,738 / 22,062 | 0.76 → 0.90 ms | 0.11 ms | 0.33 → 0.45 ms | 0.98 → 1.20 ms |
 
 Hardware depth testing already rejects the hidden pixels, and the remaining vertex cost is small. A likely reason for the slower opaque pass is that removing hidden instances also removes the depth they wrote early, so more of what is behind them gets shaded (not confirmed with a capture). Terrain was not registered as an occluder in these runs, and scenes where hidden instances are vertex heavy were not measured.
+
+The code is kept, unmerged, on the local branch `feat/hiz` (275eb20). It differs from the requested two-phase design: without history nothing can go stale on camera cuts. One control of its `render-check` (translucent materials taken as occluders must change the image) misses its own threshold: 35 px, more than 100 required.
 
 ### `SpatialGrid` (`engine.scene.spatial_grid`)
 
@@ -746,6 +749,17 @@ dub build --config=demo --build=release
 dub build --config=benchmark --build=release
 ```
 
+## Render Checks
+
+`dub run --config=render-check` draws small scenes, reads the frames back and asserts on the pixels (needs a window and a GPU; exit code
+0 = all passed).
+
+| Option | |
+|:---|:---|
+| `--check=<name>` | one check: `unlit`, `srgb`, `aa`, `mask`, `gpucull`, `passinputs`, `ao`, `specaa`, `vcolor`, `volumetric`, `exposure`, `particles`, `bc`, `thin`, `stars` |
+| `--dump=DIR` | also write the frames as PNG |
+| `--bench --size=1920x1080` | profiler zones of each feature (build with LDC release) |
+
 ## Antialiasing and Sharpening
 
 `PostSettings.aaMode` selects the filter applied to the tone-mapped image. Every mode is a single-frame
@@ -922,7 +936,9 @@ app.renderer.clearColorLut();
 
 **Auto exposure** builds a 256-bin log-luminance histogram of the HDR image in compute (one pixel of every 4x4), averages
 the bins between the percentiles and moves the exposure toward `key / average` (in log2). Only that value survives the
-frame, in a GPU buffer; there is no readback. The time step is measured; `fixedDt` sets it for reproducible runs.
+frame, in a GPU buffer; there is no readback. `key` (0.18) is the value the average is brought to and `minEv` / `maxEv` (-12 to 8) the range of the histogram. With
+the defaults a city capture came out noticeably darker than with fixed exposure: tune `key`, the limits or `post.exposure`.
+The time step is measured; `fixedDt` sets it for reproducible runs.
 It meters before bloom and after the `beforeTonemap` passes. `bloomThreshold` stays in scene units, unaffected by
 the exposure.
 
@@ -958,7 +974,7 @@ d.flipbookFrames = 64;    // once over the lifetime; flipbookFps > 0 loops
   of a ball (or the `normal` map). Shadows use one filtered comparison per light. No specular.
 - **`flipbook`** reads albedo, normal and emissive from an atlas, row by row, first frame at the top left. The frame number is the
   instance `custom.w` (fractional = cross-fade), filled in by `ParticleSystem`; that channel is then not the rain shelter. Samples
-  stay inside the frame. `ParticleEmitter` has `flipbookFrames`, `flipbookFps` and `flipbookRandomStart`. Particles with a
+  stay inside the frame. `ParticleEmitter` has `flipbookFrames`, `flipbookFps` and `flipbookRandomStart`; `ParticleDesc.flipbookStart` sets the first frame of one particle. Particles with a
   flipbook draw the top of the frame up; plain quads keep V = 1 at their top.
 
 Alpha particles of one batch are drawn back to front (as before).
@@ -1001,13 +1017,16 @@ opts.compressedTextures = true;                  // the files written by `texc g
   without it compile the previous shader. Read `normalMap` of a BC5 material in a surface shader as X and Y only. Not for decals, terrain arrays or the coat normal.
 - **Fallback:** without the `textureCompressionBC` feature (some web and mobile GPUs), or when the size is not a multiple of 4
   (a WebGPU rule), the levels are decoded to RGBA8 on the CPU with a warning. BC5 decodes to a normal RGBA8 normal map.
-- `--zstd=N` (0 off, 1 to 9) shrinks the file; `--quality=fast|normal|high` trades encoding time (1024x1024 with mips: 0.14, 0.29 and
+- `--zstd=N` (0 off, 1 to 9) shrinks the file; `--quality=fast|normal|high` trades encoding time, `--format=auto|bc7|bc5|rgba8` forces the codec and `--no-mips` writes only the base level (1024x1024 with mips: 0.14, 0.29 and
   0.54 s here). Only 2D textures; KTX2 features such as BasisU, arrays and cube maps are refused.
-- Exported bundles and `.pak` files carry `.ktx2` like any other asset. The source image is not read when its `.ktx2` loads.
+- Exported bundles and `.pak` files carry `.ktx2` like any other asset (the loader reads through the asset layer; a complete export with
+  `.ktx2` files was not run). The source image is not read when its `.ktx2` loads.
 
 Measured on an RX 6600, 2048x2048 color map with mips, LDC release: PNG 117.3 ms and 21.33 MiB on the GPU; KTX2 2.4 ms and
 5.33 MiB (5.33 MiB file); KTX2 with zstd 46.6 ms and 5.33 MiB (3.30 MiB file); decoding to RGBA8 on the CPU 91.3 ms. The BC7 decoder
-is bit-identical to the GPU in every mode. Verification: `dub run --config=render-check -- --check=bc`.
+is bit-identical to the GPU in every mode; BC5 differs by up to 3.41 codes on random blocks (RX 6600), checked against a limit of 4.
+The files were not checked with an external KTX2 validator. Code API: `engine.assets.ktx2` (`readKtx2`, `writeKtx2`) and `engine.assets.bc`
+(`encodeBcLevel`, `decodeBc7Block`, `decodeBc5Block`). Verification: `dub run --config=render-check -- --check=bc`.
 
 ## Thin Geometry
 
@@ -1029,7 +1048,7 @@ wire.renderState = RenderState(BlendMode.opaque, true); // dithered coverage, no
 - Made for tubes with smooth normals. Boxes with split normals open at the corners by less than a pixel. Flat grids and
   fences are better as an alpha mask with `TextureDesc.alphaCoverage`.
 - Works for `Scene3DTextured.draw*`, skinned meshes, static buffers (CPU and GPU culling) and surface shaders. Shadow maps draw the
-  original geometry. Bounds are not widened: an object can be culled when only its extra half pixel is on screen.
+  original geometry (the optional expansion in shadow passes is not implemented). Bounds are not widened: an object can be culled when only its extra half pixel is on screen.
 - Without an antialiasing filter the light of a wire at exactly 45 degrees varies by up to 41% with its sub-pixel position (one or two
   pixels per step of the lattice); at the other angles measured it stays within 6% (dither) and 2% (alpha).
 - Materials without the flag compile the previous shader. Geometry wider than `thinPixels` renders exactly as before.

@@ -313,6 +313,9 @@ dub run --config=export -- --target=<id> [options]
 | **GIF** | `decodeImageFile`, `IMG_LoadAnimation_IO`, `gltf.d` | — | Enabled | Enabled |
 | **WEBP** | `decodeImageFile`, `decodeImageBytes`, `Texture.fromImageFile`, `gltf.d` | — | Disabled by default in static script (`-DSDLIMAGE_WEBP=OFF`) | Host-dependent (enabled on Fedora system `libSDL3_image.so.0`) |
 | **AVIF** | `decodeImageFile`, `decodeImageBytes`, `Texture.fromImageFile`, `gltf.d` | `IMG_SaveAVIF` | Disabled by default in static script (`-DSDLIMAGE_AVIF=OFF`) | Host-dependent |
+| **KTX2 (BC7 / BC5)** | `Texture.fromKtx2Bytes`, `TextureDesc.compressed`, `GltfImportOptions.compressedTextures` | `game-engine-texc` (`dub build --config=texc`) | Always (pure D) | Always |
+
+`.ktx2` files are ordinary assets: put them beside the images before exporting. Loading falls back to RGBA8 when the GPU has no BC support. A complete export with `.ktx2` files was not run yet. See [graphics.md](graphics.md#block-compressed-textures-bc7-bc5).
 
 ### 5.2 Font Rasterization Modes & Hinting (`engine.ui.text.font`, `bindings.sdl3_ttf`)
 
