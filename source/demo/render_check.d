@@ -297,13 +297,58 @@ private bool checkAa(ref App app) {
     immutable sharp = run("aa_fxaaQ_cas", AaMode.fxaaQuality, 0.6f);
     immutable offSharp = run("aa_off_cas", AaMode.off, 0.6f);
     immutable oldSharp = run("aa_fxaa_cas", AaMode.fxaa, 0.6f);
-    foreach (i, mode; [AaMode.off, AaMode.fxaa, AaMode.fxaaQuality]) {
+    immutable smaa = run("aa_smaa", AaMode.smaa, 0);
+    immutable cmaa2 = run("aa_cmaa2", AaMode.cmaa2, 0);
+    immutable smaaSharp = run("aa_smaa_cas", AaMode.smaa, 0.6f);
+    immutable cmaa2Sharp = run("aa_cmaa2_cas", AaMode.cmaa2, 0.6f);
+
+    // Coverage of straight edges at several angles against the exact value.
+    float coverageError(AaMode mode) {
+        import std.math : cos, sin, tan;
+        auto post = neutralPost();
+        post.aaMode = mode;
+        app.renderer.postSettings() = post;
+        double err = 0;
+        uint n;
+        foreach (a; [0.03f, 0.11f, 0.24f, 0.4f, 0.6f, 0.785f, 1.0f, 1.35f, 1.53f]) {
+            auto s = capture(app, "aa_angle", (ref FrameContext f) {
+                rig.scene.begin(rig.camera);
+                rig.scene.drawMatrix(rig.quad, edgeMat, Mat4.rotationY(a) * Mat4.translation(0, 0, 10)
+                                     * Mat4.scaling(40.0f, 1, 20), Color4.white);
+                rig.scene.end(f);
+            });
+            if (!s.valid) return 1e9f;
+            // Edge through the center; signed distance grows to the lit side.
+            immutable nx = sin(a), ny = cos(a);
+            foreach (y; s.h / 2 - 100 .. s.h / 2 + 100) foreach (x; s.w / 2 - 100 .. s.w / 2 + 100) {
+                float cov = 0;
+                foreach (sy; 0 .. 8) foreach (sx; 0 .. 8) {
+                    immutable px = x + (sx + 0.5f) / 8 - s.w * 0.5f, py = y + (sy + 0.5f) / 8 - s.h * 0.5f;
+                    if (px * nx + py * ny > 0) cov += 1.0f / 64;
+                }
+                immutable near = cov > 0 && cov < 1;
+                if (!near && s.luma(x, y) != 0 && s.luma(x, y) < 219) { /* blur outside the edge counts */ }
+                else if (!near) continue;
+                import std.math : pow;
+                immutable got = pow(s.luma(x, y) / 220.0f, 2.2f);
+                err += (got - cov) * (got - cov);
+                n++;
+            }
+        }
+        immutable r = cast(float) sqrt(err / n);
+        writefln("  %-14s coverage error %.3f", mode, r);
+        return r;
+    }
+    immutable covOff = coverageError(AaMode.off), covFxaa = coverageError(AaMode.fxaa),
+        covHq = coverageError(AaMode.fxaaQuality), covSmaa = coverageError(AaMode.smaa),
+        covCmaa2 = coverageError(AaMode.cmaa2);
+    foreach (i, mode; [AaMode.off, AaMode.fxaa, AaMode.fxaaQuality, AaMode.smaa, AaMode.cmaa2]) {
         foreach (sh; [0.0f, 0.6f]) {
             auto post = neutralPost();
             post.aaMode = mode;
             post.sharpness = sh;
             app.renderer.postSettings() = post;
-            string[3] names = ["off", "fxaa", "fxaaQuality"];
+            string[5] names = ["off", "fxaa", "fxaaQuality", "smaa", "cmaa2"];
             timeZones(app, names[i] ~ (sh > 0 ? " + sharpening" : ""), ["gpu.post.", "post."], (ref FrameContext f) {
                 rig.scene.begin(rig.camera);
                 rig.scene.draw(rig.quad, texMat, Vec3(0, 0, 0), Vec3(20, 1, 12));
@@ -316,6 +361,14 @@ private bool checkAa(ref App app) {
     ok &= expect(hq.detail > old.detail, "textures are sharper than FXAA");
     ok &= expect(sharp.detail > hq.detail * 1.05f && sharp.stairs < old.stairs, "sharpening after quality FXAA");
     ok &= expect(offSharp.detail > off.detail && oldSharp.detail > old.detail, "sharpening after any AA mode");
+    ok &= expect(smaa.stairs < off.stairs * 0.5f && smaa.stairs < old.stairs, "SMAA removes stair steps");
+    ok &= expect(cmaa2.stairs < off.stairs * 0.5f && cmaa2.stairs < old.stairs, "CMAA2 removes stair steps");
+    ok &= expect(smaa.detail > old.detail && cmaa2.detail > old.detail, "SMAA and CMAA2 keep more texture than FXAA");
+    ok &= expect(covSmaa < covOff * 0.6f && covSmaa < covFxaa, "SMAA coverage is closer to the exact value");
+    ok &= expect(covCmaa2 < covOff * 0.6f && covCmaa2 < covFxaa, "CMAA2 coverage is closer to the exact value");
+    ok &= expect(smaaSharp.detail > smaa.detail && cmaa2Sharp.detail > cmaa2.detail
+                 && smaaSharp.stairs < off.stairs * 0.6f && cmaa2Sharp.stairs < off.stairs * 0.6f,
+                 "sharpening after SMAA and CMAA2");
     return ok;
 }
 
@@ -1223,6 +1276,153 @@ private bool checkAo(ref App app) {
     return ok;
 }
 
+/// Specular antialiasing: a bumpy plane seen from afar must keep the mean
+/// brightness of the same plane seen up close, and a curved surface with
+/// `geometricSpecularAa` must not shimmer.
+private bool checkSpecularAa(ref App app) {
+    import std.math : cos, PI, pow, sin, sqrt;
+    import std.random : Random, uniform;
+    import engine.graphics.specular_aa : specularAaTexture;
+    auto scene = Scene3DTextured.create(app.gpu, 16, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    app.renderer.postSettings() = neutralPost();
+    enum N = 256;
+    auto px = new ubyte[N * N * 4];
+    auto rng = Random(11);
+    // Smooth bumps about 4 texels wide.
+    float[64][64] hmap;
+    foreach (ref row; hmap) foreach (ref v; row) v = uniform(-1.0f, 1.0f, rng);
+    float height(uint x, uint y) {
+        immutable fx = x / 4.0f, fy = y / 4.0f;
+        immutable x0 = cast(uint) fx, y0 = cast(uint) fy;
+        immutable tx = fx - x0, ty = fy - y0;
+        float h(uint a, uint b) { return hmap[b % 64][a % 64]; }
+        return (h(x0, y0) * (1 - tx) + h(x0 + 1, y0) * tx) * (1 - ty)
+            + (h(x0, y0 + 1) * (1 - tx) + h(x0 + 1, y0 + 1) * tx) * ty;
+    }
+    foreach (y; 0 .. N) foreach (x; 0 .. N) {
+        immutable dx = (height((x + 1) % N, y) - height(x, y)) * 0.6f, dy = (height(x, (y + 1) % N) - height(x, y)) * 0.6f;
+        immutable l = sqrt(dx * dx + dy * dy + 1);
+        immutable float[3] n = [-dx / l, -dy / l, 1 / l];
+        foreach (c; 0 .. 3) px[(y * N + x) * 4 + c] = cast(ubyte)((n[c] * 0.5f + 0.5f) * 255 + 0.5f);
+        px[(y * N + x) * 4 + 3] = 255;
+    }
+    auto normal = Texture.fromPixels(app.gpu, px, N, N, TextureDesc.mippedNormal());
+    scope(exit) normal.destroy();
+    enum ROUGH = 0.25f;
+    auto baked = specularAaTexture(app.gpu, null, 0, 0, px, N, N, ROUGH);
+    scope(exit) baked.destroy();
+    MaterialParams mp;
+    mp.baseColor = [0.0f, 0.0f, 0.0f];
+    mp.specularRoughness = ROUGH;
+    mp.flags = MaterialFlags.normal;
+    auto plain = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, () @trusted { return &normal; }(), null, null);
+    scope(exit) plain.destroy();
+    mp.specularRoughness = 1;
+    mp.flags |= MaterialFlags.metallicRoughness;
+    auto aa = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, () @trusted { return &baked; }(), () @trusted { return &normal; }(), null, null);
+    scope(exit) aa.destroy();
+    LightList lights;
+    scope(exit) lights.release();
+    // Orthographic-like view: the camera backs off and narrows the field of view.
+    float mean(string name, ref Material m, float quadPixels, float tilt) {
+        import std.math : atan;
+        Camera cam = Camera.create(2 * atan(4.0f * WIN_H / quadPixels / 2 / 200), WIN_W, WIN_H, 100, 300);
+        cam.lookAt(Vec3(0, 200, 0), Vec3(0, 0, 0));
+        cam.up = Vec3(0, 0, -1);
+        auto s = capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = true;
+            lights.dir.direction = Vec3(tilt, 1, 0).normalized();
+            lights.dir.intensity = 0.35f;
+            lights.dir.castShadows = false;
+            scene.setIblIntensity(0);
+            scene.begin(cam);
+            scene.draw(quad, m, Vec3(0, 0, 0), Vec3(4, 1, 4));
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+        if (!s.valid) return -1;
+        immutable half = cast(int)(quadPixels / 2) - 2;
+        double sum = 0;
+        uint n;
+        foreach (y; s.h / 2 - half .. s.h / 2 + half) foreach (x; s.w / 2 - half .. s.w / 2 + half) {
+            sum += pow(s.at(x, y, 1) / 255.0f, 2.2f);
+            n++;
+        }
+        return cast(float)(sum / n);
+    }
+    bool ok = true;
+    // GGX is not closed under this convolution, so one angle can be off by a
+    // third: sum the error over several light angles.
+    static immutable float[5] tilts = [0.0f, 0.1f, 0.2f, 0.3f, 0.45f];
+    foreach (q; [32.0f, 16.0f]) {
+        float errPlain = 0, errAa = 0, total = 0;
+        foreach (t; tilts) {
+            immutable r = mean("saa_near", plain, 256 * 1.7f, t), a = mean("saa_plain", plain, q, t),
+                b = mean("saa_aa", aa, q, t);
+            writefln("    %3.0f px, tilt %.2f: plain %.3f, specular AA %.3f, reference %.3f", q, t, a, b, r);
+            errPlain += abs(a - r);
+            errAa += abs(b - r);
+            total += r;
+        }
+        writefln("    %3.0f px: relative error plain %.2f, specular AA %.2f", q, errPlain / total, errAa / total);
+        ok &= expect(errAa < errPlain * 0.4f, "baked roughness keeps the distant brightness");
+    }
+
+    // A sphere a few pixels wide sliding by fractions of a pixel: its specular
+    // highlight must change less with the flag.
+    auto ball = lodSphere(app, 64, 32);
+    scope(exit) ball.destroy();
+    mp = MaterialParams.init;
+    mp.baseColor = [0.0f, 0.0f, 0.0f];
+    mp.specularRoughness = 0.15f;
+    auto shiny = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) shiny.destroy();
+    mp.flags = MaterialFlags.geometricSpecularAa;
+    auto calm = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) calm.destroy();
+    float flicker(ref Material m) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 100);
+        cam.lookAt(Vec3(0, 20, 0), Vec3(0, 0, 0));
+        cam.up = Vec3(0, 0, -1);
+        double[16] total;
+        double avg = 0;
+        foreach (i; 0 .. 16) {
+            auto s = capture(app, "saa_ball", (ref FrameContext f) {
+                lights.clear();
+                lights.dirEnabled = true;
+                lights.dir.direction = Vec3(0.4f, 1, 0.3f).normalized();
+                lights.dir.intensity = 0.05f;
+                lights.dir.castShadows = false;
+                scene.setIblIntensity(0);
+                scene.begin(cam);
+                scene.draw(ball, m, Vec3(i * 0.007f, 0, i * 0.011f), Vec3(0.18f, 0.18f, 0.18f));
+                scene.renderShadows(f, lights);
+                scene.end(f);
+            });
+            double t = 0;
+            foreach (y; WIN_H / 2 - 20 .. WIN_H / 2 + 20) foreach (x; WIN_W / 2 - 20 .. WIN_W / 2 + 20)
+                t += pow(s.at(x, y, 1) / 255.0f, 2.2f);
+            total[i] = t;
+            avg += t / 16;
+        }
+        double var = 0;
+        foreach (t; total) var += (t - avg) * (t - avg) / 16;
+        return cast(float)(sqrt(var) / avg);
+    }
+    immutable fPlain = flicker(shiny), fCalm = flicker(calm);
+    writefln("    highlight flicker: plain %.3f, geometric specular AA %.3f", fPlain, fCalm);
+    ok &= expect(fCalm < fPlain * 0.5f, "geometricSpecularAa steadies small highlights");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -1294,6 +1494,7 @@ private immutable Check[] checks = [
     Check("gpucull", &checkGpuCull),
     Check("passinputs", &checkPassInputs),
     Check("ao", &checkAo),
+    Check("specaa", &checkSpecularAa),
     Check("stars", &checkStars),
 ];
 
