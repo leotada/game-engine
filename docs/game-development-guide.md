@@ -239,6 +239,8 @@ particles.update(dt);
 particles.draw(scene, quadMesh, glowMat, camera); // pair with Texture.softDisc + BlendMode.additive
 ```
 
+Material flags `soft`, `litParticle` and `flipbook` add depth fade, lighting with shadows and animated atlases. See [graphics.md](graphics.md#soft-lit-and-animated-particles).
+
 Deep dive: [graphics.md](graphics.md) · [plan-openpbr.md](plan-openpbr.md) · [plan-water-realism.md](plan-water-realism.md).
 
 ---

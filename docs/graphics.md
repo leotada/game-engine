@@ -917,3 +917,37 @@ the exposure.
 Cost at 1920x1080 on an RX 6600: auto exposure 0.11 ms GPU and 0.01 ms CPU (uniform image, the worst case), table about
 0.01 ms. Zones: `post.autoExposure`, `gpu.post.autoExposure`.
 Verification: `dub run --config=render-check -- --check=exposure`.
+
+## Soft, Lit and Animated Particles
+
+Three independent `MaterialFlags`, all off by default, for `ParticleSystem` and any other alpha or additive instance:
+
+```d
+MaterialParams p;
+p.flags = MaterialFlags.litParticle | MaterialFlags.soft | MaterialFlags.flipbook;
+p.softDistance = 0.8f;    // world units
+p.lightWrap = 0.5f;       // 0 = Lambert, 1 = half Lambert
+p.flipbookGrid = [8, 8];  // columns, rows
+p.flipbookBlend = 1;      // cross-fade frames (0 = hard steps)
+auto smoke = Material.create(gpu, scene.materialLayout(), sampler, atlas, p, null, null, null, null);
+smoke.renderState = RenderState(BlendMode.alpha, false, true);
+
+ParticleDesc d;
+d.flipbookFrames = 64;    // once over the lifetime; flipbookFps > 0 loops
+```
+
+- **`soft`** fades the opacity where the surface comes within `softDistance` in front of the scene. The scene copies its depth
+  (water included) only when a soft batch is drawn. Batches of `Scene3DTextured.draw*` only: static buffers are not faded.
+- **`litParticle`** shades with wrapped diffuse from the sun, the clustered point and spot lights and the ambient, on the normal
+  of a ball (or the `normal` map). Shadows use one filtered comparison per light. No specular.
+- **`flipbook`** reads albedo, normal and emissive from an atlas, row by row, first frame at the top left. The frame number is the
+  instance `custom.w` (fractional = cross-fade), filled in by `ParticleSystem`; that channel is then not the rain shelter. Samples
+  stay inside the frame. `ParticleEmitter` has `flipbookFrames`, `flipbookFps` and `flipbookRandomStart`. Particles with a
+  flipbook draw the top of the frame up; plain quads keep V = 1 at their top.
+
+Alpha particles of one batch are drawn back to front (as before).
+
+Cost at 1920x1080 on an RX 6600, 2000 large particles (about 8 full-screen layers): unlit 0.91 ms, soft 1.26 ms + 0.055 ms for
+the depth copy, lit by the sun with shadows 1.98 ms, lit by the sun and 16 overlapping point lights 5.1 ms. Lit particles
+cost per covered pixel and light: prefer few, small or low-alpha sprites. The depth copy allocates the opaque snapshot
+(color pyramid and depth) on first use. Verification: `dub run --config=render-check -- --check=particles`.

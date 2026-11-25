@@ -27,7 +27,7 @@ features below. This file keeps the requests and their status.
 | E6 | Volumetric light: sun with cascades, clustered spots and points | — | done |
 | E7 | Optional vertex color (glTF `COLOR_0`): static, instanced, skinned | No larger vertex for other meshes | done |
 | E8 | Auto exposure and 3D color LUT | Only the exposure value persists between frames | done |
-| E9 | Soft, lit particles with an animated atlas | — | planned |
+| E9 | Soft, lit particles with an animated atlas | — | done |
 | E10 | BC7 / BC5 textures, conversion tool, RGBA8 fallback | Memory and load time measured | planned |
 | E13 | Minimum 1 px width for thin geometry, per material | No sorted alpha if possible | planned |
 | S1 | Round, soft stars instead of hard-edged voxels | — | done |
