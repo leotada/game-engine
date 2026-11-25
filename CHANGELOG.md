@@ -8,7 +8,7 @@
   constants; optional device features requested only when available (`GpuContext.hasFeature`); `MaterialParams` grows
   to 240 bytes (surface options block); new `render-check` config with GPU pixel checks.
 - **Stars** (default on): the night sky draws round stars with a jittered center and a smooth falloff, at least one
-  pixel wide (`SkyInputs.pixelAngle`). They were hard-edged voxel slivers.
+  pixel wide (`SkyInputs.pixelAngle`). The only default image change. They were hard-edged voxel slivers.
 - **sRGB color textures** (`TextureDesc.srgb`, `TextureDesc.mippedSrgb()`, `GltfImportOptions.srgbColor`, `srgbAlbedo` for
   terrain and decals): hardware decode and mips averaged in linear light. `PostSettings.outputTransfer = srgb` selects
   the exact display curve. Defaults are unchanged.
@@ -28,17 +28,26 @@
   `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
 - **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),
   `SurfaceIn.vertexColor`. Separate stream: meshes without colors are unchanged.
-- **Volumetric light** of the sun and the clustered lights (`Renderer.volumetrics`, `VolumetricSettings`). Off by default.
-- **Auto exposure** (`PostSettings.autoExposure`) and **3D color tables** (`Renderer.setColorLut`, `loadCubeLut`, `PostSettings.lutStrength`). Off by default.
-- **Soft, lit and animated particles** (`MaterialFlags.soft`, `litParticle`, `flipbook`, `ParticleDesc.flipbookFrames`). Off by default.
+- **Volumetric light** of the sun and the clustered lights (`Renderer.volumetrics`, `VolumetricSettings`), at half or quarter
+  resolution. Off by default. Outdoor demo: `--volumetric`.
+- **Auto exposure** (`PostSettings.autoExposure`, `Renderer.resetAutoExposure`) and **3D color tables** (`Renderer.setColorLut`,
+  `clearColorLut`, `loadCubeLut`, `PostSettings.lutStrength`). Off by default.
+- **Soft, lit and animated particles** (`MaterialFlags.soft`, `litParticle`, `flipbook`; `MaterialParams.softDistance`, `lightWrap`,
+  `flipbookGrid`, `flipbookBlend`; `flipbookFrames`, `flipbookFps` and start frame in `ParticleDesc` / `ParticleEmitter`). Off by default.
 - **BC7 / BC5 textures** (`game-engine-texc`, `Texture.fromKtx2Bytes`, `TextureDesc.compressed`,
   `GltfImportOptions.compressedTextures`): KTX2 files with mips and optional zstd, a quarter of the memory, RGBA8 fallback on the
   CPU. BC5 normal maps rebuild Z (`MaterialFlags.normalXy`). Off by default.
 - **Thin geometry** (`MaterialFlags.thin`, `MaterialParams.thinRadius`, `thinPixels`): wires keep a minimum width on screen, with
-  dithered or blended coverage. Off by default; replaces the unused `specularAaStrength` field.
+  dithered or blended coverage. Off by default. Shadow maps draw the original geometry.
 - **GPU culling** splits groups above 1,024 instances, so `gpu.staticCull` no longer grows with the largest group
   (0.81 to 0.30 ms in a city with 205,000 instances). Hi-Z occlusion was built and measured, and left out because it cost more
   than it saved (`docs/graphics.md`).
+- **Compatibility**: `MaterialParams` is 240 bytes (was 208) and its uniform buffer is visible to the vertex stage, so code that
+  copies the material layout or builds its own bind group layout must follow (`MATERIAL_PARAMS_SIZE`). Particles with
+  `flipbookFrames` use the instance `custom.w` as the frame number instead of the rain shelter, and draw the top of the frame up.
+  New function parameters (`parseGltfMesh`, `uploadOptimizedMesh`, `composeCustomPostShader`, ...) are optional.
+- **Licenses**: SMAA (MIT, with its tables), CMAA2 (Apache-2.0) and the CAS formulation (MIT) are listed in
+  `docs/third-party-licenses.md`.
 
 ### Engine bug fixes
 
