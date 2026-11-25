@@ -66,6 +66,8 @@ struct GltfMesh {
     uint[] shadowIndices;
     /// One tangent per vertex when the file has `TANGENT` or a normal map generated one. `tangent[3]` is handedness.
     float[4][] tangents;
+    /// One linear RGBA8 color per vertex (`COLOR_0` with `GltfImportOptions.vertexColors`), or empty.
+    ubyte[4][] colors;
 }
 
 /// Opt-in glTF material features shared by `loadGltfPbr`, `loadGltfAsset` and
@@ -82,6 +84,8 @@ struct GltfImportOptions {
     /// normal-mapped materials (specular antialiasing). Builds one
     /// metallic-roughness texture per such material.
     bool specularAa = false;
+    /// Import `COLOR_0` and multiply it into base color and opacity.
+    bool vertexColors = false;
 }
 
 /// glTF `alphaMode`.
@@ -192,7 +196,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     import core.lifetime : move;
 
     auto doc = parseGltfDocument(gltfPath);
-    auto meshCpu = parseFirstMesh(doc);
+    auto meshCpu = parseFirstMesh(doc, opts.vertexColors);
     GltfMaterialDesc matDesc;
     if ("materials" in doc.root && doc.root["materials"].array.length) {
         immutable mi = firstPrimitiveMaterial(doc);
@@ -200,10 +204,10 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     }
     if (matDesc.normalImage >= 0 || matDesc.clearcoatNormalImage >= 0
         || matDesc.anisotropyImage >= 0 || matDesc.params.specularAnisotropy != 0.0f)
-        generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
+        generateMissingTangents(gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents, meshCpu.colors);
 
     GltfModel model;
-    model.mesh = uploadImportedMesh(gpu, gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents);
+    model.mesh = uploadImportedMesh(gpu, gltfPath, meshCpu.vertices, meshCpu.indices, meshCpu.shadowIndices, meshCpu.tangents, meshCpu.colors);
 
     MaterialParams params = matDesc.params;
     params.flags = matDesc.params.flags & MaterialFlags.thinWalled;
@@ -1227,9 +1231,22 @@ uint[] readAccessorIndices(ref GltfDocument doc, int accessorIndex) @trusted {
     return dst;
 }
 
+/// `COLOR_0` floats (3 or 4 per vertex, linear) to RGBA8.
+package(engine) ubyte[4][] packVertexColors(scope const(float)[] c, uint comps) pure {
+    auto dst = new ubyte[4][c.length / comps];
+    foreach (i, ref d; dst) {
+        d = [255, 255, 255, 255];
+        foreach (k; 0 .. comps) {
+            immutable v = c[i * comps + k];
+            d[k] = v <= 0 ? 0 : v >= 1 ? 255 : cast(ubyte)(v * 255 + 0.5f);
+        }
+    }
+    return dst;
+}
+
 /// Geometry of one primitive, exactly as authored (no node transform, no
 /// optimization). Non-indexed triangle lists get sequential indices.
-GltfMesh readPrimitiveGeometry(ref GltfDocument doc, ref JSONValue prim) @trusted {
+GltfMesh readPrimitiveGeometry(ref GltfDocument doc, ref JSONValue prim, bool vertexColors = false) @trusted {
     if ("mode" in prim.object)
         enforce(prim["mode"].integer == 4, "glTF: only TRIANGLES primitives are supported");
     auto attrs = prim["attributes"].object;
@@ -1256,6 +1273,15 @@ GltfMesh readPrimitiveGeometry(ref GltfDocument doc, ref JSONValue prim) @truste
         v.normal = normals.length ? [normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]] : [0.0f, 1.0f, 0.0f];
         v.uv = uvs.length ? [uvs[i * 2], uvs[i * 2 + 1]] : [0.0f, 0.0f];
         out_.vertices[i] = v;
+    }
+    if (vertexColors && "COLOR_0" in attrs) {
+        immutable acc = cast(int) attrs["COLOR_0"].integer;
+        auto accessors = doc.root["accessors"].array;
+        enforce(acc >= 0 && acc < accessors.length, "glTF: accessor index OOB");
+        immutable uint comps = accessors[acc]["type"].str == "VEC3" ? 3 : 4;
+        auto c = readAccessorFloats(doc, acc, comps);
+        enforce(c.length == vcount * comps, "glTF: COLOR_0 count mismatch");
+        out_.colors = packVertexColors(c, comps);
     }
     if (tans.length) {
         enforce(tans.length == vcount * 4, "glTF: TANGENT count mismatch");
@@ -1315,7 +1341,7 @@ struct GltfSceneCpu {
 /// import-time optimizer (`.meta` settings of `doc.path`) and generates
 /// tangents when its material needs them. Node transforms stay in
 /// `GltfNodeCpu.local`.
-GltfSceneCpu parseGltfScene(ref GltfDocument doc) @trusted {
+GltfSceneCpu parseGltfScene(ref GltfDocument doc, bool vertexColors = false) @trusted {
     GltfSceneCpu scene;
     auto root = doc.root;
 
@@ -1337,16 +1363,16 @@ GltfSceneCpu parseGltfScene(ref GltfDocument doc) @trusted {
                 auto p = &scene.meshes[mi].primitives[pi];
                 p.material = ("material" in prim.object) ? cast(int) prim["material"].integer : -1;
                 enforce(p.material < cast(int) scene.materials.length, "glTF: primitive material index OOB");
-                p.mesh = readPrimitiveGeometry(doc, prim);
+                p.mesh = readPrimitiveGeometry(doc, prim, vertexColors);
                 auto g = &p.mesh;
-                finalizeImportedMesh(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
+                finalizeImportedMesh(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents, g.colors);
                 if (p.material >= 0) {
                     auto md = &scene.materials[p.material];
                     if (md.normalImage >= 0 || md.normalUri.length
                         || md.clearcoatNormalImage >= 0 || md.clearcoatNormalUri.length
                         || md.anisotropyImage >= 0 || md.anisotropyUri.length
                         || md.params.specularAnisotropy != 0.0f)
-                        generateMissingTangents(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents);
+                        generateMissingTangents(doc.path, g.vertices, g.indices, g.shadowIndices, g.tangents, g.colors);
                 }
             }
         }
@@ -1508,12 +1534,12 @@ private Vec3 transformNormal(Mat4 invWorld, Vec3 n) pure nothrow @nogc {
 
 /// Parse a `.gltf`/`.glb` file and return its first primitive as CPU geometry,
 /// with the first instancing node's world transform baked into the vertices.
-GltfMesh parseGltfMesh(string gltfPath) @trusted {
+GltfMesh parseGltfMesh(string gltfPath, bool vertexColors = false) @trusted {
     auto doc = parseGltfDocument(gltfPath);
-    return parseFirstMesh(doc);
+    return parseFirstMesh(doc, vertexColors);
 }
 
-private GltfMesh parseFirstMesh(ref GltfDocument doc) @trusted {
+private GltfMesh parseFirstMesh(ref GltfDocument doc, bool vertexColors = false) @trusted {
     enforce("meshes" in doc.root, "glTF: no meshes");
     auto meshes = doc.root["meshes"].array;
     enforce(meshes.length > 0, "glTF: empty meshes array");
@@ -1522,7 +1548,7 @@ private GltfMesh parseFirstMesh(ref GltfDocument doc) @trusted {
     auto prim = primitives[0];
     immutable hasNormals = ("NORMAL" in prim["attributes"].object) !is null;
 
-    GltfMesh out_ = readPrimitiveGeometry(doc, prim);
+    GltfMesh out_ = readPrimitiveGeometry(doc, prim, vertexColors);
     Mat4 world = meshNodeWorld(doc.root);
     Mat4 ident = Mat4.identity;
     if (world.m != ident.m) {
@@ -1542,7 +1568,7 @@ private GltfMesh parseFirstMesh(ref GltfDocument doc) @trusted {
             t[2] = n.z;
         }
     }
-    finalizeImportedMesh(doc.path, out_.vertices, out_.indices, out_.shadowIndices, out_.tangents);
+    finalizeImportedMesh(doc.path, out_.vertices, out_.indices, out_.shadowIndices, out_.tangents, out_.colors);
     return out_;
 }
 
@@ -1973,4 +1999,32 @@ version (unittest) {
     assert((wax.params.flags & MaterialFlags.thinWalled) == 0);
     assert(abs(wax.params.subsurfaceWeight - 0.9f) < 1e-4f);
     assert(abs(wax.params.subsurfaceRadius - 0.8f) < 1e-4f);
+}
+
+@("gltf.vertexColors") @trusted unittest {
+    // COLOR_0 as normalized ubyte VEC4 and as float VEC3, only when asked for.
+    float[9] pos = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+    float[9] rgb = [1, 0.5f, 0, 0, 1, 2, 0.25f, -1, 1];
+    ubyte[12] rgba = [255, 0, 0, 255, 0, 128, 0, 64, 0, 0, 255, 0];
+    ubyte[] bin = leBytes(pos[]) ~ leBytes(rgb[]) ~ rgba[].dup;
+    foreach (fl; [false, true]) {
+        string json = `{"asset":{"version":"2.0"},"buffers":[{"byteLength":` ~ bin.length.to!string ~ `}],
+          "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},
+                         {"buffer":0,"byteOffset":72,"byteLength":12}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+                       {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+                       {"bufferView":2,"componentType":5121,"normalized":true,"count":3,"type":"VEC4"}],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0,"COLOR_0":` ~ (fl ? "1" : "2") ~ `}}]}],
+          "nodes":[{"mesh":0}]}`;
+        auto doc = parseGltfDocumentBytes(buildGlb(json, bin), "/nonexistent-dir");
+        assert(parseGltfScene(doc).meshes[0].primitives[0].mesh.colors.length == 0);
+        auto m = parseGltfScene(doc, true).meshes[0].primitives[0].mesh;
+        assert(m.colors.length == m.vertices.length && m.colors.length == 3);
+        foreach (i, v; m.vertices) {
+            immutable ubyte[4] want = v.pos[0] > 0.5f ? (fl ? [ubyte(0), ubyte(255), ubyte(255), ubyte(255)] : [ubyte(0), ubyte(128), ubyte(0), ubyte(64)])
+                : v.pos[1] > 0.5f ? (fl ? [ubyte(64), ubyte(0), ubyte(255), ubyte(255)] : [ubyte(0), ubyte(0), ubyte(255), ubyte(0)])
+                : (fl ? [ubyte(255), ubyte(128), ubyte(0), ubyte(255)] : [ubyte(255), ubyte(0), ubyte(0), ubyte(255)]);
+            assert(m.colors[i] == want);
+        }
+    }
 }

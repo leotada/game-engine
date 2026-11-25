@@ -31,6 +31,20 @@ private enum DISPLACE_FN_MARKER = "//@@DISPLACE_FN@@";
 private immutable string kTextured3dSurfaceTemplate = textured3dSurfaceTemplate;
 private immutable string kTextured3dSurfaceTangentTemplate = textured3dSurfaceTangentTemplate;
 
+/// Enable the vertex-color lines (`//#VC`) of a composed PBR shader.
+string withVertexColor(scope const(char)[] code) {
+    import std.array : replace;
+    return code.replace("//#VC ", "").idup;
+}
+
+@("shaders.withVertexColor") unittest {
+    import std.algorithm.searching : canFind, count;
+    auto code = withVertexColor(textured3dTangentShaderSource);
+    assert(code.canFind("\n    @location(12) vertexColor: vec4<f32>,"));
+    assert(!code.canFind("//#VC "));
+    assert(textured3dTangentShaderSource.count("//#VC ") >= 5);
+}
+
 /// Which vertex hook a surface snippet defines.
 enum DisplaceKind : ubyte {
     /// No vertex hook: geometry is static (shadow passes use the stock pipeline).

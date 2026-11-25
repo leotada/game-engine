@@ -55,6 +55,88 @@ LodImport parseLodImport(JSONValue root) @trusted {
     return result;
 }
 
+/// Import-time vertex of meshes with vertex colors; split again before upload.
+private struct ColorVert {
+    float[3] pos;
+    float[3] normal;
+    float[2] uv;
+    ubyte[4] color;
+}
+
+private struct ColorTanVert {
+    float[3] pos;
+    float[3] normal;
+    float[2] uv;
+    float[4] tangent;
+    ubyte[4] color;
+}
+
+private V[] packColors(V)(const(TexVert)[] vertices, const(float[4])[] tangents, const(ubyte[4])[] colors) {
+    auto packed = new V[vertices.length];
+    foreach (i, ref p; packed) {
+        p.pos = vertices[i].pos;
+        p.normal = vertices[i].normal;
+        p.uv = vertices[i].uv;
+        static if (is(V == ColorTanVert)) p.tangent = tangents[i];
+        p.color = colors[i];
+    }
+    return packed;
+}
+
+private void unpackColors(V)(const(V)[] packed, ref TexVert[] vertices, ref float[4][] tangents, ref ubyte[4][] colors) {
+    vertices = new TexVert[packed.length];
+    colors = new ubyte[4][packed.length];
+    static if (is(V == ColorTanVert)) tangents = new float[4][packed.length];
+    foreach (i, ref p; packed) {
+        vertices[i] = TexVert(p.pos, p.normal, p.uv);
+        colors[i] = p.color;
+        static if (is(V == ColorTanVert)) tangents[i] = p.tangent;
+    }
+}
+
+private void optimizeColored(V)(string assetPath, V[] packed, ref TexVert[] vertices, ref uint[] indices,
+                                ref uint[] shadowIndices, ref float[4][] tangents, ref ubyte[4][] colors) {
+    optimizeImportedMesh(assetPath, packed, indices, shadowIndices);
+    unpackColors(packed, vertices, tangents, colors);
+}
+
+/// `finalizeImportedMesh` keeping one color per vertex.
+void finalizeImportedMesh(string assetPath, ref TexVert[] vertices, ref uint[] indices, ref uint[] shadowIndices,
+                          ref float[4][] tangents, ref ubyte[4][] colors) {
+    if (colors.length == 0 || colors.length != vertices.length) {
+        colors = null;
+        finalizeImportedMesh(assetPath, vertices, indices, shadowIndices, tangents);
+    } else if (tangents.length == vertices.length) {
+        optimizeColored(assetPath, packColors!ColorTanVert(vertices, tangents, colors), vertices, indices,
+                        shadowIndices, tangents, colors);
+    } else {
+        optimizeColored(assetPath, packColors!ColorVert(vertices, null, colors), vertices, indices,
+                        shadowIndices, tangents, colors);
+    }
+}
+
+/// `generateMissingTangents` keeping one color per vertex.
+void generateMissingTangents(string assetPath, ref TexVert[] vertices, ref uint[] indices, ref uint[] shadowIndices,
+                             ref float[4][] tangents, ref ubyte[4][] colors) {
+    if (colors.length == 0 || colors.length != vertices.length) {
+        colors = null;
+        generateMissingTangents(assetPath, vertices, indices, shadowIndices, tangents);
+        return;
+    }
+    if (tangents.length == vertices.length || indices.length == 0) return;
+    auto corners = new float[4][](indices.length);
+    generateTangents(corners, indices, positionsOf!TexVert(vertices), positionsOf!(TexVert, "normal")(vertices),
+                     uvStream(vertices), TangentOptions.compatible);
+    auto expanded = new ColorTanVert[indices.length];
+    auto expandedIdx = new uint[indices.length];
+    foreach (i, id; indices) {
+        expanded[i] = ColorTanVert(vertices[id].pos, vertices[id].normal, vertices[id].uv, corners[i], colors[id]);
+        expandedIdx[i] = cast(uint) i;
+    }
+    indices = expandedIdx;
+    optimizeColored(assetPath, expanded, vertices, indices, shadowIndices, tangents, colors);
+}
+
 /// `.meta` `settings.lod` of `assetPath` (disabled when absent or unreadable).
 LodImport lodImportFor(string assetPath) @trusted {
     string metaPath = assetPath ~ ".meta";
@@ -69,11 +151,12 @@ LodImport lodImportFor(string assetPath) @trusted {
 
 /// Upload an imported mesh, building a LOD chain when `.meta` asks for one.
 TexMesh uploadImportedMesh(ref GpuContext gpu, string assetPath, const(TexVert)[] vertices,
-                           const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents) {
+                           const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents,
+                           const(ubyte[4])[] colors = null) {
     immutable lod = lodImportFor(assetPath);
     if (lod.enabled)
-        return uploadLodMesh(gpu, vertices, indices, shadowIndices, tangents, lod.settings);
-    return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents);
+        return uploadLodMesh(gpu, vertices, indices, shadowIndices, tangents, lod.settings, colors);
+    return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents, colors);
 }
 
 /// `assetPath` is the glTF (or other asset), not the `.meta` path.
@@ -168,7 +251,14 @@ void generateMissingTangents(string assetPath, ref TexVert[] vertices, ref uint[
 }
 
 /// Upload `TexTanVert` when tangents are present, otherwise `TexVert`.
-TexMesh uploadOptimizedMesh(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents) {
+TexMesh uploadOptimizedMesh(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices, const(uint)[] shadowIndices, const(float[4])[] tangents, const(ubyte[4])[] colors = null) {
+    auto mesh = uploadPlain(gpu, vertices, indices, shadowIndices, tangents);
+    if (colors.length == vertices.length) mesh.setVertexColors(gpu, colors);
+    return mesh;
+}
+
+private TexMesh uploadPlain(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices,
+                            const(uint)[] shadowIndices, const(float[4])[] tangents) {
     if (tangents.length == vertices.length && tangents.length > 0)
         return TexMesh.fromData(gpu, packTangents(vertices, tangents), indices, shadowIndices);
     return TexMesh.fromData(gpu, vertices, indices, shadowIndices);
@@ -182,10 +272,15 @@ TexMesh uploadOptimizedMesh(ref GpuContext gpu, const(TexVert)[] vertices, const
  */
 TexMesh uploadLodMesh(ref GpuContext gpu, const(TexVert)[] vertices, const(uint)[] indices,
                       const(uint)[] shadowIndices, const(float[4])[] tangents,
-                      LodSettings settings = LodSettings.init) {
+                      LodSettings settings = LodSettings.init, const(ubyte[4])[] colors = null) {
     if (settings.maxLods > 8) settings.maxLods = 8;
     if (indices.length == 0 || vertices.length == 0)
-        return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents);
+        return uploadOptimizedMesh(gpu, vertices, indices, shadowIndices, tangents, colors);
+    if (colors.length == vertices.length) {
+        if (tangents.length == vertices.length)
+            return uploadColorChain(gpu, buildLodChain(packColors!ColorTanVert(vertices, tangents, colors), indices, settings));
+        return uploadColorChain(gpu, buildLodChain(packColors!ColorVert(vertices, null, colors), indices, settings));
+    }
     if (tangents.length == vertices.length && tangents.length > 0)
         return uploadChain(gpu, buildLodChain(packTangents(vertices, tangents), indices, settings));
     return uploadChain(gpu, buildLodChain(vertices, indices, settings));
@@ -212,6 +307,19 @@ private TexMesh uploadChain(V)(ref GpuContext gpu, LodChain!(V, uint) chain) {
     auto concat = concatLodLevels(chain.levels[0 .. n], first[], counts[], errors[]);
     auto mesh = TexMesh.fromData(gpu, chain.vertices, concat);
     mesh.setLodChain(first[0 .. n], counts[0 .. n], errors[0 .. n], simplifyScale(positionsOf!V(chain.vertices)));
+    return mesh;
+}
+
+private TexMesh uploadColorChain(V)(ref GpuContext gpu, LodChain!(V, uint) chain) {
+    TexVert[] vertices;
+    float[4][] tangents;
+    ubyte[4][] colors;
+    unpackColors(chain.vertices, vertices, tangents, colors);
+    static if (is(V == ColorTanVert))
+        auto mesh = uploadChain(gpu, LodChain!(TexTanVert, uint)(packTangents(vertices, tangents), chain.levels));
+    else
+        auto mesh = uploadChain(gpu, LodChain!(TexVert, uint)(vertices, chain.levels));
+    mesh.setVertexColors(gpu, colors);
     return mesh;
 }
 
@@ -333,4 +441,38 @@ private bool jsonBool(ref JSONValue obj, string key, bool fallback) {
     assert(on.settings.maxError > 0.09f && on.settings.maxError < 0.11f);
     auto defaults = parseLodImport(parseJSON(`{"settings":{"lod":{"enabled":true}}}`));
     assert(defaults.enabled && defaults.settings.maxLods == LodSettings.init.maxLods);
+}
+
+@("vertexColors.optimize") unittest {
+    // Same position, two colors: the seam must survive the reindex.
+    TexVert[] verts = [
+        TexVert([0, 0, 0], [0, 1, 0], [0, 0]), TexVert([1, 0, 0], [0, 1, 0], [1, 0]),
+        TexVert([0, 0, 1], [0, 1, 0], [0, 1]), TexVert([1, 0, 0], [0, 1, 0], [1, 0]),
+        TexVert([1, 0, 1], [0, 1, 0], [1, 1]), TexVert([0, 0, 1], [0, 1, 0], [0, 1]),
+    ];
+    ubyte[4] red = [255, 0, 0, 255], blue = [0, 0, 255, 128];
+    foreach (withTangents; [false, true]) {
+        auto v = verts.dup;
+        uint[] idx = [0, 2, 1, 3, 5, 4];
+        uint[] shadow;
+        float[4][] tangents;
+        ubyte[4][] colors = [red, red, red, blue, blue, blue];
+        finalizeImportedMesh("/nonexistent/a.gltf", v, idx, shadow, tangents, colors);
+        if (withTangents) generateMissingTangents("/nonexistent/a.gltf", v, idx, shadow, tangents, colors);
+        assert(v.length == 6 && colors.length == 6 && tangents.length == (withTangents ? 6 : 0));
+        foreach (t; 0 .. 2) {
+            // The triangle touching the origin is the red one.
+            bool origin = false;
+            foreach (k; 0 .. 3) if (v[idx[t * 3 + k]].pos == [0.0f, 0, 0]) origin = true;
+            foreach (k; 0 .. 3) assert(colors[idx[t * 3 + k]] == (origin ? red : blue));
+        }
+    }
+    // Wrong count: colors are dropped.
+    auto v = verts.dup;
+    uint[] idx = [0, 2, 1];
+    uint[] shadow;
+    float[4][] tangents;
+    ubyte[4][] colors = [red];
+    finalizeImportedMesh("/nonexistent/a.gltf", v, idx, shadow, tangents, colors);
+    assert(colors.length == 0);
 }

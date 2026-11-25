@@ -110,6 +110,9 @@ struct PoolSlot {
 struct MeshPool {
     WGPUBuffer[2] vertices;
     ulong[2] vertexBytes;
+    /// Vertex colors of the colored meshes, which come first in `vertices`.
+    WGPUBuffer[2] colors;
+    ulong[2] colorBytes;
     WGPUBuffer[2] indices;
     ulong[2] indexBytes;
     Pod!PoolSlot[] slots;
@@ -123,11 +126,13 @@ struct MeshPool {
         MeshPool p;
         p.slots = new PoolSlot[meshes.length];
         static ulong align4(ulong v) { return (v + 3) & ~3UL; }
-        foreach (i, m; meshes) {
+        foreach (colored; [true, false]) foreach (i, m; meshes) {
+            if (m.hasVertexColors != colored) continue;
             immutable si = strideIndex(m.vertexStride), fi = formatIndex(m.indexFormat);
             immutable isz = fi == 1 ? 4 : 2;
             p.slots[i].baseVertex = cast(uint)(p.vertexBytes[si] / m.vertexStride);
             p.vertexBytes[si] += m.vertexBufSize;
+            if (colored) p.colorBytes[si] += m.vertexBufSize / m.vertexStride * 4;
             p.slots[i].firstIndex = cast(uint)(p.indexBytes[fi] / isz);
             p.indexBytes[fi] += align4(m.indexBufSize);
             p.slots[i].firstShadowIndex = p.slots[i].firstIndex;
@@ -140,6 +145,9 @@ struct MeshPool {
         foreach (k; 0 .. 2) {
             if (p.vertexBytes[k])
                 p.vertices[k] = createBufferWithUsage(device, p.vertexBytes[k],
+                    WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst);
+            if (p.colorBytes[k])
+                p.colors[k] = createBufferWithUsage(device, p.colorBytes[k],
                     WGPUBufferUsage.vertex | WGPUBufferUsage.copyDst);
             if (p.indexBytes[k])
                 p.indices[k] = createBufferWithUsage(device, p.indexBytes[k],
@@ -154,6 +162,9 @@ struct MeshPool {
             if (m.vertexBufSize)
                 wgpuCommandEncoderCopyBufferToBuffer(enc, m.vertexBuffer, 0, p.vertices[si],
                     cast(ulong) s.baseVertex * m.vertexStride, m.vertexBufSize);
+            if (m.hasVertexColors)
+                wgpuCommandEncoderCopyBufferToBuffer(enc, m.colorBuffer, 0, p.colors[si],
+                    cast(ulong) s.baseVertex * 4, m.vertexBufSize / m.vertexStride * 4);
             if (m.indexBufSize)
                 wgpuCommandEncoderCopyBufferToBuffer(enc, m.indexBuffer, 0, p.indices[fi],
                     cast(ulong) s.firstIndex * isz, align4(m.indexBufSize));
@@ -172,7 +183,9 @@ struct MeshPool {
     void destroy() nothrow @nogc {
         foreach (k; 0 .. 2) {
             destroyBuffer(vertices[k]);
+            destroyBuffer(colors[k]);
             destroyBuffer(indices[k]);
+            colors[k] = null;
             vertices[k] = null;
             indices[k] = null;
         }

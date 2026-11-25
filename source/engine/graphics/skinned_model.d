@@ -106,7 +106,7 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
                               bool generateMips = true,
                               GltfImportOptions gltfOpts = GltfImportOptions.init) @trusted {
     GltfSkinnedCharacterCpu cpu;
-    if (!loadGltfSkinnedCharacterCpu(path, skeleton, cpu, error))
+    if (!loadGltfSkinnedCharacterCpu(path, skeleton, cpu, error, 0, gltfOpts.vertexColors))
         return false;
 
     try {
@@ -197,6 +197,7 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
         asset.subMeshInfo = new Pod!SkinnedSubMeshInfo[cpu.subMeshes.length];
         foreach (i, ref sm; cpu.subMeshes) {
             auto uploaded = SkinnedMesh.fromData(gpu, sm.vertices, sm.indices);
+            uploaded.setVertexColors(gpu, sm.colors);
             move(uploaded, asset.subMeshes[i]);
             asset.subMeshInfo[i].material = sm.material >= 0 ? cast(uint) sm.material : DEFAULT_MATERIAL;
             asset.subMeshInfo[i].bounds = sm.localBounds;

@@ -652,7 +652,7 @@ Pipeline3D createTexturedPipeline3D(WGPUDevice device, WGPUTextureFormat surface
 
 /// Vertex layout is stride 32 (`TexVert`) or 48 (`TexTanVert`, location 8);
 /// instances are `TexInstanceData` (stride 96, custom at location 9).
-WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout, WGPUTextureFormat surfaceFormat, ulong stride, bool tangent, RenderState state = RenderState.init) nothrow @nogc @trusted {
+WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout, WGPUTextureFormat surfaceFormat, ulong stride, bool tangent, RenderState state = RenderState.init, bool colored = false) nothrow @nogc @trusted {
     WGPUVertexAttribute[4] vertexAttrs = [
         { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
         { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
@@ -661,11 +661,11 @@ WGPURenderPipeline createTexturedDrawPipeline(WGPUDevice device, WGPUShaderModul
     ];
     return createTexturedDrawPipelineWithAttrs(
         device, shader, layout, surfaceFormat,
-        stride, vertexAttrs.ptr, tangent ? 4 : 3, state);
+        stride, vertexAttrs.ptr, tangent ? 4 : 3, state, colored);
 }
 
 /// Stride-80 skinned PBR pipeline (`SkinnedVertex`: pos, normal, uv, tangent, joints, weights).
-WGPURenderPipeline createSkinnedTexturedDrawPipeline(WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout, WGPUTextureFormat surfaceFormat, RenderState state = RenderState.init) nothrow @nogc @trusted {
+WGPURenderPipeline createSkinnedTexturedDrawPipeline(WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout, WGPUTextureFormat surfaceFormat, RenderState state = RenderState.init, bool colored = false) nothrow @nogc @trusted {
     WGPUVertexAttribute[6] vertexAttrs = [
         { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
         { format: WGPUVertexFormat.float32x3, offset: 12, shaderLocation: 1 },
@@ -676,15 +676,16 @@ WGPURenderPipeline createSkinnedTexturedDrawPipeline(WGPUDevice device, WGPUShad
     ];
     return createTexturedDrawPipelineWithAttrs(
         device, shader, layout, surfaceFormat,
-        80, vertexAttrs.ptr, 6, state);
+        80, vertexAttrs.ptr, 6, state, colored);
 }
 
 private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     WGPUDevice device, WGPUShaderModule shader, WGPUPipelineLayout layout,
     WGPUTextureFormat surfaceFormat, ulong stride,
     const(WGPUVertexAttribute)* vertexAttrs, uint vertexAttrCount,
-    RenderState state) nothrow @nogc @trusted
+    RenderState state, bool colored) nothrow @nogc @trusted
 {
+    WGPUVertexAttribute colorAttr = { format: WGPUVertexFormat.unorm8x4, offset: 0, shaderLocation: 12 };
     WGPUVertexAttribute[6] instanceAttrs = [
         { format: WGPUVertexFormat.float32x4, offset: 0,  shaderLocation: 3 },
         { format: WGPUVertexFormat.float32x4, offset: 16, shaderLocation: 4 },
@@ -693,7 +694,7 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
         { format: WGPUVertexFormat.float32x4, offset: 64, shaderLocation: 7 },
         { format: WGPUVertexFormat.float32x4, offset: 80, shaderLocation: 9 },
     ];
-    WGPUVertexBufferLayout[2] bufferLayouts = [
+    WGPUVertexBufferLayout[3] bufferLayouts = [
         {
             arrayStride: stride,
             stepMode: WGPUVertexStepMode.vertex,
@@ -705,6 +706,13 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
             stepMode: WGPUVertexStepMode.instance_,
             attributeCount: 6,
             attributes: instanceAttrs.ptr,
+        },
+        // Optional vertex color stream.
+        {
+            arrayStride: 4,
+            stepMode: WGPUVertexStepMode.vertex,
+            attributeCount: 1,
+            attributes: &colorAttr,
         },
     ];
 
@@ -746,7 +754,7 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     pipeDesc.layout = layout;
     pipeDesc.vertex.module_ = shader;
     pipeDesc.vertex.entryPoint = wgpuStringView("vs_main");
-    pipeDesc.vertex.bufferCount = 2;
+    pipeDesc.vertex.bufferCount = colored ? 3 : 2;
     pipeDesc.vertex.buffers = bufferLayouts.ptr;
     pipeDesc.primitive.topology = WGPUPrimitiveTopology.triangleList;
     pipeDesc.primitive.frontFace = WGPUFrontFace.ccw;

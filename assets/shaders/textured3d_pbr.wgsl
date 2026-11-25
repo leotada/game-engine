@@ -294,6 +294,9 @@ struct SurfaceIn {
     /// position in object-sized units, so procedural patterns keep their
     /// real-world scale on meshes stretched by the instance transform.
     objectScale: vec3<f32>,
+    /// Interpolated vertex color (linear), white on meshes without one.
+    /// `base.baseColor` and `base.opacity` already include it.
+    vertexColor: vec4<f32>,
 };
 
 /// Surface description handed to the standard OpenPBR lighting. A custom
@@ -399,6 +402,8 @@ struct VertexInput {
     @location(10) joints: vec4<u32>,
     @location(11) weights: vec4<f32>,
 #endif
+    // Lines starting with `//#VC` are enabled by `withVertexColor` (meshes with a color stream).
+    //#VC @location(12) vertexColor: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -414,6 +419,7 @@ struct VertexOutput {
     @location(8) custom: vec4<f32>,
     @location(9) tintAlpha: f32,
     @location(10) objectScale: vec3<f32>,
+    //#VC @location(11) vertexColor: vec4<f32>,
 };
 
 @vertex
@@ -490,6 +496,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.custom = in.custom;
     out.tintAlpha = in.tint.a;
     out.objectScale = vec3<f32>(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
+    //#VC out.vertexColor = in.vertexColor;
     return out;
 }
 
@@ -607,6 +614,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
     // Instance tint alpha scales opacity (particle fade); 1 for stock draws.
     var surfaceOpacity = albedoSample.a * mat.geometryOpacity * in.tintAlpha;
+    //#VC baseColor *= in.vertexColor.rgb;
+    //#VC surfaceOpacity *= in.vertexColor.a;
     var metalness = mat.baseMetalness;
     var roughness = mat.specularRoughness;
     if ((mat.flags & FLAG_MR) != 0u) {
@@ -714,6 +723,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     surfIn.viewDir = V;
     surfIn.custom = in.custom;
     surfIn.objectScale = in.objectScale;
+    surfIn.vertexColor = vec4<f32>(1.0);
+    //#VC surfIn.vertexColor = in.vertexColor;
     var surfBase: SurfaceOut;
     surfBase.baseColor = baseColor;
     surfBase.metalness = metalness;

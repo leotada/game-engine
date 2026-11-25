@@ -28,6 +28,8 @@ struct TexMesh {
     package(engine) WGPUBuffer indexBuffer;
     /// Position-welded index buffer. Null when the mesh has no shadow indices.
     package(engine) WGPUBuffer shadowIndexBuffer;
+    /// Optional vertex colors (RGBA8, linear), see `setVertexColors`. Null = white.
+    package(engine) WGPUBuffer colorBuffer;
     package(engine) uint indexCount;
     package(engine) ulong vertexBufSize;
     package(engine) ulong indexBufSize;
@@ -205,7 +207,24 @@ struct TexMesh {
         return draw;
     }
 
+    /// Attach (or replace) per-vertex colors: one linear RGBA8 value per vertex,
+    /// multiplied into base color and opacity. They live in their own stream,
+    /// so meshes without colors keep their vertex size.
+    void setVertexColors(ref GpuContext gpu, scope const(ubyte[4])[] colors) @trusted {
+        assert(colors.length * vertexStride == vertexBufSize, "one color per vertex");
+        if (colors.length == 0) return;
+        if (colorBuffer is null)
+            colorBuffer = createVertexBuffer(gpu.getDevice(), gpu.getQueue(), colors.ptr, colors.length * 4);
+        else
+            updateBuffer(gpu.getQueue(), colorBuffer, colors.ptr, colors.length * 4);
+    }
+
+    /// True when the mesh carries vertex colors.
+    bool hasVertexColors() const pure nothrow @nogc { return colorBuffer !is null; }
+
     void destroy() nothrow @nogc {
+        destroyBuffer(colorBuffer);
+        colorBuffer = null;
         destroyBuffer(vertexBuffer);
         destroyBuffer(indexBuffer);
         destroyBuffer(shadowIndexBuffer);

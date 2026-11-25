@@ -386,7 +386,8 @@ struct StaticInstanceBuffer {
                  | (cast(ulong) MeshPool.formatIndex(mesh.indexFormat) << 62)
                  | (cls << 61) | (cast(ulong) mat.renderState.depthWrite << 60)
                  | (cast(ulong) mat.renderState.doubleSided << 59)
-                 | (cast(ulong) groups[gi].material << 28) | gi;
+                 | (cast(ulong) groups[gi].material << 28)
+                 | (cast(ulong) mesh.hasVertexColors << 27) | gi;
         }
         order.sort!((a, b) => key(a) < key(b));
         foreach (i, ref t; table) fillGroup(t, cast(uint) i);

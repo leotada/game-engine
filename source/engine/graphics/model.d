@@ -432,7 +432,7 @@ GltfNode[] buildNodeTable(ref const GltfSceneCpu scene, const(uint)[] meshFirstS
 GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout materialLayout,
                         ref Sampler sampler, GltfLoadOptions opts = GltfLoadOptions.init) @trusted {
     auto doc = parseGltfDocument(path);
-    auto scene = parseGltfScene(doc);
+    auto scene = parseGltfScene(doc, opts.gltf.vertexColors);
     GltfAsset asset;
     // `.meta` `settings.lod.enabled` turns LOD generation on for this file.
     if (!opts.generateLods) {
@@ -537,8 +537,8 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
         foreach (ref p; m.primitives) {
             auto g = &p.mesh;
             TexMesh tm = opts.generateLods
-                ? uploadLodMesh(gpu, g.vertices, g.indices, g.shadowIndices, g.tangents, opts.lodSettings)
-                : uploadOptimizedMesh(gpu, g.vertices, g.indices, g.shadowIndices, g.tangents);
+                ? uploadLodMesh(gpu, g.vertices, g.indices, g.shadowIndices, g.tangents, opts.lodSettings, g.colors)
+                : uploadOptimizedMesh(gpu, g.vertices, g.indices, g.shadowIndices, g.tangents, g.colors);
             move(tm, asset.subMeshes[k]);
             asset.subMeshInfo[k].material = p.material >= 0 ? cast(uint) p.material : DEFAULT_MATERIAL;
             asset.subMeshInfo[k].bounds = asset.subMeshes[k].localBounds;

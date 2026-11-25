@@ -444,6 +444,7 @@ struct Scene3DTextured {
     private struct PipelineVariant {
         uint shaderId;
         RenderState state;
+        bool colored;
         WGPURenderPipeline pipeline;
         WGPURenderPipeline pipelineTangent;
         WGPURenderPipeline pipelineSkinned;
@@ -456,6 +457,25 @@ struct Scene3DTextured {
 
     private enum MAX_SURFACE_SHADERS = 16;
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
+    /// Vertex-color modules of one shader id, compiled on first use.
+    private struct ColoredShader {
+        WGPUShaderModule[3] modules; // stride 32, tangent, skinned
+        /// Surface snippet, or the hot-reloaded stock sources (empty = embedded).
+        PodBuffer!char[2] source;
+
+        void releaseModules() nothrow @nogc @trusted {
+            foreach (ref m; modules) if (m !is null) { wgpuShaderModuleRelease(m); m = null; }
+        }
+        void setSource(uint i, scope const(char)[] text) nothrow @nogc {
+            source[i].resize(text.length);
+            source[i][][] = text[];
+        }
+        void release() nothrow @nogc {
+            releaseModules();
+            foreach (ref s; source) s.release();
+        }
+    }
+    private ColoredShader[MAX_SURFACE_SHADERS + 1] coloredShaders;
     private uint surfaceShaderCount = 0;
 
     /// malloc-backed batch table (see `reserveBatches`); `length` is the
@@ -600,6 +620,7 @@ struct Scene3DTextured {
     bool reloadShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
         if (!reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, false)) return false;
+        coloredShaders[0].setSource(0, newWgsl);
         releaseVariants(0);
         return true;
     }
@@ -608,6 +629,7 @@ struct Scene3DTextured {
     bool reloadTangentShader(scope const(char)[] newWgsl) nothrow @nogc {
         import engine.gpu.pipeline : reloadTexturedPipeline3D;
         if (!reloadTexturedPipeline3D(pipeline, device, Renderer.sceneFormat(), newWgsl, true)) return false;
+        coloredShaders[0].setSource(1, newWgsl);
         releaseVariants(0);
         return true;
     }
@@ -639,7 +661,9 @@ struct Scene3DTextured {
         }
         built.displace = surfaceDisplaceKind(surfaceWgsl);
         surfaceShaders[surfaceShaderCount] = built;
-        return ++surfaceShaderCount;
+        ++surfaceShaderCount;
+        coloredShaders[surfaceShaderCount].setSource(0, surfaceWgsl);
+        return surfaceShaderCount;
     }
 
     /// Recompile an existing surface shader in place (hot reload). The old
@@ -653,6 +677,7 @@ struct Scene3DTextured {
         built.displace = surfaceDisplaceKind(surfaceWgsl);
         surfaceShaders[id - 1].release();
         surfaceShaders[id - 1] = built;
+        coloredShaders[id].setSource(0, surfaceWgsl);
         releaseVariants(id);
         return true;
     }
@@ -1890,16 +1915,18 @@ struct Scene3DTextured {
                 immutable gj = d.order[i];
                 auto mj = sib.meshes[sib.groups[gj].mesh];
                 if (sib.materials[sib.groups[gj].material] !is mat || mj.vertexStride != mesh.vertexStride
+                        || mj.hasVertexColors != mesh.hasVertexColors
                         || mj.indexFormat != mesh.indexFormat)
                     break;
                 count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
             }
-            auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), mesh.vertexStride == 48);
+            auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), mesh.vertexStride == 48, mesh.hasVertexColors);
             if (pipe is null) continue;
             immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
             frame.setPipeline(pipe);
             frame.setBindGroup(1, mat.bindGroup);
             frame.setVertexBuffer(0, d.pool.vertices[si], d.pool.vertexBytes[si]);
+            if (mesh.hasVertexColors) frame.setVertexBuffer(2, d.pool.colors[si], d.pool.colorBytes[si]);
             frame.setIndexBuffer(d.pool.indices[fi], mesh.indexFormat, d.pool.indexBytes[fi]);
             wgpuRenderPassEncoderMultiDrawIndexedIndirect(frame.pass, d.views[0].args,
                 first * cast(ulong) INDIRECT_STRIDE, count);
@@ -1923,12 +1950,14 @@ struct Scene3DTextured {
                 boundGroup = run.group;
                 auto mat = sib.materials[g.material];
                 immutable tangent = mesh.vertexStride == 48;
-                auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), tangent);
+                auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), tangent, mesh.hasVertexColors);
                 groupDrawable = pipe !is null;
                 if (!groupDrawable) continue;
                 frame.setPipeline(pipe);
                 frame.setBindGroup(1, mat.bindGroup);
                 frame.setVertexBuffer(0, mesh.vertexBuffer, mesh.vertexBufSize);
+                if (mesh.hasVertexColors)
+                    frame.setVertexBuffer(2, mesh.colorBuffer, mesh.vertexBufSize / mesh.vertexStride * 4);
                 if (!instancesBound) {
                     frame.setVertexBuffer(1, sib.instanceBuf, sib.instanceCount * TexInstanceData.sizeof);
                     instancesBound = true;
@@ -2341,12 +2370,14 @@ struct Scene3DTextured {
         ensureBatchUploaded(b);
 
         if (b.skinnedMesh !is null) {
-            auto pipe = skinnedPipelineFor(drawState(*b.material));
+            immutable colored = b.skinnedMesh.hasVertexColors;
+            auto pipe = skinnedPipelineFor(drawState(*b.material), colored);
             if (pipe is null) return;
             frame.setPipeline(pipe);
             frame.setBindGroup(1, b.material.bindGroup);
             frame.setBindGroup(3, skinPaletteBg);
             frame.setVertexBuffer(0, b.skinnedMesh.vertexBuffer, b.skinnedMesh.vertexBufSize);
+            if (colored) frame.setVertexBuffer(2, b.skinnedMesh.colorBuffer, b.skinnedMesh.vertexCount * 4UL);
             frame.setVertexBuffer(1, sharedInstBuf, sharedCapacity * TexInstanceData.sizeof);
             frame.setIndexBuffer(b.skinnedMesh.indexBuffer, b.skinnedMesh.indexFormat, b.skinnedMesh.indexBufSize);
             frame.drawIndexed(b.skinnedMesh.indexCount, b.colorCount, 0, 0, b.base + b.colorFirst);
@@ -2356,11 +2387,12 @@ struct Scene3DTextured {
         }
 
         immutable tangent = b.mesh.vertexStride == 48;
-        auto pipe = pipelineFor(b.material.surfaceShader, drawState(*b.material), tangent);
+        auto pipe = pipelineFor(b.material.surfaceShader, drawState(*b.material), tangent, b.mesh.hasVertexColors);
         if (pipe is null) return;
         frame.setPipeline(pipe);
         frame.setBindGroup(1, b.material.bindGroup);
         frame.setVertexBuffer(0, b.mesh.vertexBuffer, b.mesh.vertexBufSize);
+        if (b.mesh.hasVertexColors) frame.setVertexBuffer(2, b.mesh.colorBuffer, b.mesh.vertexBufSize / b.mesh.vertexStride * 4);
         frame.setVertexBuffer(1, sharedInstBuf, sharedCapacity * TexInstanceData.sizeof);
         frame.setIndexBuffer(b.mesh.indexBuffer, b.mesh.indexFormat, b.mesh.indexBufSize);
         immutable range = b.mesh.colorLodRange(b.lod);
@@ -2384,8 +2416,9 @@ struct Scene3DTextured {
     /// True while opaque hooks should write `1 - ambient share` to alpha.
     package(engine) bool writesAmbientAlpha() const nothrow @nogc { return ambientAlphaPass != 0; }
 
-    private WGPURenderPipeline pipelineFor(uint shaderId, RenderState state, bool tangent) @trusted {
+    private WGPURenderPipeline pipelineFor(uint shaderId, RenderState state, bool tangent, bool colored = false) @trusted {
         if (shaderId > surfaceShaderCount) shaderId = 0;
+        if (colored) return coloredPipelineFor(shaderId, state, tangent ? 1 : 0);
         if (state.isDefault) {
             if (shaderId == 0) return tangent ? pipeline.pipelineTangent : pipeline.pipeline;
             auto custom = &surfaceShaders[shaderId - 1];
@@ -2394,7 +2427,7 @@ struct Scene3DTextured {
         auto module32 = shaderId == 0 ? pipeline.shaderModule : surfaceShaders[shaderId - 1].shaderModule;
         auto module48 = shaderId == 0 ? pipeline.shaderModuleTangent : surfaceShaders[shaderId - 1].shaderModuleTangent;
         foreach (ref v; variants[0 .. variantCount]) {
-            if (v.shaderId == shaderId && v.state == state) {
+            if (v.shaderId == shaderId && v.state == state && !v.colored) {
                 if (v.pipeline is null)
                     v.pipeline = createTexturedDrawPipeline(device, module32, pipeline.pipelineLayout,
                                                             Renderer.sceneFormat(), 32, false, state);
@@ -2419,11 +2452,54 @@ struct Scene3DTextured {
         return tangent ? v.pipelineTangent : v.pipeline;
     }
 
+    /// Vertex-color pipeline, built on first use. `layout`: 0 = stride 32, 1 = tangent, 2 = skinned.
+    private WGPURenderPipeline coloredPipelineFor(uint shaderId, RenderState state, uint layout) @trusted {
+        PipelineVariant* v;
+        foreach (ref c; variants[0 .. variantCount])
+            if (c.colored && c.shaderId == shaderId && c.state == state) { v = &c; break; }
+        if (v is null) {
+            if (variantCount >= MAX_VARIANTS) {
+                warn("Textured pipeline variant table full; drawing without vertex color");
+                return layout == 2 ? skinnedPipelineFor(state) : pipelineFor(shaderId, state, layout == 1);
+            }
+            v = &variants[variantCount++];
+            *v = PipelineVariant(shaderId, state, true);
+        }
+        auto slot = layout == 0 ? &v.pipeline : layout == 1 ? &v.pipelineTangent : &v.pipelineSkinned;
+        if (*slot is null) {
+            auto mod = coloredModule(shaderId, layout);
+            if (mod is null) return null;
+            *slot = layout == 2
+                ? createSkinnedTexturedDrawPipeline(device, mod, pipeline.skinnedPipelineLayout,
+                                                    Renderer.sceneFormat(), state, true)
+                : createTexturedDrawPipeline(device, mod, pipeline.pipelineLayout, Renderer.sceneFormat(),
+                                             layout == 1 ? 48 : 32, layout == 1, state, true);
+        }
+        return *slot;
+    }
+
+    private WGPUShaderModule coloredModule(uint shaderId, uint layout) @trusted {
+        import engine.gpu.shader : createShaderModule;
+        import engine.gpu.shaders : composeSurfaceShader, textured3dShaderSource, textured3dSkinnedShaderSource,
+            textured3dTangentShaderSource, withVertexColor;
+        auto c = &coloredShaders[shaderId];
+        if (c.modules[layout] is null) {
+            string src;
+            if (shaderId != 0) src = composeSurfaceShader(c.source[0][], layout == 1);
+            else if (layout == 2) src = textured3dSkinnedShaderSource;
+            else if (c.source[layout].length) src = c.source[layout][].idup;
+            else src = layout == 1 ? textured3dTangentShaderSource : textured3dShaderSource;
+            c.modules[layout] = createShaderModule(device, withVertexColor(src), "vertex_color");
+        }
+        return c.modules[layout];
+    }
+
     /// Skinned PBR pipeline for `state`, built on first use.
-    private WGPURenderPipeline skinnedPipelineFor(RenderState state) @trusted {
+    private WGPURenderPipeline skinnedPipelineFor(RenderState state, bool colored = false) @trusted {
+        if (colored) return coloredPipelineFor(0, state, 2);
         if (state.isDefault) return pipeline.pipelineSkinned;
         foreach (ref v; variants[0 .. variantCount]) {
-            if (v.shaderId == 0 && v.state == state) {
+            if (v.shaderId == 0 && v.state == state && !v.colored) {
                 if (v.pipelineSkinned is null)
                     v.pipelineSkinned = createSkinnedTexturedDrawPipeline(
                         device, pipeline.shaderModuleSkinned, pipeline.skinnedPipelineLayout,
@@ -2447,6 +2523,7 @@ struct Scene3DTextured {
 
     /// Drop cached variants of one shader (after a hot reload).
     private void releaseVariants(uint shaderId) nothrow @nogc @trusted {
+        coloredShaders[shaderId].releaseModules();
         uint kept = 0;
         foreach (ref v; variants[0 .. variantCount]) {
             if (v.shaderId == shaderId) {
@@ -2472,6 +2549,7 @@ struct Scene3DTextured {
         skinPaletteCapacity = 0;
         skinPaletteStaging.release();
         foreach (ref s; surfaceShaders[0 .. surfaceShaderCount]) s.release();
+        foreach (ref c; coloredShaders) c.release();
         surfaceShaderCount = 0;
         releaseBatches();
         partitionScratch.release();

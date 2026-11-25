@@ -42,6 +42,8 @@ struct GltfSkinnedSubMeshCpu {
     string materialName;
     /// Interleaved vertices (`position`, `normal`, `uv`, `tangent`, `joints`, `weights`).
     SkinnedVertex[] vertices;
+    /// Linear RGBA8 `COLOR_0` per vertex, or empty.
+    ubyte[4][] colors;
     /// Triangle indices.
     uint[] indices;
     /// Bind-pose object-space bounds.
@@ -430,12 +432,13 @@ bool loadGltfSkin(string gltfPath, ref const Skeleton skeleton, out SkinBinding 
 /// attributes) from a `.gltf` or `.glb` character file, matching skin joints to `skeleton` by name.
 bool loadGltfSkinnedCharacterCpu(string gltfPath, ref const Skeleton skeleton,
                                  out GltfSkinnedCharacterCpu character, out string error,
-                                 size_t skinIndex = 0) @trusted {
+                                 size_t skinIndex = 0, bool vertexColors = false) @trusted {
     import std.file : read;
     import std.path : dirName;
     try {
         auto bytes = cast(const(ubyte)[]) read(gltfPath);
-        return loadGltfSkinnedCharacterCpuFromBytes(bytes, dirName(gltfPath), skeleton, character, error, skinIndex);
+        return loadGltfSkinnedCharacterCpuFromBytes(bytes, dirName(gltfPath), skeleton, character, error, skinIndex,
+                                                    vertexColors);
     } catch (Exception e) {
         error = e.msg;
         return false;
@@ -447,7 +450,7 @@ bool loadGltfSkinnedCharacterCpuFromBytes(const(ubyte)[] bytes, string baseDir,
                                           ref const Skeleton skeleton,
                                           out GltfSkinnedCharacterCpu character,
                                           out string error,
-                                          size_t skinIndex = 0) @trusted {
+                                          size_t skinIndex = 0, bool vertexColors = false) @trusted {
     try {
         JSONValue root;
         const(ubyte)[][] buffers;
@@ -527,6 +530,14 @@ bool loadGltfSkinnedCharacterCpuFromBytes(const(ubyte)[] bytes, string baseDir,
                     throw new Exception("glTF: TANGENT count mismatch");
 
                 GltfSkinnedSubMeshCpu sm;
+                if (vertexColors && "COLOR_0" in attrs) {
+                    import engine.assets.gltf : packVertexColors;
+                    immutable ci = attrs["COLOR_0"].integer;
+                    immutable uint cn = root["accessors"].array[cast(size_t) ci]["type"].str == "VEC3" ? 3 : 4;
+                    auto col = readAccessorFloats(root, buffers, ci, cn);
+                    if (col.length != vcount * cn) throw new Exception("glTF: COLOR_0 count mismatch");
+                    sm.colors = packVertexColors(col, cn);
+                }
                 sm.meshName = mname;
                 if ("material" in prim.object) {
                     sm.material = cast(int) prim["material"].integer;
