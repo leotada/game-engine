@@ -209,10 +209,10 @@ struct TexMesh {
 
     /// Attach (or replace) per-vertex colors: one linear RGBA8 value per vertex,
     /// multiplied into base color and opacity. They live in their own stream,
-    /// so meshes without colors keep their vertex size.
+    /// so meshes without colors keep their vertex size. An empty list is a no-op.
     void setVertexColors(ref GpuContext gpu, scope const(ubyte[4])[] colors) @trusted {
-        assert(colors.length * vertexStride == vertexBufSize, "one color per vertex");
         if (colors.length == 0) return;
+        assert(colors.length * vertexStride == vertexBufSize, "one color per vertex");
         if (colorBuffer is null)
             colorBuffer = createVertexBuffer(gpu.getDevice(), gpu.getQueue(), colors.ptr, colors.length * 4);
         else

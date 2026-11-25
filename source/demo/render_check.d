@@ -1465,6 +1465,10 @@ private bool checkVertexColor(ref App app) {
     skinned.setVertexColors(app.gpu, colors);
     auto plainSkinned = SkinnedMesh.fromData(app.gpu, sv, idx);
     scope(exit) plainSkinned.destroy();
+    // Characters without COLOR_0 pass an empty list: it must be a no-op, not an assert.
+    plain.setVertexColors(app.gpu, null);
+    plainSkinned.setVertexColors(app.gpu, null);
+    assert(!plain.hasVertexColors && !plainSkinned.hasVertexColors);
 
     enum kSurface = `
 fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut {

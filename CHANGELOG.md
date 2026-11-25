@@ -27,7 +27,8 @@
 - **SMAA 1x and CMAA2** (`AaMode.smaa`, `AaMode.cmaa2`) and **specular antialiasing** (`GltfImportOptions.specularAa`,
   `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
 - **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),
-  `SurfaceIn.vertexColor`. Separate stream: meshes without colors are unchanged.
+  `SurfaceIn.vertexColor`. Separate stream: meshes without colors are unchanged. An empty color list is a no-op (debug builds
+  asserted when loading a skinned character without `COLOR_0`).
 - **Volumetric light** of the sun and the clustered lights (`Renderer.volumetrics`, `VolumetricSettings`), at half or quarter
   resolution. Off by default. Outdoor demo: `--volumetric`.
 - **Auto exposure** (`PostSettings.autoExposure`, `Renderer.resetAutoExposure`) and **3D color tables** (`Renderer.setColorLut`,

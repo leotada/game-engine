@@ -61,11 +61,11 @@ struct SkinnedMesh {
 
     bool hasBounds() const pure nothrow @nogc { return !localBounds.empty; }
 
-    /// Attach (or replace) per-vertex colors, see `TexMesh.setVertexColors`.
+    /// Attach (or replace) per-vertex colors, see `TexMesh.setVertexColors`. An empty list is a no-op.
     void setVertexColors(ref GpuContext gpu, scope const(ubyte[4])[] colors) @trusted {
         import engine.gpu.buffer : updateBuffer;
-        assert(colors.length == vertexCount, "one color per vertex");
         if (colors.length == 0) return;
+        assert(colors.length == vertexCount, "one color per vertex");
         if (colorBuffer is null)
             colorBuffer = createVertexBuffer(gpu.getDevice(), gpu.getQueue(), colors.ptr, colors.length * 4);
         else
