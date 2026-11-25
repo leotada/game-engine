@@ -2476,6 +2476,129 @@ private bool checkBc(ref App app) {
     return ok;
 }
 
+/// E13: wires thinner than a pixel. Plain wires break up, thin ones keep their
+/// light whatever the angle, and wide geometry is untouched.
+private bool checkThin(ref App app) {
+    import std.math : cos, PI, pow, sin, tan;
+    auto scene = Scene3DTextured.create(app.gpu, 256, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto post = neutralPost();
+    post.outputTransfer = OutputTransfer.srgb;
+    app.renderer.postSettings() = post;
+
+    // Unit-radius tube along X, length 2.
+    enum SIDES = 24;
+    TexVert[] tv;
+    uint[] idx;
+    foreach (i; 0 .. SIDES + 1) {
+        immutable float a = 2 * PI * i / SIDES, y = cos(a), z = sin(a);
+        tv ~= TexVert([-1, y, z], [0, y, z], [0, 0]);
+        tv ~= TexVert([1, y, z], [0, y, z], [1, 0]);
+    }
+    foreach (i; 0 .. SIDES) {
+        immutable uint o = i * 2;
+        idx ~= [o, o + 2, o + 1, o + 1, o + 2, o + 3];
+    }
+    auto tube = TexMesh.fromData(app.gpu, tv, idx);
+    scope(exit) tube.destroy();
+
+    enum DIST = 100.0f, FOV = 0.9f;
+    Camera cam = Camera.create(FOV, WIN_W, WIN_H, 1, 300);
+    cam.lookAt(Vec3(0, 0, DIST), Vec3(0, 0, 0));
+    immutable float pixel = 2 * DIST * tan(FOV / 2) / WIN_H; // world size of a pixel at the wires
+    Material make(float radius, uint flags, bool alpha, bool ds) {
+        MaterialParams mp;
+        mp.flags = MaterialFlags.unlit | flags;
+        mp.thinRadius = radius;
+        auto m = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+        m.renderState = RenderState(alpha ? BlendMode.alpha : BlendMode.opaque, !alpha, ds);
+        return m;
+    }
+    Shot render(string name, ref Material m, float radius, float angle, float shift) {
+        return capture(app, name, (ref FrameContext f) {
+            scene.begin(cam);
+            scene.drawMatrix(tube, m, Mat4.translation(shift * pixel * -sin(angle), shift * pixel * cos(angle), 0)
+                * Mat4.rotationZ(angle) * Mat4.scaling(30, radius, radius), Color4(1, 1, 1, 1));
+            scene.end(f);
+        });
+    }
+    static float linear(ubyte v) {
+        immutable float c = v / 255.0f;
+        return c <= 0.04045f ? c / 12.92f : ((c + 0.055f) / 1.055f) ^^ 2.4f;
+    }
+    static double light(ref Shot s) {
+        double t = 0;
+        for (size_t i = 0; i < s.px.length; i += 4) t += linear(s.px[i]);
+        return t;
+    }
+    bool ok = true;
+    immutable float lengthPx = 60 / pixel;
+    foreach (width; [0.25f, 0.6f]) {
+        immutable radius = width * pixel / 2;
+        auto plain = make(radius, 0, false, false), thin = make(radius, MaterialFlags.thin, false, false),
+            soft = make(radius, MaterialFlags.thin, true, false);
+        scope(exit) { plain.destroy(); thin.destroy(); soft.destroy(); }
+        // Light of each wire over angles and sub-pixel shifts, against its real coverage.
+        // At 45 degrees a one-pixel band holds one or two pixels per 1.41: up to 41% off.
+        float worstPlain = 0, worstThin = 0, worstSoft = 0, diagonal = 0;
+        uint gaps = 0, plainGaps = 0, columns = 0;
+        foreach (angle; [0.0f, 0.03f, 0.4f, 0.785f, 1.2f, 1.5707f]) foreach (shift; [0.1f, 0.3f, 0.6f, 0.8f]) {
+            auto a = render("thin_plain", plain, radius, angle, shift), b = render("thin_dither", thin, radius, angle, shift),
+                c = render("thin_alpha", soft, radius, angle, shift);
+            immutable want = width * lengthPx;
+            float rel(ref Shot s) { return abs(cast(float)(light(s) / want) - 1); }
+            if (rel(a) > worstPlain) worstPlain = rel(a);
+            if (angle == 0.785f) {
+                diagonal = rel(b) > diagonal ? rel(b) : diagonal;
+                diagonal = rel(c) > diagonal ? rel(c) : diagonal;
+            } else {
+                if (rel(b) > worstThin) worstThin = rel(b);
+                if (rel(c) > worstSoft) worstSoft = rel(c);
+            }
+            if (angle == 0.03f) foreach (x; c.w / 2 - 80 .. c.w / 2 + 80) {
+                bool hit = false, plainHit = false;
+                foreach (y; 0 .. c.h) {
+                    if (c.at(x, y, 0) > 0) hit = true;
+                    if (a.at(x, y, 0) > 0) plainHit = true;
+                }
+                columns++;
+                if (!hit) gaps++;
+                if (!plainHit) plainGaps++;
+            }
+        }
+        writefln("  wire %.2f px wide, worst light error: plain %.2f, thin %.2f, thin with alpha %.2f, at 45 degrees %.2f; gaps: plain %s, thin with alpha %s of %s columns",
+            width, worstPlain, worstThin, worstSoft, diagonal, plainGaps, gaps, columns);
+        ok &= expect(worstThin < 0.1f, "dithered wires keep their light");
+        ok &= expect(worstSoft < 0.05f && gaps == 0, "blended wires keep their light without gaps");
+        ok &= expect(diagonal < 0.45f, "the diagonal stays within the pixel lattice");
+        ok &= expect(worstPlain > 0.3f && plainGaps > columns / 4, "plain wires break up");
+    }
+    // Wider than a pixel: same image with and without the flag.
+    immutable radius = 3 * pixel;
+    auto plain = make(radius, 0, false, false), thin = make(radius, MaterialFlags.thin, false, false);
+    scope(exit) { plain.destroy(); thin.destroy(); }
+    auto a = render("thin_wide_plain", plain, radius, 0.4f, 0.3f), b = render("thin_wide", thin, radius, 0.4f, 0.3f);
+    ok &= expect(a.valid && a.px == b.px, "geometry wider than a pixel is untouched");
+
+    // Cost: 4000 wires.
+    foreach (flag; [0u, cast(uint) MaterialFlags.thin]) {
+        auto m = make(0.1f * pixel, flag, false, false);
+        scope(exit) m.destroy();
+        timeZones(app, flag ? "4000 wires, thin" : "4000 wires, plain", ["gpu.scene.opaque.batches"], (ref FrameContext f) {
+            scene.begin(cam);
+            foreach (i; 0 .. 4000)
+                scene.drawMatrix(tube, m, Mat4.translation(0, (i % 800) * 0.1f - 40, (i / 800) * -2.0f)
+                    * Mat4.scaling(60, 0.1f * pixel, 0.1f * pixel), Color4(1, 1, 1, 1));
+            scene.end(f);
+        });
+    }
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -2553,6 +2676,7 @@ private immutable Check[] checks = [
     Check("exposure", &checkExposure),
     Check("particles", &checkParticles),
     Check("bc", &checkBc),
+    Check("thin", &checkThin),
     Check("stars", &checkStars),
 ];
 
