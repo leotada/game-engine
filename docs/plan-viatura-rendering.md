@@ -37,3 +37,29 @@ features below. This file keeps the requests and their status.
 
 Foundation (bindings, `MaterialParams` block, `render-check`), then wave 1 (S1, E1, E12, E2, E11),
 wave 2 (E3, E4, E5, E7), wave 3 (E6, E8, E9, E10) and wave 4 (E13, E14).
+
+## Final measurements in the game
+
+Game copy, release (LDC), RX 6600, headless compositor, `city` benchmark script, 600 frames, one run per row (frame times
+vary by about 0.3 ms between runs). Frame is the average, with the GPU frame from timestamps. Budget: 12 ms at 1080p.
+
+| Setting | Frame 1080p | GPU 1080p | Frame 900p | GPU 900p |
+|:---|:---|:---|:---|:---|
+| All off (two runs) | 7.24 to 7.42 ms | 4.99 to 5.06 ms | 7.04 to 7.29 ms | 4.33 to 4.78 ms |
+| `gpuCull` (E11) | 6.81 ms | 5.13 ms | 6.88 ms | 4.39 ms |
+| `fxaaQuality` (E12) | 7.36 ms | 5.09 ms | 7.35 ms | 4.61 ms |
+| Sharpening 0.5 (E12) | 7.35 ms | 5.12 ms | 7.44 ms | 5.07 ms |
+| `smaa` (E5) | 7.28 ms | 5.14 ms | 7.38 ms | 4.81 ms |
+| `cmaa2` (E5) | 7.71 ms | 5.16 ms | 7.65 ms | 4.96 ms |
+| AO medium, full / half (E4) | 7.56 / 7.75 ms | 6.11 / 5.61 ms | 7.66 / 7.56 ms | 5.38 / 4.93 ms |
+| Volumetric medium, half / quarter (E6) | 7.59 / 7.43 ms | 5.90 / 5.40 ms | 7.48 / 7.29 ms | 4.93 / 4.67 ms |
+| Auto exposure (E8) | 7.64 ms | 5.21 ms | 7.51 ms | 4.95 ms |
+| Combined, AO half | 7.66 ms | 6.99 ms | 7.59 ms | 5.84 ms |
+| Combined, AO full | 7.97 ms | 7.51 ms | 7.60 ms | 6.21 ms |
+
+Combined: `gpuCull`, SMAA, sharpening, AO, half-resolution volumetric light, auto exposure, exact sRGB output, alpha mask on
+foliage and soft particles. The foliage has no transparent texels and few particles are on screen, so the last two
+cost nothing measurable here. E7, E9 (lit, flipbook), E10 and E13 need game content and were only measured in engine scenes.
+
+With everything off, the engine before this work (c54cf83) and after it give the same game image (0 pixels differ) and the
+same cost (four interleaved runs at 1080p: 7.07 to 7.41 against 7.17 to 7.36 ms; GPU 5.00 to 5.32 against 4.98 to 5.11 ms).
