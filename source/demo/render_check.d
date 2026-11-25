@@ -19,7 +19,8 @@ import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : alphaCoverageOf, Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, SkinnedVertex;
 import engine.gpu.pipeline : BlendMode, RenderState;
-import engine.gpu.post : AaMode, OutputTransfer, PostSettings;
+import engine.gpu.post : AaMode, OutputTransfer, PostPassDesc, PostSettings, PostStage;
+import bindings.wgpu : WGPUTextureFormat;
 import engine.gpu.renderer : FrameContext;
 import engine.math.mat : Mat4;
 import engine.math.vec : Vec3;
@@ -823,6 +824,165 @@ private TexMesh oddTriangle(ref App app) {
     return TexMesh.fromData(app.gpu, verts, idx);
 }
 
+/// Scene inputs of post passes: depth, camera and normals against known
+/// geometry, named targets at reduced resolution, every stage.
+private bool checkPassInputs(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 16, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    app.renderer.postSettings() = neutralPost();
+    MaterialParams mp;
+    auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    mat.renderState = RenderState(BlendMode.opaque, true, true, false);
+    // Camera 10 above a floor at y = 0, looking down; a slope on the right
+    // rises 45 degrees along +X from x = 1.
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 60.0f);
+    cam.lookAt(Vec3(0, 10, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    immutable slope = Mat4.translation(2, 1, 0) * Mat4.rotationZ(0.78539816f) * Mat4.scaling(2.8284271f, 1, 4);
+    void draw(ref FrameContext f) {
+        scene.begin(cam);
+        scene.setTime(0.5f);
+        scene.draw(quad, mat, Vec3(0, 0, 0), Vec3(6, 1, 6));
+        scene.drawMatrix(quad, mat, slope, Color4.white);
+        scene.end(f);
+    }
+    import std.math : tan;
+    // Pixel of a world point.
+    uint[2] at(float x, float y, float z) {
+        immutable k = (WIN_H * 0.5f) / (tan(0.45f) * (10 - y));
+        return [cast(uint)(WIN_W * 0.5f + x * k), cast(uint)(WIN_H * 0.5f + z * k)];
+    }
+    bool near(ref Shot s, uint[2] p, int r, int g, int b, int tol) {
+        immutable okay = abs(s.at(p[0], p[1], 0) - r) <= tol && abs(s.at(p[0], p[1], 1) - g) <= tol
+            && abs(s.at(p[0], p[1], 2) - b) <= tol;
+        if (!okay) writefln("    at %s: %s %s %s, expected %s %s %s", p, s.at(p[0], p[1], 0), s.at(p[0], p[1], 1),
+                            s.at(p[0], p[1], 2), r, g, b);
+        return okay;
+    }
+    bool ok = true;
+    auto floor_ = at(-1.5f, 0, 1), onSlope = at(2, 1, -0.5f), sky = [WIN_W - 4, 4u];
+    uint[2] skyP = [sky[0], sky[1]];
+
+    // World position / 8 + 0.5, then world normal, then depth, camera and planes.
+    static immutable string[3] shaders = [
+        "@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+            let p = scenePixel(uv);
+            if (sceneDepthAt(p) >= 1.0) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+            return vec4<f32>(sceneWorldPosition(p) / 8.0 + 0.5, 1.0); }",
+        "@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+            let p = scenePixel(uv);
+            if (sceneDepthAt(p) >= 1.0) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+            return vec4<f32>(sceneWorldNormal(p) * 0.5 + 0.5, 1.0); }",
+        "@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+            return vec4<f32>(sceneLinearDepth(sceneDepth(uv)) / 60.0, sceneCamera.position.y / 20.0,
+                             sceneCamera.position.w * sceneCamera.planes.z, 1.0); }"];
+    foreach (stage; [PostStage.afterTonemap, PostStage.afterUi]) {
+        immutable label = stage == PostStage.afterUi ? "afterUi " : "afterTonemap ";
+        foreach (i, src; shaders) {
+            PostPassDesc d;
+            d.wgsl = src;
+            d.stage = stage;
+            d.sceneInputs = true;
+            immutable id = app.renderer.addPostPass(d);
+            ok &= expect(id != 0, label ~ "pass compiles");
+            auto s = capture(app, "passinputs", &draw);
+            app.renderer.removePostPass(id);
+            if (!s.valid) return expect(false, "frame captured");
+            if (i == 0) {
+                ok &= expect(near(s, floor_, 80, 128, 159, 2), label ~ "world position of the floor");
+                ok &= expect(near(s, onSlope, 191, 159, 112, 2), label ~ "world position of the slope");
+                ok &= expect(near(s, skyP, 0, 0, 0, 0), label ~ "empty depth is 1");
+            } else if (i == 1) {
+                ok &= expect(near(s, floor_, 128, 255, 128, 2), label ~ "normal of the floor");
+                ok &= expect(near(s, onSlope, 37, 218, 128, 3), label ~ "normal of the slope");
+            } else {
+                ok &= expect(near(s, floor_, 42, 128, 128, 1), label ~ "linear depth, camera position, time");
+                ok &= expect(near(s, onSlope, 38, 128, 128, 1), label ~ "linear depth of the slope");
+            }
+        }
+    }
+
+    // Scene inside a panel (editor): same world positions at the panel's pixels.
+    {
+        PostPassDesc v;
+        v.wgsl = shaders[0];
+        v.sceneInputs = true;
+        immutable vid = app.renderer.addPostPass(v);
+        auto panel = capture(app, "passinputs_viewport", (ref FrameContext f) {
+            f.setViewport(100, 60, 320, 240, WIN_W, WIN_H);
+            draw(f);
+        });
+        app.renderer.removePostPass(vid);
+        immutable uint[2] pf = [100 + floor_[0] / 2, 60 + floor_[1] / 2];
+        ok &= expect(panel.valid && near(panel, pf, 80, 128, 159, 3), "world position inside a viewport panel");
+    }
+
+    // Named targets: half-resolution pass, quarter-resolution pass reading it, composite.
+    PostPassDesc a;
+    a.wgsl = "@fragment fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+        let full = vec2<f32>(textureDimensions(sceneDepthTex));
+        return vec4<f32>(pos.x / full.x, 0.25, 0.0, 1.0); }";
+    a.sceneInputs = true;
+    a.stage = PostStage.beforeTonemap;
+    a.output = "half";
+    a.scale = 2;
+    PostPassDesc b;
+    b.wgsl = "@fragment fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+        let d = vec2<f32>(textureDimensions(input0));
+        let h = textureLoad(input0, vec2<i32>(pos.xy) * 2, 0);
+        return vec4<f32>(d.x / 1000.0, h.x, h.y, 1.0); }";
+    b.stage = PostStage.beforeTonemap;
+    b.inputs[0] = "half";
+    b.output = "quarter";
+    b.scale = 4;
+    b.format = WGPUTextureFormat.rgba8Unorm;
+    PostPassDesc c;
+    c.wgsl = "@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+        return vec4<f32>(textureLoad(input1, vec2<i32>(uv * vec2<f32>(textureDimensions(input1))), 0).rg,
+                         textureSampleLevel(srcTex, srcSamp, uv, 0.0).b * 0.0 + textureLoad(input0, vec2<i32>(0), 0).g, 1.0); }";
+    c.inputs[0] = "half";
+    c.inputs[1] = "quarter";
+    ok &= expect(app.renderer.addPostPass(b) == 0, "reading a target before its writer is refused");
+    immutable ia = app.renderer.addPostPass(a), ib = app.renderer.addPostPass(b), ic = app.renderer.addPostPass(c);
+    ok &= expect(ia && ib && ic, "named target passes compile");
+    auto s = capture(app, "passinputs_targets", &draw);
+    if (!s.valid) return expect(false, "frame captured");
+    immutable uint[2] mid = [WIN_W / 2 + 1, WIN_H / 2];
+    // half width 320 -> 0.32; x at half resolution over full width -> 0.25; constant 0.25.
+    ok &= expect(near(s, mid, 82, 64, 64, 2), "reduced-resolution targets are chained");
+    // Only named-output passes in a stage: the picture must be untouched.
+    app.renderer.removePostPass(ic);
+    auto plain = capture(app, "passinputs_named_only", &draw);
+    PostPassDesc d;
+    d.wgsl = a.wgsl;
+    d.sceneInputs = true;
+    d.output = "unused";
+    immutable id = app.renderer.addPostPass(d);
+    auto named = capture(app, "passinputs_named_only2", &draw);
+    app.renderer.removePostPass(id);
+    app.renderer.removePostPass(ib);
+    app.renderer.removePostPass(ia);
+    auto none = capture(app, "passinputs_none", &draw);
+    ok &= expect(plain.px == none.px && named.px == none.px, "passes with a named output leave the picture alone");
+    // Order survives removal: a pass added after a removal still runs last.
+    immutable p1 = app.renderer.addPostPass("@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }");
+    immutable p2 = app.renderer.addPostPass("@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(0.0, 1.0, 0.0, 1.0); }");
+    app.renderer.removePostPass(p1);
+    immutable p3 = app.renderer.addPostPass("@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(0.0, 0.0, 1.0, 1.0); }");
+    auto order = capture(app, "passinputs_order", &draw);
+    ok &= expect(near(order, mid, 0, 0, 255, 0), "passes run in insertion order after a removal");
+    app.renderer.removePostPass(p2);
+    app.renderer.removePostPass(p3);
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -892,6 +1052,7 @@ private immutable Check[] checks = [
     Check("aa", &checkAa),
     Check("mask", &checkMask),
     Check("gpucull", &checkGpuCull),
+    Check("passinputs", &checkPassInputs),
     Check("stars", &checkStars),
 ];
 
