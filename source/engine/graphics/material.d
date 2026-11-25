@@ -57,6 +57,8 @@ enum MaterialFlags : uint {
     /// Albedo, normal and emissive maps are atlases of `flipbookGrid` frames; the
     /// instance `custom.w` holds the frame (and is no longer the rain shelter).
     flipbook           = 1 << 19,
+    /// The normal map holds X and Y only; Z is rebuilt. Set by `Material.create` for BC5 textures.
+    normalXy           = 1 << 20,
 }
 
 /// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).
@@ -198,6 +200,8 @@ struct Material {
     bool soft = false;
     /// True when the material uses `soft`, `litParticle` or `flipbook`.
     package(engine) bool sprite = false;
+    /// True when the normal map holds X and Y only.
+    package(engine) bool normalXy = false;
     /// Blend mode, depth write and culling. Non-default states get their own
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
@@ -241,7 +245,9 @@ struct Material {
         Texture* af   = layers.anisoFilm !is null ? layers.anisoFilm : &gMaterialDefaults.anisoDefault;
         Texture* tr   = layers.transmission !is null ? layers.transmission : &gMaterialDefaults.white;
 
+        if (nrm.normalXy) params.flags |= MaterialFlags.normalXy;
         Material m;
+        m.normalXy = (params.flags & MaterialFlags.normalXy) != 0;
         m.transmissive = params.transmissionWeight > 0.0f
                       || (params.flags & MaterialFlags.transmission) != 0;
         m.ssr = (params.flags & MaterialFlags.ssr) != 0;

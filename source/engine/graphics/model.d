@@ -462,6 +462,7 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
             d.normalMap = normal;
             d.srgb = srgb;
             d.alphaCoverage = alphaCoverage;
+            d.compressed = opts.gltf.compressedTextures;
             auto t = loadGltfImage(gpu, doc, image, d);
             move(t, asset.textures[slot]);
         }
@@ -489,7 +490,7 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
         }
         Texture* mr;
         if (opts.gltf.specularAa && opts.generateMips && mi < matCount) {
-            auto t = buildGltfSpecularAa(gpu, doc, md, params);
+            auto t = buildGltfSpecularAa(gpu, doc, md, params, opts.gltf.compressedTextures ? cast(int) mi : -1);
             if (t.valid) {
                 mr = &asset.textures[layerTexBase + matCount * 5 + mi];
                 move(t, *mr);

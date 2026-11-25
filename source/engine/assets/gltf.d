@@ -20,7 +20,8 @@ import core.math : sqrt;
 import std.conv : to;
 import std.exception : enforce;
 import std.json;
-import std.path : dirName, buildPath, extension;
+import core.lifetime : move;
+import std.path : buildPath, dirName, extension, stripExtension;
 import std.string : toLower;
 
 import engine.assets.pak : assetExists, readAssetBytes;
@@ -86,6 +87,9 @@ struct GltfImportOptions {
     bool specularAa = false;
     /// Import `COLOR_0` and multiply it into base color and opacity.
     bool vertexColors = false;
+    /// Use the `.ktx2` files written by `game-engine-texc gltf` beside the images
+    /// (`<model>.image<N>.ktx2` for embedded ones). Missing files load as usual.
+    bool compressedTextures = false;
 }
 
 /// glTF `alphaMode`.
@@ -97,6 +101,7 @@ package(engine) TextureDesc gltfBaseColorDesc(ref const GltfMaterialDesc desc, G
     TextureDesc d;
     d.generateMips = generateMips;
     d.srgb = opts.srgbColor;
+    d.compressed = opts.compressedTextures;
     if (opts.alphaModes && desc.alphaMode == GltfAlphaMode.mask) d.alphaCoverage = desc.params.alphaCutoff;
     return d;
 }
@@ -198,8 +203,9 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     auto doc = parseGltfDocument(gltfPath);
     auto meshCpu = parseFirstMesh(doc, opts.vertexColors);
     GltfMaterialDesc matDesc;
+    int mi = -1;
     if ("materials" in doc.root && doc.root["materials"].array.length) {
-        immutable mi = firstPrimitiveMaterial(doc);
+        mi = firstPrimitiveMaterial(doc);
         matDesc = parseGltfMaterialAt(doc.root, mi >= 0 ? mi : 0);
     }
     if (matDesc.normalImage >= 0 || matDesc.clearcoatNormalImage >= 0
@@ -215,6 +221,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     TextureDesc colorDesc = TextureDesc.mipped();
     colorDesc.srgb = opts.srgbColor;
     Texture loadMap(int image, TextureDesc d) {
+        d.compressed = opts.compressedTextures;
         return image >= 0 ? loadGltfImage(gpu, doc, image, d) : Texture.init;
     }
 
@@ -244,7 +251,7 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     {
         Texture t;
         if (opts.specularAa) {
-            auto baked = buildGltfSpecularAa(gpu, doc, matDesc, params);
+            auto baked = buildGltfSpecularAa(gpu, doc, matDesc, params, opts.compressedTextures ? (mi >= 0 ? mi : 0) : -1);
             move(baked, t);
         }
         if (!t.valid) {
@@ -520,6 +527,10 @@ private string resolveTextureRef(ref JSONValue root, int textureIndex, out int i
 }
 
 private Texture loadImageTexture(ref GpuContext gpu, string path, TextureDesc desc = TextureDesc.init) {
+    if (desc.compressed) {
+        auto t = Texture.fromSidecar(gpu, path, desc);
+        if (t.valid) return move(t);
+    }
     if (!assetExists(path)) {
         err("glTF image not found: ", path);
         return Texture.init;
@@ -545,7 +556,7 @@ private Texture loadImageTexture(ref GpuContext gpu, string path, TextureDesc de
         return loadBmpTexture(gpu, path, desc);
     }
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp"
-            || ext == ".qoi" || ext == ".gif" || ext == ".avif" || ext == ".svg") {
+            || ext == ".ktx2" || ext == ".qoi" || ext == ".gif" || ext == ".avif" || ext == ".svg") {
         return Texture.fromImageFile(gpu, path, desc);
     }
     err("glTF: unsupported image format: ", path);
@@ -880,6 +891,20 @@ private const(char)* imageTypeHint(string mime) pure nothrow @nogc {
     return null;
 }
 
+/// Image path whose `.ktx2` sidecar stands for image `imageIndex`.
+string gltfSidecarBase(ref GltfDocument doc, int imageIndex) @trusted {
+    import std.conv : to;
+    auto r = resolveGltfImage(doc, imageIndex);
+    if (r.uri.length) return buildPath(doc.baseDir, r.uri);
+    return doc.path.stripExtension ~ ".image" ~ imageIndex.to!string ~ ".bin";
+}
+
+/// `.ktx2` file with the specular-AA bake of a material (`game-engine-texc gltf --specular-aa`).
+string gltfSpecularAaPath(ref GltfDocument doc, int material) {
+    import std.conv : to;
+    return doc.path.stripExtension ~ ".material" ~ material.to!string ~ ".specaa.ktx2";
+}
+
 /// Upload a glTF image (file URI or embedded bytes) as a GPU texture.
 Texture loadGltfImage(ref GpuContext gpu, ref GltfDocument doc, int imageIndex,
                       TextureDesc desc = TextureDesc.init) @trusted {
@@ -890,19 +915,26 @@ Texture loadGltfImage(ref GpuContext gpu, ref GltfDocument doc, int imageIndex,
         err("glTF image ", imageIndex, ": ", e.msg);
         return Texture.init;
     }
-    if (r.bytes.length)
+    if (r.bytes.length) {
+        if (desc.compressed) {
+            auto t = Texture.fromSidecar(gpu, gltfSidecarBase(doc, imageIndex), desc);
+            if (t.valid) return move(t);
+        }
         return Texture.fromImageBytes(gpu, r.bytes, imageTypeHint(r.mimeType), desc);
+    }
     return loadImageTexture(gpu, buildPath(doc.baseDir, r.uri), desc);
 }
 
-private struct DecodedImage {
+/// RGBA8 pixels of a glTF image.
+struct DecodedImage {
     ubyte[] rgba;
     uint w;
     uint h;
     bool valid() const pure nothrow @nogc { return w > 0 && h > 0 && rgba.length >= cast(size_t) w * h * 4; }
 }
 
-private DecodedImage decodeGltfImagePixels(ref GltfDocument doc, int imageIndex) @trusted {
+/// Decode a glTF image on the CPU. Invalid (and logged) when it cannot be read.
+DecodedImage decodeGltfImagePixels(ref GltfDocument doc, int imageIndex) @trusted {
     DecodedImage img;
     if (imageIndex < 0) return img;
     GltfImageRef r;
@@ -948,9 +980,17 @@ private DecodedImage decodeGltfImagePixels(ref GltfDocument doc, int imageIndex)
 /// (`GltfImportOptions.specularAa`). Invalid when the material has no normal
 /// map. The roughness factor moves from `params` into the texture.
 package(engine) Texture buildGltfSpecularAa(ref GpuContext gpu, ref GltfDocument doc, ref const GltfMaterialDesc desc,
-                                            ref MaterialParams params) @trusted {
+                                            ref MaterialParams params, int compressedMaterial = -1) @trusted {
     import engine.graphics.specular_aa : specularAaTexture;
     if (desc.normalImage < 0) return Texture.init;
+    if (compressedMaterial >= 0) {
+        auto t = Texture.fromSidecar(gpu, gltfSpecularAaPath(doc, compressedMaterial), TextureDesc.init);
+        if (t.valid) {
+            params.flags |= MaterialFlags.metallicRoughness;
+            params.specularRoughness = 1; // baked in
+            return move(t);
+        }
+    }
     auto n = decodeGltfImagePixels(doc, desc.normalImage);
     if (!n.valid) return Texture.init;
     DecodedImage mr;

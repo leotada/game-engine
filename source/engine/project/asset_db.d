@@ -167,6 +167,7 @@ struct AssetDatabase {
             case ".jpeg":
             case ".bmp":
             case ".tga":
+            case ".ktx2":
                 return "image";
             case ".wav":
             case ".ogg":

@@ -86,6 +86,8 @@ override ALPHA_MASK: bool = false;
 override AMBIENT_ALPHA: bool = false;
 /// Set for materials with `soft`, `litParticle` or `flipbook`; their code costs nothing elsewhere.
 override SPRITE_FEATURES: bool = false;
+/// The normal map holds X and Y only (BC5).
+override NORMAL_XY: bool = false;
 
 const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
@@ -766,7 +768,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             nTexel = textureSample(normalMap, texSampler, in.uv).xyz;
         }
-        let nSample = nTexel * 2.0 - 1.0;
+        var nSample = nTexel * 2.0 - 1.0;
+        if (NORMAL_XY) {
+            nSample.z = sqrt(max(1.0 - dot(nSample.xy, nSample.xy), 0.0));
+        }
         let TBN = mat3x3<f32>(T, B, N);
         N = normalize(TBN * nSample);
         T = normalize(T - N * dot(N, T));

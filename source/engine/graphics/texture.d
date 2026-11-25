@@ -1,5 +1,6 @@
 /// GPU texture + sampler wrappers and a minimal in-engine TGA loader.
 /// Textures are RGBA8Unorm by default; `TextureDesc.srgb` selects RGBA8UnormSrgb for color maps.
+/// KTX2 files hold BC7 / BC5 blocks (`game-engine-texc`).
 module engine.graphics.texture;
 
 import bindings.wgpu;
@@ -9,8 +10,10 @@ import engine.assets.image :
     decodeImgFile  = decodeImageFile,
     decodeSvgBytesSized,
     surfaceToRgba8;
-import engine.assets.pak : isAssetPakMounted, readAssetBytes;
+import engine.assets.ktx2 : isKtx2, Ktx2Image, readKtx2, TextureCodec;
+import engine.assets.pak : assetExists, isAssetPakMounted, readAssetBytes;
 import engine.gpu.context : GpuContext;
+import core.lifetime : move;
 import engine.core.log;
 
 @safe:
@@ -39,6 +42,8 @@ struct Texture {
     uint mipLevels = 1;
     /// Storage format of `texture`.
     WGPUTextureFormat format = WGPUTextureFormat.rgba8Unorm;
+    /// Normal map with X and Y only (BC5). `Material.create` sets `MaterialFlags.normalXy` for it.
+    bool normalXy = false;
 
     @disable this(this);
 
@@ -87,6 +92,67 @@ struct Texture {
         }
         t.view = createView(t.texture, t.format, WGPUTextureViewDimension.dim2D, 1);
         return t;
+    }
+
+    /// Upload a KTX2 image with its own mips. Blocks go to the GPU as they are when
+    /// it supports BC and the size is a multiple of 4; otherwise they are decoded
+    /// to RGBA8 here (load time only). `srgb` selects the sRGB format.
+    static Texture fromKtx2(ref GpuContext gpu, ref const Ktx2Image img, bool srgb, bool forceDecode = false) {
+        import engine.assets.bc : BC_BLOCK_BYTES, decodeBcLevel;
+        Texture t;
+        if (!img.valid) return t;
+        immutable bc = img.codec != TextureCodec.rgba8;
+        immutable blocks = bc && !forceDecode && img.width % 4 == 0 && img.height % 4 == 0
+            && gpu.hasFeature(WGPUFeatureName.textureCompressionBC);
+        if (bc && !blocks && !forceDecode)
+            warn("Texture: BC blocks decoded to RGBA8 (", img.width, "x", img.height, ")");
+        t.width = img.width;
+        t.height = img.height;
+        t.mipLevels = cast(uint) img.levels.length;
+        t.normalXy = blocks && img.codec == TextureCodec.bc5;
+        if (!blocks) t.format = srgb && img.codec != TextureCodec.bc5 ? WGPUTextureFormat.rgba8UnormSrgb : WGPUTextureFormat.rgba8Unorm;
+        else if (img.codec == TextureCodec.bc5) t.format = WGPUTextureFormat.bc5RgUnorm;
+        else t.format = srgb ? WGPUTextureFormat.bc7RgbaUnormSrgb : WGPUTextureFormat.bc7RgbaUnorm;
+        t.texture = createTexture2D(gpu, t.format, t.width, t.height, 1, t.mipLevels);
+        if (t.texture is null) fatal("Failed to create WGPU texture");
+        foreach (l; 0 .. t.mipLevels) {
+            immutable w = mipExtent(t.width, l), h = mipExtent(t.height, l);
+            if (blocks) {
+                immutable bw = (w + 3) / 4, bh = (h + 3) / 4;
+                writeBlocks(gpu, t.texture, l, img.levels[l], bw, bh, BC_BLOCK_BYTES);
+            } else if (bc) {
+                auto rgba = new ubyte[cast(size_t) w * h * 4];
+                if (img.codec == TextureCodec.bc7) decodeBcLevel!true(img.levels[l], w, h, rgba);
+                else decodeBcLevel!false(img.levels[l], w, h, rgba);
+                writeLevel(gpu, t.texture, 0, l, rgba, w, h, 4);
+            } else {
+                writeLevel(gpu, t.texture, 0, l, img.levels[l], w, h, 4);
+            }
+        }
+        t.view = createView(t.texture, t.format, WGPUTextureViewDimension.dim2D, 1);
+        return t;
+    }
+
+    /// Load KTX2 bytes; the file says whether it is sRGB.
+    static Texture fromKtx2Bytes(ref GpuContext gpu, const(ubyte)[] bytes) {
+        string error;
+        auto img = readKtx2(bytes, error);
+        if (!img.valid) {
+            err("KTX2: ", error);
+            return Texture.init;
+        }
+        return fromKtx2(gpu, img, img.srgb);
+    }
+
+    /// GPU memory of the texture in bytes, mips included.
+    size_t gpuBytes() const pure nothrow @nogc {
+        import engine.assets.ktx2 : textureLevelBytes;
+        immutable codec = format == WGPUTextureFormat.bc5RgUnorm ? TextureCodec.bc5
+            : format == WGPUTextureFormat.bc7RgbaUnorm || format == WGPUTextureFormat.bc7RgbaUnormSrgb ? TextureCodec.bc7
+            : TextureCodec.rgba8;
+        size_t n = 0;
+        foreach (l; 0 .. mipLevels) n += textureLevelBytes(codec, width, height, l);
+        return n;
     }
 
     /// Single-channel 16-bit normalized texture (heightmaps, masks).
@@ -253,6 +319,7 @@ struct Texture {
     /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, etc.) from in-memory file bytes into a GPU Texture.
     static Texture fromImageBytes(ref GpuContext gpu, const(ubyte)[] bytes, const(char)* typeHint = null,
                                   TextureDesc desc = TextureDesc.init) @trusted {
+        if (isKtx2(bytes)) return fromKtx2Desc(gpu, bytes, desc);
         ubyte[] rgba;
         uint w, h;
         if (!decodeImageBytes(bytes, rgba, w, h, typeHint)) return Texture.init;
@@ -262,6 +329,18 @@ struct Texture {
     /// Load an image (PNG, JPG, TGA, BMP, QOI, SVG, WEBP, etc.) from disk or mounted `GEPK` pak into a GPU Texture.
     static Texture fromImageFile(ref GpuContext gpu, scope const(char)[] path,
                                  TextureDesc desc = TextureDesc.init) {
+        if (desc.compressed) {
+            auto t = fromSidecar(gpu, path, desc);
+            if (t.valid) return move(t);
+        }
+        if (isKtx2Path(path)) {
+            ubyte[] bytes;
+            if (!readAssetBytes(path, bytes)) {
+                err("Texture.fromImageFile: file not found");
+                return Texture.init;
+            }
+            return fromKtx2Desc(gpu, bytes, desc);
+        }
         if (isAssetPakMounted()) {
             ubyte[] bytes;
             if (!readAssetBytes(path, bytes)) {
@@ -282,6 +361,25 @@ struct Texture {
             return Texture.init;
         }
         return fromPixels(gpu, rgba, w, h, desc);
+    }
+
+    /// `<name>.ktx2` beside `path`, when it exists and is readable.
+    package(engine) static Texture fromSidecar(ref GpuContext gpu, scope const(char)[] path, TextureDesc desc) {
+        auto side = ktx2Sidecar(path);
+        ubyte[] bytes;
+        if (!assetExists(side) || !readAssetBytes(side, bytes)) return Texture.init;
+        return fromKtx2Desc(gpu, bytes, desc);
+    }
+
+    /// KTX2 under the caller's `srgb` choice, as for any other image.
+    private static Texture fromKtx2Desc(ref GpuContext gpu, const(ubyte)[] bytes, TextureDesc desc) {
+        string error;
+        auto img = readKtx2(bytes, error);
+        if (!img.valid) {
+            err("KTX2: ", error);
+            return Texture.init;
+        }
+        return fromKtx2(gpu, img, desc.srgb);
     }
 
     /// Create an empty GPU texture usable as both a render target and a sampled UI/shader texture.
@@ -343,6 +441,9 @@ struct TextureDesc {
     /// this cutoff that level 0 has, so masked foliage and fences do not thin
     /// out with distance.
     float alphaCoverage = 0;
+    /// Use `<name>.ktx2` beside the image when it exists (`game-engine-texc`). Its
+    /// mips are used as they are; `srgb` still selects how colors are read.
+    bool compressed = false;
 
     /// GPU format of the uploaded pixels.
     WGPUTextureFormat format() const pure nothrow @nogc {
@@ -355,6 +456,16 @@ struct TextureDesc {
     static TextureDesc mipped() pure nothrow @nogc { return TextureDesc(true, false); }
     /// Mipmapped normal map.
     static TextureDesc mippedNormal() pure nothrow @nogc { return TextureDesc(true, true); }
+}
+
+/// Path of the compressed version of image `path`.
+string ktx2Sidecar(scope const(char)[] path) pure {
+    import std.path : stripExtension;
+    return (path.stripExtension ~ ".ktx2").idup;
+}
+
+private bool isKtx2Path(scope const(char)[] path) pure nothrow @nogc {
+    return path.length > 5 && (path[$ - 5 .. $] == ".ktx2" || path[$ - 5 .. $] == ".KTX2");
 }
 
 /// Number of mip levels for a full chain down to 1×1.
@@ -586,6 +697,22 @@ package(engine) void writeLevel(ref GpuContext gpu, WGPUTexture tex, uint layer,
     layout.bytesPerRow  = w * bytesPerPixel;
     layout.rowsPerImage = h;
     WGPUExtent3D extent = WGPUExtent3D(w, h, 1);
+    auto queue = gpu.getQueue();
+    () @trusted {
+        wgpuQueueWriteTexture(queue, &dst, data.ptr, data.length, &layout, &extent);
+    }();
+}
+
+/// Write one level of a block-compressed texture.
+private void writeBlocks(ref GpuContext gpu, WGPUTexture tex, uint mip, scope const(ubyte)[] data,
+                         uint blocksWide, uint blocksHigh, uint blockBytes) {
+    WGPUImageCopyTexture dst;
+    dst.texture  = tex;
+    dst.mipLevel = mip;
+    WGPUTextureDataLayout layout;
+    layout.bytesPerRow  = blocksWide * blockBytes;
+    layout.rowsPerImage = blocksHigh;
+    auto extent = WGPUExtent3D(blocksWide * 4, blocksHigh * 4, 1);
     auto queue = gpu.getQueue();
     () @trusted {
         wgpuQueueWriteTexture(queue, &dst, data.ptr, data.length, &layout, &extent);

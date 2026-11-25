@@ -133,6 +133,7 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
                 d.normalMap = normal;
                 d.srgb = srgb;
                 d.alphaCoverage = alphaCoverage;
+                d.compressed = gltfOpts.compressedTextures;
                 auto t = loadGltfImage(gpu, doc, image, d);
                 move(t, asset.textures[slot]);
             }
@@ -160,7 +161,7 @@ bool loadGltfSkinnedCharacter(ref GpuContext gpu, string path, ref const Skeleto
             }
             Texture* mr;
             if (gltfOpts.specularAa && generateMips && mi < matCount) {
-                auto t = buildGltfSpecularAa(gpu, doc, md, params);
+                auto t = buildGltfSpecularAa(gpu, doc, md, params, gltfOpts.compressedTextures ? cast(int) mi : -1);
                 if (t.valid) {
                     mr = &asset.textures[layerTexBase + matCount * 5 + mi];
                     move(t, *mr);

@@ -439,6 +439,8 @@ struct RenderState {
     package(engine) bool ambientAlpha = false;
     /// Set by the engine for materials with sprite features (`soft`, `litParticle`, `flipbook`).
     package(engine) bool sprite = false;
+    /// Set by the engine for materials whose normal map holds X and Y only.
+    package(engine) bool normalXy = false;
 
     bool isDefault() const pure nothrow @nogc { return this == RenderState.init; }
 }
@@ -741,10 +743,11 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     fragState.entryPoint = wgpuStringView("fs_main");
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
-    WGPUConstantEntry[3] constants;
+    WGPUConstantEntry[4] constants;
     if (state.alphaMask) constants[fragState.constantCount++].key = wgpuStringView("ALPHA_MASK");
     if (state.ambientAlpha) constants[fragState.constantCount++].key = wgpuStringView("AMBIENT_ALPHA");
     if (state.sprite) constants[fragState.constantCount++].key = wgpuStringView("SPRITE_FEATURES");
+    if (state.normalXy) constants[fragState.constantCount++].key = wgpuStringView("NORMAL_XY");
     foreach (ref c; constants) c.value = 1;
     if (fragState.constantCount > 0) fragState.constants = constants.ptr;
 
