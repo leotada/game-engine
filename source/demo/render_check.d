@@ -26,7 +26,7 @@ import engine.math.vec : Vec3;
 import engine.scene.camera : Camera;
 import engine.scene.light : GpuPointLight, GpuSpotLight, LightList;
 import engine.scene.scene3d_textured : Scene3DTextured;
-import engine.scene.static_instances : StaticInstanceBuffer, StaticInstanceDesc;
+import engine.scene.static_instances : StaticBuildOptions, StaticInstanceBuffer, StaticInstanceDesc;
 
 @safe:
 
@@ -558,6 +558,271 @@ private bool checkMaskCoverage(ref App app) {
     return ok;
 }
 
+/// GPU culling of static instances against the CPU path: same frames for a
+/// still, turning and jumping camera, over LODs, masks, `displaceEx`, both
+/// vertex strides, both index formats and edited instances.
+private bool checkGpuCull(ref App app) {
+    if (bench) return gpuCullScene(app, 40_000, 900, 64, true);
+    immutable small = gpuCullScene(app, 4000, 140, 4, true);
+    // Many groups, like a city: no edits, just the image.
+    immutable city = gpuCullScene(app, 40_000, 400, 64, false);
+    return small && city;
+}
+
+private bool gpuCullScene(ref App app, uint total, float area, uint matCount, bool edits) {
+    import std.math : cos, sin;
+    import std.random : Random, uniform;
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto px = new ubyte[16 * 16 * 4];
+    foreach (i; 0 .. 256) {
+        px[i * 4 .. i * 4 + 4] = 255;
+        if ((i / 4 + i / 64) % 2) px[i * 4 + 3] = 0;
+    }
+    auto holes = Texture.fromPixels(app.gpu, px, 16, 16);
+    scope(exit) holes.destroy();
+
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    // 16-bit, stride 32, with a two-level chain inside one index buffer.
+    auto ball = lodSphere(app, 24, 12);
+    scope(exit) ball.destroy();
+    // 32-bit indices (more than 65536 vertices) and stride 48.
+    auto tan = TexMesh.sphere(app.gpu, 16, 8, true);
+    scope(exit) tan.destroy();
+    auto dense = TexMesh.sphere(app.gpu, 320, 210);
+    scope(exit) dense.destroy();
+    auto tri = oddTriangle(app);
+    scope(exit) tri.destroy();
+
+    auto layout = scene.materialLayout();
+    immutable shader = scene.createSurfaceShader(`
+fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }
+fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.2 * d.localPos.y, 0.0, 0.0); }
+`);
+    if (shader == 0) return expect(false, "surface shader compiles");
+    Material make(float r, float g, float b, bool mask, uint sh, bool ds) {
+        MaterialParams mp;
+        mp.baseColor = [r, g, b];
+        auto m = Material.create(app.gpu, layout, sampler, mask ? holes : white, mp, null, null, null, null);
+        m.surfaceShader = sh;
+        m.renderState = RenderState(BlendMode.opaque, true, ds, mask);
+        m.displacementBound = sh ? 0.5f : 0;
+        return m;
+    }
+    auto red = make(0.7f, 0.2f, 0.2f, false, 0, false);
+    scope(exit) red.destroy();
+    auto green = make(0.2f, 0.7f, 0.2f, true, 0, true);
+    scope(exit) green.destroy();
+    auto blue = make(0.2f, 0.3f, 0.8f, false, shader, false);
+    scope(exit) blue.destroy();
+    auto grey = make(0.5f, 0.5f, 0.5f, false, 0, true);
+    scope(exit) grey.destroy();
+
+    enum M = 6;
+    auto extra = new Material[matCount > 4 ? matCount - 4 : 0];
+    foreach (i, ref e; extra) {
+        auto m = make(0.2f + 0.01f * i, 0.5f, 0.3f, i % 4 == 1, i % 8 == 2 ? shader : 0, i % 3 == 0);
+        import core.lifetime : move;
+        move(m, e);
+    }
+    scope(exit) foreach (ref e; extra) e.destroy();
+    auto meshes = new TexMesh*[M];
+    auto mats = new Material*[matCount];
+    () @trusted {
+        meshes[0] = &cube; meshes[1] = &quad; meshes[2] = &ball; meshes[3] = &tan; meshes[4] = &dense; meshes[5] = &tri;
+        mats[0] = &red; mats[1] = &green; mats[2] = &blue; mats[3] = &grey;
+        foreach (i, ref e; extra) mats[4 + i] = &e;
+    }();
+    writefln("  scene: %s instances, %s materials", total, matCount);
+    auto rng = Random(5);
+    auto descs = new StaticInstanceDesc[total];
+    foreach (i, ref d; descs) {
+        d.mesh = total > 4000 ? [0u, 1, 2, 3, 5][uniform(0, 5, rng)] : (i % 400 == 0 ? 4 : [0u, 1, 2, 3, 5][uniform(0, 5, rng)]);
+        d.material = uniform(0, matCount, rng);
+        immutable sc = uniform(0.5f, 3.0f, rng);
+        d.model = Mat4.translation(uniform(-area, area, rng), uniform(0.2f, 6.0f, rng), uniform(-area, area, rng))
+            * Mat4.rotationY(uniform(0.0f, 6.28f, rng)) * Mat4.scaling(sc, sc, sc);
+    }
+    StaticInstanceBuffer build(bool gpu, bool parity) {
+        StaticBuildOptions o;
+        o.cellSize = total > 4000 ? 64 : 32;
+        o.gpuCull = gpu;
+        o.rangeLodParity = parity;
+        return StaticInstanceBuffer.build(app.gpu, meshes, mats, descs, o);
+    }
+    auto cpu = build(false, false);
+    scope(exit) cpu.destroy();
+    auto gpu = build(true, false);
+    scope(exit) gpu.destroy();
+    auto parity = build(true, true);
+    scope(exit) parity.destroy();
+    if (!gpu.gpuCulled) {
+        writeln("  GPU culling not supported by this adapter: skipped");
+        return true;
+    }
+    LightList lights;
+    scope(exit) lights.release();
+    lights.dirEnabled = true;
+    lights.dir.direction = Vec3(0.6f, 1, 0.3f).normalized();
+    lights.dir.intensity = 3;
+    lights.dir.castShadows = true;
+    lights.dir.cascades.count = 3;
+    lights.dir.cascades.maxDistance = 120;
+    Vec3 eye, dirv;
+    void frameOf(ref FrameContext f, ref StaticInstanceBuffer b) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.3f, 400.0f);
+        cam.lookAt(eye, eye + dirv);
+        scene.begin(cam);
+        scene.draw(quad, grey, Vec3(0, 0, 0), Vec3(area * 2, 1, area * 2));
+        scene.submitStatic(b);
+        scene.renderShadows(f, lights);
+        scene.end(f);
+    }
+    if (bench) {
+        eye = Vec3(0, 8, 0);
+        dirv = Vec3(0.3f, -0.1f, 1).normalized();
+        static immutable zones = ["scene.", "gpu.scene.opaque.static", "gpu.shadows", "gpu.staticCull", "renderer.", "frame"];
+        timeZones(app, "static CPU 40k", zones, (ref FrameContext f) { frameOf(f, cpu); });
+        writefln("    draws %s shadow draws %s", scene.stats.drawCalls, scene.stats.shadowDrawCalls);
+        timeZones(app, "static GPU 40k", zones, (ref FrameContext f) { frameOf(f, gpu); });
+        writefln("    draws %s shadow draws %s", scene.stats.drawCalls, scene.stats.shadowDrawCalls);
+        return true;
+    }
+    uint[2] compare(string name, ref StaticInstanceBuffer a, ref StaticInstanceBuffer b, uint warmup) {
+        auto sa = capture(app, name ~ "_a", (ref FrameContext f) { frameOf(f, a); }, warmup);
+        auto sb = capture(app, name ~ "_b", (ref FrameContext f) { frameOf(f, b); }, warmup);
+        if (!sa.valid || !sb.valid) return [uint.max, 0];
+        uint diff = 0, worst = 0;
+        foreach (i; 0 .. sa.px.length / 4) {
+            uint d = 0;
+            foreach (c; 0 .. 3) {
+                immutable e = abs(cast(int) sa.px[i * 4 + c] - cast(int) sb.px[i * 4 + c]);
+                if (e > d) d = e;
+            }
+            if (d > 0) diff++;
+            if (d > worst) worst = d;
+        }
+        return [diff, worst];
+    }
+    bool ok = true;
+    uint worstParity = 0, worstInst = 0, parityDiff = 0, instDiff = 0;
+    void views(bool withLods) {
+        foreach (k; 0 .. 8) {
+            immutable float a = k * 0.8f;
+            eye = k < 6 ? Vec3(0, 5, 0) : Vec3(k == 6 ? 90 : -110, 12, k == 6 ? -60 : 100);
+            dirv = Vec3(sin(a), -0.15f, cos(a)).normalized();
+            immutable p = compare("gpucull_parity", cpu, parity, 0);
+            if (p[0] > parityDiff) parityDiff = p[0];
+            if (p[1] > worstParity) worstParity = p[1];
+            if (withLods) continue;
+            immutable i = compare("gpucull", cpu, gpu, 0);
+            if (i[0] > instDiff) instDiff = i[0];
+            if (i[1] > worstInst) worstInst = i[1];
+        }
+    }
+    views(true);
+    writefln("  with LODs, range decisions: max %s px differ, max step %s", parityDiff, worstParity);
+    ok &= expect(parityDiff == 0, "GPU path equals the CPU path with the same decisions");
+    // Per-instance decisions: equal images need equal LODs, so drop the chain.
+    scene.setLodBias(1e6f);
+    views(false);
+    writefln("  LOD 0, per instance: max %s px differ, max step %s", instDiff, worstInst);
+    ok &= expect(instDiff == 0, "per-instance culling never drops a visible instance");
+    // The GPU must keep at least what is needed and at most what the ranges keep.
+    uint drawnInstances(ref StaticInstanceBuffer b) @trusted {
+        uint n = 0;
+        auto a = b.gpuData.readArgs(app.gpu, 0);
+        foreach (i; 0 .. a.length / 5) n += a[i * 5 + 1];
+        return n;
+    }
+    // The CPU path has no displacement slack: compare the counts without it.
+    foreach (m; mats) m.displacementBound = 0;
+    compare("gpucull_count", gpu, parity, 0);
+    immutable nInst = drawnInstances(gpu), nRange = drawnInstances(parity);
+    auto cpuFrame = capture(app, "gpucull_count_cpu", (ref FrameContext f) { frameOf(f, cpu); });
+    immutable nCpu = scene.stats.staticInstancesVisible;
+    writefln("  camera instances: per instance %s, range decisions %s, CPU path %s", nInst, nRange, nCpu);
+    ok &= expect(nRange == nCpu, "range decisions draw exactly the CPU path's instances");
+    ok &= expect(nInst > 0 && nInst <= nCpu, "per-instance culling only removes");
+    foreach (m; mats) m.displacementBound = m.surfaceShader ? 0.5f : 0;
+    compare("gpucull_count", gpu, parity, 0);
+    immutable nSlack = drawnInstances(gpu);
+    ok &= expect(nSlack > nInst, "displacementBound keeps more instances at the border");
+    if (!edits) return ok;
+    // Control: removing instances on one side must be seen.
+    eye = Vec3(0, 5, 0);
+    dirv = Vec3(0, -0.15f, 1).normalized();
+    foreach (i; 0 .. 400) gpu.hideInstance(i);
+    immutable hidden = compare("gpucull_control", cpu, gpu, 0);
+    writefln("  control: 400 hidden instances change %s px", hidden[0]);
+    ok &= expect(hidden[0] > 500, "the comparison sees missing instances (control)");
+    foreach (i; 0 .. 400) cpu.hideInstance(i);
+    ok &= expect(compare("gpucull_hidden", cpu, gpu, 0)[0] == 0, "hidden instances match");
+    // A moved instance (inside its cell) takes its culling volume along.
+    foreach (i; 400 .. 800) {
+        auto m = Mat4.translation(0, 4, 0) * descs[i].model;
+        cpu.updateInstance(i, m);
+        gpu.updateInstance(i, m);
+    }
+    ok &= expect(compare("gpucull_moved", cpu, gpu, 0)[0] == 0, "moved instances match");
+    // Culling changed after the build.
+    scene.setLodBias(1);
+    parity.setMeshCull(0, 40, 0);
+    cpu.setMeshCull(0, 40, 0);
+    parity.setMeshCull(1, 0, 12);
+    cpu.setMeshCull(1, 0, 12);
+    foreach (i; 0 .. 400) parity.hideInstance(i);
+    foreach (i; 400 .. 800) parity.updateInstance(i, Mat4.translation(0, 4, 0) * descs[i].model);
+    ok &= expect(compare("gpucull_ranges", cpu, parity, 0)[0] == 0, "distance and pixel culling match");
+    return ok;
+}
+
+/// Sphere with a coarser second level in the same index buffer.
+private TexMesh lodSphere(ref App app, uint segments, uint rings) {
+    import engine.graphics.types : TexVert;
+    import std.math : cos, PI, sin;
+    TexVert[] verts;
+    ushort[] idx;
+    uint[2] first, count;
+    foreach (l; 0 .. 2) {
+        immutable seg = segments >> l, ring = rings >> l;
+        immutable base = cast(uint) verts.length;
+        first[l] = cast(uint) idx.length;
+        foreach (y; 0 .. ring + 1) foreach (x; 0 .. seg + 1) {
+            immutable float phi = cast(float) PI * y / ring, th = 2 * cast(float) PI * x / seg;
+            immutable float nx = sin(phi) * cos(th), ny = cos(phi), nz = sin(phi) * sin(th);
+            verts ~= TexVert([nx * 0.5f, ny * 0.5f, nz * 0.5f], [nx, ny, nz],
+                             [cast(float) x / seg, cast(float) y / ring]);
+        }
+        foreach (y; 0 .. ring) foreach (x; 0 .. seg) {
+            immutable a = cast(ushort)(base + y * (seg + 1) + x), b = cast(ushort)(a + seg + 1);
+            idx ~= [a, cast(ushort)(a + 1), b, cast(ushort)(a + 1), cast(ushort)(b + 1), b];
+        }
+        count[l] = cast(uint) idx.length - first[l];
+    }
+    auto m = TexMesh.fromData(app.gpu, verts, idx);
+    immutable float[2] errors = [0.0f, 0.02f];
+    m.setLodChain(first[], count[], errors[], 1);
+    return m;
+}
+
+/// One triangle: three 16-bit indices, not a multiple of 4 bytes.
+private TexMesh oddTriangle(ref App app) {
+    import engine.graphics.types : TexVert;
+    auto verts = [TexVert([-0.5f, 0, 0], [0, 0, 1], [0, 1]), TexVert([0.5f, 0, 0], [0, 0, 1], [1, 1]),
+                  TexVert([0, 1, 0], [0, 0, 1], [0.5f, 0])];
+    ushort[] idx = [0, 1, 2];
+    return TexMesh.fromData(app.gpu, verts, idx);
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -626,6 +891,7 @@ private immutable Check[] checks = [
     Check("srgb", &checkSrgb),
     Check("aa", &checkAa),
     Check("mask", &checkMask),
+    Check("gpucull", &checkGpuCull),
     Check("stars", &checkStars),
 ];
 
