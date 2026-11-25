@@ -193,7 +193,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 
 - **Compatibility:** `displace` keeps compiling and behaving as before. When both are defined, `displaceEx` wins. Detection is textual (`fn displaceEx(` / `fn displace(`) in `composeSurfaceShader`, which emits an `engineDisplace(...)` wrapper that both the main vertex stage and the shadow stage call. Existing shaders need no change; a new hook is purely additive (no new binding, no pipeline-layout change), which is why it was chosen over a changed `displace` signature or an extra bind group.
 - **Per-instance vec4:** `d.custom` is the instance `custom` vec4 that already rides in the 96-byte `TexInstanceData` (`StaticInstanceDesc.custom`, `drawMatrix(..., custom)`). Stock meaning is `x` emission multiplier, `y` white flash, `z` dissolve, `w` shelter; a surface shader may reinterpret the channels it does not use (zero emission makes `x` free; keep `z` out of reach of dissolve). Use it for a per-instance phase, e.g. `sin(frame.time * speed + d.custom.x)`. `d.instancePos` also differs per instance for a free phase seed.
-- **Painted bend weight:** the mesh UV is exposed (`d.uv`), so a modeler can paint the weight into a UV channel (e.g. `uv.y`). Vertex color is **not** exposed: the engine vertex formats (`TexVert`, `TexTanVert`) carry no color attribute and adding one would change vertex strides and every vertex-buffer layout.
+- **Painted bend weight:** the mesh UV is exposed (`d.uv`), so a modeler can paint the weight into a UV channel (e.g. `uv.y`). Vertex color is **not** exposed to the vertex hook (it lives in an optional stream the shadow passes do not bind); `surface` reads it as `in.vertexColor`.
 - **Shadow passes:** materials with either hook get a depth-only `vs_shadow` pipeline (cascades, point cube faces, spot maps; dynamic batches and `StaticInstanceBuffer`) built lazily from the same composed module, with the same `surfaceParams`, `frame.time` and instance data, so shadows follow the animation. Materials without a hook keep the stock shadow pipeline. Skinned meshes do not use surface shaders. Shadow group 0 holds the frame uniforms (binding 0) and the light matrix (binding 20, dynamic offset); group 1 is the material bind group.
 - **Cost:** the per-instance vec4 needs no extra memory (it is part of the existing stride). A displaced caster re-reads the 16-byte `custom` attribute once per instance per shadow view (e.g. 4 cascades + local faces) and binds a second pipeline/bind group when switching between displaced and stock casters; there is no extra buffer or upload. Displacement ALU runs once per vertex per shadow view in addition to the main pass.
 
@@ -825,3 +825,21 @@ app.renderer.ambientOcclusion().halfResolution = false;
 - **Cost** (RX 6600, 1920x1080, `gpu.gtao`): low 0.39 ms, medium 0.65, high 1.02, ultra 1.81; half resolution: 0.23, 0.29, 0.38, 0.57. CPU (`scene.gtao`) 0.01 ms. It also costs the extra alpha math in opaque shaders.
 
 Verification: `dub run --config=render-check -- --check=ao`; `dub run --config=outdoor -- --ao`.
+
+## Vertex Color
+
+`TexMesh.setVertexColors(gpu, colors)` and `SkinnedMesh.setVertexColors` attach one linear RGBA8 color per vertex
+(call again to replace them). The color multiplies base color and opacity on dynamic, static (CPU and GPU culled),
+tangent, skinned and surface-shader draws. `GltfImportOptions.vertexColors` imports `COLOR_0` (glTF stores it linear)
+in `loadGltfPbr`, `loadGltfAsset` and `loadGltfSkinnedCharacter`; `.meta` optimization and LODs keep the colors.
+
+- **Cost:** 4 bytes per vertex in a separate stream (vertex buffer slot 2, location 12), only for meshes that have
+  colors. Other meshes keep their vertex size, shader and pipeline. The `//#VC` lines of `textured3d_pbr.wgsl` make the
+  variant, compiled the first time a colored mesh is drawn with a given shader and render state (one-time hitch:
+  draw it once while loading). 400 spheres of 3,200 triangles at 1080p (RX 6600): opaque pass 0.429 → 0.443 ms.
+- **Surface shaders:** `SurfaceIn.vertexColor` (white without colors). `base.baseColor` already includes it.
+- **Alpha:** drives blending and the color pass of `alphaMask`. Shadow masks read only the texture alpha.
+- **Static buffers:** attach colors before `StaticInstanceBuffer.build` when `gpuCull` is on (the pool copies them).
+- 8 bits per channel: dark linear gradients may band; bake them in the texture if it shows.
+
+Verification: `dub run --config=render-check -- --check=vcolor`.

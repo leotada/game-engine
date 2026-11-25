@@ -26,6 +26,8 @@
   temporal data; radius, intensity, quality and half resolution. Outdoor demo: `--ao`.
 - **SMAA 1x and CMAA2** (`AaMode.smaa`, `AaMode.cmaa2`) and **specular antialiasing** (`GltfImportOptions.specularAa`,
   `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
+- **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),
+  `SurfaceIn.vertexColor`. Separate stream: meshes without colors are unchanged.
 
 ### Engine bug fixes
 
