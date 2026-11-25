@@ -2243,6 +2243,13 @@ struct Scene3DTextured {
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }
+                if (frame.owner !is null && frame.owner.volumetricsAvailable) {
+                    frame.owner.applyVolumetrics(frame, frameCamera, frameData.viewportRect,
+                                                 pipeline.frameBindGroupLayout, frameBindGroup);
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                    sceneDirtySinceSnapshot = true;
+                }
             }
         }}
         setSceneSnapshotViews(defaultSceneColorView, defaultShadow2dView);

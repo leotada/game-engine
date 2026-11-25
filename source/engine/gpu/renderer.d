@@ -4,6 +4,7 @@ module engine.gpu.renderer;
 import bindings.wgpu;
 import engine.gpu.context;
 import engine.gpu.gtao : AoSettings, GtaoPass;
+import engine.gpu.volumetric : VolumetricPass, VolumetricSettings;
 import engine.scene.camera : Camera;
 import engine.gpu.post : PostPassDesc, PostProcessor, PostSceneCamera, PostSettings, PostStage, SCENE_COLOR_FORMAT;
 import engine.gpu.shader : createShaderModule;
@@ -47,6 +48,8 @@ struct Renderer {
     private uint rtW, rtH;
     private PostProcessor post;
     private GtaoPass gtao;
+    private VolumetricSettings volSettings;
+    private VolumetricPass volumetric;
     private AoSettings aoSettings;
     private bool postOwned;
     private WGPUTextureFormat surfaceFormat;
@@ -86,6 +89,7 @@ struct Renderer {
         r.post = PostProcessor.create(gpuCtx, gpuCtx.getFormat());
         r.postOwned = true;
         r.gtao.setup(r.device, r.queue);
+        r.volumetric.setup(r.device, r.queue);
         r.createSceneTargets(gpuCtx.width(), gpuCtx.height());
         gpuProfilerInit(r.device, r.queue, gpuCtx.timestampsSupported());
         return r;
@@ -109,6 +113,22 @@ struct Renderer {
         if (!frame.valid || frame.postResolved) return;
         frame.suspendScenePass();
         gtao.run(frame.encoder, hdrView, depthView, rtW, rtH, viewport, aoSettings, cam);
+        frame.resumeScenePass();
+    }
+
+    /// Volumetric light of the sun and the local lights (off by default).
+    ref VolumetricSettings volumetrics() return nothrow @nogc { return volSettings; }
+
+    package(engine) bool volumetricsAvailable() const nothrow @nogc {
+        return volSettings.enabled && volSettings.density > 0 && volSettings.intensity > 0 && volumetric.available;
+    }
+
+    /// March and composite the volumetric light (called after the opaque and water draws).
+    package(engine) void applyVolumetrics(ref FrameContext frame, ref const Camera cam, float[4] viewport,
+                                          WGPUBindGroupLayout frameLayout, WGPUBindGroup frameGroup) nothrow @nogc {
+        if (!frame.valid || frame.postResolved) return;
+        frame.suspendScenePass();
+        volumetric.run(frame.encoder, hdrView, depthView, rtW, rtH, viewport, volSettings, cam, frameLayout, frameGroup);
         frame.resumeScenePass();
     }
 
@@ -199,6 +219,7 @@ struct Renderer {
         }
 
         gtao.releaseTargets();
+        volumetric.releaseTargets();
         post.resize(w, h);
     }
 
@@ -500,6 +521,7 @@ struct Renderer {
         }
         post.clearSceneCamera();
         gtao.beginFrame();
+        volumetric.beginFrame();
         WGPUCommandEncoderDescriptor encDesc;
         auto encoder = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 
@@ -805,6 +827,7 @@ struct Renderer {
         if (postOwned) {
             post.destroy();
             gtao.destroy();
+            volumetric.destroy();
             postOwned = false;
         }
     }
