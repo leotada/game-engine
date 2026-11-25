@@ -72,6 +72,7 @@ struct TerrainRenderer {
     private WGPUBindGroupLayout mainLayout, shadowLayout;
     private WGPUPipelineLayout mainPipeLayout, shadowPipeLayout;
     private WGPURenderPipeline mainPipe, shadowPipe;
+    private WGPURenderPipeline aoPipe; /// created when GTAO first runs
     private WGPUBindGroup mainBg, shadowBg;
 
     private float[PARAMS_SIZE / 4] params;
@@ -191,7 +192,8 @@ struct TerrainRenderer {
         if (ch.visibleCount == 0) return;
         auto z = profileZone!"terrain.draw"();
         auto g = gpuFrameScope!"gpu.terrain"(frame);
-        frame.setPipeline(mainPipe);
+        if (scene.writesAmbientAlpha && aoPipe is null) aoPipe = createMainPipe(true);
+        frame.setPipeline(scene.writesAmbientAlpha ? aoPipe : mainPipe);
         frame.setBindGroup(0, scene.frameGroup());
         frame.setBindGroup(1, mainBg);
         frame.setBindGroup(2, scene.iblGroup());
@@ -293,32 +295,7 @@ struct TerrainRenderer {
         vbl.attributeCount = 1;
         vbl.attributes = &attr;
 
-        WGPUColorTargetState target;
-        target.format = Renderer.sceneFormat();
-        target.writeMask = WGPUColorWriteMask.all;
-        WGPUFragmentState fst;
-        fst.module_ = mainModule;
-        fst.entryPoint = wgpuStringView("fs_main");
-        fst.targetCount = 1;
-        fst.targets = &target;
-        WGPUDepthStencilState depth;
-        depth.format = WGPUTextureFormat.depth24Plus;
-        depth.depthWriteEnabled = WGPUOptionalBool.true_;
-        depth.depthCompare = WGPUCompareFunction.less;
-
-        WGPURenderPipelineDescriptor pd;
-        pd.layout = mainPipeLayout;
-        pd.vertex.module_ = mainModule;
-        pd.vertex.entryPoint = wgpuStringView("vs_main");
-        pd.vertex.bufferCount = 1;
-        pd.vertex.buffers = &vbl;
-        pd.fragment = &fst;
-        pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
-        pd.primitive.frontFace = WGPUFrontFace.ccw;
-        pd.primitive.cullMode = WGPUCullMode.back;
-        pd.depthStencil = &depth;
-        mainPipe = wgpuDeviceCreateRenderPipeline(device, &pd);
-        if (mainPipe is null) fatal("Terrain pipeline creation failed");
+        mainPipe = createMainPipe(false);
 
         WGPUDepthStencilState sdepth;
         sdepth.format = WGPUTextureFormat.depth32Float;
@@ -338,6 +315,51 @@ struct TerrainRenderer {
         sp.depthStencil = &sdepth;
         shadowPipe = wgpuDeviceCreateRenderPipeline(device, &sp);
         if (shadowPipe is null) fatal("Terrain shadow pipeline creation failed");
+    }
+
+    /// Color pipeline; `ambientAlpha` selects the GTAO variant.
+    private WGPURenderPipeline createMainPipe(bool ambientAlpha) nothrow @nogc @trusted {
+        WGPUVertexAttribute attr = { format: WGPUVertexFormat.float32x4, offset: 0, shaderLocation: 0 };
+        WGPUVertexBufferLayout vbl;
+        vbl.arrayStride = TerrainChunkInstance.sizeof;
+        vbl.stepMode = WGPUVertexStepMode.instance_;
+        vbl.attributeCount = 1;
+        vbl.attributes = &attr;
+
+        WGPUColorTargetState target;
+        target.format = Renderer.sceneFormat();
+        target.writeMask = WGPUColorWriteMask.all;
+        WGPUFragmentState fst;
+        fst.module_ = mainModule;
+        fst.entryPoint = wgpuStringView("fs_main");
+        fst.targetCount = 1;
+        fst.targets = &target;
+        WGPUConstantEntry constant;
+        constant.key = wgpuStringView("AMBIENT_ALPHA");
+        constant.value = 1;
+        if (ambientAlpha) {
+            fst.constantCount = 1;
+            fst.constants = &constant;
+        }
+        WGPUDepthStencilState depth;
+        depth.format = WGPUTextureFormat.depth24Plus;
+        depth.depthWriteEnabled = WGPUOptionalBool.true_;
+        depth.depthCompare = WGPUCompareFunction.less;
+
+        WGPURenderPipelineDescriptor pd;
+        pd.layout = mainPipeLayout;
+        pd.vertex.module_ = mainModule;
+        pd.vertex.entryPoint = wgpuStringView("vs_main");
+        pd.vertex.bufferCount = 1;
+        pd.vertex.buffers = &vbl;
+        pd.fragment = &fst;
+        pd.primitive.topology = WGPUPrimitiveTopology.triangleList;
+        pd.primitive.frontFace = WGPUFrontFace.ccw;
+        pd.primitive.cullMode = WGPUCullMode.back;
+        pd.depthStencil = &depth;
+        auto pipe = wgpuDeviceCreateRenderPipeline(device, &pd);
+        if (pipe is null) fatal("Terrain pipeline creation failed");
+        return pipe;
     }
 
     private void createBindGroups(ref TerrainMaterial m) @trusted {
@@ -369,6 +391,7 @@ struct TerrainRenderer {
         detach();
         if (mainBg !is null) { wgpuBindGroupRelease(mainBg); mainBg = null; }
         if (shadowBg !is null) { wgpuBindGroupRelease(shadowBg); shadowBg = null; }
+        if (aoPipe !is null) { wgpuRenderPipelineRelease(aoPipe); aoPipe = null; }
         if (mainPipe !is null) { wgpuRenderPipelineRelease(mainPipe); mainPipe = null; }
         if (shadowPipe !is null) { wgpuRenderPipelineRelease(shadowPipe); shadowPipe = null; }
         if (mainPipeLayout !is null) { wgpuPipelineLayoutRelease(mainPipeLayout); mainPipeLayout = null; }

@@ -21,6 +21,9 @@
 @group(1) @binding(8) var clampSampler: sampler;
 
 
+/// Write `1 - ambient share of the color` to alpha (GTAO).
+override AMBIENT_ALPHA: bool = false;
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) worldPos: vec3<f32>,
@@ -181,8 +184,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         N = normalize(N + V * (0.05 - nv));
     }
 
-    let lit = shadeSimplePbr(P, N, Ng, V, in.pos.xy, albedo, metallic, roughness, ao);
-    var color = lit * cascadeDebugTint(P);
+    let light = shadeSimplePbrParts(P, N, Ng, V, in.pos.xy, albedo, metallic, roughness, ao);
+    var color = (light.direct + light.ambient) * cascadeDebugTint(P);
     color = applyFog(color, P);
+    if (AMBIENT_ALPHA) {
+        return vec4<f32>(color, ambientAlpha(attenuateByFog(light.ambient, P), color));
+    }
     return vec4<f32>(color, 1.0);
 }

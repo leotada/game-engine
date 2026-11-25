@@ -3,6 +3,8 @@ module engine.gpu.renderer;
 
 import bindings.wgpu;
 import engine.gpu.context;
+import engine.gpu.gtao : AoSettings, GtaoPass;
+import engine.scene.camera : Camera;
 import engine.gpu.post : PostPassDesc, PostProcessor, PostSceneCamera, PostSettings, PostStage, SCENE_COLOR_FORMAT;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : depthCopyShaderSource, bloomDownsampleShaderSource;
@@ -44,6 +46,8 @@ struct Renderer {
     private WGPUTextureView hdrView;
     private uint rtW, rtH;
     private PostProcessor post;
+    private GtaoPass gtao;
+    private AoSettings aoSettings;
     private bool postOwned;
     private WGPUTextureFormat surfaceFormat;
     // Frame capture (screenshots for verification): readback buffer filled during endFrame.
@@ -81,6 +85,7 @@ struct Renderer {
         r.surfaceFormat = gpuCtx.getFormat();
         r.post = PostProcessor.create(gpuCtx, gpuCtx.getFormat());
         r.postOwned = true;
+        r.gtao.setup(r.device, r.queue);
         r.createSceneTargets(gpuCtx.width(), gpuCtx.height());
         gpuProfilerInit(r.device, r.queue, gpuCtx.timestampsSupported());
         return r;
@@ -89,6 +94,22 @@ struct Renderer {
     /// Mutable post-processing settings (exposure, bloom, FXAA, …).
     ref PostSettings postSettings() return nothrow @nogc {
         return post.settings;
+    }
+
+    /// Ambient occlusion of opaque surfaces (off by default).
+    ref AoSettings ambientOcclusion() return nothrow @nogc { return aoSettings; }
+
+    package(engine) bool aoAvailable() const nothrow @nogc {
+        return aoSettings.enabled && aoSettings.intensity > 0 && gtao.available;
+    }
+
+    /// Composite GTAO into the scene color (called after the opaque draws).
+    package(engine) void applyAmbientOcclusion(ref FrameContext frame, ref const Camera cam, float[4] viewport)
+    nothrow @nogc {
+        if (!frame.valid || frame.postResolved) return;
+        frame.suspendScenePass();
+        gtao.run(frame.encoder, hdrView, depthView, rtW, rtH, viewport, aoSettings, cam);
+        frame.resumeScenePass();
     }
 
     /// Format used by Scene3D / Scene3DTextured / gizmos color targets.
@@ -177,6 +198,7 @@ struct Renderer {
             createSnapshotTargets(w, h);
         }
 
+        gtao.releaseTargets();
         post.resize(w, h);
     }
 
@@ -477,6 +499,7 @@ struct Renderer {
             gpuProfilerCollect(); // commit GPU timings of frames that finished (non-blocking)
         }
         post.clearSceneCamera();
+        gtao.beginFrame();
         WGPUCommandEncoderDescriptor encDesc;
         auto encoder = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 
@@ -781,6 +804,7 @@ struct Renderer {
         snapshotActive = false;
         if (postOwned) {
             post.destroy();
+            gtao.destroy();
             postOwned = false;
         }
     }

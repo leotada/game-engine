@@ -434,6 +434,9 @@ struct RenderState {
     /// Discard pixels whose opacity is below `MaterialParams.alphaCutoff`, in
     /// the color pass and in every shadow map. Surviving pixels are opaque.
     bool alphaMask = false;
+    /// Set by the engine while `AoSettings` is enabled: no blending, and alpha
+    /// holds `1 - ambient share of the color`.
+    package(engine) bool ambientAlpha = false;
 
     bool isDefault() const pure nothrow @nogc { return this == RenderState.init; }
 }
@@ -720,7 +723,7 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
 
     WGPUColorTargetState colorTarget;
     colorTarget.format = surfaceFormat;
-    colorTarget.blend = state.blend == BlendMode.opaque ? null : &blendState;
+    colorTarget.blend = state.blend == BlendMode.opaque || state.ambientAlpha ? null : &blendState;
     colorTarget.writeMask = WGPUColorWriteMask.all;
 
     WGPUFragmentState fragState;
@@ -728,13 +731,11 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     fragState.entryPoint = wgpuStringView("fs_main");
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
-    WGPUConstantEntry maskConstant;
-    if (state.alphaMask) {
-        maskConstant.key = wgpuStringView("ALPHA_MASK");
-        maskConstant.value = 1;
-        fragState.constantCount = 1;
-        fragState.constants = &maskConstant;
-    }
+    WGPUConstantEntry[2] constants;
+    if (state.alphaMask) constants[fragState.constantCount++].key = wgpuStringView("ALPHA_MASK");
+    if (state.ambientAlpha) constants[fragState.constantCount++].key = wgpuStringView("AMBIENT_ALPHA");
+    foreach (ref c; constants) c.value = 1;
+    if (fragState.constantCount > 0) fragState.constants = constants.ptr;
 
     WGPUDepthStencilState depthState;
     depthState.format = WGPUTextureFormat.depth24Plus;

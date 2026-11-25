@@ -448,6 +448,8 @@ struct Scene3DTextured {
         WGPURenderPipeline pipelineTangent;
         WGPURenderPipeline pipelineSkinned;
     }
+    /// 0 = off, 1 = opaque and masked materials, 2 = also the default blend state.
+    private ubyte ambientAlphaPass;
     private enum MAX_VARIANTS = 128;
     private PipelineVariant[MAX_VARIANTS] variants;
     private uint variantCount = 0;
@@ -1892,7 +1894,7 @@ struct Scene3DTextured {
                     break;
                 count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
             }
-            auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, mesh.vertexStride == 48);
+            auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), mesh.vertexStride == 48);
             if (pipe is null) continue;
             immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
             frame.setPipeline(pipe);
@@ -1921,7 +1923,7 @@ struct Scene3DTextured {
                 boundGroup = run.group;
                 auto mat = sib.materials[g.material];
                 immutable tangent = mesh.vertexStride == 48;
-                auto pipe = pipelineFor(mat.surfaceShader, mat.renderState, tangent);
+                auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), tangent);
                 groupDrawable = pipe !is null;
                 if (!groupDrawable) continue;
                 frame.setPipeline(pipe);
@@ -2104,6 +2106,8 @@ struct Scene3DTextured {
         uint orderCount = 0;
         bool snapshotTaken = false;
         bool sceneDirtySinceSnapshot = false;
+        immutable aoPass = frame.owner !is null && frame.owner.aoAvailable;
+        ambientAlphaPass = !aoPass ? 0 : frame.owner.ambientOcclusion.treatDefaultBlendAsOpaque ? 2 : 1;
         // Unrolled so every pass gets its own compile-time zone names.
         static foreach (pass; 0 .. 4) {{
             enum string passName = ["opaque", "ssr", "alpha", "additive"][pass];
@@ -2174,6 +2178,12 @@ struct Scene3DTextured {
                         hook(frame);
                         sceneDirtySinceSnapshot = true;
                     }
+                }
+                ambientAlphaPass = 0;
+                if (aoPass) {
+                    frame.owner.applyAmbientOcclusion(frame, frameCamera, frameData.viewportRect);
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
                 }
                 {
                     auto zHooks = profileZone!"scene.end.opaque.postHooks"();
@@ -2331,7 +2341,7 @@ struct Scene3DTextured {
         ensureBatchUploaded(b);
 
         if (b.skinnedMesh !is null) {
-            auto pipe = skinnedPipelineFor(b.material.renderState);
+            auto pipe = skinnedPipelineFor(drawState(*b.material));
             if (pipe is null) return;
             frame.setPipeline(pipe);
             frame.setBindGroup(1, b.material.bindGroup);
@@ -2346,7 +2356,7 @@ struct Scene3DTextured {
         }
 
         immutable tangent = b.mesh.vertexStride == 48;
-        auto pipe = pipelineFor(b.material.surfaceShader, b.material.renderState, tangent);
+        auto pipe = pipelineFor(b.material.surfaceShader, drawState(*b.material), tangent);
         if (pipe is null) return;
         frame.setPipeline(pipe);
         frame.setBindGroup(1, b.material.bindGroup);
@@ -2360,6 +2370,20 @@ struct Scene3DTextured {
     }
 
     /// Pipeline for a surface shader id + render state, built on first use.
+    /// Render state of a color draw. While GTAO runs, opaque surfaces write their
+    /// ambient share to alpha.
+    private RenderState drawState(ref const Material m) const nothrow @nogc {
+        RenderState s = m.renderState;
+        if (ambientAlphaPass != 0 && !m.transmissive && s.depthWrite
+                && (s.blend == BlendMode.opaque || s.alphaMask
+                    || (s.blend == BlendMode.alpha && ambientAlphaPass == 2)))
+            s.ambientAlpha = true;
+        return s;
+    }
+
+    /// True while opaque hooks should write `1 - ambient share` to alpha.
+    package(engine) bool writesAmbientAlpha() const nothrow @nogc { return ambientAlphaPass != 0; }
+
     private WGPURenderPipeline pipelineFor(uint shaderId, RenderState state, bool tangent) @trusted {
         if (shaderId > surfaceShaderCount) shaderId = 0;
         if (state.isDefault) {

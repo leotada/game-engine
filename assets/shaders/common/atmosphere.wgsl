@@ -53,6 +53,12 @@ fn applyFog(color: vec3<f32>, worldPos: vec3<f32>) -> vec3<f32> {
     return mix(color, fogColorFor(v), f);
 }
 
+/// Scene alpha of an opaque surface with GTAO: 1 - ambient share of `color`.
+fn ambientAlpha(ambient: vec3<f32>, color: vec3<f32>) -> f32 {
+    let w = vec3<f32>(0.2126, 0.7152, 0.0722);
+    return 1.0 - clamp(dot(ambient, w) / max(dot(color, w), 1e-5), 0.0, 1.0);
+}
+
 /// Fog for additive / premultiplied contributions: only attenuates.
 fn attenuateByFog(color: vec3<f32>, worldPos: vec3<f32>) -> vec3<f32> {
     return color * (1.0 - fogAmount(worldPos));

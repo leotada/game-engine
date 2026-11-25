@@ -45,8 +45,13 @@ fn evalSimpleSpot(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>,
     return evalBRDF(N, V, L, albedo, metallic, roughness, radiance) * shadow;
 }
 
-fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, screenXY: vec2<f32>,
-                  albedo: vec3<f32>, metallic: f32, roughness: f32, ao: f32) -> vec3<f32> {
+struct SimplePbrLight {
+    direct: vec3<f32>,
+    ambient: vec3<f32>,
+};
+
+fn shadeSimplePbrParts(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, screenXY: vec2<f32>,
+                       albedo: vec3<f32>, metallic: f32, roughness: f32, ao: f32) -> SimplePbrLight {
     var direct = vec3<f32>(0.0);
     if (frame.dirEnabled != 0u) {
         let L = normalize(frame.dirLight.direction);
@@ -98,5 +103,11 @@ fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, scree
     let lut = textureSampleLevel(brdfLut, iblSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
     let ambient = (kD * irradiance * albedo + prefiltered * (F * lut.x + lut.y)) * ao;
 
-    return direct + ambient;
+    return SimplePbrLight(direct, ambient);
+}
+
+fn shadeSimplePbr(P: vec3<f32>, N: vec3<f32>, Ng: vec3<f32>, V: vec3<f32>, screenXY: vec2<f32>,
+                  albedo: vec3<f32>, metallic: f32, roughness: f32, ao: f32) -> vec3<f32> {
+    let l = shadeSimplePbrParts(P, N, Ng, V, screenXY, albedo, metallic, roughness, ao);
+    return l.direct + l.ambient;
 }

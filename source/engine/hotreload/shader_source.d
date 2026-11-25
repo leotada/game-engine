@@ -322,6 +322,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("water_sim_cs.wgsl");
         case "clustered_cull_cs.wgsl":
             return import("clustered_cull_cs.wgsl");
+        case "gtao.wgsl":
+            return import("gtao.wgsl");
         case "static_cull_cs.wgsl":
             return import("static_cull_cs.wgsl");
         default:

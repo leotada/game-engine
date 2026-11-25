@@ -82,6 +82,8 @@ struct MaterialParams {
 
 /// `RenderState.alphaMask`: discard below `mat.alphaCutoff`, write alpha 1.
 override ALPHA_MASK: bool = false;
+/// `RenderState.ambientAlpha`: write `1 - ambient share of the color` to alpha (GTAO).
+override AMBIENT_ALPHA: bool = false;
 
 const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
@@ -764,6 +766,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (dissolveKill) {
             discard;
         }
+        if (AMBIENT_ALPHA) {
+            surfaceOpacity = 1.0;
+        }
         return vec4<f32>(applyFog(baseColor + emissive, in.worldPos), clamp(surfaceOpacity, 0.0, 1.0));
     }
 
@@ -1072,6 +1077,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     outAlpha = mix(outAlpha, 1.0, transWeight);
     if (dissolveKill) {
         discard;
+    }
+    if (AMBIENT_ALPHA) {
+        outAlpha = ambientAlpha(attenuateByFog(ambient, in.worldPos), color);
     }
     return vec4<f32>(color, outAlpha);
 }

@@ -195,7 +195,8 @@ struct ShaderHotReloader {
                 info("ShaderHotReloader: successfully reloaded '%s'", name);
             } else if (name != "fullscreen_vs.wgsl" && name != "pbr_brdf.wgsl"
                        && name != "shadows.wgsl" && name != "light_types.wgsl"
-                       && name != "clustered_cull_cs.wgsl" && name != "static_cull_cs.wgsl") {
+                       && name != "clustered_cull_cs.wgsl" && name != "static_cull_cs.wgsl"
+                       && name != "gtao.wgsl") {
                 warn("ShaderHotReloader: failed or skipped reloading '%s'", name);
             }
             return ok;
