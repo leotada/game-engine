@@ -47,6 +47,16 @@ enum MaterialFlags : uint {
     /// Raise the roughness where the vertex normal turns fast on screen
     /// (specular antialiasing of curved and distant geometry).
     geometricSpecularAa = 1 << 16,
+    /// Fade where the surface comes within `softDistance` in front of the opaque
+    /// scene. Alpha and additive materials only.
+    soft               = 1 << 17,
+    /// Particle lighting: wrapped diffuse (`lightWrap`) from the sun, the clustered
+    /// lights and the ambient, with shadows, on a ball normal (or `normal` map).
+    /// Ignored with `unlit`.
+    litParticle        = 1 << 18,
+    /// Albedo, normal and emissive maps are atlases of `flipbookGrid` frames; the
+    /// instance `custom.w` holds the frame (and is no longer the rain shelter).
+    flipbook           = 1 << 19,
 }
 
 /// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).
@@ -122,7 +132,7 @@ struct MaterialParams {
     // vec4 [14] (offset 224..240): Flipbook atlas
     float[2] flipbookGrid = [1.0f, 1.0f];         // atlas columns, rows (`MaterialFlags.flipbook`)
     float    flipbookBlend = 1.0f;                // 1 = cross-fade consecutive frames, 0 = hard steps
-    float    _reserved = 0.0f;
+    float    lightWrap = 0.5f;                    // how far diffuse light wraps around (`MaterialFlags.litParticle`)
 }
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);
@@ -184,6 +194,10 @@ struct Material {
     bool transmissive = false;
     /// True when the material opts into OPBR-9 Screen-Space Reflections (`MaterialFlags.ssr`).
     bool ssr = false;
+    /// True when the material fades against the scene depth (`MaterialFlags.soft`).
+    bool soft = false;
+    /// True when the material uses `soft`, `litParticle` or `flipbook`.
+    package(engine) bool sprite = false;
     /// Blend mode, depth write and culling. Non-default states get their own
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
@@ -231,6 +245,7 @@ struct Material {
         m.transmissive = params.transmissionWeight > 0.0f
                       || (params.flags & MaterialFlags.transmission) != 0;
         m.ssr = (params.flags & MaterialFlags.ssr) != 0;
+        m.setSpriteFlags(params.flags);
         m.paramsBuf = createUniformBuffer(gpu.getDevice(), MATERIAL_PARAMS_SIZE);
         updateBuffer(gpu.getQueue(), m.paramsBuf, (&params)[0 .. 1]);
 
@@ -284,6 +299,11 @@ struct Material {
         return m;
     }
 
+    private void setSpriteFlags(uint flags) nothrow @nogc {
+        soft = (flags & MaterialFlags.soft) != 0;
+        sprite = (flags & (MaterialFlags.soft | MaterialFlags.litParticle | MaterialFlags.flipbook)) != 0;
+    }
+
     bool valid() const nothrow @nogc { return bindGroup !is null; }
 
     /// Upload new PBR params to the material UBO (live editor overrides).
@@ -292,6 +312,7 @@ struct Material {
         transmissive = params.transmissionWeight > 0.0f
                     || (params.flags & MaterialFlags.transmission) != 0;
         ssr = (params.flags & MaterialFlags.ssr) != 0;
+        setSpriteFlags(params.flags);
         updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
     }
 

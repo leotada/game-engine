@@ -42,6 +42,12 @@ struct ParticleDesc {
     float damping = 0.0f;
     /// Constant acceleration (world units / s²).
     Vec3 gravity = Vec3(0, 0, 0);
+    /// Frames of the atlas (`MaterialFlags.flipbook`); 0 = no flipbook.
+    uint flipbookFrames = 0;
+    /// Frames per second, looping. 0 = play once over the lifetime.
+    float flipbookFps = 0.0f;
+    /// First frame (may be fractional).
+    float flipbookStart = 0.0f;
 }
 
 struct Particle {
@@ -55,6 +61,23 @@ struct Particle {
     float damping = 0.0f;
     Color4 colorStart;
     Color4 colorEnd;
+    uint flipbookFrames;
+    float flipbookFps = 0.0f;
+    float flipbookStart = 0.0f;
+
+    /// Flipbook frame now, in [0, flipbookFrames).
+    float frame() const pure nothrow @nogc {
+        if (flipbookFrames == 0) return 0.0f;
+        immutable n = cast(float) flipbookFrames;
+        if (flipbookFps <= 0.0f) {
+            // Once over the lifetime: ends on the last frame, no wrap to the first.
+            immutable last = n - 1.0f;
+            immutable f = flipbookStart + (last - flipbookStart) * (age / life);
+            return f < 0.0f ? 0.0f : f > last ? last : f;
+        }
+        immutable f = flipbookStart + age * flipbookFps;
+        return f - n * floor(f / n);
+    }
 }
 static assert(isPod!Particle);
 
@@ -112,6 +135,11 @@ struct ParticleEmitter {
     Vec3 gravity = Vec3(0, 0, 0);
     /// Added to every particle velocity (e.g. the emitter's own motion).
     Vec3 inheritVelocity = Vec3(0, 0, 0);
+    /// Flipbook of the particles, see `ParticleDesc`.
+    uint flipbookFrames = 0;
+    float flipbookFps = 0.0f;
+    /// Start each particle on a random frame.
+    bool flipbookRandomStart = false;
     /// Set 0 to pause `emit` without losing the fractional carry.
     bool enabled = true;
 
@@ -185,6 +213,9 @@ struct ParticleEmitter {
         d.colorEnd = colorEnd;
         d.damping = damping;
         d.gravity = gravity;
+        d.flipbookFrames = flipbookFrames;
+        d.flipbookFps = flipbookFps;
+        if (flipbookRandomStart) d.flipbookStart = next01() * flipbookFrames;
         return d;
     }
 }
@@ -230,6 +261,9 @@ struct ParticleSystem {
         p.damping = d.damping;
         p.colorStart = d.colorStart;
         p.colorEnd = d.colorEnd;
+        p.flipbookFrames = d.flipbookFrames;
+        p.flipbookFps = d.flipbookFps;
+        p.flipbookStart = d.flipbookStart;
         pool[live++] = p;
         return true;
     }
@@ -282,7 +316,10 @@ struct ParticleSystem {
                 p.colorStart.g + (p.colorEnd.g - p.colorStart.g) * k,
                 p.colorStart.b + (p.colorEnd.b - p.colorStart.b) * k,
                 (p.colorStart.a + (p.colorEnd.a - p.colorStart.a) * k) * fade);
-            scene.drawMatrix(quad, material, billboardMatrix(p.pos, right, up, toCamera, size), color);
+            // The quad has V = 1 at its top: turn atlas frames upright.
+            immutable top = p.flipbookFrames ? -up : up;
+            scene.drawMatrix(quad, material, billboardMatrix(p.pos, right, top, toCamera, size), color,
+                             [1.0f, 0.0f, 0.0f, p.frame()]);
         }
     }
 }
@@ -307,6 +344,22 @@ unittest {
     assert(!s.spawn(d));
     s.update(10.0f);
     assert(s.count == 0);
+}
+
+unittest {
+    Particle p;
+    p.life = 2;
+    assert(p.frame == 0);
+    p.flipbookFrames = 8;
+    assert(p.frame == 0);
+    p.age = 1;
+    assert(p.frame == 3.5f);
+    p.age = 2;
+    assert(p.frame == 7); // ends on the last frame
+    p.flipbookFps = 10;
+    assert(p.frame == 4); // 20 mod 8
+    p.flipbookStart = 5.5f;
+    assert(p.frame == 1.5f);
 }
 
 unittest {

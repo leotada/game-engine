@@ -437,6 +437,8 @@ struct RenderState {
     /// Set by the engine while `AoSettings` is enabled: no blending, and alpha
     /// holds `1 - ambient share of the color`.
     package(engine) bool ambientAlpha = false;
+    /// Set by the engine for materials with sprite features (`soft`, `litParticle`, `flipbook`).
+    package(engine) bool sprite = false;
 
     bool isDefault() const pure nothrow @nogc { return this == RenderState.init; }
 }
@@ -739,9 +741,10 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     fragState.entryPoint = wgpuStringView("fs_main");
     fragState.targetCount = 1;
     fragState.targets = &colorTarget;
-    WGPUConstantEntry[2] constants;
+    WGPUConstantEntry[3] constants;
     if (state.alphaMask) constants[fragState.constantCount++].key = wgpuStringView("ALPHA_MASK");
     if (state.ambientAlpha) constants[fragState.constantCount++].key = wgpuStringView("AMBIENT_ALPHA");
+    if (state.sprite) constants[fragState.constantCount++].key = wgpuStringView("SPRITE_FEATURES");
     foreach (ref c; constants) c.value = 1;
     if (fragState.constantCount > 0) fragState.constants = constants.ptr;
 

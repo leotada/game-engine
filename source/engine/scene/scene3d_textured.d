@@ -17,7 +17,7 @@ import engine.gpu.ibl : IblEnvironment;
 import engine.gpu.pipeline : BlendMode, Pipeline3D, RenderState, SurfacePipelines, TexInstanceData,
     createSkinnedTexturedDrawPipeline, createSurfacePipelines, createTexturedDrawPipeline,
     createTexturedPipeline3D, FRAME_UNIFORMS_SIZE;
-import engine.gpu.renderer : FrameContext, Renderer;
+import engine.gpu.renderer : FrameContext, Renderer, SnapshotParts;
 import engine.gpu.skinned : SkinnedMesh;
 import engine.gpu.sky : SkyRenderer;
 import engine.gpu.shaders : DisplaceKind;
@@ -2135,6 +2135,7 @@ struct Scene3DTextured {
         uint orderCount = 0;
         bool snapshotTaken = false;
         bool sceneDirtySinceSnapshot = false;
+        bool softDepthReady = false;
         immutable aoPass = frame.owner !is null && frame.owner.aoAvailable;
         ambientAlphaPass = !aoPass ? 0 : frame.owner.ambientOcclusion.treatDefaultBlendAsOpaque ? 2 : 1;
         // Unrolled so every pass gets its own compile-time zone names.
@@ -2177,6 +2178,21 @@ struct Scene3DTextured {
                     snapshotTaken = true;
                     sceneDirtySinceSnapshot = false;
                     setSceneSnapshotViews(frame.owner.opaqueColorView(), frame.owner.opaqueDepthView());
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                    softDepthReady = true;
+                }
+            }
+            static if (pass >= 2) {
+                // Soft materials read the scene depth, water included.
+                bool hasSoft = false;
+                foreach (idx; sortOrder[0 .. orderCount])
+                    if (batches[idx].material.soft) { hasSoft = true; break; }
+                if (hasSoft && !softDepthReady && frame.owner !is null) {
+                    frame.owner.snapshotOpaque(frame, SnapshotParts.depth);
+                    softDepthReady = true;
+                    setSceneSnapshotViews(snapshotTaken ? frame.owner.opaqueColorView() : defaultSceneColorView,
+                                          frame.owner.opaqueDepthView());
                     frame.setBindGroup(0, frameBindGroup);
                     frame.setBindGroup(2, iblBindGroup);
                 }
@@ -2413,6 +2429,7 @@ struct Scene3DTextured {
     /// ambient share to alpha.
     private RenderState drawState(ref const Material m) const nothrow @nogc {
         RenderState s = m.renderState;
+        s.sprite = m.sprite;
         if (ambientAlphaPass != 0 && !m.transmissive && s.depthWrite
                 && (s.blend == BlendMode.opaque || s.alphaMask
                     || (s.blend == BlendMode.alpha && ambientAlphaPass == 2)))

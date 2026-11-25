@@ -60,7 +60,7 @@ struct MaterialParams {
 
     flipbookGrid: vec2<f32>,
     flipbookBlend: f32,
-    _reserved: f32,
+    lightWrap: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
 @group(1) @binding(1) var texSampler: sampler;
@@ -84,6 +84,8 @@ struct MaterialParams {
 override ALPHA_MASK: bool = false;
 /// `RenderState.ambientAlpha`: write `1 - ambient share of the color` to alpha (GTAO).
 override AMBIENT_ALPHA: bool = false;
+/// Set for materials with `soft`, `litParticle` or `flipbook`; their code costs nothing elsewhere.
+override SPRITE_FEATURES: bool = false;
 
 const FLAG_MR: u32 = 1u;
 const FLAG_NORMAL: u32 = 2u;
@@ -101,6 +103,9 @@ const FLAG_THIN_WALLED: u32 = 8192u;
 const FLAG_SUBSURFACE_TEX: u32 = 16384u;
 const FLAG_SSR: u32 = 32768u;
 const FLAG_GEOMETRIC_SPECULAR_AA: u32 = 65536u;
+const FLAG_SOFT: u32 = 131072u;
+const FLAG_LIT_PARTICLE: u32 = 262144u;
+const FLAG_FLIPBOOK: u32 = 524288u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -122,6 +127,121 @@ fn engineDissolveNoise(x: vec3<f32>) -> f32 {
 
 fn linearizeSceneDepth(z: f32, nearZ: f32, farZ: f32) -> f32 {
     return (nearZ * farZ) / max(farZ - z * (farZ - nearZ), 1e-4);
+}
+
+/// Two frames of a flipbook atlas, `uvA` and `uvB` in atlas space.
+struct Flipbook {
+    uvA: vec2<f32>,
+    uvB: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+    blend: f32,
+};
+
+fn flipbookFrames(uv: vec2<f32>, frameIndex: f32) -> Flipbook {
+    let grid = max(floor(mat.flipbookGrid), vec2<f32>(1.0));
+    let count = grid.x * grid.y;
+    var f: Flipbook;
+    f.ddx = dpdx(uv) / grid;
+    f.ddy = dpdy(uv) / grid;
+    // Stay inside the cell at the sampled mip: no bleeding from the neighbors.
+    let texels = vec2<f32>(textureDimensions(albedoMap));
+    let footprint = max(length(f.ddx * texels), length(f.ddy * texels));
+    let cell = texels / grid;
+    let inset = min(0.5 * max(footprint, 1.0) / cell, vec2<f32>(0.5));
+    let c = clamp(uv, inset, vec2<f32>(1.0) - inset);
+    let x = max(frameIndex, 0.0);
+    let a = floor(x + 1e-3);
+    let ia = a % count;
+    let ib = (a + 1.0) % count;
+    f.uvA = (vec2<f32>(ia % grid.x, floor(ia / grid.x)) + c) / grid;
+    f.uvB = (vec2<f32>(ib % grid.x, floor(ib / grid.x)) + c) / grid;
+    f.blend = clamp(x - a, 0.0, 1.0) * clamp(mat.flipbookBlend, 0.0, 1.0);
+    return f;
+}
+
+fn flipbookSample(tex: texture_2d<f32>, f: Flipbook) -> vec4<f32> {
+    return mix(textureSampleGrad(tex, texSampler, f.uvA, f.ddx, f.ddy),
+               textureSampleGrad(tex, texSampler, f.uvB, f.ddx, f.ddy), f.blend);
+}
+
+/// Fade of a soft particle where it meets the opaque scene. 1 without a depth copy.
+fn softFade(clipPos: vec4<f32>) -> f32 {
+    let dims = vec2<i32>(textureDimensions(opaqueSceneDepthMap));
+    let p = vec2<i32>(clipPos.xy);
+    if (dims.x <= 1 || p.x >= dims.x || p.y >= dims.y || mat.softDistance <= 0.0) {
+        return 1.0;
+    }
+    let behind = textureLoad(opaqueSceneDepthMap, p, 0);
+    let gap = linearizeSceneDepth(behind, frame.cameraNear, frame.cameraFar)
+            - linearizeSceneDepth(clipPos.z, frame.cameraNear, frame.cameraFar);
+    return smoothstep(0.0, 1.0, gap / mat.softDistance);
+}
+
+/// Diffuse that wraps around the terminator by `w` (0 = Lambert, 1 = half Lambert).
+fn wrappedDiffuse(cosine: f32, w: f32) -> f32 {
+    let k = 1.0 + w;
+    return max(cosine + w, 0.0) / (k * k);
+}
+
+/// Incoming diffuse light of a particle, without its color.
+fn particleLight(worldPos: vec3<f32>, N: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let w = clamp(mat.lightWrap, 0.0, 1.0);
+    var sum = vec3<f32>(0.0);
+    if (frame.dirEnabled != 0u) {
+        let L = normalize(frame.dirLight.direction);
+        var shadow = 1.0;
+        if (frame.dirLight.castShadows != 0u) {
+            shadow = dirShadowTap(worldPos);
+        }
+        sum += frame.dirLight.color * frame.dirLight.intensity * shadow * wrappedDiffuse(dot(N, L), w);
+    }
+    if ((frame.pointCount | frame.spotCount) != 0u) {
+        var pointFirst = 0u;
+        var pointN = min(frame.pointCount, arrayLength(&pointLights));
+        var spotFirst = 0u;
+        var spotN = min(frame.spotCount, arrayLength(&spotLights));
+        let clustered = (frame.clusteredFlags & 1u) != 0u;
+        if (clustered) {
+            let rec = clusterGrid[clusterIndexAt(worldPos, pixel)];
+            pointFirst = rec.offset;
+            pointN = rec.pointCount;
+            spotFirst = rec.offset + rec.pointCount;
+            spotN = rec.spotCount;
+        }
+        for (var k = 0u; k < pointN; k++) {
+            var i = k;
+            if (clustered) { i = clusterLightIndices[pointFirst + k]; }
+            if (i >= arrayLength(&pointLights)) { continue; }
+            let pl = pointLights[i];
+            let v = pl.position - worldPos;
+            let dist = length(v);
+            if (dist >= pl.range || dist <= 1e-6) { continue; }
+            let L = v / dist;
+            sum += pl.color * pl.intensity * lightAttenuation(dist, pl.range, pl.attenuation)
+                 * wrappedDiffuse(dot(N, L), w)
+                 * pointShadowTap(pl, worldPos);
+        }
+        for (var k = 0u; k < spotN; k++) {
+            var i = k;
+            if (clustered) { i = clusterLightIndices[spotFirst + k]; }
+            if (i >= arrayLength(&spotLights)) { continue; }
+            let sl = spotLights[i];
+            let v = sl.position - worldPos;
+            let dist = length(v);
+            if (dist >= sl.range || dist <= 1e-6) { continue; }
+            let L = v / dist;
+            let cone = clamp((dot(normalize(-sl.direction), L) - sl.outerConeCos)
+                             / max(sl.innerConeCos - sl.outerConeCos, 0.001), 0.0, 1.0);
+            if (cone <= 0.0) { continue; }
+            let soft = select(cone * cone, pow(cone, sl.angleAttenuation), sl.angleAttenuation > 0.0);
+            sum += sl.color * sl.intensity * lightAttenuation(dist, sl.range, sl.attenuation) * soft
+                 * wrappedDiffuse(dot(N, L), w)
+                 * spotShadowTap(sl, worldPos);
+        }
+    }
+    return sum * 0.31830989
+         + textureSampleLevel(irradianceMap, iblSampler, N, 0.0).rgb * max(frame.iblIntensity, 0.0);
 }
 
 /// OPBR-9: Parallax-corrected local reflection probes (returns rgb + blend weight in .a).
@@ -610,7 +730,15 @@ fn evalSpotOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, 
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let albedoSample = textureSample(albedoMap, texSampler, in.uv);
+    let flipbook = SPRITE_FEATURES && (mat.flags & FLAG_FLIPBOOK) != 0u;
+    var book: Flipbook;
+    var albedoSample: vec4<f32>;
+    if (flipbook) {
+        book = flipbookFrames(in.uv, in.custom.w);
+        albedoSample = flipbookSample(albedoMap, book);
+    } else {
+        albedoSample = textureSample(albedoMap, texSampler, in.uv);
+    }
     var baseColor = albedoSample.rgb * mat.baseColor * in.tint * mat.baseWeight;
     // Instance tint alpha scales opacity (particle fade); 1 for stock draws.
     var surfaceOpacity = albedoSample.a * mat.geometryOpacity * in.tintAlpha;
@@ -632,7 +760,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var B = normalize(in.worldBitangent);
     let vertexTBN = mat3x3<f32>(T, B, N);
     if ((mat.flags & FLAG_NORMAL) != 0u) {
-        let nSample = textureSample(normalMap, texSampler, in.uv).xyz * 2.0 - 1.0;
+        var nTexel: vec3<f32>;
+        if (flipbook) {
+            nTexel = flipbookSample(normalMap, book).xyz;
+        } else {
+            nTexel = textureSample(normalMap, texSampler, in.uv).xyz;
+        }
+        let nSample = nTexel * 2.0 - 1.0;
         let TBN = mat3x3<f32>(T, B, N);
         N = normalize(TBN * nSample);
         T = normalize(T - N * dot(N, T));
@@ -646,7 +780,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var emissive = mat.emissionColor * mat.emissionLuminance;
     if ((mat.flags & FLAG_EMISSIVE) != 0u) {
-        let emTex = textureSample(emissiveMap, texSampler, in.uv).rgb;
+        var emTex: vec3<f32>;
+        if (flipbook) {
+            emTex = flipbookSample(emissiveMap, book).rgb;
+        } else {
+            emTex = textureSample(emissiveMap, texSampler, in.uv).rgb;
+        }
         emissive = emTex * mat.emissionColor * max(mat.emissionLuminance, 1.0);
     }
 
@@ -769,6 +908,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         emissive = emissive + mat.emissionColor * edge * 6.0;
     }
 
+    if (SPRITE_FEATURES && (mat.flags & FLAG_SOFT) != 0u) {
+        surfaceOpacity *= softFade(in.clipPos);
+    }
+
     if (ALPHA_MASK) {
         dissolveKill = dissolveKill || surfaceOpacity < mat.alphaCutoff;
         surfaceOpacity = 1.0;
@@ -782,6 +925,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             surfaceOpacity = 1.0;
         }
         return vec4<f32>(applyFog(baseColor + emissive, in.worldPos), clamp(surfaceOpacity, 0.0, 1.0));
+    }
+
+    if (SPRITE_FEATURES && (mat.flags & FLAG_LIT_PARTICLE) != 0u) {
+        var pn = N;
+        if ((mat.flags & FLAG_NORMAL) == 0u) {
+            // A ball seen from the front. Its axes follow the UVs on screen.
+            let dx = dpdx(in.worldPos);
+            let dy = dpdy(in.worldPos);
+            let ux = dpdx(in.uv);
+            let uy = dpdy(in.uv);
+            let flip = select(-1.0, 1.0, ux.x * uy.y - uy.x * ux.y > 0.0);
+            let du = (dx * uy.y - dy * ux.y) * flip;
+            let dv = (dy * ux.x - dx * uy.x) * flip;
+            let q = in.uv * 2.0 - 1.0;
+            pn = normalize(du * q.x / max(length(du), 1e-12) + dv * q.y / max(length(dv), 1e-12)
+                           + N * sqrt(max(1.0 - dot(q, q), 0.05)));
+        }
+        if (dissolveKill || surfaceOpacity < 0.002) {
+            discard;
+        }
+        let lit = baseColor * particleLight(in.worldPos, pn, in.clipPos.xy) * ao + emissive;
+        return vec4<f32>(applyFog(lit, in.worldPos), clamp(surfaceOpacity, 0.0, 1.0));
     }
 
     let NdotV = max(dot(N, V), 0.001);
@@ -834,7 +999,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Global rain wetness (`frame.globalWetness`): a water coat darkens and
     // glosses rain-exposed surfaces. Upward faces get the full amount, walls a
     // fraction, overhangs none; `custom.w = 1` marks sheltered instances.
-    let shelter = clamp(in.custom.w, 0.0, 1.0);
+    let shelter = select(clamp(in.custom.w, 0.0, 1.0), 1.0, flipbook);
     let rainExposure = mix(0.35, 1.0, smoothstep(0.2, 0.8, N.y)) * smoothstep(-0.3, 0.0, N.y);
     let globalWet = clamp(frame.globalWetness, 0.0, 1.0) * rainExposure * (1.0 - shelter);
     if (globalWet > 0.001 && !enableWaterFx) {
