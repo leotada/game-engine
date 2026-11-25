@@ -148,6 +148,10 @@ immutable string tonemapShaderSource = preprocessShader(import("post_tonemap.wgs
 immutable string fxaaShaderSource = preprocessShader(import("post_fxaa.wgsl"), "post_fxaa.wgsl").code;
 
 immutable string fxaaHqShaderSource = preprocessShader(import("post_fxaa_hq.wgsl"), "post_fxaa_hq.wgsl").code;
+/// SMAA 1x — `engine.gpu.post_smaa.SmaaPass`.
+immutable string smaaShaderSource = import("post_smaa.wgsl");
+/// CMAA2 — `engine.gpu.post_cmaa2.Cmaa2Pass`.
+immutable string cmaa2ShaderSource = import("post_cmaa2.wgsl");
 immutable string casShaderSource = preprocessShader(import("post_cas.wgsl"), "post_cas.wgsl").code;
 
 immutable string blitShaderSource = preprocessShader(import("post_blit.wgsl"), "post_blit.wgsl").code;

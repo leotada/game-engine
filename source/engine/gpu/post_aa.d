@@ -7,6 +7,8 @@ import engine.core.log;
 import engine.devtools.profiler : profileZone;
 import engine.gpu.buffer : createUniformBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.gpu_profiler : gpuScope;
+import engine.gpu.post_cmaa2 : Cmaa2Pass;
+import engine.gpu.post_smaa : SmaaPass;
 import engine.gpu.post_util;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : casShaderSource, fxaaHqShaderSource;
@@ -22,6 +24,10 @@ enum AaMode : ubyte {
     fxaa,
     /// FXAA with edge-end search and configurable sub-pixel smoothing.
     fxaaQuality,
+    /// SMAA 1x, preset high (pattern based, keeps texture detail).
+    smaa,
+    /// CMAA2, preset high (compute; the sharpest, for scenes with much texture detail).
+    cmaa2,
 }
 
 /// AA parameters for one frame.
@@ -72,6 +78,8 @@ struct PostAa {
     private WGPUPipelineLayout pl;      // borrowed
     private WGPUBuffer ubo;
     private FsPass fxaaHq, cas;
+    private SmaaPass smaaPass;
+    private Cmaa2Pass cmaa2Pass;
     private WGPUTextureFormat surfaceFormat;
 
     @disable this(this);
@@ -85,6 +93,8 @@ struct PostAa {
         pl = pl_;
         surfaceFormat = surfFmt;
         ubo = createUniformBuffer(device, AaParams.sizeof);
+        smaaPass.setup(device, queue, sampler);
+        cmaa2Pass.setup(device, queue);
     }
 
     package(engine) void begin(AaParams params) nothrow @nogc {
@@ -105,6 +115,24 @@ struct PostAa {
         auto z = profileZone!"post.sharpen"();
         auto g = gpuScope!"gpu.post.sharpen"(encoder);
         run(cas, casShaderSource, encoder, src, dst, toSurface);
+    }
+
+    package(engine) void smaa(WGPUCommandEncoder encoder, WGPUTextureView src, WGPUTextureView dst,
+                              bool toSurface, uint w, uint h, float threshold) nothrow @nogc {
+        smaaPass.run(encoder, src, dst, toSurface ? surfaceFormat : WGPUTextureFormat.rgba8Unorm, toSurface,
+                     w, h, threshold);
+    }
+
+    /// In place on `image`.
+    package(engine) void cmaa2(WGPUCommandEncoder encoder, WGPUTextureView image, uint w, uint h, float threshold)
+    nothrow @nogc {
+        cmaa2Pass.run(encoder, image, w, h, threshold);
+    }
+
+    /// Drop everything sized after the target (resize).
+    package(engine) void releaseTargets() nothrow @nogc {
+        smaaPass.releaseTargets();
+        cmaa2Pass.releaseTargets();
     }
 
     private void run(ref FsPass pass, string source, WGPUCommandEncoder encoder, WGPUTextureView src,
@@ -131,6 +159,8 @@ struct PostAa {
     }
 
     package(engine) void destroy() nothrow @nogc {
+        smaaPass.destroy();
+        cmaa2Pass.destroy();
         fxaaHq.release();
         cas.release();
         destroyBuffer(ubo);

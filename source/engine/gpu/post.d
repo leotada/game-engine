@@ -66,6 +66,10 @@ struct PostSettings {
     float fxaaSubpix = 0.5f;
     /// `fxaaQuality`: minimum local contrast, relative to the local maximum.
     float fxaaEdgeThreshold = 0.125f;
+    /// `smaa`: luma difference that makes an edge (0.05 = ultra, 0.1 = high, 0.15 = low).
+    float smaaThreshold = 0.1f;
+    /// `cmaa2`: luma difference that makes an edge (0.05 = ultra, 0.07 = high, 0.15 = low).
+    float cmaa2Threshold = 0.07f;
     /// Contrast adaptive sharpening after any AA mode (0 = pass skipped, 1 = strongest).
     float sharpness = 0.0f;
 
@@ -226,6 +230,7 @@ struct PostProcessor {
     private WGPURenderPipeline tonemapPipe, fxaaPipe, fxaaLdrPipe, blitPipe;
 
     private TexRT[MAX_BLOOM_MIPS] bloomMips;
+    private bool ldrStorage; // `ldrRT` can be written by compute
     private TexRT ldrRT; // tonemap output when AA or sharpening is on
     private TexRT aaRT;  // AA output when sharpening follows
     private PostAa aa;
@@ -347,6 +352,8 @@ struct PostProcessor {
     private void releaseTargets() nothrow @nogc {
         foreach (ref m; bloomMips) m.release();
         ldrRT.release();
+        ldrStorage = false;
+        aa.releaseTargets();
         aaRT.release();
         foreach (ref s; hdrScratchRT) s.release();
         foreach (ref s; ldrScratchRT) s.release();
@@ -769,6 +776,11 @@ struct PostProcessor {
 
         immutable mode = settings.effectiveAa();
         immutable sharpen = settings.sharpness > 0;
+        if (mode == AaMode.cmaa2 && !ldrStorage) {
+            ldrRT.release();
+            ldrRT = createRT(device, width, height, WGPUTextureFormat.rgba8Unorm, WGPUTextureUsage.storageBinding);
+            ldrStorage = true;
+        }
         if (mode == AaMode.off && !sharpen) {
             ensureTonemapSurfacePipe();
             auto g = gpuScope!"gpu.post.tonemap"(encoder);
@@ -793,9 +805,9 @@ struct PostProcessor {
         aa.begin(AaParams(settings.fxaaSubpix, settings.sharpness, settings.fxaaEdgeThreshold));
         auto src = ldrRT.view;
         if (mode != AaMode.off) {
-            if (sharpen && aaRT.view is null)
+            if (sharpen && mode != AaMode.cmaa2 && aaRT.view is null)
                 aaRT = createRT(device, width, height, WGPUTextureFormat.rgba8Unorm);
-            auto dst = sharpen ? aaRT.view : target;
+            auto dst = mode == AaMode.cmaa2 ? src : sharpen ? aaRT.view : target;
             final switch (mode) {
                 case AaMode.legacy:
                 case AaMode.off:
@@ -810,6 +822,18 @@ struct PostProcessor {
                     break;
                 case AaMode.fxaaQuality:
                     aa.fxaaQuality(encoder, src, dst, !sharpen);
+                    break;
+                case AaMode.smaa:
+                    aa.smaa(encoder, src, dst, !sharpen, width, height, settings.smaaThreshold);
+                    break;
+                case AaMode.cmaa2:
+                    aa.cmaa2(encoder, src, width, height, settings.cmaa2Threshold);
+                    if (!sharpen) {
+                        auto blBG = makeSampleBG(sampleBGL, src);
+                        scope(exit) wgpuBindGroupRelease(blBG);
+                        auto gb = gpuScope!"gpu.post.cmaa2.copy"(encoder);
+                        drawPass(encoder, target, blitPipe, blBG, true);
+                    }
                     break;
             }
             src = dst;
