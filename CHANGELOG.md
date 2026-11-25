@@ -34,6 +34,8 @@
 - **BC7 / BC5 textures** (`game-engine-texc`, `Texture.fromKtx2Bytes`, `TextureDesc.compressed`,
   `GltfImportOptions.compressedTextures`): KTX2 files with mips and optional zstd, a quarter of the memory, RGBA8 fallback on the
   CPU. BC5 normal maps rebuild Z (`MaterialFlags.normalXy`). Off by default.
+- **Thin geometry** (`MaterialFlags.thin`, `MaterialParams.thinRadius`, `thinPixels`): wires keep a minimum width on screen, with
+  dithered or blended coverage. Off by default; replaces the unused `specularAaStrength` field.
 
 ### Engine bug fixes
 

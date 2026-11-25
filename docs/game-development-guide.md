@@ -338,6 +338,7 @@ Scenes render into `rgba16Float` HDR and resolve into the swapchain inside `app.
 - **Bloom & AA:** `bloom` (`bool`), `bloomThreshold`, `bloomKnee`, `bloomStrength`, `bloomClamp`, `bloomRadius` (`3..7` mip levels), `bloomScreen` (`bool`), and `fxaa` (`bool`).
 - **Quality AA & sharpening:** `app.post.aaMode = AaMode.fxaaQuality` (edge search, `fxaaSubpix`, `fxaaEdgeThreshold`), `AaMode.smaa` or `AaMode.cmaa2`; `MaterialFlags.geometricSpecularAa` and `GltfImportOptions.specularAa` for sparkling highlights; and `app.post.sharpness = 0.5f` (contrast adaptive sharpening after any AA mode, 0 = off). See [graphics.md](graphics.md#antialiasing-and-sharpening).
 - **Vertex color:** `mesh.setVertexColors(gpu, colors)` (linear RGBA8) or `GltfImportOptions.vertexColors` (`COLOR_0`). See [graphics.md](graphics.md#vertex-color).
+- **Thin geometry:** `MaterialFlags.thin` with `thinRadius` keeps wires at least one pixel wide. See [graphics.md](graphics.md#thin-geometry).
 - **Compressed textures:** `game-engine-texc gltf car.glb` (or `encode a.png a.ktx2 --srgb`), then `GltfImportOptions.compressedTextures` or `TextureDesc.compressed`. A quarter of the memory. See [graphics.md](graphics.md#block-compressed-textures-bc7-bc5).
 - **Custom fullscreen WGSL passes:** Inject passes at `PostStage.beforeTonemap` (HDR), `PostStage.afterTonemap` (LDR pre-UI), or `PostStage.afterUi`:
 

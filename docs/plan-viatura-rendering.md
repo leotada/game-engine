@@ -29,7 +29,7 @@ features below. This file keeps the requests and their status.
 | E8 | Auto exposure and 3D color LUT | Only the exposure value persists between frames | done |
 | E9 | Soft, lit particles with an animated atlas | — | done |
 | E10 | BC7 / BC5 textures, conversion tool, RGBA8 fallback | Memory and load time measured | done |
-| E13 | Minimum 1 px width for thin geometry, per material | No sorted alpha if possible | planned |
+| E13 | Minimum 1 px width for thin geometry, per material | No sorted alpha if possible | done |
 | S1 | Round, soft stars instead of hard-edged voxels | — | done |
 | E14 | GPU occlusion culling (Hi-Z, two-phase), after E11, main view only | Same image on/off, counter, measured gain | planned |
 

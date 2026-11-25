@@ -992,3 +992,31 @@ opts.compressedTextures = true;                  // the files written by `texc g
 Measured on an RX 6600, 2048x2048 color map with mips, LDC release: PNG 117.3 ms and 21.33 MiB on the GPU; KTX2 2.4 ms and
 5.33 MiB (5.33 MiB file); KTX2 with zstd 46.6 ms and 5.33 MiB (3.30 MiB file); decoding to RGBA8 on the CPU 91.3 ms. The BC7 decoder
 is bit-identical to the GPU in every mode. Verification: `dub run --config=render-check -- --check=bc`.
+
+## Thin Geometry
+
+Wires, railings and antennas thinner than a pixel break into dots. `MaterialFlags.thin` keeps them at least `thinPixels` wide on
+screen: vertices move out along their normals and the coverage drops by the same factor, so distant wires fade instead of
+flickering.
+
+```d
+MaterialParams p;
+p.flags = MaterialFlags.thin;
+p.thinRadius = 0.012f; // radius of the tube in world units, after the instance scale
+p.thinPixels = 1;      // smallest width (default 1)
+auto wire = Material.create(gpu, scene.materialLayout(), sampler, white, p, null, null, null, null);
+wire.renderState = RenderState(BlendMode.opaque, true); // dithered coverage, no sorting
+```
+
+- With `RenderState.depthWrite` (the default) the coverage is a fixed screen dither: opaque, unsorted, written to depth. FXAA or SMAA
+  smooths the dots. Without `depthWrite` the coverage multiplies the opacity (blended, sorted like any alpha batch).
+- Made for tubes with smooth normals. Boxes with split normals open at the corners by less than a pixel. Flat grids and
+  fences are better as an alpha mask with `TextureDesc.alphaCoverage`.
+- Works for `Scene3DTextured.draw*`, skinned meshes, static buffers (CPU and GPU culling) and surface shaders. Shadow maps draw the
+  original geometry. Bounds are not widened: an object can be culled when only its extra half pixel is on screen.
+- Without an antialiasing filter the light of a wire at exactly 45 degrees varies by up to 41% with its sub-pixel position (one or two
+  pixels per step of the lattice); at the other angles measured it stays within 6% (dither) and 2% (alpha).
+- Materials without the flag compile the previous shader. Geometry wider than `thinPixels` renders exactly as before.
+
+Cost at 1920x1080 on an RX 6600: 4000 screen-wide wires 0.1 pixels wide, 0.27 ms plain and 0.74 ms thin (ten times more pixels are
+drawn). Verification: `dub run --config=render-check -- --check=thin`.
