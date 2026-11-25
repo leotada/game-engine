@@ -1867,8 +1867,8 @@ struct Scene3DTextured {
         size_t i = 0;
         while (i < d.order.length) {
             immutable gi = d.order[i];
-            auto mesh = sib.meshes[sib.groups[gi].mesh];
-            auto mat = sib.materials[sib.groups[gi].material];
+            auto mesh = sib.meshes[sib.groups[d.partGroup[gi]].mesh];
+            auto mat = sib.materials[sib.groups[d.partGroup[gi]].material];
             if (!mat.renderState.depthWrite) { i++; continue; }
             // Plain opaque casters only differ by stride and culling; the others bind their material.
             immutable plain = !mat.renderState.alphaMask && mat.surfaceShader == 0;
@@ -1876,8 +1876,8 @@ struct Scene3DTextured {
             uint count = 0;
             for (; i < d.order.length; i++) {
                 immutable gj = d.order[i];
-                auto mj = sib.meshes[sib.groups[gj].mesh];
-                auto tj = sib.materials[sib.groups[gj].material];
+                auto mj = sib.meshes[sib.groups[d.partGroup[gj]].mesh];
+                auto tj = sib.materials[sib.groups[d.partGroup[gj]].material];
                 if (mj.vertexStride != mesh.vertexStride || mj.indexFormat != mesh.indexFormat
                         || !tj.renderState.depthWrite || tj.renderState.doubleSided != mat.renderState.doubleSided)
                     break;
@@ -1907,14 +1907,14 @@ struct Scene3DTextured {
         size_t i = 0;
         while (i < d.order.length) {
             immutable gi = d.order[i];
-            auto mesh = sib.meshes[sib.groups[gi].mesh];
-            auto mat = sib.materials[sib.groups[gi].material];
+            auto mesh = sib.meshes[sib.groups[d.partGroup[gi]].mesh];
+            auto mat = sib.materials[sib.groups[d.partGroup[gi]].material];
             immutable first = d.groups[gi].firstArg;
             uint count = 0;
             for (; i < d.order.length; i++) {
                 immutable gj = d.order[i];
-                auto mj = sib.meshes[sib.groups[gj].mesh];
-                if (sib.materials[sib.groups[gj].material] !is mat || mj.vertexStride != mesh.vertexStride
+                auto mj = sib.meshes[sib.groups[d.partGroup[gj]].mesh];
+                if (sib.materials[sib.groups[d.partGroup[gj]].material] !is mat || mj.vertexStride != mesh.vertexStride
                         || mj.hasVertexColors != mesh.hasVertexColors
                         || mj.indexFormat != mesh.indexFormat)
                     break;

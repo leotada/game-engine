@@ -83,6 +83,36 @@ struct CullGroup {
 static assert(CullBlock.sizeof == 16 && CullMeta.sizeof == 32 && CullGroup.sizeof == 208);
 static assert(isPod!CullBlock && isPod!CullMeta && isPod!CullGroup);
 
+/// Most blocks of one culling group: `cs_sum` walks them in one invocation.
+enum uint STATIC_CULL_PART_BLOCKS = 16;
+
+/// Cut groups longer than `STATIC_CULL_PART_BLOCKS` blocks. `order` then lists parts
+/// instead of groups and `partGroup` maps each part to its group.
+CullGroup[] splitCullGroups(scope const(CullGroup)[] groups, ref uint[] order, out uint[] partGroup) {
+    enum uint MAX = STATIC_CULL_PART_BLOCKS * STATIC_CULL_BLOCK;
+    CullGroup[] parts;
+    auto firstPart = new uint[groups.length + 1];
+    foreach (gi, ref g; groups) {
+        firstPart[gi] = cast(uint) parts.length;
+        uint done = 0;
+        do {
+            CullGroup p = g;
+            p.first = g.first + done;
+            p.count = g.count - done < MAX ? g.count - done : MAX;
+            done += p.count;
+            parts ~= p;
+            partGroup ~= cast(uint) gi;
+        } while (done < g.count);
+    }
+    firstPart[groups.length] = cast(uint) parts.length;
+    uint[] partOrder;
+    foreach (gi; order)
+        foreach (k; firstPart[gi] .. firstPart[gi + 1])
+            partOrder ~= k;
+    order = partOrder;
+    return parts;
+}
+
 /// Split the groups' instance ranges into blocks of at most 64; a block never crosses a group.
 CullBlock[] buildCullBlocks(scope CullGroup[] groups) {
     CullBlock[] blocks;
@@ -329,6 +359,8 @@ struct StaticGpuData {
     Pod!CullGroup[] groups;
     /// Group indices in indirect-record order (neighbors share state).
     Pod!uint[] order;
+    /// Per entry of `groups`: the group of the `StaticInstanceBuffer` it is part of.
+    Pod!uint[] partGroup;
     uint blockCount;
     uint argCount;
     uint instanceCount;
@@ -351,6 +383,7 @@ struct StaticGpuData {
     /// `groups` must carry the instance ranges; blocks and buffers are built here. Load time.
     void build(ref GpuContext gpu, CullGroup[] groupTable, uint[] drawOrder, scope const(CullMeta)[] metas,
                WGPUBuffer instances) {
+        groupTable = splitCullGroups(groupTable, drawOrder, partGroup);
         auto blocks = buildCullBlocks(groupTable);
         uint arg = 0;
         foreach (gi; drawOrder) {
@@ -501,4 +534,19 @@ CullMeta cullMetaOf(BoundingSphere world, float scale) pure nothrow @nogc {
     ReceiverCull rc;
     u = CullViewUbo.make(f, Vec3(0, 0, 0), 1, 0.9f, 1080, CULL_SHADOW, &rc);
     assert(u.flags[0] == (CULL_SHADOW | CULL_RECEIVER) && u.sweep[3] == rc.drop);
+}
+
+@("staticCull.parts") @safe unittest {
+    CullGroup[2] g;
+    g[0].count = 2500;
+    g[0].firstArg = 7;
+    g[1].first = 2500;
+    g[1].count = 10;
+    uint[] order = [1, 0], map;
+    auto p = splitCullGroups(g[], order, map);
+    assert(p.length == 4 && map == [0, 0, 0, 1] && order == [3, 0, 1, 2]);
+    assert(p[0].first == 0 && p[0].count == 1024 && p[1].first == 1024 && p[2].first == 2048 && p[2].count == 452);
+    assert(p[3].first == 2500 && p[3].count == 10);
+    foreach (ref x; buildCullBlocks(p)) assert(x.count > 0);
+    foreach (ref x; p) assert(x.blockCount <= STATIC_CULL_PART_BLOCKS);
 }

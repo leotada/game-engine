@@ -419,7 +419,7 @@ struct StaticInstanceBuffer {
     package(engine) void refreshGpuGroups() nothrow @nogc {
         foreach (i; 0 .. gpuData.groups.length) {
             CullGroup t = gpuData.groups[i];
-            fillGroup(t, cast(uint) i);
+            fillGroup(t, gpuData.partGroup[i]);
             if (t != gpuData.groups[i]) {
                 gpuData.groups[i] = t;
                 gpuData.dirty = true;
