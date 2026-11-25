@@ -227,6 +227,12 @@
             "mainSourceFile": "source/demo/render_check.d"
         },
         {
+            "name": "texc",
+            "targetType": "executable",
+            "targetName": "game-engine-texc",
+            "mainSourceFile": "tools/texc_main.d"
+        },
+        {
             "name": "test-physics",
             "targetType": "executable",
             "targetName": "game-engine-test-physics",
