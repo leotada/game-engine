@@ -44,6 +44,9 @@ enum MaterialFlags : uint {
     subsurface         = 1 << 14,
     /// Opt-in per-material Screen-Space Reflections (`OPBR-9`).
     ssr                = 1 << 15,
+    /// Raise the roughness where the vertex normal turns fast on screen
+    /// (specular antialiasing of curved and distant geometry).
+    geometricSpecularAa = 1 << 16,
 }
 
 /// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).

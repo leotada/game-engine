@@ -78,6 +78,10 @@ struct GltfImportOptions {
     /// Apply `alphaMode` / `alphaCutoff`: `MASK` becomes `RenderState.alphaMask`
     /// with coverage-preserving base color mips, `OPAQUE` disables blending.
     bool alphaModes = false;
+    /// Bake the normal-map variation lost in each mip into the roughness of
+    /// normal-mapped materials (specular antialiasing). Builds one
+    /// metallic-roughness texture per such material.
+    bool specularAa = false;
 }
 
 /// glTF `alphaMode`.
@@ -234,7 +238,15 @@ GltfModel loadGltfPbr(ref GpuContext gpu, string gltfPath,
     Texture* emPtr = null;
 
     {
-        auto t = loadMap(matDesc.metallicRoughnessImage, TextureDesc.mipped());
+        Texture t;
+        if (opts.specularAa) {
+            auto baked = buildGltfSpecularAa(gpu, doc, matDesc, params);
+            move(baked, t);
+        }
+        if (!t.valid) {
+            auto plain = loadMap(matDesc.metallicRoughnessImage, TextureDesc.mipped());
+            move(plain, t);
+        }
         if (t.valid) {
             model.metallicRoughness = move(t);
             model.hasMR = true;
@@ -926,6 +938,23 @@ private DecodedImage decodeGltfImagePixels(ref GltfDocument doc, int imageIndex)
     if (!Texture.decodeImageBytes(fileBytes, img.rgba, img.w, img.h, hint))
         return DecodedImage.init;
     return img;
+}
+
+/// Metallic-roughness texture with the normal variation of each mip
+/// (`GltfImportOptions.specularAa`). Invalid when the material has no normal
+/// map. The roughness factor moves from `params` into the texture.
+package(engine) Texture buildGltfSpecularAa(ref GpuContext gpu, ref GltfDocument doc, ref const GltfMaterialDesc desc,
+                                            ref MaterialParams params) @trusted {
+    import engine.graphics.specular_aa : specularAaTexture;
+    if (desc.normalImage < 0) return Texture.init;
+    auto n = decodeGltfImagePixels(doc, desc.normalImage);
+    if (!n.valid) return Texture.init;
+    DecodedImage mr;
+    if (desc.metallicRoughnessImage >= 0) mr = decodeGltfImagePixels(doc, desc.metallicRoughnessImage);
+    params.flags |= MaterialFlags.metallicRoughness;
+    immutable factor = params.specularRoughness;
+    params.specularRoughness = 1;
+    return specularAaTexture(gpu, mr.valid ? mr.rgba : null, mr.w, mr.h, n.rgba, n.w, n.h, factor);
 }
 
 private ubyte sampleChannelResized(ref const DecodedImage img, uint x, uint y, uint dw, uint dh, uint ch) pure nothrow @nogc {

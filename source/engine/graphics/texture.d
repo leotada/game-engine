@@ -70,6 +70,25 @@ struct Texture {
         return t;
     }
 
+    /// Upload a complete linear RGBA8 mip chain (level 0 first, tightly packed).
+    static Texture fromMipChain(ref GpuContext gpu, const(ubyte)[] chain, uint width, uint height, uint levels) {
+        Texture t;
+        t.width = width;
+        t.height = height;
+        t.mipLevels = levels;
+        t.texture = createTexture2D(gpu, t.format, width, height, 1, levels);
+        if (t.texture is null) fatal("Failed to create WGPU texture");
+        size_t off = 0;
+        foreach (l; 0 .. levels) {
+            immutable w = mipExtent(width, l), h = mipExtent(height, l);
+            immutable bytes = cast(size_t) w * h * 4;
+            writeLevel(gpu, t.texture, 0, l, chain[off .. off + bytes], w, h, 4);
+            off += bytes;
+        }
+        t.view = createView(t.texture, t.format, WGPUTextureViewDimension.dim2D, 1);
+        return t;
+    }
+
     /// Single-channel 16-bit normalized texture (heightmaps, masks).
     /// Requires the 16-bit-norm device feature; returns an invalid texture
     /// (and logs) when the device cannot create it.

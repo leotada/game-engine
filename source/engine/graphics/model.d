@@ -447,7 +447,7 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
     size_t imageCount = ("images" in doc.root) ? doc.root["images"].array.length : 0;
     immutable matCount = scene.materials.length;
     immutable size_t layerTexBase = imageCount * 4 + matCount + 1;
-    asset.textures = new Texture[layerTexBase + matCount * 5];
+    asset.textures = new Texture[layerTexBase + matCount * 6]; // 5 layer maps + specular AA roughness
     bool[] loaded = new bool[imageCount * 4];
 
     // One slot per (image, usage): data, normal map, sRGB color, masked base color.
@@ -487,7 +487,15 @@ GltfAsset loadGltfAsset(ref GpuContext gpu, string path, WGPUBindGroupLayout mat
             params.baseColor = [1, 1, 1];
             params.geometryOpacity = 1.0f;
         }
-        Texture* mr = imageTexture(md.metallicRoughnessImage, false);
+        Texture* mr;
+        if (opts.gltf.specularAa && opts.generateMips && mi < matCount) {
+            auto t = buildGltfSpecularAa(gpu, doc, md, params);
+            if (t.valid) {
+                mr = &asset.textures[layerTexBase + matCount * 5 + mi];
+                move(t, *mr);
+            }
+        }
+        if (mr is null) mr = imageTexture(md.metallicRoughnessImage, false);
         Texture* nrm = imageTexture(md.normalImage, true);
         Texture* ao = imageTexture(md.occlusionImage, false);
         Texture* em = imageTexture(md.emissiveImage, false, true);

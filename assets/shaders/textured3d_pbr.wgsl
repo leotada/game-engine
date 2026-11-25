@@ -100,6 +100,7 @@ const FLAG_TRANSMISSION_TEX: u32 = 4096u;
 const FLAG_THIN_WALLED: u32 = 8192u;
 const FLAG_SUBSURFACE_TEX: u32 = 16384u;
 const FLAG_SSR: u32 = 32768u;
+const FLAG_GEOMETRIC_SPECULAR_AA: u32 = 65536u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -787,6 +788,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var coatIor = mat.coatIor;
     var coatDark = mat.coatDarkening;
     var coatCol = mat.coatColor;
+    if ((mat.flags & FLAG_GEOMETRIC_SPECULAR_AA) != 0u) {
+        // Tokuyoshi and Kaplanyan 2019: screen-space variance of the normal.
+        let Nv = normalize(in.worldNormal);
+        let geomDx = dpdx(Nv);
+        let geomDy = dpdy(Nv);
+        let variance = 0.25 * (dot(geomDx, geomDx) + dot(geomDy, geomDy));
+        let alpha = roughness * roughness;
+        roughness = sqrt(sqrt(min(alpha * alpha + min(2.0 * variance, 0.18), 1.0)));
+    }
     var effectiveRoughness = coatRoughenBase(roughness, coatR, coatW);
 
     if (enableWaterFx) {
