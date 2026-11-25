@@ -1980,6 +1980,255 @@ private bool checkExposure(ref App app) {
     return ok;
 }
 
+/// Particles: soft fade against the depth, wrapped lighting with shadows, flipbook atlas.
+private bool checkParticles(ref App app) {
+    import engine.graphics.particles : ParticleDesc, ParticleSystem;
+    import std.math : PI, pow;
+    auto scene = Scene3DTextured.create(app.gpu, 4096, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.clamp);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    // 4x2 atlas of 16x16 frames: frame i is the solid color (i * 32, 255 - i * 32, 64).
+    ubyte[] px = new ubyte[64 * 32 * 4];
+    foreach (y; 0 .. 32) foreach (x; 0 .. 64) {
+        immutable i = (y / 16) * 4 + x / 16;
+        px[(y * 64 + x) * 4 .. (y * 64 + x) * 4 + 4] = [cast(ubyte)(i * 32), cast(ubyte)(255 - i * 32), 64, 255];
+    }
+    auto atlas = Texture.fromPixels(app.gpu, px, 64, 32);
+    scope(exit) atlas.destroy();
+    app.renderer.postSettings() = neutralPost();
+    LightList lights;
+    scope(exit) lights.release();
+
+    Material make(ref Texture tex, uint flags, BlendMode blend, float softDistance = 0, float blendFrames = 1) {
+        MaterialParams mp;
+        mp.baseColor = [1, 1, 1];
+        mp.flags = flags;
+        mp.softDistance = softDistance;
+        mp.flipbookGrid = [4, 2];
+        mp.flipbookBlend = blendFrames;
+        mp.lightWrap = 0.5f;
+        Material m = Material.create(app.gpu, scene.materialLayout(), sampler, tex, mp, null, null, null, null);
+        m.renderState = RenderState(blend, false, true);
+        return m;
+    }
+    MaterialParams bp;
+    bp.baseColor = [0, 0, 0];
+    bp.specularWeight = 0;
+    auto black = Material.create(app.gpu, scene.materialLayout(), sampler, white, bp, null, null, null, null);
+    scope(exit) black.destroy();
+    black.renderState.blend = BlendMode.opaque;
+    auto hard = make(white, MaterialFlags.unlit, BlendMode.alpha);
+    scope(exit) hard.destroy();
+    auto soft = make(white, MaterialFlags.unlit | MaterialFlags.soft, BlendMode.alpha, 1);
+    scope(exit) soft.destroy();
+    auto softAdd = make(white, MaterialFlags.unlit | MaterialFlags.soft, BlendMode.additive, 1);
+    scope(exit) softAdd.destroy();
+    auto lit = make(white, MaterialFlags.litParticle, BlendMode.alpha);
+    scope(exit) lit.destroy();
+    auto book = make(atlas, MaterialFlags.unlit | MaterialFlags.flipbook, BlendMode.alpha);
+    scope(exit) book.destroy();
+    auto bookHard = make(atlas, MaterialFlags.unlit | MaterialFlags.flipbook, BlendMode.alpha, 0, 0);
+    scope(exit) bookHard.destroy();
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.1f, 100.0f);
+    cam.lookAt(Vec3(0, 0, 10), Vec3(0, 0, 0));
+    // Unit quad facing +Z.
+    Mat4 facing(Vec3 at, float size) {
+        import engine.graphics.particles : billboardMatrix;
+        return billboardMatrix(at, Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1), size);
+    }
+    immutable cx = WIN_W / 2, cy = WIN_H / 2;
+    float linear(ref Shot s, uint x, uint y) { return pow(s.at(x, y, 1) / 255.0f, 2.2f); }
+
+    if (bench) {
+        auto disc = Texture.softDisc(app.gpu);
+        scope(exit) disc.destroy();
+        auto dUnlit = make(disc, MaterialFlags.unlit, BlendMode.alpha);
+        auto dSoft = make(disc, MaterialFlags.unlit | MaterialFlags.soft, BlendMode.alpha, 1);
+        auto dLit = make(disc, MaterialFlags.litParticle, BlendMode.alpha);
+        auto dAll = make(disc, MaterialFlags.litParticle | MaterialFlags.soft | MaterialFlags.flipbook, BlendMode.alpha, 1);
+        scope(exit) { dUnlit.destroy(); dSoft.destroy(); dLit.destroy(); dAll.destroy(); }
+        auto ps = ParticleSystem.create(2000);
+        foreach (i; 0 .. 2000) {
+            ParticleDesc d;
+            d.pos = Vec3((i % 50 - 25) * 0.25f, (i / 50 - 20) * 0.2f, (i * 7 % 40) * 0.1f - 2);
+            d.life = 1e6f;
+            d.sizeStart = 0.8f;
+            d.colorStart = Color4(1, 1, 1, 0.1f);
+            ps.spawn(d);
+        }
+        void run(string label, ref Material m, uint points = 16) {
+            auto mat = () @trusted { return &m; }();
+            timeZones(app, label, ["gpu.scene.alpha", "gpu.snapshotOpaque"], (ref FrameContext f) {
+                lights.clear();
+                lights.dirEnabled = true;
+                lights.dir.direction = Vec3(0.3f, 1, 0.2f).normalized();
+                lights.dir.castShadows = true;
+                foreach (i; 0 .. points) {
+                    GpuPointLight pl;
+                    pl.position = Vec3(i % 4 * 2.0f - 3, i / 4 * 1.5f - 2, 1);
+                    pl.range = 4;
+                    lights.addPoint(pl);
+                }
+                scene.begin(cam);
+                scene.drawMatrix(cube, black, Mat4.translation(0, 0, -3) * Mat4.scaling(30, 30, 1), Color4.white);
+                ps.draw(scene, quad, *mat, cam);
+                scene.renderShadows(f, lights);
+                scene.end(f);
+            });
+        }
+        run("2000 unlit", dUnlit);
+        run("2000 soft", dSoft);
+        run("2000 lit, sun", dLit, 0);
+        run("2000 lit, sun + 16 point lights", dLit);
+        run("2000 lit + soft + flipbook", dAll);
+        return true;
+    }
+
+    bool ok = true;
+    // --- soft: a wall behind the particle, at several gaps.
+    Shot wallShot(string name, ref Material m, float gap, bool wall = true) {
+        auto mat = () @trusted { return &m; }();
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            scene.begin(cam);
+            if (wall) scene.drawMatrix(cube, black, Mat4.translation(0, 0, -0.5f) * Mat4.scaling(30, 30, 1), Color4.white);
+            scene.drawMatrix(quad, *mat, facing(Vec3(0, 0, gap), 4), Color4.white);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    static float smooth(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+    foreach (gap; [0.1f, 0.25f, 0.5f, 0.75f, 1.5f]) {
+        auto a = wallShot("soft_alpha", soft, gap);
+        if (!a.valid) return expect(false, "frame captured");
+        auto b = wallShot("soft_additive", softAdd, gap);
+        immutable want = smooth(gap);
+        writefln("    gap %.2f: alpha %.3f additive %.3f, exact %.3f", gap, linear(a, cx, cy), linear(b, cx, cy), want);
+        ok &= expect(abs(linear(a, cx, cy) - want) < 0.02f && abs(linear(b, cx, cy) - want) < 0.02f, "soft fade follows the gap");
+    }
+    auto hardShot = wallShot("hard", hard, 0.1f);
+    ok &= expect(hardShot.at(cx, cy, 1) == 255, "without the flag the particle is not faded");
+    auto sky = wallShot("soft_sky", soft, 0.1f, false);
+    ok &= expect(sky.at(cx, cy, 1) == 255, "nothing behind: not faded");
+
+    // --- lit: sun on the camera side, aside and behind; shadow; point light.
+    Shot litShot(string name, Vec3 sunDir, bool blocker, bool point) {
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = !point;
+            lights.dir.direction = sunDir;
+            lights.dir.color = Vec3(1, 1, 1);
+            lights.dir.intensity = 2;
+            lights.dir.castShadows = blocker;
+            if (point) {
+                GpuPointLight pl;
+                pl.position = Vec3(0, 0, 2);
+                pl.range = 10;
+                pl.intensity = 10;
+                lights.addPoint(pl);
+            }
+            scene.setIblIntensity(0);
+            scene.begin(cam);
+            if (blocker) scene.drawMatrix(cube, black, Mat4.translation(0, 3.5f, 0) * Mat4.scaling(8, 0.5f, 8), Color4.white);
+            scene.drawMatrix(quad, lit, facing(Vec3(0, 0, 0), 4), Color4.white);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    float wrapped(float c) { return c + 0.5f > 0 ? (c + 0.5f) / 2.25f : 0; }
+    foreach (i, d; [Vec3(0, 0, 1), Vec3(0, 1, 0), Vec3(0, 0, -1)]) {
+        auto s = litShot("lit", d, false, false);
+        // The center of the ball faces the camera.
+        immutable want = 2 / PI * wrapped(d.z);
+        writefln("    sun %s: %.4f, exact %.4f", d, linear(s, cx, cy), want);
+        ok &= expect(abs(linear(s, cx, cy) - want) < 0.01f, "wrapped sun light");
+        if (i == 1) ok &= expect(linear(s, cx, cy - 80) > linear(s, cx, cy + 80) * 2, "the ball is brighter on the side of the sun");
+    }
+    auto shadowed = litShot("lit_shadow", Vec3(0, 1, 0), true, false);
+    ok &= expect(linear(shadowed, cx, cy) < 0.002f, "the particle receives shadows");
+    auto pointLit = litShot("lit_point", Vec3(0, 1, 0), false, true);
+    immutable att = pow(1 - pow(0.2f, 4.0f), 2.0f) / 5;
+    immutable wantPoint = 10 / PI * att * wrapped(1);
+    writefln("    point light %.4f, exact %.4f", linear(pointLit, cx, cy), wantPoint);
+    ok &= expect(abs(linear(pointLit, cx, cy) - wantPoint) < 0.02f, "point lights reach the particle");
+
+    // --- flipbook
+    Shot bookShot(string name, ref Material m, float frameIndex, float size = 4) {
+        auto mat = () @trusted { return &m; }();
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            scene.begin(cam);
+            scene.drawMatrix(quad, *mat, facing(Vec3(0, 0, 0), size), Color4.white, [1, 0, 0, frameIndex]);
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    int code(float lin) { return cast(int)(pow(lin, 1 / 2.2f) * 255 + 0.5f); }
+    foreach (i; 0 .. 8) {
+        auto s = bookShot("flipbook", book, i);
+        bool exact = true;
+        // Every pixel of the quad, edges included: no bleeding from the neighbors.
+        immutable half = cast(int)(2 * (WIN_H * 0.5f) / 0.483f / 10) - 2;
+        foreach (y; cy - half .. cy + half) foreach (x; cx - half .. cx + half)
+            if (abs(s.at(x, y, 0) - code(i * 32 / 255.0f)) > 1 || abs(s.at(x, y, 1) - code((255 - i * 32) / 255.0f)) > 1) exact = false;
+        ok &= expect(exact, "frame " ~ cast(char)('0' + i) ~ " fills the quad with its own color");
+    }
+    auto mid = bookShot("flipbook_mid", book, 2.5f);
+    ok &= expect(abs(mid.at(cx, cy, 0) - code(80 / 255.0f)) <= 1, "frames cross-fade");
+    auto step = bookShot("flipbook_step", bookHard, 2.9f);
+    ok &= expect(abs(step.at(cx, cy, 0) - code(64 / 255.0f)) <= 1, "hard steps without blending");
+    auto wrap = bookShot("flipbook_wrap", book, 8.0f);
+    ok &= expect(abs(wrap.at(cx, cy, 1) - 255) <= 1, "the frame index wraps");
+    auto tiny = bookShot("flipbook_tiny", book, 5, 0.1f);
+    ok &= expect(abs(tiny.at(cx, cy, 0) - code(160 / 255.0f)) <= 3, "a minified frame keeps its color");
+
+    // --- through ParticleSystem
+    auto ps = ParticleSystem.create(1);
+    ParticleDesc d;
+    d.life = 2;
+    d.sizeStart = d.sizeEnd = 4;
+    d.colorEnd = Color4(1, 1, 1, 1);
+    d.flipbookFrames = 8;
+    ps.spawn(d);
+    ps.update(1);
+    auto sys = capture(app, "flipbook_system", (ref FrameContext f) {
+        lights.clear();
+        scene.begin(cam);
+        ps.draw(scene, quad, book, cam);
+        scene.renderShadows(f, lights);
+        scene.end(f);
+    });
+    ok &= expect(abs(sys.at(cx, cy, 0) - code(112 / 255.0f)) <= 1, "ParticleSystem plays the atlas over the lifetime");
+    // Frames are upright: one 2x2 frame, red on top.
+    auto flag = Texture.fromPixels(app.gpu, [255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255], 2, 2);
+    scope(exit) flag.destroy();
+    MaterialParams fp;
+    fp.baseColor = [1, 1, 1];
+    fp.flags = MaterialFlags.unlit | MaterialFlags.flipbook;
+    auto flagMat = Material.create(app.gpu, scene.materialLayout(), sampler, flag, fp, null, null, null, null);
+    scope(exit) flagMat.destroy();
+    flagMat.renderState = RenderState(BlendMode.alpha, false, true);
+    ps.clear();
+    d.flipbookFrames = 1;
+    ps.spawn(d);
+    auto upright = capture(app, "flipbook_upright", (ref FrameContext f) {
+        lights.clear();
+        scene.begin(cam);
+        ps.draw(scene, quad, flagMat, cam);
+        scene.renderShadows(f, lights);
+        scene.end(f);
+    });
+    ok &= expect(upright.at(cx, cy - 80, 0) > 200 && upright.at(cx, cy + 80, 2) > 200, "atlas frames are upright");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -2055,6 +2304,7 @@ private immutable Check[] checks = [
     Check("vcolor", &checkVertexColor),
     Check("volumetric", &checkVolumetric),
     Check("exposure", &checkExposure),
+    Check("particles", &checkParticles),
     Check("stars", &checkStars),
 ];
 
