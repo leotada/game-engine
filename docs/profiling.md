@@ -100,6 +100,7 @@ that no scope covers (pass load/store, clears) is not in it.
 | `Scene3DTextured` | `scene.begin`; `scene.shadows` (`lights`, `prepare`, `upload`, `casters`, `encode`); `scene.end` (`uniforms`, `clusterCull`, `skinUpload`, `prepare`, and per pass `opaque` / `ssr` / `alpha` / `additive` with `sort`, `batches`, `static`, `hooks`, `postHooks`, `sky`, `transparentHooks`) | `gpu.shadows` (`cascades`, `directional`, `points`, `spots`), `gpu.clusterCull`, `gpu.scene.<pass>` and the same segments |
 | Static GPU culling | `scene.staticCull` | `gpu.staticCull` |
 | Ambient occlusion | `scene.gtao` | `gpu.gtao` (`depth`, `ao`, `blur`, `composite`) |
+| Volumetric light | `scene.volumetric` | `gpu.volumetric` (`march`, `blur`, `composite`) |
 | Terrain / decals / water | `terrain.update`, `terrain.draw`, `decals.update`, `decals.draw`, `water.update`, `water.draw` | `gpu.terrain`, `gpu.decals`, `gpu.water`, `gpu.water.sim` |
 | IBL | `ibl.bakeStep` | `gpu.ibl.bakeStep` |
 | UI | `ui.flush` | (inside `gpu.ui`) |

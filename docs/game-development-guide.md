@@ -354,6 +354,8 @@ app.renderer.updatePostPassParams(passId, tintValues); // e.g. float[4] tintValu
 
 **Ambient occlusion (GTAO)**: `app.renderer.ambientOcclusion().enabled = true;` with `radius`, `intensity`, `quality` and `halfResolution`. Use `BlendMode.opaque` materials. See [graphics.md](graphics.md#ambient-occlusion-gtao).
 
+**Volumetric light**: `app.renderer.volumetrics().enabled = true;` with `density`, `heightFalloff`, `anisotropy`, `quality` and `quarterResolution`. See [graphics.md](graphics.md#volumetric-light).
+
 Deep dive: [graphics.md](graphics.md) · [plan-post-processing.md](plan-post-processing.md).
 
 ---

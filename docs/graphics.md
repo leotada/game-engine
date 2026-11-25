@@ -843,3 +843,40 @@ in `loadGltfPbr`, `loadGltfAsset` and `loadGltfSkinnedCharacter`; `.meta` optimi
 - 8 bits per channel: dark linear gradients may band; bake them in the texture if it shows.
 
 Verification: `dub run --config=render-check -- --check=vcolor`.
+
+## Volumetric Light
+
+`Renderer.volumetrics()` returns the `VolumetricSettings` (off by default): single scattering of the sun (with its shadow
+map) and of the clustered point and spot lights (with theirs) in a medium with constant or height-based density.
+
+```d
+auto v = &app.renderer.volumetrics();
+v.enabled = true;
+v.density = 0.02f;        // extinction per world unit at baseHeight
+v.heightFalloff = 0.05f;  // 0 = uniform
+v.anisotropy = 0.6f;      // > 0: brighter toward the light
+v.maxDistance = 100;
+v.quality = VolumetricQuality.medium;
+v.quarterResolution = false;
+```
+
+`albedo`, `intensity`, `sunScale`, `localScale` and `ambient` tune the result; `steps` overrides the preset.
+`attenuate` also darkens what is behind by the transmittance; it is off by default because the analytic fog usually does it.
+
+The march runs in the opaque depth buffer at half or quarter resolution after the opaque, sky, SSR and water draws, with a
+fixed 4x4 spatial jitter cancelled by a depth-aware blur and a depth-aware upsample. Nothing accumulates between frames.
+
+| 1920x1080, RX 6600 | low (12 steps) | medium (20) | high (32) | ultra (64) |
+|---|---|---|---|---|
+| Sun, half resolution | 0.54 ms | 0.68 ms | 0.86 ms | 1.36 ms |
+| Sun, quarter | 0.30 ms | 0.35 ms | 0.40 ms | 0.54 ms |
+| Sun + 64 lights, half | 0.84 ms | 1.16 ms | 1.63 ms | 2.86 ms |
+| Sun + 64 lights, quarter | 0.39 ms | 0.49 ms | 0.63 ms | 0.99 ms |
+
+CPU cost 0.006 ms. Zones: `scene.volumetric`, `gpu.volumetric` (`march`, `blur`, `composite`).
+
+Limits: transparent and additive draws come after it, so they neither receive nor occlude the effect (analytic fog still
+applies to them). Beams narrower than one step need more steps or a smaller `maxDistance`; quarter resolution
+softens small cones. Beyond the shadow range the sun counts as unshadowed. Up to four scenes per frame (split screen).
+The outdoor demo has `--volumetric`. Verification: `dub run --config=render-check -- --check=volumetric` (open air within 1%
+of the exact integral, shadows in the air, silhouettes within 1/255).
