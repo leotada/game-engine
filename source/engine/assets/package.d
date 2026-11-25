@@ -6,9 +6,11 @@ version (NoAssetFile) {
 } else {
     public import engine.assets.asset_file;
 }
+public import engine.assets.bc;
 public import engine.assets.bmp;
 public import engine.assets.cube_lut;
 public import engine.assets.gltf;
 public import engine.assets.image;
+public import engine.assets.ktx2;
 public import engine.assets.pak;
 public import engine.assets.png;
