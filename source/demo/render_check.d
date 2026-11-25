@@ -1836,6 +1836,150 @@ private bool checkVolumetric(ref App app) {
     return ok;
 }
 
+/// Auto exposure brings a uniform image to the key, adapts at the set speed and
+/// ignores outliers; the color table is exact on identity and on known colors.
+private bool checkExposure(ref App app) {
+    import engine.assets.cube_lut : CubeLut;
+    import std.math : exp, log2, pow;
+    auto rig = QuadRig.create(app);
+    scope(exit) rig.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    app.renderer.postSettings() = neutralPost();
+    scope(exit) app.renderer.postSettings() = PostSettings.init;
+    scope(exit) app.renderer.clearColorLut();
+    MaterialParams mp;
+    mp.baseColor = [1, 1, 1];
+    mp.flags = MaterialFlags.unlit;
+    auto mat = Material.create(app.gpu, rig.scene.materialLayout(), rig.sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    float level = 1;
+    bool spot;
+    void draw(ref FrameContext f) {
+        rig.scene.begin(rig.camera);
+        rig.scene.draw(rig.quad, mat, Vec3(0, 0, 0), Vec3(40, 1, 40), Color4(level, level, level, 1));
+        // A lamp over 3% of the view.
+        if (spot) rig.scene.draw(rig.quad, mat, Vec3(0, 0.01f, 0), Vec3(2, 1, 2), Color4(60, 60, 60, 1));
+        rig.scene.end(f);
+    }
+    if (bench) {
+        app.renderer.postSettings().autoExposure.enabled = true;
+        timeZones(app, "auto exposure", ["gpu.post.autoExposure", "post.autoExposure", "gpu.post.tonemap"], &draw);
+        auto lut = CubeLut.identity(33);
+        app.renderer.setColorLut(lut);
+        timeZones(app, "auto exposure + table", ["gpu.post.autoExposure", "gpu.post.tonemap"], &draw);
+        app.renderer.postSettings().autoExposure.enabled = false;
+        timeZones(app, "table", ["gpu.post.tonemap"], &draw);
+        app.renderer.clearColorLut();
+        timeZones(app, "off", ["gpu.post.tonemap"], &draw);
+        return true;
+    }
+    bool ok = true;
+    float linear(ref Shot s) { return pow(s.at(s.w / 8, s.h / 8, 1) / 255.0f, 2.2f); }
+    auto settings = () @trusted { return &app.renderer.postSettings(); }();
+    level = 0.3f;
+    auto off = capture(app, "exposure_off", &draw);
+    if (!off.valid) return expect(false, "frame captured");
+
+    // Uniform images land on the key.
+    settings.autoExposure.enabled = true;
+    settings.autoExposure.fixedDt = 1 / 60.0f;
+    settings.autoExposure.minExposure = 0.001f;
+    settings.autoExposure.maxExposure = 1000;
+    foreach (l; [0.01f, 0.3f, 1.0f, 20.0f]) {
+        level = l;
+        app.renderer.resetAutoExposure();
+        auto s = capture(app, "exposure_on", &draw, 0);
+        writefln("    level %.2f -> %.4f", l, linear(s));
+        ok &= expect(abs(linear(s) - 0.18f) < 0.18f * 0.03f, "a uniform image lands on the key in one frame after a reset");
+    }
+    // Limits.
+    settings.autoExposure.maxExposure = 2;
+    level = 0.02f;
+    app.renderer.resetAutoExposure();
+    auto clamped = capture(app, "exposure_clamp", &draw, 0);
+    ok &= expect(abs(linear(clamped) - 0.04f) < 0.004f, "the exposure limit holds");
+    settings.autoExposure.maxExposure = 1000;
+    // Outliers.
+    level = 0.3f;
+    spot = true;
+    app.renderer.resetAutoExposure();
+    auto outlier = capture(app, "exposure_spot", &draw, 0);
+    writefln("    with a lamp in view %.4f", linear(outlier));
+    ok &= expect(abs(linear(outlier) - 0.18f) < 0.18f * 0.05f, "a small bright object does not move the exposure");
+    spot = false;
+    // Adaptation: log2 exposure follows 1 - exp(-t * speed).
+    foreach (toBright; [true, false]) {
+        immutable from = toBright ? 0.1f : 0.8f, to = toBright ? 0.8f : 0.1f;
+        settings.autoExposure.adaptToBright = 3;
+        settings.autoExposure.adaptToDark = 1;
+        level = from;
+        app.renderer.resetAutoExposure();
+        capture(app, "exposure_from", &draw, 0);
+        level = to;
+        auto s = capture(app, "exposure_adapt", &draw, 29); // 30 frames = 0.5 s
+        immutable speed = toBright ? 3.0f : 1.0f;
+        immutable start = log2(0.18f / from), goal = log2(0.18f / to);
+        immutable want = to * pow(2.0f, goal + (start - goal) * exp(-0.5f * speed));
+        immutable float shown = want > 1 ? 1 : want;
+        writefln("    %s after 0.5 s: %.4f, exact %.4f", toBright ? "to bright" : "to dark", linear(s), shown);
+        ok &= expect(abs(linear(s) - shown) < shown * 0.05f, toBright ? "adapts to bright at its speed" : "adapts to dark at its speed");
+    }
+    settings.autoExposure.enabled = false;
+    level = 0.3f;
+    auto offAgain = capture(app, "exposure_off_again", &draw);
+    ok &= expect(offAgain.px == off.px, "off returns the same image");
+
+    // Color table.
+    auto lut = CubeLut.identity(17);
+    app.renderer.setColorLut(lut);
+    uint worst;
+    foreach (l; [0.0f, 0.02f, 0.3f, 0.7f, 1.0f]) {
+        level = l;
+        settings.lutStrength = 0;
+        auto a = capture(app, "lut_none", &draw, 0);
+        settings.lutStrength = 1;
+        auto b = capture(app, "lut_identity", &draw, 0);
+        foreach (c; 0 .. 3) {
+            immutable d = abs(a.at(50, 50, c) - b.at(50, 50, c));
+            if (d > worst) worst = d;
+        }
+    }
+    ok &= expect(worst <= 1, "the identity table keeps every level within 1/255");
+    // Swap red and blue, darken green.
+    foreach (i; 0 .. lut.rgb.length / 3) {
+        immutable r = lut.rgb[i * 3];
+        lut.rgb[i * 3] = lut.rgb[i * 3 + 2];
+        lut.rgb[i * 3 + 1] *= 0.5f;
+        lut.rgb[i * 3 + 2] = r;
+    }
+    app.renderer.setColorLut(lut);
+    mp.baseColor = [0.9f, 0.4f, 0.1f];
+    mat.updateParams(app.gpu, mp);
+    level = 1;
+    settings.lutStrength = 0;
+    auto plain = capture(app, "lut_plain", &draw);
+    settings.lutStrength = 1;
+    auto swapped = capture(app, "lut_swapped", &draw);
+    writefln("    plain %s swapped %s", plain.px[0 .. 3], swapped.px[0 .. 3]);
+    ok &= expect(abs(swapped.at(50, 50, 0) - plain.at(50, 50, 2)) <= 1 && abs(swapped.at(50, 50, 2) - plain.at(50, 50, 0)) <= 1
+                 && abs(swapped.at(50, 50, 1) - plain.at(50, 50, 1) / 2) <= 1, "the table maps the display colors");
+    settings.lutStrength = 0.5f;
+    auto half = capture(app, "lut_half", &draw);
+    ok &= expect(abs(half.at(50, 50, 0) - (plain.at(50, 50, 0) + swapped.at(50, 50, 0)) / 2) <= 1, "strength blends");
+    settings.lutStrength = 1;
+    foreach (aa; [AaMode.off, AaMode.smaa]) {
+        settings.aaMode = aa;
+        auto s = capture(app, "lut_aa", &draw);
+        ok &= expect(abs(s.at(50, 50, 0) - swapped.at(50, 50, 0)) <= 1, "works with the AA chain");
+    }
+    settings.aaMode = AaMode.legacy;
+    app.renderer.clearColorLut();
+    auto cleared = capture(app, "lut_cleared", &draw);
+    ok &= expect(cleared.px == plain.px, "clearing the table returns the same image");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -1910,6 +2054,7 @@ private immutable Check[] checks = [
     Check("specaa", &checkSpecularAa),
     Check("vcolor", &checkVertexColor),
     Check("volumetric", &checkVolumetric),
+    Check("exposure", &checkExposure),
     Check("stars", &checkStars),
 ];
 
