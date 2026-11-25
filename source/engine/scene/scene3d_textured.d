@@ -32,6 +32,7 @@ import engine.graphics.lod : LOD_NONE, projectedPixels, selectLod;
 import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
 import engine.meshopt.internal.bits : bitsFloat, floatBits;
+import engine.gpu.post : PostSceneCamera;
 import engine.gpu.static_cull : CULL_DISTANCE, CULL_SHADOW, CullViewUbo, INDIRECT_STRIDE, MeshPool,
     StaticCuller, StaticGpuData;
 import engine.scene.static_instances : collectVisibleRuns, markVisibleCells, StaticInstanceBuffer, StaticRun, StaticViewParams;
@@ -2037,6 +2038,10 @@ struct Scene3DTextured {
 
         immutable float[4] vpRect = frame.activeViewportRect();
         frameData.viewportRect = vpRect;
+        if (frame.owner !is null && frame.owner.needsSceneCamera) {
+            immutable sceneCam = PostSceneCamera.make(frameCamera, vpRect, frameData.time);
+            frame.owner.setSceneCamera(sceneCam);
+        }
         frameData.clusterZParams = computeClusterZParams(frameCamera.near, frameCamera.far);
         frameData.clusteredFlags = clusteredEnabled ? 1u : 0u;
         if (localLightsDirty) {

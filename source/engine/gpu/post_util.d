@@ -48,7 +48,8 @@ TexRT createRT(WGPUDevice device, uint w, uint h, WGPUTextureFormat fmt,
 
 /// Draw one fullscreen triangle into `target`.
 void drawPass(WGPUCommandEncoder encoder, WGPUTextureView target,
-                      WGPURenderPipeline pipe, WGPUBindGroup bg, bool clear) nothrow @nogc @trusted {
+                      WGPURenderPipeline pipe, WGPUBindGroup bg, bool clear,
+                      WGPUBindGroup bg1 = null) nothrow @nogc @trusted {
     WGPURenderPassColorAttachment ca;
     ca.view = target;
     ca.loadOp = clear ? WGPULoadOp.clear : WGPULoadOp.load;
@@ -62,6 +63,7 @@ void drawPass(WGPUCommandEncoder encoder, WGPUTextureView target,
     auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &pd);
     wgpuRenderPassEncoderSetPipeline(pass, pipe);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, null);
+    if (bg1 !is null) wgpuRenderPassEncoderSetBindGroup(pass, 1, bg1, 0, null);
     wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);

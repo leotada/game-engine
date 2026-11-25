@@ -3,7 +3,7 @@ module engine.gpu.renderer;
 
 import bindings.wgpu;
 import engine.gpu.context;
-import engine.gpu.post : PostProcessor, PostSettings, PostStage, SCENE_COLOR_FORMAT;
+import engine.gpu.post : PostPassDesc, PostProcessor, PostSceneCamera, PostSettings, PostStage, SCENE_COLOR_FORMAT;
 import engine.gpu.shader : createShaderModule;
 import engine.gpu.shaders : depthCopyShaderSource, bloomDownsampleShaderSource;
 import engine.graphics.texture : mipCount;
@@ -107,6 +107,16 @@ struct Renderer {
                      PostStage stage = PostStage.afterTonemap) {
         return post.addPass(wgsl, uniformBytes, stage);
     }
+
+    /// Add a pass that can read scene depth, the camera and named intermediate
+    /// targets, or write one at reduced resolution. See `PostPassDesc`.
+    uint addPostPass(scope const ref PostPassDesc desc) { return post.addPass(desc); }
+
+    /// True when a post pass reads the scene inputs this frame.
+    package(engine) bool needsSceneCamera() const nothrow @nogc { return post.anySceneInputs(); }
+
+    /// Camera of this frame's 3D scene (set by `Scene3DTextured.end`; the last scene wins).
+    package(engine) void setSceneCamera(ref const PostSceneCamera c) nothrow @nogc { post.setSceneCamera(c); }
 
     void updatePostPassParams(uint id, scope const(void)[] data) nothrow @nogc {
         post.updatePassParams(id, data);
@@ -466,6 +476,7 @@ struct Renderer {
             auto z = profileZone!"renderer.gpuReadback"();
             gpuProfilerCollect(); // commit GPU timings of frames that finished (non-blocking)
         }
+        post.clearSceneCamera();
         WGPUCommandEncoderDescriptor encDesc;
         auto encoder = wgpuDeviceCreateCommandEncoder(device, &encDesc);
 
@@ -541,7 +552,7 @@ struct Renderer {
         {
             auto z = profileZone!"renderer.post"();
             auto g = gpuScope!"gpu.post"(frame.encoder);
-            post.execute(frame.encoder, hdrView, uiDst);
+            post.execute(frame.encoder, hdrView, uiDst, depthView);
         }
 
         // Present pass for UI (no depth)
@@ -575,7 +586,7 @@ struct Renderer {
         wgpuRenderPassEncoderRelease(frame.pass);
 
         if (post.hasActiveAfterUiPasses()) {
-            post.executeAfterUi(frame.encoder, frame.view);
+            post.executeAfterUi(frame.encoder, frame.view, depthView);
         }
 
         if (captureBuf !is null && frame.texture !is null) encodeCapture(frame);

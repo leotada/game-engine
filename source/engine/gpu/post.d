@@ -6,12 +6,14 @@ import bindings.wgpu;
 import engine.core.log;
 import engine.gpu.buffer : createUniformBuffer, destroyBuffer, updateBuffer;
 import engine.gpu.context : GpuContext;
-import engine.gpu.shader : createShaderModule;
+import engine.gpu.shader : createShaderModule, isValidUniformStruct;
 public import engine.gpu.post_aa : AaMode;
 import engine.gpu.post_aa : AaParams, PostAa;
 import engine.gpu.post_util;
 import engine.gpu.shaders;
 import engine.gpu.gpu_profiler : gpuScope;
+import engine.math.mat : Mat4;
+import engine.scene.camera : Camera;
 
 @safe:
 
@@ -75,10 +77,85 @@ struct PostSettings {
 
 private enum MAX_BLOOM_MIPS = 7;
 private enum MAX_CUSTOM_POST_PASSES = 16;
+private enum MAX_POST_TARGETS = 8;
+/// Named targets one pass can read.
+enum MAX_POST_INPUTS = 4;
+
+/// Description of a custom fullscreen pass (`Renderer.addPostPass`).
+struct PostPassDesc {
+    /// Fragment shader (`fs_main`); the vertex shader and bindings are added when missing.
+    const(char)[] wgsl;
+    size_t uniformBytes = 64;
+    PostStage stage = PostStage.afterTonemap;
+    /// Bind scene depth, camera and the named inputs at `@group(1)`
+    /// (`common/post_scene.wgsl` is prepended). Implied by `inputs`.
+    bool sceneInputs = false;
+    /// Named targets read as `input0 .. input3`. Each must be the `output` of a
+    /// pass added before this one. Their content is this frame's.
+    const(char)[][MAX_POST_INPUTS] inputs;
+    /// Named target this pass writes instead of the color chain. Empty = chain.
+    /// Passes sharing one name must agree on `scale` and `format`.
+    const(char)[] output;
+    /// Target size divisor (1 = full resolution, 2 = half, ...). Only with `output`.
+    uint scale = 1;
+    /// Target format: a filterable color format. Only with `output`.
+    WGPUTextureFormat format = SCENE_COLOR_FORMAT;
+}
+
+/// GPU mirror of WGSL `SceneCamera` (`common/post_scene.wgsl`).
+struct PostSceneCamera {
+    float[16] view;
+    float[16] proj;
+    float[16] viewProj;
+    float[16] invView;
+    float[16] invProj;
+    float[16] invViewProj;
+    float[4] position = 0;
+    float[4] planes = [0.1f, 100.0f, 0.0f, 0.0f];
+    float[4] viewport = [0.0f, 0.0f, 1.0f, 1.0f];
+
+    static PostSceneCamera make(ref const Camera c, float[4] viewport, float time) pure nothrow @nogc {
+        PostSceneCamera s;
+        immutable view = Mat4.lookAt(c.position, c.target, c.up);
+        immutable proj = Mat4.perspective(c.fovY, c.aspect, c.near, c.far);
+        immutable vp = proj * view;
+        s.view = view.m;
+        s.proj = proj.m;
+        s.viewProj = vp.m;
+        s.invView = view.inverse().m;
+        s.invProj = proj.inverse().m;
+        s.invViewProj = vp.inverse().m;
+        s.position = [c.position.x, c.position.y, c.position.z, time];
+        s.planes = [c.near, c.far, 1, 0];
+        s.viewport = viewport;
+        return s;
+    }
+}
+static assert(PostSceneCamera.sizeof == 432);
+static assert(isValidUniformStruct!PostSceneCamera);
+
+/// Formats accepted for named targets: renderable and filterable.
+private bool isPostTargetFormat(WGPUTextureFormat f) pure nothrow @nogc {
+    switch (f) with (WGPUTextureFormat) {
+        case r8Unorm, rg8Unorm, rgba8Unorm, r16Float, rg16Float, rgba16Float: return true;
+        default: return false;
+    }
+}
+
+private struct PostTarget {
+    char[32] name = 0;
+    ubyte nameLength;
+    uint scale = 1;
+    WGPUTextureFormat format;
+    uint users; /// passes that write it
+    TexRT rt;
+
+    const(char)[] nameOf() const return pure nothrow @nogc { return name[0 .. nameLength]; }
+}
 
 /// Expand a custom fullscreen fragment WGSL snippet by supplying the shared
 /// fullscreen vertex shader and default `@group(0)` bindings when omitted.
-string composeCustomPostShader(scope const(char)[] wgsl) {
+string composeCustomPostShader(scope const(char)[] wgsl, bool sceneInputs = false) {
     import std.algorithm.searching : canFind;
     import engine.hotreload.shader_source : preprocessShader;
 
@@ -104,6 +181,7 @@ struct PostParams {
 @group(0) @binding(2) var srcTex: texture_2d<f32>;
 };
     }
+    if (sceneInputs) header ~= postSceneSource ~ "\n";
     return header.length ? (header ~ "\n" ~ src) : src;
 }
 
@@ -115,6 +193,10 @@ private struct CustomPostPass {
     WGPURenderPipeline pipe;
     WGPUBuffer ubo;
     ulong uniformBytes = 64;
+    bool sceneInputs;
+    byte output = -1;                         /// index into `targets`, -1 = color chain
+    byte[MAX_POST_INPUTS] inputs = [-1, -1, -1, -1];
+    WGPUTextureFormat format;
 
     void release() nothrow @nogc @trusted {
         if (pipe !is null) { wgpuRenderPipelineRelease(pipe); pipe = null; }
@@ -123,6 +205,9 @@ private struct CustomPostPass {
         ubo = null;
         id = 0;
         enabled = false;
+        output = -1;
+        inputs = -1;
+        sceneInputs = false;
     }
 }
 
@@ -149,6 +234,12 @@ struct PostProcessor {
     private TexRT uiTargetRT;
     private CustomPostPass[MAX_CUSTOM_POST_PASSES] customPasses;
     private uint nextCustomPassId = 1;
+    private PostTarget[MAX_POST_TARGETS] targets;
+    private WGPUBindGroupLayout sceneBGL;
+    private WGPUPipelineLayout scenePL;
+    private WGPUBuffer sceneUBO;
+    private TexRT blackRT;
+    private PostSceneCamera sceneCamera;
     private uint bloomLevels = 0;
     private uint width, height;
     private WGPUTextureFormat surfaceFormat;
@@ -260,13 +351,26 @@ struct PostProcessor {
         foreach (ref s; hdrScratchRT) s.release();
         foreach (ref s; ldrScratchRT) s.release();
         uiTargetRT.release();
+        foreach (ref t; targets) t.rt.release();
         bloomLevels = 0;
     }
 
     /// Add a custom fullscreen post pass at `stage`. Returns a 1-based pass id
     /// (0 on compile failure or when the pass table is full).
     uint addPass(scope const(char)[] wgsl, size_t uniformBytes = 64,
-                 PostStage stage = PostStage.afterTonemap) @trusted {
+                 PostStage stage = PostStage.afterTonemap) {
+        PostPassDesc desc;
+        desc.uniformBytes = uniformBytes;
+        desc.stage = stage;
+        return addPass(desc, wgsl);
+    }
+
+    /// Add a custom pass with scene inputs and named targets. Passes of one stage
+    /// run in insertion order. Returns 0 (with a warning) when the shader does
+    /// not compile or the description is not valid.
+    uint addPass(scope const ref PostPassDesc desc) { return addPass(desc, desc.wgsl); }
+
+    private uint addPass(scope const ref PostPassDesc desc, scope const(char)[] wgsl) @trusted {
         if (device is null) return 0;
         size_t slot = size_t.max;
         foreach (i, ref cp; customPasses) {
@@ -277,16 +381,53 @@ struct PostProcessor {
             return 0;
         }
 
-        immutable ulong alignedUbo = uniformBytes < 16 ? 16 : ((uniformBytes + 15) & ~cast(size_t) 15);
-        immutable fullWgsl = composeCustomPostShader(wgsl);
-        auto sm = createShaderModule(device, fullWgsl, "custom_post");
-        if (sm is null) return 0;
+        CustomPostPass p;
+        p.stage = desc.stage;
+        p.sceneInputs = desc.sceneInputs;
+        foreach (i, name; desc.inputs) {
+            if (name.length == 0) continue;
+            p.sceneInputs = true;
+            immutable t = findTarget(name);
+            if (t < 0 || !writtenBefore(t, desc.stage)) {
+                warn("PostProcessor: input '", name, "' is not written by an earlier pass");
+                return 0;
+            }
+            p.inputs[i] = cast(byte) t;
+        }
+        p.format = desc.stage == PostStage.beforeTonemap ? SCENE_COLOR_FORMAT : surfaceFormat;
+        if (desc.output.length) {
+            foreach (i; 0 .. MAX_POST_INPUTS)
+                if (desc.inputs[i] == desc.output) {
+                    warn("PostProcessor: a pass cannot read its own output '", desc.output, "'");
+                    return 0;
+                }
+            if (!isPostTargetFormat(desc.format) || desc.scale == 0) {
+                warn("PostProcessor: unsupported format or scale for target '", desc.output, "'");
+                return 0;
+            }
+            p.format = desc.format;
+        } else if (desc.scale != 1 || desc.format != SCENE_COLOR_FORMAT) {
+            warn("PostProcessor: scale and format need an output name");
+            return 0;
+        }
 
-        immutable targetFmt = stage == PostStage.beforeTonemap ? SCENE_COLOR_FORMAT : surfaceFormat;
-        auto pipe = tryMakeFSPipeline(device, threshPL, sm, targetFmt, false);
+        immutable ulong alignedUbo = desc.uniformBytes < 16 ? 16 : ((desc.uniformBytes + 15) & ~cast(size_t) 15);
+        auto sm = createShaderModule(device, composeCustomPostShader(wgsl, p.sceneInputs), "custom_post");
+        if (sm is null) return 0;
+        if (p.sceneInputs) ensureSceneResources();
+        auto pipe = tryMakeFSPipeline(device, p.sceneInputs ? scenePL : threshPL, sm, p.format, false);
         if (pipe is null) {
             wgpuShaderModuleRelease(sm);
             return 0;
+        }
+        if (desc.output.length) {
+            immutable t = acquireTarget(desc.output, desc.scale, desc.format);
+            if (t < 0) {
+                wgpuRenderPipelineRelease(pipe);
+                wgpuShaderModuleRelease(sm);
+                return 0;
+            }
+            p.output = cast(byte) t;
         }
 
         auto ubo = createUniformBuffer(device, alignedUbo);
@@ -294,9 +435,7 @@ struct PostProcessor {
         if (alignedUbo <= zeros.length)
             wgpuQueueWriteBuffer(queue, ubo, 0, zeros.ptr, cast(size_t) alignedUbo);
 
-        CustomPostPass p;
         p.id = nextCustomPassId++;
-        p.stage = stage;
         p.enabled = true;
         p.sm = sm;
         p.pipe = pipe;
@@ -304,6 +443,147 @@ struct PostProcessor {
         p.uniformBytes = alignedUbo;
         customPasses[slot] = p;
         return p.id;
+    }
+
+    private int findTarget(scope const(char)[] name) const nothrow @nogc {
+        foreach (i, ref t; targets)
+            if (t.users > 0 && t.nameOf == name) return cast(int) i;
+        return -1;
+    }
+
+    /// True when a pass already added writes target `t` no later than `stage`.
+    private bool writtenBefore(int t, PostStage stage) const nothrow @nogc {
+        foreach (ref cp; customPasses)
+            if (cp.id != 0 && cp.output == t && cp.stage <= stage) return true;
+        return false;
+    }
+
+    private int acquireTarget(scope const(char)[] name, uint scale, WGPUTextureFormat format) nothrow {
+        immutable found = findTarget(name);
+        if (found >= 0) {
+            if (targets[found].scale != scale || targets[found].format != format) {
+                warn("PostProcessor: target '", name, "' already exists with another scale or format");
+                return -1;
+            }
+            targets[found].users++;
+            return found;
+        }
+        if (name.length > PostTarget.name.length) {
+            warn("PostProcessor: target name too long");
+            return -1;
+        }
+        foreach (i, ref t; targets) {
+            if (t.users > 0) continue;
+            t.name[0 .. name.length] = name[];
+            t.nameLength = cast(ubyte) name.length;
+            t.scale = scale;
+            t.format = format;
+            t.users = 1;
+            return cast(int) i;
+        }
+        warn("PostProcessor: target table full (max=", MAX_POST_TARGETS, ")");
+        return -1;
+    }
+
+    /// Camera of this frame's 3D scene, read by passes with `sceneInputs`.
+    void setSceneCamera(ref const PostSceneCamera c) nothrow @nogc { sceneCamera = c; }
+
+    /// Forget the previous frame's camera (`planes.z` = 0).
+    void clearSceneCamera() nothrow @nogc { sceneCamera.planes[2] = 0; }
+
+    private void ensureSceneResources() @trusted {
+        if (scenePL !is null) return;
+        WGPUBindGroupLayoutEntry[2 + MAX_POST_INPUTS] e;
+        foreach (i, ref x; e) {
+            x.binding = cast(uint) i;
+            x.visibility = WGPUShaderStage.fragment;
+            if (i == 0) {
+                x.buffer.type = WGPUBufferBindingType.uniform;
+                x.buffer.minBindingSize = PostSceneCamera.sizeof;
+            } else {
+                x.texture.sampleType = i == 1 ? WGPUTextureSampleType.depth : WGPUTextureSampleType.float_;
+                x.texture.viewDimension = WGPUTextureViewDimension.dim2D;
+            }
+        }
+        WGPUBindGroupLayoutDescriptor d;
+        d.entryCount = e.length;
+        d.entries = e.ptr;
+        sceneBGL = wgpuDeviceCreateBindGroupLayout(device, &d);
+        WGPUBindGroupLayout[2] layouts = [threshBGL, sceneBGL];
+        WGPUPipelineLayoutDescriptor pd;
+        pd.bindGroupLayoutCount = 2;
+        pd.bindGroupLayouts = layouts.ptr;
+        scenePL = wgpuDeviceCreatePipelineLayout(device, &pd);
+        sceneUBO = createUniformBuffer(device, PostSceneCamera.sizeof);
+        blackRT = createRT(device, 1, 1, WGPUTextureFormat.rgba8Unorm); // zero-initialized
+    }
+
+    private WGPUBindGroup makeSceneBG(ref const CustomPostPass cp, WGPUTextureView depthView) nothrow @nogc @trusted {
+        WGPUBindGroupEntry[2 + MAX_POST_INPUTS] e;
+        foreach (i, ref x; e) {
+            x.binding = cast(uint) i;
+            if (i == 0) {
+                x.buffer = sceneUBO;
+                x.size = PostSceneCamera.sizeof;
+            } else if (i == 1) {
+                x.textureView = depthView;
+            } else {
+                immutable t = cp.inputs[i - 2];
+                x.textureView = t >= 0 && targets[t].rt.view !is null ? targets[t].rt.view : blackRT.view;
+            }
+        }
+        WGPUBindGroupDescriptor d;
+        d.layout = sceneBGL;
+        d.entryCount = e.length;
+        d.entries = e.ptr;
+        return wgpuDeviceCreateBindGroup(device, &d);
+    }
+
+    /// Run the enabled passes of `stage` from `cur`. Chain passes alternate
+    /// between the two `scratch` targets; when `final_` is set the result lands
+    /// there. Returns the view holding the result.
+    private WGPUTextureView runCustomPasses(WGPUCommandEncoder encoder, PostStage stage, WGPUTextureView cur,
+                                            ref TexRT[2] scratch, WGPUTextureView final_,
+                                            WGPUTextureView depthView) nothrow @nogc @trusted {
+        immutable total = countActivePasses(stage);
+        uint idx = 0;
+        foreach (ref cp; customPasses) {
+            if (cp.id == 0 || !cp.enabled || cp.stage != stage) continue;
+            idx++;
+            WGPUTextureView dst;
+            if (cp.output >= 0) {
+                auto t = &targets[cp.output];
+                if (t.rt.view is null) {
+                    immutable w = width / t.scale, h = height / t.scale;
+                    t.rt = createRT(device, w ? w : 1, h ? h : 1, t.format);
+                }
+                dst = t.rt.view;
+            } else {
+                // The surface cannot be sampled: only the last pass may write it.
+                dst = final_ !is null && idx == total ? final_
+                    : (scratch[0].view is cur ? scratch[1].view : scratch[0].view);
+            }
+            auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, cur);
+            scope(exit) wgpuBindGroupRelease(bg);
+            WGPUBindGroup sceneBg = cp.sceneInputs ? makeSceneBG(cp, depthView) : null;
+            scope(exit) if (sceneBg !is null) wgpuBindGroupRelease(sceneBg);
+            drawPass(encoder, dst, cp.pipe, bg, true, sceneBg);
+            if (cp.output < 0) cur = dst;
+        }
+        if (final_ !is null && cur !is final_) {
+            auto bg = makeSampleBG(sampleBGL, cur);
+            scope(exit) wgpuBindGroupRelease(bg);
+            drawPass(encoder, final_, blitPipe, bg, true);
+            cur = final_;
+        }
+        return cur;
+    }
+
+    /// True when an enabled pass reads the scene inputs.
+    bool anySceneInputs() const nothrow @nogc {
+        foreach (ref cp; customPasses)
+            if (cp.id != 0 && cp.enabled && cp.sceneInputs) return true;
+        return false;
     }
 
     void updatePassParams(uint id, scope const(void)[] data) nothrow @nogc @trusted {
@@ -328,11 +608,9 @@ struct PostProcessor {
         if (id == 0 || device is null) return false;
         foreach (ref cp; customPasses) {
             if (cp.id != id) continue;
-            immutable fullWgsl = composeCustomPostShader(wgsl);
-            auto sm = createShaderModule(device, fullWgsl, "reload_custom_post");
+            auto sm = createShaderModule(device, composeCustomPostShader(wgsl, cp.sceneInputs), "reload_custom_post");
             if (sm is null) return false;
-            immutable targetFmt = cp.stage == PostStage.beforeTonemap ? SCENE_COLOR_FORMAT : surfaceFormat;
-            auto pipe = tryMakeFSPipeline(device, threshPL, sm, targetFmt, false);
+            auto pipe = tryMakeFSPipeline(device, cp.sceneInputs ? scenePL : threshPL, sm, cp.format, false);
             if (pipe is null) {
                 wgpuShaderModuleRelease(sm);
                 return false;
@@ -348,8 +626,24 @@ struct PostProcessor {
 
     void removePass(uint id) nothrow @nogc {
         if (id == 0) return;
-        foreach (ref cp; customPasses) {
-            if (cp.id == id) { cp.release(); return; }
+        foreach (i, ref cp; customPasses) {
+            if (cp.id != id) continue;
+            if (cp.output >= 0) {
+                auto t = &targets[cp.output];
+                if (--t.users == 0) {
+                    t.rt.release();
+                    // Readers fall back to black.
+                    foreach (ref other; customPasses)
+                        foreach (ref input; other.inputs) if (input == cp.output) input = -1;
+                }
+            }
+            cp.release();
+            // Close the gap: passes keep running in insertion order.
+            foreach (k; i + 1 .. MAX_CUSTOM_POST_PASSES) {
+                customPasses[k - 1] = customPasses[k];
+                customPasses[k] = CustomPostPass.init;
+            }
+            return;
         }
     }
 
@@ -393,24 +687,17 @@ struct PostProcessor {
     /// custom passes into `surfaceView`. Uses `encoder` (no open pass).
     void execute(WGPUCommandEncoder encoder,
                  WGPUTextureView hdrView,
-                 WGPUTextureView surfaceView) nothrow @nogc @trusted {
+                 WGPUTextureView surfaceView,
+                 WGPUTextureView depthView = null) nothrow @nogc @trusted {
         if (width == 0 || height == 0) return;
+        if (anySceneInputs()) updateBuffer(queue, sceneUBO, (&sceneCamera)[0 .. 1]);
 
         WGPUTextureView sceneHdrIn = hdrView;
         immutable uint nBefore = countActivePasses(PostStage.beforeTonemap);
         if (nBefore > 0) {
             auto g = gpuScope!"gpu.post.customBeforeTonemap"(encoder);
             ensureHdrScratch();
-            uint idx = 0;
-            foreach (ref cp; customPasses) {
-                if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.beforeTonemap) continue;
-                auto dst = hdrScratchRT[idx & 1].view;
-                auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, sceneHdrIn);
-                scope(exit) wgpuBindGroupRelease(bg);
-                drawPass(encoder, dst, cp.pipe, bg, true);
-                sceneHdrIn = dst;
-                idx++;
-            }
+            sceneHdrIn = runCustomPasses(encoder, PostStage.beforeTonemap, hdrView, hdrScratchRT, null, depthView);
         }
 
         immutable int clampedRadius = settings.bloomRadius < 3
@@ -496,18 +783,7 @@ struct PostProcessor {
 
         if (nAfter > 0) {
             auto g = gpuScope!"gpu.post.customAfterTonemap"(encoder);
-            WGPUTextureView cur = ldrScratchRT[0].view;
-            uint idx = 0;
-            foreach (ref cp; customPasses) {
-                if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.afterTonemap) continue;
-                immutable bool isLast = (idx + 1 == nAfter);
-                auto dst = isLast ? surfaceView : ldrScratchRT[(idx + 1) & 1].view;
-                auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, cur);
-                scope(exit) wgpuBindGroupRelease(bg);
-                drawPass(encoder, dst, cp.pipe, bg, true);
-                cur = dst;
-                idx++;
-            }
+            runCustomPasses(encoder, PostStage.afterTonemap, ldrScratchRT[0].view, ldrScratchRT, surfaceView, depthView);
         }
     }
 
@@ -542,25 +818,15 @@ struct PostProcessor {
     }
 
     /// Run enabled `afterUi` passes reading `uiTargetRT` and writing to `surfaceView`.
-    void executeAfterUi(WGPUCommandEncoder encoder, WGPUTextureView surfaceView) nothrow @nogc @trusted {
+    void executeAfterUi(WGPUCommandEncoder encoder, WGPUTextureView surfaceView,
+                        WGPUTextureView depthView = null) nothrow @nogc @trusted {
         if (width == 0 || height == 0 || uiTargetRT.view is null) return;
         immutable uint nUi = countActivePasses(PostStage.afterUi);
         if (nUi == 0) return;
 
         ensureLdrScratch();
         auto g = gpuScope!"gpu.post.afterUi"(encoder);
-        WGPUTextureView cur = uiTargetRT.view;
-        uint idx = 0;
-        foreach (ref cp; customPasses) {
-            if (cp.id == 0 || !cp.enabled || cp.stage != PostStage.afterUi) continue;
-            immutable bool isLast = (idx + 1 == nUi);
-            auto dst = isLast ? surfaceView : ldrScratchRT[idx & 1].view;
-            auto bg = makeUBOTexBG(threshBGL, cp.ubo, cp.uniformBytes, cur);
-            scope(exit) wgpuBindGroupRelease(bg);
-            drawPass(encoder, dst, cp.pipe, bg, true);
-            cur = dst;
-            idx++;
-        }
+        runCustomPasses(encoder, PostStage.afterUi, uiTargetRT.view, ldrScratchRT, surfaceView, depthView);
     }
 
     void destroy() nothrow @nogc @trusted {
@@ -581,11 +847,16 @@ struct PostProcessor {
         void relPL(ref WGPUPipelineLayout p) {
             if (p !is null) { wgpuPipelineLayoutRelease(p); p = null; }
         }
+        relPL(scenePL);
         relPL(threshPL); relPL(samplePL); relPL(tonemapPL);
 
         void relBGL(ref WGPUBindGroupLayout p) {
             if (p !is null) { wgpuBindGroupLayoutRelease(p); p = null; }
         }
+        relBGL(sceneBGL);
+        blackRT.release();
+        destroyBuffer(sceneUBO);
+        sceneUBO = null;
         relBGL(threshBGL); relBGL(sampleBGL); relBGL(tonemapBGL);
 
         void relSM(ref WGPUShaderModule p) {
@@ -790,6 +1061,13 @@ struct PostProcessor {
     assert(composed.canFind("fn vs_main"));
     assert(composed.canFind("@group(0) @binding(0)"));
     assert(composed.canFind("fn fs_main"));
+
+    // Scene inputs are declared once, only on request.
+    assert(!composed.canFind("sceneDepthTex"));
+    assert(composeCustomPostShader(vignette, true).canFind("var sceneDepthTex: texture_depth_2d"));
+    PostPassDesc pd;
+    assert(pd.scale == 1 && pd.format == SCENE_COLOR_FORMAT && !pd.sceneInputs && pd.output.length == 0);
+    assert(isPostTargetFormat(WGPUTextureFormat.r8Unorm) && !isPostTargetFormat(WGPUTextureFormat.r32Float));
 
     // Defaults remain backward-compatible.
     PostSettings ps;

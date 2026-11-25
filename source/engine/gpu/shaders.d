@@ -7,6 +7,8 @@ import engine.hotreload.shader_source : preprocessShader;
 @safe:
 
 enum fullscreenVsSource = import("common/fullscreen_vs.wgsl");
+/// Scene depth / camera inputs of custom post passes (`PostPassDesc.sceneInputs`).
+enum postSceneSource = import("common/post_scene.wgsl");
 
 enum cube3dShaderSource = import("cube3d.wgsl");
 
