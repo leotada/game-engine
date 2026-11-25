@@ -394,6 +394,31 @@ scene.submitStatic(sib);
 - Static buffers draw in the opaque pass: use depth-writing materials. Up to `MAX_STATIC_SUBMISSIONS = 8` per frame. The meshes and materials must outlive the buffer.
 - `updateInstance(i, model)` / `hideInstance(i)` rewrite one instance on the GPU (slow path for rare edits; keep the new position inside the original cell).
 
+#### GPU culling and indirect draws (`StaticBuildOptions.gpuCull`, `engine.gpu.static_cull`)
+
+Off by default. With `gpuCull = true` a compute shader (`static_cull_cs.wgsl`) culls every instance (frustum, cascade receivers, distance, pixel size), picks its LOD and writes a compacted instance buffer plus one indirect record per (group, LOD). The scene then issues one multi-draw per (material, vertex stride, index format); plain opaque shadow casters share one per (stride, format, culling). Output order equals input order, so coplanar surfaces do not flicker. Vertex shaders see the same `TexInstanceData`: surface shaders, `displaceEx` and alpha masks work unchanged.
+
+- **Views:** camera and directional shadows (cascades or the fixed map). Point and spot shadows keep the CPU path.
+- **Needs** the `indirectFirstInstance` and `multiDrawIndirectCount` features; otherwise (web included) the CPU path is used. `sib.gpuCulled` tells which one is active.
+- **Displacement:** set `Material.displacementBound` to the largest movement of a `displace` / `displaceEx` hook, or instances can vanish at the screen border while their displaced vertices are still visible.
+- **Memory:** each active view keeps `instances × 100` bytes plus about 32 bytes per 64 instances. 40,000 instances with the camera and three cascades take about 16 MB. The meshes are copied into shared pools at build, so later `TexMesh.updateVertices` calls are not seen.
+- **Stats:** `drawCalls`, `shadowDrawCalls` and `staticRangesDrawn` (indirect records) are filled. Instance counts (`staticInstancesVisible`, `shadowStaticInstancesDrawn`, `lodHistogram`) stay on the GPU and are not counted.
+- **`rangeLodParity`** takes the CPU path's per-range decisions, for comparisons.
+- **Zones:** CPU `scene.staticCull`, GPU `gpu.staticCull`.
+
+Measured (RX 6600, 1080p, LDC release, 40,000 instances, 3 cascades, two runs):
+
+| Scene | Path | Draws color + shadow | `renderer.submit` | Static draw + shadow encode (CPU) | `gpu.scene.opaque.static` | `gpu.staticCull` | Frame |
+|:---|:---|:---|:---|:---|:---|:---|:---|
+| 64 materials | CPU | 1137 + 255 | 1.25 to 1.29 ms | 0.36 to 0.38 ms | 0.40 to 0.43 ms | none | 1.80 to 1.83 ms |
+| 64 materials | GPU | 129 + 165 | 0.77 to 0.84 ms | 0.06 ms | 0.19 ms | 0.05 ms | 0.95 to 1.04 ms |
+| 4 materials | CPU | 172 + 102 | 0.41 to 0.42 ms | 0.14 ms | 0.24 ms | none | 0.95 to 0.98 ms |
+| 4 materials | GPU | 9 + 27 | 0.35 to 0.40 ms | 0.02 ms | 0.22 ms | 0.09 ms | 0.88 ms |
+
+The gain follows the number of draws the CPU path issues. With few materials it is small.
+
+Verification: `dub run --config=render-check -- --check=gpucull` (same image as the CPU path, and the same instances with `rangeLodParity`).
+
 ### `SpatialGrid` (`engine.scene.spatial_grid`)
 
 A loose XZ grid (default 64 m cells) for dynamic objects: `insert(userId, sphere)`, `update`, `remove` are O(1) (intrusive per-cell lists, malloc storage, free-list reuse); `query(frustum, camPos, maxDistance, outIds)` writes visible ids into a caller buffer. Spheres larger than half a cell or outside the grid go to an always-tested overflow list. Use it to skip whole groups of gameplay entities before they reach `drawModel`.

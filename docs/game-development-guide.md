@@ -195,6 +195,9 @@ auto rock = loadGltfAsset(app.gpu, "assets/models/rock_boulder.gltf", scene.mate
 StaticInstanceDesc[] props;   // (meshIndex, materialIndex, model)
 auto rocks = StaticInstanceBuffer.build(app.gpu, [&rock.subMeshes[0]], [rock.materialPtr(0)], props);
 
+// Many groups or tens of thousands of props: StaticBuildOptions.gpuCull culls and draws on the GPU
+// (see graphics.md, "GPU culling and indirect draws").
+
 // Per-instance state is POD: hide parts, swap materials, detach a door.
 ModelInstance inst;
 inst.setMaterialOverride(0, pool.add(bluePaint));

@@ -17,6 +17,9 @@
 - **Alpha mask** (`RenderState.alphaMask`, `MaterialParams.alphaCutoff`): discard in color and in every shadow map
   (dynamic, skinned, static, `displaceEx`), coverage-preserving mips (`TextureDesc.alphaCoverage`) and glTF
   `alphaMode` import (`GltfImportOptions.alphaModes`). Off by default.
+- **GPU culling for static instances** (`StaticBuildOptions.gpuCull`): per-instance culling and LOD in compute, indirect
+  multi-draws for the camera and the directional shadows, CPU fallback. `Material.displacementBound`. Off by default.
+  16-bit index buffers with an odd index count are now padded on upload.
 
 ### Engine bug fixes
 
