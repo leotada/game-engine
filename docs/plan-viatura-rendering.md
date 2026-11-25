@@ -26,7 +26,7 @@ features below. This file keeps the requests and their status.
 | E5 | SMAA 1x and CMAA2 modes, specular antialiasing, license check | — | done |
 | E6 | Volumetric light: sun with cascades, clustered spots and points | — | done |
 | E7 | Optional vertex color (glTF `COLOR_0`): static, instanced, skinned | No larger vertex for other meshes | done |
-| E8 | Auto exposure and 3D color LUT | Only the exposure value persists between frames | planned |
+| E8 | Auto exposure and 3D color LUT | Only the exposure value persists between frames | done |
 | E9 | Soft, lit particles with an animated atlas | — | planned |
 | E10 | BC7 / BC5 textures, conversion tool, RGBA8 fallback | Memory and load time measured | planned |
 | E13 | Minimum 1 px width for thin geometry, per material | No sorted alpha if possible | planned |

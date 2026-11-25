@@ -880,3 +880,40 @@ applies to them). Beams narrower than one step need more steps or a smaller `max
 softens small cones. Beyond the shadow range the sun counts as unshadowed. Up to four scenes per frame (split screen).
 The outdoor demo has `--volumetric`. Verification: `dub run --config=render-check -- --check=volumetric` (open air within 1%
 of the exact integral, shadows in the air, silhouettes within 1/255).
+
+## Auto Exposure and Color Table
+
+Both are off by default and add a tone map variant that is only compiled when one is in use.
+
+```d
+auto post = &app.renderer.postSettings();
+post.autoExposure.enabled = true;
+post.autoExposure.minExposure = 0.1f;   // limits of the multiplier
+post.autoExposure.maxExposure = 4;
+post.autoExposure.lowPercentile = 0.1f; // share of dark / bright pixels left out
+post.autoExposure.highPercentile = 0.9f;
+post.autoExposure.adaptToBright = 3;    // 1/s
+post.autoExposure.adaptToDark = 1;
+post.exposure = 1;                      // compensation, multiplies the result
+app.renderer.resetAutoExposure();       // camera cut: no adaptation in the next frame
+
+string error;
+auto lut = loadCubeLut("assets/grade.cube", error);
+if (lut.valid) app.renderer.setColorLut(lut);
+post.lutStrength = 1;
+app.renderer.clearColorLut();
+```
+
+**Auto exposure** builds a 256-bin log-luminance histogram of the HDR image in compute (one pixel of every 4x4), averages
+the bins between the percentiles and moves the exposure toward `key / average` (in log2). Only that value survives the
+frame, in a GPU buffer; there is no readback. The time step is measured; `fixedDt` sets it for reproducible runs.
+It meters before bloom and after the `beforeTonemap` passes. `bloomThreshold` stays in scene units, unaffected by
+the exposure.
+
+**Color table**: `.cube` 3D tables (2 to 64 entries per side, `DOMAIN_MIN` / `DOMAIN_MAX`), trilinear, stored as
+`rgba16Float`. It is applied last in the tone map pass, on the display-encoded color (after `tonemapMode`,
+`contrast`, `saturation` and `outputTransfer`), before antialiasing. 1D tables are rejected.
+
+Cost at 1920x1080 on an RX 6600: auto exposure 0.11 ms GPU and 0.01 ms CPU (uniform image, the worst case), table about
+0.01 ms. Zones: `post.autoExposure`, `gpu.post.autoExposure`.
+Verification: `dub run --config=render-check -- --check=exposure`.

@@ -96,7 +96,7 @@ that no scope covers (pass load/store, clears) is not in it.
 
 | Area | CPU zones | GPU scopes |
 |---|---|---|
-| App / Renderer | `app.beginFrame` (`renderer.gpuReadback`), `app.resolvePost` (`renderer.acquire`, `renderer.post`), `app.endFrame` (`renderer.submit`, `renderer.present`, `gc.frameSlack`), `renderer.snapshotOpaque`, root `frame` | `gpu.post` (`bloom`, `tonemap`, `fxaa`, `fxaaQuality`, `smaa`, `cmaa2`, `sharpen`, custom passes), `gpu.ui`, `gpu.snapshotOpaque`, `gpu.post.afterUi` |
+| App / Renderer | `app.beginFrame` (`renderer.gpuReadback`), `app.resolvePost` (`renderer.acquire`, `renderer.post`, `post.autoExposure`), `app.endFrame` (`renderer.submit`, `renderer.present`, `gc.frameSlack`), `renderer.snapshotOpaque`, root `frame` | `gpu.post` (`autoExposure`, `bloom`, `tonemap`, `fxaa`, `fxaaQuality`, `smaa`, `cmaa2`, `sharpen`, custom passes), `gpu.ui`, `gpu.snapshotOpaque`, `gpu.post.afterUi` |
 | `Scene3DTextured` | `scene.begin`; `scene.shadows` (`lights`, `prepare`, `upload`, `casters`, `encode`); `scene.end` (`uniforms`, `clusterCull`, `skinUpload`, `prepare`, and per pass `opaque` / `ssr` / `alpha` / `additive` with `sort`, `batches`, `static`, `hooks`, `postHooks`, `sky`, `transparentHooks`) | `gpu.shadows` (`cascades`, `directional`, `points`, `spots`), `gpu.clusterCull`, `gpu.scene.<pass>` and the same segments |
 | Static GPU culling | `scene.staticCull` | `gpu.staticCull` |
 | Ambient occlusion | `scene.gtao` | `gpu.gtao` (`depth`, `ao`, `blur`, `composite`) |

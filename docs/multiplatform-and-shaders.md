@@ -93,6 +93,7 @@ assets/shaders/
 ├── static_cull_cs.wgsl       # GPU culling of static instances (compute)
 ├── gtao.wgsl                 # Ambient occlusion passes
 ├── volumetric.wgsl           # Volumetric light passes
+├── auto_exposure.wgsl        # Auto exposure histogram and adaptation
 ├── gizmo_line.wgsl           # 3D debug lines and grid
 ├── ui2d.wgsl                 # Vector / UI box renderer
 ├── text2d.wgsl               # Bitmap font text renderer

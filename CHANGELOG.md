@@ -29,6 +29,7 @@
 - **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),
   `SurfaceIn.vertexColor`. Separate stream: meshes without colors are unchanged.
 - **Volumetric light** of the sun and the clustered lights (`Renderer.volumetrics`, `VolumetricSettings`). Off by default.
+- **Auto exposure** (`PostSettings.autoExposure`) and **3D color tables** (`Renderer.setColorLut`, `loadCubeLut`, `PostSettings.lutStrength`). Off by default.
 
 ### Engine bug fixes
 
