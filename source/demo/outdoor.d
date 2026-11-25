@@ -17,6 +17,7 @@
  *   --time-scale=S    in-game seconds per real second multiplier (default 1; 0 freezes)
  *   --rain            start in a storm (clouds, rain, wet surfaces)
  *   --debug-cascades  tint the shadow cascades
+ *   --ao              ambient occlusion (GTAO) on terrain, rocks and props
  *   --view=N          camera preset (0 = orbit path, 1 = low over a ridge, 2 = high overview)
  *   --headless-frames=N --assert-no-gc --screenshot=PATH
  */
@@ -67,6 +68,7 @@ private struct Options {
     float timeScale = 1.0f;
     bool rain = false;
     bool debugCascades = false;
+    bool ao = false;
     uint view = 0;
     uint headlessFrames = 0;
     bool assertNoGc = false;
@@ -86,6 +88,7 @@ private Options parseArgs(string[] args) {
         else if (a.startsWith("--time-scale=")) o.timeScale = v("--time-scale=").to!float;
         else if (a == "--rain") o.rain = true;
         else if (a == "--debug-cascades") o.debugCascades = true;
+        else if (a == "--ao") o.ao = true;
         else if (a.startsWith("--view=")) o.view = v("--view=").to!uint;
         else if (a.startsWith("--headless-frames=")) o.headlessFrames = v("--headless-frames=").to!uint;
         else if (a == "--assert-no-gc") o.assertNoGc = true;
@@ -116,6 +119,10 @@ void main(string[] args) @trusted {
     scope(exit) scene.destroy();
     scene.setLodScreenHeight(H);
     scene.setSkyEnabled(true);
+    if (opts.ao) {
+        app.renderer.ambientOcclusion().enabled = true;
+        app.renderer.ambientOcclusion().treatDefaultBlendAsOpaque = true;
+    }
 
     // ---- Terrain -------------------------------------------------------
     immutable t0 = MonoTime.currTime;

@@ -19,6 +19,7 @@ import engine.graphics.texmesh : TexMesh;
 import engine.graphics.texture : alphaCoverageOf, Sampler, Texture, TextureDesc, TextureFilter, TextureWrap;
 import engine.graphics.types : Color4, SkinnedVertex;
 import engine.gpu.pipeline : BlendMode, RenderState;
+import engine.gpu.gtao : AoQuality, AoSettings;
 import engine.gpu.post : AaMode, OutputTransfer, PostPassDesc, PostSettings, PostStage;
 import bindings.wgpu : WGPUTextureFormat;
 import engine.gpu.renderer : FrameContext;
@@ -983,6 +984,245 @@ private bool checkPassInputs(ref App app) {
     return ok;
 }
 
+/// GTAO: analytic occlusion beside a wall, ambient only, participating
+/// materials, scene alpha restored, resolution and viewport.
+private bool checkAo(ref App app) {
+    import std.algorithm.comparison : max;
+    import std.math : atan, cos, pow;
+    auto scene = Scene3DTextured.create(app.gpu, 16, false);
+    scope(exit) scene.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    app.renderer.postSettings() = neutralPost();
+    scope(exit) app.renderer.ambientOcclusion() = AoSettings.init;
+    Material make(RenderState st, uint flags) {
+        MaterialParams mp;
+        mp.baseColor = [0.8f, 0.8f, 0.8f];
+        mp.specularRoughness = 1;
+        mp.alphaCutoff = 0.5f;
+        mp.flags = flags;
+        auto m = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+        m.renderState = st;
+        return m;
+    }
+    auto opaque = make(RenderState(BlendMode.opaque), 0);
+    scope(exit) opaque.destroy();
+    auto masked = make(RenderState(BlendMode.alpha, true, false, true), 0);
+    scope(exit) masked.destroy();
+    auto blended = make(RenderState.init, 0);
+    scope(exit) blended.destroy();
+    auto unlit = make(RenderState(BlendMode.opaque), MaterialFlags.unlit);
+    scope(exit) unlit.destroy();
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 60.0f);
+    cam.lookAt(Vec3(0, 10, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    LightList lights;
+    scope(exit) lights.release();
+
+    AoSettings ao;
+    ao.enabled = true;
+    ao.radius = 2.5f;
+    ao.quality = AoQuality.ultra;
+    Shot shoot(string name, bool on, ref Material floor_, float ibl, bool sun, bool box = true) {
+        app.renderer.ambientOcclusion() = on ? ao : AoSettings.init;
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = sun;
+            lights.dir.direction = Vec3(0, 1, 0);
+            lights.dir.intensity = 1.0f;
+            lights.dir.castShadows = false;
+            scene.setIblIntensity(ibl);
+            scene.begin(cam);
+            scene.draw(quad, floor_, Vec3(0, 0, 0), Vec3(9, 1, 9));
+            if (box) scene.draw(cube, opaque, Vec3(2.5f, 0.125f, 0), Vec3(3, 0.25f, 9));
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    // Mean linear value of the floor at distance `d` from the wall (x = 1).
+    float lin(ref Shot s, float d) {
+        import std.math : tan;
+        immutable k = (WIN_H * 0.5f) / (tan(0.45f) * 10);
+        immutable x = cast(uint)(WIN_W * 0.5f + (1 - d) * k);
+        float sum = 0;
+        foreach (y; WIN_H / 2 - 16 .. WIN_H / 2 + 16) sum += pow(s.at(x, y, 1) / 255.0f, 2.2f);
+        return sum / 32;
+    }
+    bool ok = true;
+    static immutable float[4] dist = [0.12f, 0.25f, 0.5f, 1.0f];
+    immutable float bright = 2.0f;
+    auto off = shoot("ao_off", false, opaque, bright, false);
+    if (!off.valid) return expect(false, "frame captured");
+    float[4] expected;
+    foreach (i, d; dist) expected[i] = 1 - (1 - cos(atan(0.25f / d))) * 0.5f;
+    // Reference sampling converges to the analytic value. The presets sample
+    // sparsely (the wall is 1/10 of the radius here): they may only
+    // underestimate, and less with each quality level.
+    float[4] measure(string label) {
+        auto on = shoot("ao_" ~ label, true, opaque, bright, false);
+        float[4] got;
+        foreach (i, d; dist) got[i] = lin(on, d) / lin(off, d);
+        writefln("    %s: %s, analytic %s", label, got, expected);
+        return got;
+    }
+    ao.slices = 32;
+    ao.steps = 64;
+    immutable reference = measure("reference");
+    float refWorst = 0;
+    foreach (i; 0 .. 4) refWorst = max(refWorst, abs(reference[i] - expected[i]));
+    ok &= expect(refWorst < 0.02f, "reference sampling matches the analytic value");
+    ao.slices = ao.steps = 0;
+    foreach (half; [false, true]) {
+        ao.halfResolution = half;
+        float last = 2;
+        foreach (q; [AoQuality.low, AoQuality.medium, AoQuality.high, AoQuality.ultra]) {
+            ao.quality = q;
+            import std.conv : text;
+            immutable got = measure(text(q, half ? " half" : ""));
+            bool fine = got[0] < last && got[0] < 0.95f;
+            foreach (i; 0 .. 4) fine &= got[i] > expected[i] - 0.02f;
+            foreach (i; 1 .. 4) fine &= got[i] >= got[i - 1];
+            ok &= expect(fine, "preset approaches the reference from above");
+            last = got[0];
+        }
+    }
+    ao.halfResolution = false;
+    ao.quality = AoQuality.medium;
+
+    // Flat floor: no self occlusion, from above and at a grazing angle.
+    foreach (grazing; [false, true]) {
+        immutable saved = cam;
+        if (grazing) {
+            cam.up = Vec3(0, 1, 0);
+            cam.lookAt(Vec3(0, 0.6f, 4.4f), Vec3(0, 0.3f, 0));
+        }
+        auto a = shoot("ao_flat_off", false, opaque, bright, false, false);
+        auto b = shoot("ao_flat_on", true, opaque, bright, false, false);
+        int worst = 0;
+        foreach (i; 0 .. a.px.length) worst = max(worst, abs(a.px[i] - b.px[i]));
+        writefln("    flat floor%s: max difference %s", grazing ? " grazing" : "", worst);
+        ok &= expect(worst <= 2, "no self occlusion on a flat floor");
+        cam = saved;
+    }
+
+    // Direct light is untouched; mixed light loses exactly the ambient part.
+    auto dOff = shoot("ao_direct_off", false, opaque, 0, true);
+    auto dOn = shoot("ao_direct_on", true, opaque, 0, true);
+    ok &= expect(dOff.px == dOn.px, "direct light is not darkened");
+    auto aOn = shoot("ao_amb_on", true, opaque, 1, false);
+    auto mOn = shoot("ao_mix_on", true, opaque, 1, true);
+    float worstMix = 0;
+    foreach (d; dist) worstMix = max(worstMix, abs(lin(mOn, d) - lin(dOff, d) - lin(aOn, d)));
+    ok &= expect(worstMix < 0.01f, "mixed light loses only the ambient part");
+
+    // Who takes part.
+    bool darkened(ref Material m) {
+        auto a = shoot("ao_mat_off", false, m, bright, false);
+        auto b = shoot("ao_mat_on", true, m, bright, false);
+        return lin(b, 0.12f) < lin(a, 0.12f) * 0.9f;
+    }
+    ok &= expect(darkened(masked), "masked materials take part");
+    ok &= expect(!darkened(blended), "the default blend state does not take part");
+    ok &= expect(!darkened(unlit), "unlit materials do not take part");
+    ao.treatDefaultBlendAsOpaque = true;
+    ok &= expect(darkened(blended), "treatDefaultBlendAsOpaque adds the default blend state");
+    ao.treatDefaultBlendAsOpaque = false;
+
+    // Static buffers, CPU and GPU culled: same as the dynamic draw.
+    auto dynOn = shoot("ao_dyn", true, opaque, bright, false);
+    immutable mediumRef = lin(dynOn, 0.25f) / lin(off, 0.25f);
+    foreach (gpu; [false, true]) {
+        StaticBuildOptions o;
+        o.gpuCull = gpu;
+        auto meshes = new TexMesh*[2];
+        auto mats = new Material*[1];
+        () @trusted { meshes[0] = &quad; meshes[1] = &cube; mats[0] = &opaque; }();
+        auto descs = new StaticInstanceDesc[2];
+        descs[0].model = Mat4.scaling(9, 1, 9);
+        descs[1].model = Mat4.translation(2.5f, 0.125f, 0) * Mat4.scaling(3, 0.25f, 9);
+        descs[1].mesh = 1;
+        auto sib = StaticInstanceBuffer.build(app.gpu, meshes, mats, descs, o);
+        scope(exit) sib.destroy();
+        Shot st(bool on) {
+            app.renderer.ambientOcclusion() = on ? ao : AoSettings.init;
+            return capture(app, "ao_static", (ref FrameContext f) {
+                lights.clear();
+                lights.dirEnabled = false;
+                scene.setIblIntensity(bright);
+                scene.begin(cam);
+                scene.submitStatic(sib);
+                scene.renderShadows(f, lights);
+                scene.end(f);
+            });
+        }
+        auto a = st(false), b = st(true);
+        ok &= expect(abs(lin(b, 0.25f) / lin(a, 0.25f) - mediumRef) < 0.02f, gpu ? "GPU-culled static" : "static");
+    }
+
+    // Scene alpha ends at 1 wherever something was drawn.
+    PostPassDesc d;
+    d.wgsl = "@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+        let a = textureSampleLevel(srcTex, srcSamp, uv, 0.0).a;
+        return vec4<f32>(vec3<f32>(select(0.0, 1.0, abs(a - 1.0) < 1e-4)), 1.0); }";
+    d.stage = PostStage.beforeTonemap;
+    immutable id = app.renderer.addPostPass(d);
+    auto alpha = shoot("ao_alpha", true, opaque, bright, false);
+    app.renderer.removePostPass(id);
+    bool allOne = true;
+    foreach (v; alpha.px) allOne &= v == 255;
+    ok &= expect(allOne, "scene alpha is restored");
+
+    // Panel: same occlusion inside, nothing outside.
+    Shot panel(bool on) {
+        app.renderer.ambientOcclusion() = on ? ao : AoSettings.init;
+        return capture(app, "ao_panel", (ref FrameContext f) {
+            f.setViewport(100, 60, 320, 240, WIN_W, WIN_H);
+            lights.clear();
+            lights.dirEnabled = false;
+            scene.setIblIntensity(bright);
+            scene.begin(cam);
+            scene.draw(quad, opaque, Vec3(0, 0, 0), Vec3(9, 1, 9));
+            scene.draw(cube, opaque, Vec3(2.5f, 0.125f, 0), Vec3(3, 0.25f, 9));
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+    {
+        import std.math : tan;
+        auto a = panel(false), b = panel(true);
+        immutable x = cast(uint)(100 + 160 + 0.5f * 120 / (tan(0.45f) * 10));
+        immutable r = pow(b.at(x, 180, 1) / cast(float) a.at(x, 180, 1), 2.2f);
+        ok &= expect(abs(r - expected[2]) < 0.04f, "occlusion inside a viewport panel");
+        bool same = true;
+        foreach (y; 0 .. b.h)
+            foreach (px; 0 .. b.w)
+                if (px < 100 || px >= 420 || y < 60 || y >= 300) same &= a.at(px, y, 1) == b.at(px, y, 1);
+        ok &= expect(same, "pixels outside the panel are unchanged");
+    }
+    if (bench) {
+        foreach (half; [false, true])
+            foreach (q; [AoQuality.low, AoQuality.medium, AoQuality.high, AoQuality.ultra]) {
+                ao.quality = q;
+                ao.halfResolution = half;
+                ao.radius = 1.0f;
+                app.renderer.ambientOcclusion() = ao;
+                timeZones(app, "GTAO", ["gpu.gtao", "scene.gtao"], (ref FrameContext f) {
+                    scene.begin(cam);
+                    scene.draw(quad, opaque, Vec3(0, 0, 0), Vec3(9, 1, 9));
+                    scene.draw(cube, opaque, Vec3(2.5f, 0.125f, 0), Vec3(3, 0.25f, 9));
+                    scene.end(f);
+                });
+            }
+    }
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -1053,6 +1293,7 @@ private immutable Check[] checks = [
     Check("mask", &checkMask),
     Check("gpucull", &checkGpuCull),
     Check("passinputs", &checkPassInputs),
+    Check("ao", &checkAo),
     Check("stars", &checkStars),
 ];
 
