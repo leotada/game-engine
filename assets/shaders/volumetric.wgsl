@@ -59,54 +59,6 @@ fn density(y: f32) -> f32 {
     return p.a.x * exp(clamp(-p.a.y * (y - p.a.z), -40.0, 3.0));
 }
 
-// One hardware-filtered comparison per step: the march already averages.
-fn sunVisibility(pos: vec3<f32>) -> f32 {
-    if (frame.dirLight.castShadows == 0u) { return 1.0; }
-    let count = i32(frame.cascadeParams.x);
-    var vp = frame.dirLight.viewProj;
-    var layer = 0;
-    var bias = frame.shadowBias;
-    var fade = 0.0;
-    if (count > 0) {
-        let viewDepth = dot(pos - frame.cameraPos, frame.cameraForward);
-        if (viewDepth >= frame.cascadeParams.w) { return 1.0; }
-        fade = smoothstep(frame.cascadeParams.z, frame.cascadeParams.w, viewDepth);
-        layer = dirCascadeIndex(pos);
-        vp = frame.cascadeViewProj[layer];
-        bias = frame.cascadeTexel[layer].x * frame.cascadeTexel[layer].y;
-    }
-    let clip = vp * vec4<f32>(pos, 1.0);
-    let ndc = clip.xyz / clip.w;
-    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z >= 1.0) { return 1.0; }
-    let s = textureSampleCompareLevel(dirShadowMap, shadowSampler, uv, layer, max(ndc.z, 0.0) - bias);
-    return mix(s, 1.0, fade);
-}
-
-fn pointVisibility(l: PointLight, pos: vec3<f32>) -> f32 {
-    let v = pos - l.position;
-    let ref_ = cubeRefDepth(v, SHADOW_NEAR, l.range) - frame.shadowBias;
-    switch (l.shadowSlot) {
-        case 0: { return sampleCubeCompare(pointShadow0, v, ref_); }
-        case 1: { return sampleCubeCompare(pointShadow1, v, ref_); }
-        case 2: { return sampleCubeCompare(pointShadow2, v, ref_); }
-        case 3: { return sampleCubeCompare(pointShadow3, v, ref_); }
-        default: { return 1.0; }
-    }
-}
-
-fn spotVisibility(l: SpotLight, pos: vec3<f32>) -> f32 {
-    if (l.shadowSlot < 0) { return 1.0; }
-    let clip = l.viewProj * vec4<f32>(pos, 1.0);
-    let ndc = clip.xyz / clip.w;
-    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z <= 0.0 || ndc.z >= 1.0) { return 1.0; }
-    if (l.shadowSlot == 0) {
-        return textureSampleCompareLevel(spotShadow0, shadowSampler, uv, ndc.z - frame.shadowBias);
-    }
-    return textureSampleCompareLevel(spotShadow1, shadowSampler, uv, ndc.z - frame.shadowBias);
-}
-
 // Same falloff as the surface shading (`common/pbr_brdf.wgsl`).
 fn falloff(dist: f32, range: f32, exponent: f32) -> f32 {
     if (exponent > 0.0) {
@@ -121,7 +73,7 @@ fn pointScatter(l: PointLight, pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
     let dist = length(v);
     if (dist >= l.range || dist <= 1e-5) { return vec3<f32>(0.0); }
     let e = l.intensity * falloff(dist, l.range, l.attenuation) * phase(dot(dir, v / dist), p.a.w);
-    return l.color * e * pointVisibility(l, pos);
+    return l.color * e * pointShadowTap(l, pos);
 }
 
 fn spotScatter(l: SpotLight, pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
@@ -134,7 +86,7 @@ fn spotScatter(l: SpotLight, pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
     if (cone <= 0.0) { return vec3<f32>(0.0); }
     let soft = select(cone * cone, pow(cone, l.angleAttenuation), l.angleAttenuation > 0.0);
     let e = l.intensity * falloff(dist, l.range, l.attenuation) * soft * phase(dot(dir, L), p.a.w);
-    return l.color * e * spotVisibility(l, pos);
+    return l.color * e * spotShadowTap(l, pos);
 }
 
 fn localScatter(pos: vec3<f32>, dir: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
@@ -203,7 +155,7 @@ fn fs_march(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         let sigma = density(pos3.y);
         if (sigma <= 1e-7) { continue; }
         var light = p.d.rgb;
-        if (sunOn) { light += sun * sunVisibility(pos3); }
+        if (sunOn) { light += sun * dirShadowTap(pos3); }
         if (localOn) { light += localScatter(pos3, dir, pixel) * p.d.w; }
         let tr = exp(-sigma * ds);
         scatter += trans * (1.0 - tr) * light;

@@ -310,3 +310,51 @@ fn sampleSpotShadowPCF(slot: i32, lightVP: mat4x4<f32>, worldPos: vec3<f32>,
     }
     return sampleSpotMapPCF(spotShadow1, lightVP, worldPos, normal, L);
 }
+
+// One hardware-filtered comparison, for volumes and particles.
+fn dirShadowTap(pos: vec3<f32>) -> f32 {
+    if (frame.dirLight.castShadows == 0u) { return 1.0; }
+    let count = i32(frame.cascadeParams.x);
+    var vp = frame.dirLight.viewProj;
+    var layer = 0;
+    var bias = frame.shadowBias;
+    var fade = 0.0;
+    if (count > 0) {
+        let viewDepth = dot(pos - frame.cameraPos, frame.cameraForward);
+        if (viewDepth >= frame.cascadeParams.w) { return 1.0; }
+        fade = smoothstep(frame.cascadeParams.z, frame.cascadeParams.w, viewDepth);
+        layer = dirCascadeIndex(pos);
+        vp = frame.cascadeViewProj[layer];
+        bias = frame.cascadeTexel[layer].x * frame.cascadeTexel[layer].y;
+    }
+    let clip = vp * vec4<f32>(pos, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z >= 1.0) { return 1.0; }
+    let s = textureSampleCompareLevel(dirShadowMap, shadowSampler, uv, layer, max(ndc.z, 0.0) - bias);
+    return mix(s, 1.0, fade);
+}
+
+fn pointShadowTap(l: PointLight, pos: vec3<f32>) -> f32 {
+    let v = pos - l.position;
+    let ref_ = cubeRefDepth(v, SHADOW_NEAR, l.range) - frame.shadowBias;
+    switch (l.shadowSlot) {
+        case 0: { return sampleCubeCompare(pointShadow0, v, ref_); }
+        case 1: { return sampleCubeCompare(pointShadow1, v, ref_); }
+        case 2: { return sampleCubeCompare(pointShadow2, v, ref_); }
+        case 3: { return sampleCubeCompare(pointShadow3, v, ref_); }
+        default: { return 1.0; }
+    }
+}
+
+fn spotShadowTap(l: SpotLight, pos: vec3<f32>) -> f32 {
+    if (l.shadowSlot < 0) { return 1.0; }
+    let clip = l.viewProj * vec4<f32>(pos, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z <= 0.0 || ndc.z >= 1.0) { return 1.0; }
+    if (l.shadowSlot == 0) {
+        return textureSampleCompareLevel(spotShadow0, shadowSampler, uv, ndc.z - frame.shadowBias);
+    }
+    return textureSampleCompareLevel(spotShadow1, shadowSampler, uv, ndc.z - frame.shadowBias);
+}
