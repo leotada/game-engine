@@ -2229,6 +2229,253 @@ private bool checkParticles(ref App app) {
     return ok;
 }
 
+/// E10: block-compressed textures. The CPU decoder must agree with the GPU for
+/// every BC7 mode, a compressed image must look like its source, and the RGBA8
+/// fallback must look like the blocks.
+private bool checkBc(ref App app) {
+    import core.time : MonoTime;
+    import engine.assets.bc : BcQuality, encodeBcLevel;
+    import engine.assets.ktx2 : Ktx2Image, TextureCodec, textureLevelBytes, writeKtx2;
+    import engine.assets.png : saveRgbaPng;
+    import engine.graphics.texture : generateMipChainRgba8, mipCount, mipExtent;
+    import std.algorithm.comparison : max;
+    import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+    import std.math : log10, sin, sqrt;
+    import std.path : buildPath;
+    import std.random : Random, uniform;
+    import bindings.wgpu : WGPUFeatureName;
+
+    if (!app.gpu.hasFeature(WGPUFeatureName.textureCompressionBC)) {
+        writeln("  no BC support on this GPU: skipped");
+        return true;
+    }
+    auto rig = QuadRig.create(app);
+    scope(exit) rig.destroy();
+    auto post = neutralPost();
+    post.outputTransfer = OutputTransfer.srgb;
+    app.renderer.postSettings() = post;
+    bool ok = true;
+
+    /// The texture over black; `opaque_` ignores alpha.
+    Shot show(string name, ref Texture tex, bool opaque_) {
+        MaterialParams mp;
+        mp.flags = MaterialFlags.unlit;
+        auto mat = Material.create(app.gpu, rig.scene.materialLayout(), rig.sampler, tex, mp, null, null, null, null);
+        scope(exit) mat.destroy();
+        if (opaque_) mat.renderState.blend = BlendMode.opaque;
+        return capture(app, name, (ref FrameContext f) {
+            rig.scene.begin(rig.camera);
+            rig.scene.draw(rig.quad, mat, Vec3(0, 0, 0), Vec3(9.4f, 1, 9.4f));
+            rig.scene.end(f);
+        });
+    }
+    static int worst(ref Shot a, ref Shot b) {
+        int m = 0;
+        foreach (i; 0 .. a.px.length) m = max(m, abs(cast(int) a.px[i] - b.px[i]));
+        return m;
+    }
+    static double psnr(ref Shot a, ref Shot b) {
+        double e = 0;
+        size_t n;
+        foreach (i; 0 .. a.px.length) {
+            if (i % 4 == 3) continue;
+            immutable d = cast(double) a.px[i] - b.px[i];
+            e += d * d;
+            n++;
+        }
+        return e == 0 ? 99 : 10 * log10(255.0 * 255.0 * n / e);
+    }
+
+    // Random bits, every mode 512 times (every two- and three-subset shape).
+    enum N = 256;
+    auto rng = Random(5);
+    foreach (codec; [TextureCodec.bc7, TextureCodec.bc5]) {
+        auto blocks = new ubyte[textureLevelBytes(codec, N, N, 0)];
+        foreach (i, ref b; blocks) b = cast(ubyte) uniform(0, 256, rng);
+        if (codec == TextureCodec.bc7)
+            foreach (i; 0 .. blocks.length / 16) {
+                immutable m = i % 8;
+                blocks[i * 16] = cast(ubyte)((blocks[i * 16] & ~((2 << m) - 1)) | (1 << m));
+            }
+        Ktx2Image img;
+        img.codec = codec;
+        img.width = img.height = N;
+        img.levels = [blocks];
+        auto gpuTex = Texture.fromKtx2(app.gpu, img, false);
+        scope(exit) gpuTex.destroy();
+        auto cpuTex = Texture.fromKtx2(app.gpu, img, false, true);
+        scope(exit) cpuTex.destroy();
+        ok &= expect(gpuTex.normalXy == (codec == TextureCodec.bc5) && !cpuTex.normalXy, "only BC5 on the GPU lacks Z");
+        if (codec == TextureCodec.bc5) {
+            // Blue differs by design (Z is rebuilt on the CPU): compare red and green.
+            auto a = show("bc5_gpu", gpuTex, true), b = show("bc5_cpu", cpuTex, true);
+            // The CPU follows the specification (sevenths, 8 bits). An RX 6600 uses
+            // weights in 64ths and more bits (checked: with those weights the worst
+            // difference is one output step): up to 1.7 + 0.5 codes for random
+            // endpoints. Compare in linear: the output curve magnifies that near black.
+            static float linear(ubyte v) {
+                immutable float c = v / 255.0f;
+                return 255 * (c <= 0.04045f ? c / 12.92f : ((c + 0.055f) / 1.055f) ^^ 2.4f);
+            }
+            float m = 0;
+            foreach (i; 0 .. a.px.length) if (i % 4 < 2) m = max(m, abs(linear(a.px[i]) - linear(b.px[i])));
+            writefln("  bc5 random blocks: worst difference GPU - CPU %.2f codes", m);
+            // Plus the rounding of the captures (up to 1.2 codes each near white).
+            ok &= expect(a.valid && m <= 4.0f, "BC5 decoder matches the GPU");
+            continue;
+        }
+        foreach (opaque_; [true, false]) {
+            auto a = show(opaque_ ? "bc7_gpu" : "bc7_gpu_alpha", gpuTex, opaque_);
+            auto b = show(opaque_ ? "bc7_cpu" : "bc7_cpu_alpha", cpuTex, opaque_);
+            immutable m = worst(a, b);
+            writefln("  bc7 random blocks%s: worst difference GPU - CPU %s", opaque_ ? "" : " (alpha)", m);
+            ok &= expect(a.valid && m == 0, "BC7 decoder matches the GPU");
+        }
+    }
+
+    // A picture: source against its compressed files, through every loading path.
+    auto dir = buildPath(tempDir(), "game-engine-bc-check");
+    mkdirRecurse(dir);
+    scope(exit) if (dir.exists) rmdirRecurse(dir);
+    immutable uint P = bench ? 2048 : 512;
+    auto px = new ubyte[cast(size_t) P * P * 4];
+    auto bump = new ubyte[cast(size_t) P * P * 4];
+    foreach (y; 0 .. P) foreach (x; 0 .. P) {
+        immutable float fx = x * 512.0f / P, fy = y * 512.0f / P;
+        auto o = px[(cast(size_t) y * P + x) * 4 .. (cast(size_t) y * P + x) * 4 + 4];
+        immutable brick = (cast(int)(fx / 64 + (cast(int)(fy / 32) & 1) * 0.5f) * 37 + cast(int)(fy / 32) * 91) & 31;
+        immutable mortar = (cast(int) fy % 32 < 3) || (cast(int)(fx + (cast(int)(fy / 32) & 1) * 32) % 64 < 3);
+        immutable int grain = uniform(-6, 7, rng);
+        o[0] = cast(ubyte)((mortar ? 170 : 130 + brick) + grain);
+        o[1] = cast(ubyte)((mortar ? 165 : 62 + brick) + grain);
+        o[2] = cast(ubyte)((mortar ? 160 : 48 + brick / 2) + grain);
+        o[3] = 255;
+        immutable float dx = 0.5f * sin(fx * 0.2f) * (1 + 0.3f * sin(fy * 0.05f)), dy = 0.4f * sin(fy * 0.17f + fx * 0.03f);
+        immutable l = sqrt(dx * dx + dy * dy + 1);
+        auto b = bump[(cast(size_t) y * P + x) * 4 .. (cast(size_t) y * P + x) * 4 + 4];
+        b[0] = cast(ubyte)((-dx / l * 0.5f + 0.5f) * 255 + 0.5f);
+        b[1] = cast(ubyte)((-dy / l * 0.5f + 0.5f) * 255 + 0.5f);
+        b[2] = cast(ubyte)((1 / l * 0.5f + 0.5f) * 255 + 0.5f);
+        b[3] = 255;
+    }
+    Ktx2Image pack(const(ubyte)[] src, TextureCodec codec, bool srgb) {
+        Ktx2Image img;
+        img.codec = codec;
+        img.srgb = srgb;
+        img.width = img.height = P;
+        immutable n = mipCount(P, P);
+        size_t bytes = 0;
+        foreach (l; 1 .. n) bytes += textureLevelBytes(TextureCodec.rgba8, P, P, l);
+        auto tail = new ubyte[bytes];
+        generateMipChainRgba8(src, P, P, tail, n, codec == TextureCodec.bc5, srgb);
+        size_t off = 0;
+        foreach (l; 0 .. n) {
+            immutable b = textureLevelBytes(TextureCodec.rgba8, P, P, l);
+            auto lv = l == 0 ? src : tail[off .. off + b];
+            if (l > 0) off += b;
+            img.levels ~= encodeBcLevel(lv, mipExtent(P, l), mipExtent(P, l), codec == TextureCodec.bc7);
+        }
+        return img;
+    }
+    auto color = pack(px, TextureCodec.bc7, true);
+    auto png = buildPath(dir, "wall.png"), plainKtx = buildPath(dir, "plain.ktx2"), zstdKtx = buildPath(dir, "wall.ktx2");
+    saveRgbaPng(png, px, P, P);
+    () @trusted {
+        write(plainKtx, writeKtx2(color));
+        write(zstdKtx, writeKtx2(color, 3));
+    }();
+    auto desc = TextureDesc.mippedSrgb();
+    auto reference = Texture.fromImageFile(app.gpu, png, desc);
+    scope(exit) reference.destroy();
+    auto sideDesc = desc;
+    sideDesc.compressed = true;
+    auto sidecar = Texture.fromImageFile(app.gpu, png, sideDesc);
+    scope(exit) sidecar.destroy();
+    auto direct = Texture.fromImageFile(app.gpu, plainKtx, desc);
+    scope(exit) direct.destroy();
+    auto decoded = Texture.fromKtx2(app.gpu, color, true, true);
+    scope(exit) decoded.destroy();
+    ok &= expect(sidecar.format == WGPUTextureFormat.bc7RgbaUnormSrgb && direct.format == sidecar.format
+        && sidecar.mipLevels == reference.mipLevels, "KTX2 beside the image is used");
+    ok &= expect(reference.format == WGPUTextureFormat.rgba8UnormSrgb, "off by default");
+    ok &= expect(sidecar.gpuBytes * 4 <= reference.gpuBytes + 64 * 4, "a quarter of the memory");
+    if (!bench) {
+        auto a = show("bc_source", reference, true), b = show("bc_sidecar", sidecar, true),
+            c = show("bc_direct", direct, true), d = show("bc_decoded", decoded, true);
+        writefln("  picture: PSNR %.1f dB, zstd against plain worst %s, fallback against blocks worst %s",
+            psnr(a, b), worst(b, c), worst(b, d));
+        ok &= expect(a.valid && psnr(a, b) > 36, "compressed picture looks like its source");
+        ok &= expect(worst(b, c) == 0, "zstd is lossless");
+        ok &= expect(worst(b, d) <= 1, "fallback looks like the blocks");
+    }
+
+    // Normal map: BC5 with rebuilt Z against RGBA8, lit from the side.
+    auto normals = pack(bump, TextureCodec.bc5, false);
+    auto rgbaNormal = Texture.fromPixels(app.gpu, bump, P, P, TextureDesc.mippedNormal());
+    scope(exit) rgbaNormal.destroy();
+    auto bc5 = Texture.fromKtx2(app.gpu, normals, false);
+    scope(exit) bc5.destroy();
+    auto bc5cpu = Texture.fromKtx2(app.gpu, normals, false, true);
+    scope(exit) bc5cpu.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto smp = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) smp.destroy();
+    LightList lights;
+    scope(exit) lights.release();
+    if (!bench) {
+        Shot lit(string name, ref Texture n) {
+            MaterialParams mp;
+            mp.flags = MaterialFlags.normal;
+            auto mat = Material.create(app.gpu, rig.scene.materialLayout(), smp, white, mp, null, () @trusted { return &n; }(), null, null);
+            scope(exit) mat.destroy();
+            return capture(app, name, (ref FrameContext f) {
+                lights.clear();
+                lights.dirEnabled = true;
+                lights.dir.direction = Vec3(1, 1, 0.4f).normalized();
+                lights.dir.intensity = 1;
+                lights.dir.castShadows = false;
+                rig.scene.setIblIntensity(0);
+                rig.scene.begin(rig.camera);
+                rig.scene.draw(rig.quad, mat, Vec3(0, 0, 0), Vec3(9.4f, 1, 9.4f));
+                rig.scene.renderShadows(f, lights);
+                rig.scene.end(f);
+            });
+        }
+        auto a = lit("bc_normal_rgba", rgbaNormal), b = lit("bc_normal_bc5", bc5), c = lit("bc_normal_fallback", bc5cpu);
+        auto flat = lit("bc_normal_flat", white);
+        writefln("  normal map: BC5 against RGBA8 PSNR %.1f dB (a white map: %.1f), fallback against BC5 %.1f dB",
+            psnr(a, b), psnr(a, flat), psnr(b, c));
+        ok &= expect(a.valid && psnr(a, b) > 38, "BC5 normals shade like RGBA8 normals");
+        ok &= expect(psnr(b, c) > 38, "the fallback shades like BC5");
+    }
+
+    if (bench) {
+        double ms(scope Texture delegate() @safe load) {
+            double best = 1e9;
+            foreach (_; 0 .. 5) {
+                immutable t = MonoTime.currTime;
+                auto tex = load();
+                immutable e = (MonoTime.currTime - t).total!"usecs" / 1000.0;
+                tex.destroy();
+                if (e < best) best = e;
+            }
+            return best;
+        }
+        import std.file : getSize;
+        immutable tp = ms(() => Texture.fromImageFile(app.gpu, png, desc));
+        immutable tk = ms(() => Texture.fromImageFile(app.gpu, plainKtx, desc));
+        immutable tz = ms(() => Texture.fromImageFile(app.gpu, zstdKtx, desc));
+        immutable td = ms(() => Texture.fromKtx2(app.gpu, color, true, true));
+        writefln("  bench %sx%s color map with mips, best of 5", P, P);
+        writefln("    PNG          %7.1f ms  %6.2f MiB file  %6.2f MiB GPU", tp, getSize(png) / 1048576.0, reference.gpuBytes / 1048576.0);
+        writefln("    KTX2 BC7     %7.1f ms  %6.2f MiB file  %6.2f MiB GPU", tk, getSize(plainKtx) / 1048576.0, direct.gpuBytes / 1048576.0);
+        writefln("    KTX2 + zstd  %7.1f ms  %6.2f MiB file  %6.2f MiB GPU", tz, getSize(zstdKtx) / 1048576.0, sidecar.gpuBytes / 1048576.0);
+        writefln("    BC7 decoded to RGBA8 on the CPU %.1f ms", td);
+    }
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -2305,6 +2552,7 @@ private immutable Check[] checks = [
     Check("volumetric", &checkVolumetric),
     Check("exposure", &checkExposure),
     Check("particles", &checkParticles),
+    Check("bc", &checkBc),
     Check("stars", &checkStars),
 ];
 
