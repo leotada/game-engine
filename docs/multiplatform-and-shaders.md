@@ -91,6 +91,7 @@ assets/shaders/
 ├── textured3d_pbr.wgsl       # 3D instanced textured pipeline with OpenPBR Surface v1.1 + IBL
 ├── shadow_depth.wgsl         # Shadow depth pass
 ├── static_cull_cs.wgsl       # GPU culling of static instances (compute)
+├── gtao.wgsl                 # Ambient occlusion passes
 ├── gizmo_line.wgsl           # 3D debug lines and grid
 ├── ui2d.wgsl                 # Vector / UI box renderer
 ├── text2d.wgsl               # Bitmap font text renderer

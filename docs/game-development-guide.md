@@ -351,6 +351,8 @@ immutable passId = app.renderer.addPostPass(q{
 app.renderer.updatePostPassParams(passId, tintValues); // e.g. float[4] tintValues = [1, 0.95f, 0.9f, 1];
 ```
 
+**Ambient occlusion (GTAO)**: `app.renderer.ambientOcclusion().enabled = true;` with `radius`, `intensity`, `quality` and `halfResolution`. Use `BlendMode.opaque` materials. See [graphics.md](graphics.md#ambient-occlusion-gtao).
+
 Deep dive: [graphics.md](graphics.md) · [plan-post-processing.md](plan-post-processing.md).
 
 ---

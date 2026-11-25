@@ -22,6 +22,8 @@
   16-bit index buffers with an odd index count are now padded on upload.
 - **Post pass inputs** (`PostPassDesc`): custom passes can read scene depth, camera matrices, rebuilt normals and named
   targets at reduced resolution. Custom passes keep insertion order after a removal. Existing `addPostPass` is unchanged.
+- **Ambient occlusion (GTAO)**: `Renderer.ambientOcclusion()`, off by default. Ambient light only, no depth prepass, no
+  temporal data; radius, intensity, quality and half resolution. Outdoor demo: `--ao`.
 
 ### Engine bug fixes
 

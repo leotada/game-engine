@@ -783,3 +783,23 @@ app.renderer.addPostPass(composite);
 - Cost when unused: none. `gpu.post.customBeforeTonemap`, `gpu.post.customAfterTonemap` and `gpu.post.afterUi` time the passes.
 
 Verification: `dub run --config=render-check -- --check=passinputs`.
+
+## Ambient Occlusion (GTAO)
+
+Off by default. Darkens only the ambient light (image-based diffuse, specular, coat and fuzz) of opaque surfaces, between the opaque and transparent passes. No depth prepass, no temporal data.
+
+```d
+app.renderer.ambientOcclusion().enabled = true;
+app.renderer.ambientOcclusion().radius = 1.5f;        // world units
+app.renderer.ambientOcclusion().intensity = 1.0f;     // exponent
+app.renderer.ambientOcclusion().quality = AoQuality.medium;
+app.renderer.ambientOcclusion().halfResolution = false;
+```
+
+- **Who takes part:** `BlendMode.opaque` and `alphaMask` materials with depth write (dynamic, static, GPU-culled, skinned, surface shaders) and terrain. The default `BlendMode.alpha` state takes part with `treatDefaultBlendAsOpaque` (it is then drawn without blending). Sky, decals, water, particles, transmissive, SSR pass and unlit materials, and custom opaque hooks are never darkened. Everything that writes depth occludes.
+- **How:** opaque pipelines write `1 - ambient share` to the scene alpha (pipeline constant `AMBIENT_ALPHA`, separate pipelines created on first use). Passes: linear depth and 5 mips, horizon search with a fixed 4x4 pattern, two depth-aware blur passes, composite. Alpha is 1 again afterwards.
+- **Limits:** the share is one number per pixel (luminance), so with strongly tinted ambient light the hue of occluded areas is approximate. Normals come from depth. Decals are drawn after the composite. The search radius is capped at 160 pixels. Up to 4 scenes per frame (split screen).
+- **Accuracy:** `slices` / `steps` override the preset. With 32 x 64 a wall matches the analytic value within 0.02. Presets sample sparsely and underestimate detail much smaller than the radius: with a wall of 1/10 of the radius, 6 pixels away, visibility is 0.87 (`medium`) and 0.82 (`ultra`) instead of 0.72. Pick a radius near the size of the detail that matters.
+- **Cost** (RX 6600, 1920x1080, `gpu.gtao`): low 0.39 ms, medium 0.65, high 1.02, ultra 1.81; half resolution: 0.23, 0.29, 0.38, 0.57. CPU (`scene.gtao`) 0.01 ms. It also costs the extra alpha math in opaque shaders.
+
+Verification: `dub run --config=render-check -- --check=ao`; `dub run --config=outdoor -- --ao`.
