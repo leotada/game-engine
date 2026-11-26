@@ -83,8 +83,8 @@ struct CullGroup {
 static assert(CullBlock.sizeof == 16 && CullMeta.sizeof == 32 && CullGroup.sizeof == 208);
 static assert(isPod!CullBlock && isPod!CullMeta && isPod!CullGroup);
 
-/// Most blocks of one culling group: `cs_sum` walks them in one invocation.
-enum uint STATIC_CULL_PART_BLOCKS = 16;
+/// Most blocks of one culling group part (`cs_sum` runs one workgroup per part).
+enum uint STATIC_CULL_PART_BLOCKS = 64;
 
 /// Cut groups longer than `STATIC_CULL_PART_BLOCKS` blocks. `order` then lists parts
 /// instead of groups and `partGroup` maps each part to its group.
@@ -323,7 +323,7 @@ struct StaticCuller {
                 wgpuComputePassEncoderSetBindGroup(pass, 0, viewBg, 1, &offset);
                 foreach (d; data) {
                     wgpuComputePassEncoderSetBindGroup(pass, 1, d.views[s].bindGroup, 0, null);
-                    immutable n = stage == 1 ? (cast(uint) d.groups.length + 63) / 64 : d.blockCount;
+                    immutable n = stage == 1 ? cast(uint) d.groups.length : d.blockCount;
                     wgpuComputePassEncoderDispatchWorkgroups(pass, n, 1, 1);
                 }
             }
@@ -587,15 +587,15 @@ CullMeta cullMetaOf(BoundingSphere world, float scale) pure nothrow @nogc {
 
 @("staticCull.parts") @safe unittest {
     CullGroup[2] g;
-    g[0].count = 2500;
+    g[0].count = 10000;
     g[0].firstArg = 7;
-    g[1].first = 2500;
+    g[1].first = 10000;
     g[1].count = 10;
     uint[] order = [1, 0], map;
     auto p = splitCullGroups(g[], order, map);
     assert(p.length == 4 && map == [0, 0, 0, 1] && order == [3, 0, 1, 2]);
-    assert(p[0].first == 0 && p[0].count == 1024 && p[1].first == 1024 && p[2].first == 2048 && p[2].count == 452);
-    assert(p[3].first == 2500 && p[3].count == 10);
+    assert(p[0].first == 0 && p[0].count == 4096 && p[1].first == 4096 && p[2].first == 8192 && p[2].count == 1808);
+    assert(p[3].first == 10000 && p[3].count == 10);
     foreach (ref x; buildCullBlocks(p)) assert(x.count > 0);
     foreach (ref x; p) assert(x.blockCount <= STATIC_CULL_PART_BLOCKS);
 }

@@ -109,28 +109,54 @@ fn cs_cull(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_inde
     if (li < 8u) { blockLods[wid.x * 8u + li] = atomicLoad(&counts[li]); }
 }
 
+var<workgroup> partial: array<u32, 64>;
+
+/// One workgroup per group part: each lane owns a contiguous run of blocks
+/// (one block for parts of up to 64 blocks), an inclusive scan of the lane
+/// sums gives every block its output offset per LOD. Same order as a serial
+/// walk, so the compaction stays deterministic.
 @compute @workgroup_size(64)
-fn cs_sum(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= arrayLength(&groups)) { return; }
-    let g = gid.x;
-    var next = groups[g].first;
+fn cs_sum(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let g = wid.x;
+    if (g >= arrayLength(&groups)) { return; }
     let levels = max(groups[g].lodLevels, 1u);
     let shadow = (view.flags.x & FLAG_SHADOW) != 0u;
+    let blockCount = groups[g].blockCount;
+    let per = (blockCount + 63u) / 64u;
+    let lo = min(li * per, blockCount);
+    let hi = min(lo + per, blockCount);
+    var next = groups[g].first;
     for (var lod = 0u; lod < levels; lod++) {
-        let start = next;
-        for (var i = 0u; i < groups[g].blockCount; i++) {
+        var sum = 0u;
+        for (var i = lo; i < hi; i++) { sum += blockLods[(groups[g].firstBlock + i) * 8u + lod]; }
+        partial[li] = sum;
+        workgroupBarrier();
+        for (var off = 1u; off < 64u; off = off << 1u) {
+            var v = 0u;
+            if (li >= off) { v = partial[li - off]; }
+            workgroupBarrier();
+            partial[li] = partial[li] + v;
+            workgroupBarrier();
+        }
+        let total = partial[63];
+        var at = next + partial[li] - sum;
+        for (var i = lo; i < hi; i++) {
             let slot = (groups[g].firstBlock + i) * 8u + lod;
             let n = blockLods[slot];
-            blockLods[slot] = next;
-            next += n;
+            blockLods[slot] = at;
+            at += n;
         }
-        let range = select(groups[g].color[lod], groups[g].shadow[lod], shadow);
-        let a = (groups[g].firstArg + lod) * 5u;
-        args[a] = range.y;
-        args[a + 1u] = next - start;
-        args[a + 2u] = range.x;
-        args[a + 3u] = groups[g].baseVertex;
-        args[a + 4u] = start;
+        if (li == 0u) {
+            let range = select(groups[g].color[lod], groups[g].shadow[lod], shadow);
+            let a = (groups[g].firstArg + lod) * 5u;
+            args[a] = range.y;
+            args[a + 1u] = total;
+            args[a + 2u] = range.x;
+            args[a + 3u] = groups[g].baseVertex;
+            args[a + 4u] = next;
+        }
+        next += total;
+        workgroupBarrier();
     }
 }
 

@@ -419,7 +419,7 @@ Off by default. With `gpuCull = true` a compute shader (`static_cull_cs.wgsl`) c
 - **Displacement:** set `Material.displacementBound` to the largest movement of a `displace` / `displaceEx` hook, or instances can vanish at the screen border while their displaced vertices are still visible.
 - **Memory:** each active view keeps `instances × 100` bytes plus about 32 bytes per 64 instances. 40,000 instances with the camera and three cascades take about 16 MB. The meshes are copied into shared pools at build, so later `TexMesh.updateVertices` calls are not seen.
 - **Stats:** `drawCalls`, `shadowDrawCalls` and `staticRangesDrawn` (indirect records) are filled. Instance counts (`staticInstancesVisible`, `shadowStaticInstancesDrawn`, `lodHistogram`) stay on the GPU and are not counted.
-- **Large groups** are cut into parts of 16 blocks (1,024 instances), each with its own indirect records, because one invocation sums the blocks of a part in order.
+- **Large groups** are cut into parts of 64 blocks (4,096 instances), each with its own indirect records. One workgroup sums the blocks of a part per LOD with a prefix scan (one lane per block), so the cost no longer grows with blocks × LOD levels in one invocation.
 - **`rangeLodParity`** takes the CPU path's per-range decisions, for comparisons.
 - **Zones:** CPU `scene.staticCull`, GPU `gpu.staticCull`.
 
