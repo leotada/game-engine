@@ -382,16 +382,29 @@ struct StaticInstanceBuffer {
             auto mesh = meshes[groups[gi].mesh];
             auto mat = materials[groups[gi].material];
             immutable ulong cls = (mat.surfaceShader != 0 || mat.renderState.alphaMask) ? 1 : 0;
+            // Casters of one surface shader stay neighbors, so the shadow pass can batch them.
+            immutable ulong shader = mat.surfaceShader < 255 ? mat.surfaceShader : 255;
             return (cast(ulong) MeshPool.strideIndex(mesh.vertexStride) << 63)
                  | (cast(ulong) MeshPool.formatIndex(mesh.indexFormat) << 62)
                  | (cls << 61) | (cast(ulong) mat.renderState.depthWrite << 60)
                  | (cast(ulong) mat.renderState.doubleSided << 59)
-                 | (cast(ulong) groups[gi].material << 28)
-                 | (cast(ulong) mesh.hasVertexColors << 27) | gi;
+                 | (cast(ulong) mat.renderState.alphaMask << 58)
+                 | (shader << 50)
+                 | ((cast(ulong) mat.surfaceSlot.chunk & 0x3F) << 44)
+                 | ((cast(ulong) groups[gi].material & 0x1FFFF) << 27)
+                 | (cast(ulong) mesh.hasVertexColors << 26) | (gi & 0x3FF_FFFF);
         }
         order.sort!((a, b) => key(a) < key(b));
         foreach (i, ref t; table) fillGroup(t, cast(uint) i);
         gpuData.build(gpu, table, order, metas, instanceBuf);
+        bool anySurface = false;
+        foreach (m; materials) anySurface |= m.surfaceShader != 0;
+        if (anySurface) {
+            auto slots = new uint[layout.instances.length];
+            foreach (gi, ref t; table)
+                slots[t.first .. t.first + t.count] = materials[groups[gi].material].surfaceSlot.index;
+            gpuData.setParamIndices(gpu, slots);
+        }
     }
 
     /// Copy the culling, LOD and index ranges of group `gi` into its GPU record.

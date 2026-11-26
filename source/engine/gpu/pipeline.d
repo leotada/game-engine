@@ -798,6 +798,12 @@ struct SurfacePipelines {
     WGPURenderPipeline[4] shadowPipelines;
     /// Same, for alpha-masked materials (`vs_shadow_mask` + `fs_shadow_mask`).
     WGPURenderPipeline[4] shadowMaskPipelines;
+    /// `vs_shadow_table` modules (`composeSurfaceShadowTableShader`), null when
+    /// the vertex hook reads more than `surfaceParams` (`surfaceDisplaceBatchable`).
+    /// Index: tangent ? 1 : 0.
+    WGPUShaderModule[2] shadowTableModules;
+    /// Batched depth-only pipelines of those modules, built lazily. Index as `shadowPipelines`.
+    WGPURenderPipeline[4] shadowTablePipelines;
 
     bool valid() const nothrow @nogc { return pipeline !is null && pipelineTangent !is null; }
 
@@ -806,6 +812,10 @@ struct SurfacePipelines {
             if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
         foreach (ref p; shadowMaskPipelines)
             if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
+        foreach (ref p; shadowTablePipelines)
+            if (p !is null) { wgpuRenderPipelineRelease(p); p = null; }
+        foreach (ref m; shadowTableModules)
+            if (m !is null) { wgpuShaderModuleRelease(m); m = null; }
         if (pipeline !is null) { wgpuRenderPipelineRelease(pipeline); pipeline = null; }
         if (pipelineTangent !is null) { wgpuRenderPipelineRelease(pipelineTangent); pipelineTangent = null; }
         if (shaderModule !is null) { wgpuShaderModuleRelease(shaderModule); shaderModule = null; }

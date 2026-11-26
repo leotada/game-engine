@@ -96,6 +96,86 @@ string composeSurfaceShader(scope const(char)[] surfaceWgsl, bool tangent = fals
     return code.replace(SURFACE_CODE_MARKER, surfaceWgsl.idup);
 }
 
+private enum SURFACE_PARAMS_UNIFORM = "@group(1) @binding(7) var<uniform> surfaceParams: SurfaceParams;";
+
+/// `@binding`s (group 1) of the batched shadow stage: the material surface
+/// parameter chunk and the per-instance slot index.
+enum uint SHADOW_TABLE_PARAMS_BINDING = 30;
+enum uint SHADOW_TABLE_INDEX_BINDING = 31;
+
+/// True when the vertex hook of `surfaceWgsl` only reads `surfaceParams`,
+/// `frame` and its inputs, so shadow casters of different materials sharing
+/// the shader can be drawn together (`composeSurfaceShadowTableShader`). Any
+/// mention of `mat.`, a texture or a sampler outside `fn surface` keeps the
+/// per-material path.
+bool surfaceDisplaceBatchable(scope const(char)[] surfaceWgsl) pure {
+    import std.algorithm.searching : canFind;
+    if (surfaceDisplaceKind(surfaceWgsl) == DisplaceKind.none) return false;
+    const(char)[] rest = withoutFunction(surfaceWgsl.idup, "fn surface(");
+    foreach (word; ["mat.", "texture", "Sampler", "sampler", "Map"])
+        if (rest.canFind(word)) return false;
+    return true;
+}
+
+/// `src` with the body of the function starting at `head` removed.
+private const(char)[] withoutFunction(const(char)[] src, string head) pure {
+    import std.string : indexOf;
+    immutable start = src.indexOf(head);
+    if (start < 0) return src;
+    immutable open = src[start .. $].indexOf('{');
+    if (open < 0) return src;
+    size_t i = start + open, depth = 0;
+    for (; i < src.length; i++) {
+        if (src[i] == '{') depth++;
+        else if (src[i] == '}' && --depth == 0) break;
+    }
+    return i >= src.length ? src[0 .. start] : (src[0 .. start] ~ src[i + 1 .. $]);
+}
+
+/// `composeSurfaceShader` plus a `vs_shadow_table` entry point: `surfaceParams`
+/// becomes a per-invocation copy loaded from the material chunk
+/// (`@binding(30)`, 256-byte slots) at the slot stored for the instance
+/// (`@binding(31)`, indexed by `instance_index`). One draw then covers the
+/// casters of every material that shares the surface shader.
+string composeSurfaceShadowTableShader(scope const(char)[] surfaceWgsl, bool tangent = false) {
+    import std.array : replace;
+    import std.conv : to;
+    auto code = composeSurfaceShader(surfaceWgsl, tangent);
+    code = code.replace(SURFACE_PARAMS_UNIFORM,
+        "struct SurfaceParamSlot {\n    p: SurfaceParams,\n    pad: array<vec4<f32>, 12>,\n};\n"
+        ~ "@group(1) @binding(" ~ SHADOW_TABLE_PARAMS_BINDING.to!string
+        ~ ") var<storage, read> surfaceParamTable: array<SurfaceParamSlot>;\n"
+        ~ "@group(1) @binding(" ~ SHADOW_TABLE_INDEX_BINDING.to!string
+        ~ ") var<storage, read> surfaceParamIndex: array<u32>;\n"
+        ~ "var<private> surfaceParams: SurfaceParams;");
+    return code ~ "\n@vertex\n"
+        ~ "fn vs_shadow_table(in: ShadowVertexInput, @builtin(instance_index) instance: u32) -> @builtin(position) vec4<f32> {\n"
+        ~ "    surfaceParams = surfaceParamTable[surfaceParamIndex[instance]].p;\n"
+        ~ "    let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);\n"
+        ~ "    let localPos = engineDisplace(in.position, in.normal, in.uv, in.custom, model);\n"
+        ~ "    return shadowLight.viewProj * model * vec4<f32>(localPos, 1.0);\n"
+        ~ "}\n";
+}
+
+@("shaders.surfaceShadowTable") unittest {
+    import std.algorithm.searching : canFind;
+    enum surf = "fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { var o = base; o.baseColor = textureSample(albedoMap, texSampler, in.uv).rgb * mat.baseColor; return o; }\n";
+    enum disp = "fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + surfaceParams.p0.xyz * sin(frame.time); }\n";
+    // Textures and material fields used by `surface` only: batchable.
+    assert(surfaceDisplaceBatchable(surf ~ disp));
+    // No vertex hook: nothing to batch.
+    assert(!surfaceDisplaceBatchable(surf));
+    // A hook reading the material or a texture keeps the per-material path.
+    assert(!surfaceDisplaceBatchable(surf ~ "fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos * mat.thinRadius; }"));
+    assert(!surfaceDisplaceBatchable("fn displace(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> { return p + textureSampleLevel(albedoMap, texSampler, vec2<f32>(0.0), 0.0).xyz; }"));
+    static assert(textured3dSurfaceTemplate.canFind(SURFACE_PARAMS_UNIFORM));
+    auto code = composeSurfaceShadowTableShader(surf ~ disp);
+    assert(code.canFind("fn vs_shadow_table("));
+    assert(code.canFind("var<private> surfaceParams: SurfaceParams;"));
+    assert(!code.canFind(SURFACE_PARAMS_UNIFORM));
+    assert(code.canFind("@binding(30) var<storage, read> surfaceParamTable"));
+}
+
 private string displaceWrapper(string body_) pure {
     return "fn engineDisplace(localPos: vec3<f32>, localNormal: vec3<f32>, uv: vec2<f32>,\n"
         ~ "                   custom: vec4<f32>, model: mat4x4<f32>) -> vec3<f32> {\n"

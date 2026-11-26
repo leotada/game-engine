@@ -840,6 +840,118 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> { return d.localPos + vec3<f32>(0.2 * 
     return ok;
 }
 
+/// Shadow casters of GPU-culled buffers that share a surface shader are drawn
+/// together (`vs_shadow_table`), each with its own material's `surfaceParams`.
+private bool checkShadowBatch(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    immutable shader = scene.createSurfaceShader(`
+fn surface(in: SurfaceIn, base: SurfaceOut) -> SurfaceOut { return base; }
+fn displaceEx(d: DisplaceIn) -> vec3<f32> {
+    return d.localPos + vec3<f32>(surfaceParams.p0.x * (d.localPos.y + 0.5), 0.0, surfaceParams.p0.y * (d.localPos.y + 0.5));
+}
+`);
+    if (shader == 0) return expect(false, "surface shader compiles");
+    auto layout = scene.materialLayout();
+    MaterialParams mp;
+    mp.baseColor = [0.6f, 0.6f, 0.6f];
+    auto ground = Material.create(app.gpu, layout, sampler, white, mp, null, null, null, null);
+    scope(exit) ground.destroy();
+    enum M = 8;
+    auto mats = new Material[M];
+    scope(exit) foreach (ref m; mats) m.destroy();
+    auto ptrs = new Material*[M];
+    void setParams(bool same) {
+        foreach (i, ref m; mats) {
+            float[16] p = 0;
+            p[0] = same ? 0.0f : -1.6f + 0.45f * i;
+            p[1] = same ? 0.0f : 0.8f - 0.2f * i;
+            m.updateSurfaceParams(app.gpu, p);
+        }
+    }
+    foreach (i, ref m; mats) {
+        mp.baseColor = [0.3f + 0.05f * i, 0.4f, 0.5f];
+        auto x = Material.create(app.gpu, layout, sampler, white, mp, null, null, null, null);
+        x.surfaceShader = shader;
+        x.displacementBound = 2.0f;
+        import core.lifetime : move;
+        move(x, m);
+    }
+    () @trusted { foreach (i, ref m; mats) ptrs[i] = &m; }();
+    setParams(false);
+    auto meshes = new TexMesh*[1];
+    () @trusted { meshes[0] = &cube; }();
+    StaticInstanceDesc[] descs;
+    foreach (z; 0 .. 12) foreach (x; 0 .. 12) {
+        StaticInstanceDesc d;
+        d.mesh = 0;
+        d.material = cast(uint) ((x + z * 3) % M);
+        d.model = Mat4.translation(-11.0f + 2.0f * x, 2.0f, -11.0f + 2.0f * z) * Mat4.scaling(0.4f, 4.0f, 0.4f);
+        descs ~= d;
+    }
+    StaticBuildOptions o;
+    o.cellSize = 8;
+    o.gpuCull = true;
+    auto sib = StaticInstanceBuffer.build(app.gpu, meshes, ptrs, descs, o);
+    scope(exit) sib.destroy();
+    if (!sib.gpuCulled) {
+        writeln("  GPU culling not supported by this adapter: skipped");
+        return true;
+    }
+    LightList lights;
+    scope(exit) lights.release();
+    lights.dirEnabled = true;
+    lights.dir.direction = Vec3(0.5f, 1, 0.35f).normalized();
+    lights.dir.intensity = 3;
+    lights.dir.castShadows = true;
+    lights.dir.cascades.count = 2;
+    lights.dir.cascades.maxDistance = 80;
+    void frameOf(ref FrameContext f) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.3f, 200.0f);
+        cam.lookAt(Vec3(0, 30, 18), Vec3(0, 0, 0));
+        scene.begin(cam);
+        scene.draw(quad, ground, Vec3(0, 0, 0), Vec3(60, 1, 60));
+        scene.submitStatic(sib);
+        scene.renderShadows(f, lights);
+        scene.end(f);
+    }
+    uint differ(ref const Shot a, ref const Shot b) {
+        if (!a.valid || !b.valid || a.px.length != b.px.length) return uint.max;
+        uint n = 0;
+        foreach (i; 0 .. a.px.length / 4)
+            foreach (c; 0 .. 3)
+                if (a.px[i * 4 + c] != b.px[i * 4 + c]) { n++; break; }
+        return n;
+    }
+    bool ok = true;
+    scene.batchShadowCasters = true;
+    auto batched = capture(app, "shadowbatch_on", &frameOf);
+    immutable drawsOn = scene.stats.shadowDrawCalls;
+    scene.batchShadowCasters = false;
+    auto single = capture(app, "shadowbatch_off", &frameOf);
+    immutable drawsOff = scene.stats.shadowDrawCalls;
+    scene.batchShadowCasters = true;
+    setParams(true);
+    auto same = capture(app, "shadowbatch_control", &frameOf);
+    setParams(false);
+    immutable d = differ(batched, single), control = differ(batched, same);
+    writefln("  shadow draws batched %s, per material %s; batched vs per material %s px, control %s px",
+             drawsOn, drawsOff, d, control);
+    ok &= expect(d == 0, "batched shadows equal the per-material shadows");
+    ok &= expect(control > 500, "each material's surfaceParams move its shadows (control)");
+    ok &= expect(drawsOn < drawsOff, "fewer shadow draws when batched");
+    return ok;
+}
+
 /// Sphere with a coarser second level in the same index buffer.
 private TexMesh lodSphere(ref App app, uint segments, uint rings) {
     import engine.graphics.types : TexVert;
@@ -2872,6 +2984,7 @@ private immutable Check[] checks = [
     Check("thin", &checkThin),
     Check("stars", &checkStars),
     Check("antitile", &checkAntiTiling),
+    Check("shadowbatch", &checkShadowBatch),
 ];
 
 int main(string[] args) {

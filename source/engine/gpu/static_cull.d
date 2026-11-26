@@ -369,6 +369,14 @@ struct StaticGpuData {
     /// Owned by the `StaticInstanceBuffer`.
     private WGPUBuffer instanceBuf;
     StaticCullView[STATIC_CULL_VIEWS] views;
+    /// Per instance: the `surfaceParams` slot of its material, read by the
+    /// batched shadow stage (`vs_shadow_table`). Null when no material of the
+    /// buffer has a surface shader.
+    WGPUBuffer paramIndexBuf;
+    /// Bind groups of the batched shadow stage, one per surface parameter chunk.
+    private WGPUBindGroup[4] tableBindGroups;
+    private ushort[4] tableChunks;
+    private uint tableCount;
 
     @disable this(this);
 
@@ -404,6 +412,43 @@ struct StaticGpuData {
         updateBuffer(queue, blockBuf, blocks);
         updateBuffer(queue, metaBuf, metas);
         dirty = true;
+    }
+
+    /// Upload the per-instance surface parameter slots (load time).
+    void setParamIndices(ref GpuContext gpu, scope const(uint)[] slots) @trusted {
+        destroyBuffer(paramIndexBuf);
+        paramIndexBuf = null;
+        if (slots.length == 0) return;
+        paramIndexBuf = createStorageBuffer(gpu.getDevice(), slots.length * 4UL);
+        updateBuffer(gpu.getQueue(), paramIndexBuf, slots);
+    }
+
+    /// Bind group of the batched shadow stage for materials of `chunk`, built
+    /// on first use. Null when the buffer has no slot table or too many chunks.
+    WGPUBindGroup tableBindGroup(WGPUDevice device, WGPUBindGroupLayout layout, ushort chunk) nothrow @nogc @trusted {
+        import engine.graphics.surface_params : SURFACE_CHUNK_BYTES, surfaceChunkBuffer;
+        import engine.gpu.shaders : SHADOW_TABLE_INDEX_BINDING, SHADOW_TABLE_PARAMS_BINDING;
+        if (paramIndexBuf is null || layout is null) return null;
+        foreach (i; 0 .. tableCount)
+            if (tableChunks[i] == chunk) return tableBindGroups[i];
+        auto chunkBuf = surfaceChunkBuffer(chunk);
+        if (tableCount >= tableBindGroups.length || chunkBuf is null) return null;
+        WGPUBindGroupEntry[2] e;
+        e[0].binding = SHADOW_TABLE_PARAMS_BINDING;
+        e[0].buffer = chunkBuf;
+        e[0].size = SURFACE_CHUNK_BYTES;
+        e[1].binding = SHADOW_TABLE_INDEX_BINDING;
+        e[1].buffer = paramIndexBuf;
+        e[1].size = instanceCount * 4UL;
+        WGPUBindGroupDescriptor d;
+        d.layout = layout;
+        d.entryCount = 2;
+        d.entries = e.ptr;
+        auto bg = wgpuDeviceCreateBindGroup(device, &d);
+        if (bg is null) return null;
+        tableChunks[tableCount] = chunk;
+        tableBindGroups[tableCount++] = bg;
+        return bg;
     }
 
     /// Rewrite the culling volume of one instance.
@@ -492,6 +537,10 @@ struct StaticGpuData {
             destroyBuffer(v.visible);
             v = StaticCullView.init;
         }
+        foreach (ref bg; tableBindGroups[0 .. tableCount]) releaseBindGroup(bg);
+        tableCount = 0;
+        destroyBuffer(paramIndexBuf);
+        paramIndexBuf = null;
         destroyBuffer(blockBuf);
         destroyBuffer(metaBuf);
         destroyBuffer(groupBuf);

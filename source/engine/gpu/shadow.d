@@ -352,6 +352,12 @@ struct TexShadowPipeline {
     /// Group 0 = `surfaceBindGroupLayout`, group 1 = the material layout
     /// (`surfaceParams` at binding 7).
     WGPUPipelineLayout  surfacePipelineLayout;
+    /// Group 1 of batched displaced shadow pipelines (`vs_shadow_table`): the
+    /// material surface parameter chunk (binding 30) and the slot of each
+    /// instance (binding 31), both read-only storage.
+    WGPUBindGroupLayout tableBindGroupLayout;
+    /// Group 0 = `surfaceBindGroupLayout`, group 1 = `tableBindGroupLayout`.
+    WGPUPipelineLayout  tablePipelineLayout;
     /// Alpha-masked casters, built on first use. Index: vertex layout
     /// (0 = stride 32, 1 = stride 48, 2 = skinned) * 2 + (doubleSided ? 1 : 0).
     private WGPURenderPipeline[6] maskPipes;
@@ -418,6 +424,8 @@ struct TexShadowPipeline {
         if (skinnedMaskModule !is null) { wgpuShaderModuleRelease(skinnedMaskModule); skinnedMaskModule = null; }
         if (maskLayout !is null)        { wgpuPipelineLayoutRelease(maskLayout); maskLayout = null; }
         if (skinnedMaskLayout !is null) { wgpuPipelineLayoutRelease(skinnedMaskLayout); skinnedMaskLayout = null; }
+        if (tablePipelineLayout !is null)    { wgpuPipelineLayoutRelease(tablePipelineLayout); tablePipelineLayout = null; }
+        if (tableBindGroupLayout !is null)   { wgpuBindGroupLayoutRelease(tableBindGroupLayout); tableBindGroupLayout = null; }
         if (surfacePipelineLayout !is null)  { wgpuPipelineLayoutRelease(surfacePipelineLayout); surfacePipelineLayout = null; }
         if (surfaceBindGroupLayout !is null) { wgpuBindGroupLayoutRelease(surfaceBindGroupLayout); surfaceBindGroupLayout = null; }
         if (skinnedPipelineLayout !is null) { wgpuPipelineLayoutRelease(skinnedPipelineLayout); skinnedPipelineLayout = null; }
@@ -557,6 +565,27 @@ TexShadowPipeline createTexShadowPipeline(WGPUDevice device, WGPUBindGroupLayout
         spd.bindGroupLayouts = sl.ptr;
         r.surfacePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &spd);
 
+        import engine.gpu.shaders : SHADOW_TABLE_INDEX_BINDING, SHADOW_TABLE_PARAMS_BINDING;
+        import engine.graphics.surface_params : SURFACE_CHUNK_BYTES;
+        WGPUBindGroupLayoutEntry[2] te;
+        te[0].binding = SHADOW_TABLE_PARAMS_BINDING;
+        te[0].visibility = WGPUShaderStage.vertex;
+        te[0].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+        te[0].buffer.minBindingSize = SURFACE_CHUNK_BYTES;
+        te[1].binding = SHADOW_TABLE_INDEX_BINDING;
+        te[1].visibility = WGPUShaderStage.vertex;
+        te[1].buffer.type = WGPUBufferBindingType.readOnlyStorage;
+        te[1].buffer.minBindingSize = 4;
+        WGPUBindGroupLayoutDescriptor tbd;
+        tbd.entryCount = 2;
+        tbd.entries = te.ptr;
+        r.tableBindGroupLayout = wgpuDeviceCreateBindGroupLayout(device, &tbd);
+        WGPUBindGroupLayout[2] tl = [r.surfaceBindGroupLayout, r.tableBindGroupLayout];
+        WGPUPipelineLayoutDescriptor tpd;
+        tpd.bindGroupLayoutCount = 2;
+        tpd.bindGroupLayouts = tl.ptr;
+        r.tablePipelineLayout = wgpuDeviceCreatePipelineLayout(device, &tpd);
+
         WGPUBindGroupLayout[3] ml = [r.bindGroupLayout, materialBindGroupLayout, null];
         WGPUPipelineLayoutDescriptor mpd;
         mpd.bindGroupLayoutCount = 2;
@@ -582,7 +611,8 @@ enum uint SURFACE_SHADOW_LIGHT_BINDING = 20;
 /// `mask` selects the alpha-masked entry points (`vs_shadow_mask` / `fs_shadow_mask`).
 WGPURenderPipeline createSurfaceShadowPipeline(WGPUDevice device, WGPUPipelineLayout surfaceLayout,
                                                WGPUShaderModule surfaceModule, uint vertexStride,
-                                               bool doubleSided, bool mask = false) nothrow @nogc @trusted {
+                                               bool doubleSided, bool mask = false,
+                                               bool table = false) nothrow @nogc @trusted {
     if (surfaceLayout is null || surfaceModule is null) return null;
     WGPUVertexAttribute[3] vertexAttrs = [
         { format: WGPUVertexFormat.float32x3, offset: 0,  shaderLocation: 0 },
@@ -619,7 +649,7 @@ WGPURenderPipeline createSurfaceShadowPipeline(WGPUDevice device, WGPUPipelineLa
     pd.layout = surfaceLayout;
     if (mask) pd.fragment = &fs;
     pd.vertex.module_ = surfaceModule;
-    pd.vertex.entryPoint = wgpuStringView(mask ? "vs_shadow_mask" : "vs_shadow");
+    pd.vertex.entryPoint = wgpuStringView(table ? "vs_shadow_table" : mask ? "vs_shadow_mask" : "vs_shadow");
     pd.vertex.bufferCount = 2;
     pd.vertex.buffers = bufferLayouts.ptr;
     pd.primitive.topology = WGPUPrimitiveTopology.triangleList;

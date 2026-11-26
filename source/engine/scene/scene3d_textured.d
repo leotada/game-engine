@@ -458,6 +458,11 @@ struct Scene3DTextured {
     private uint variantCount = 0;
 
     private enum MAX_SURFACE_SHADERS = 16;
+    /// Draw the shadow casters of GPU-culled static buffers that share a surface
+    /// shader in one multi-draw per cascade (`vs_shadow_table`), when the
+    /// shader's vertex hook reads only `surfaceParams`. Same image; turn off to
+    /// compare or debug.
+    bool batchShadowCasters = true;
     private SurfacePipelines[MAX_SURFACE_SHADERS] surfaceShaders;
     /// Vertex-color modules of one shader id, compiled on first use.
     private struct ColoredShader {
@@ -662,6 +667,7 @@ struct Scene3DTextured {
             return 0;
         }
         built.displace = surfaceDisplaceKind(surfaceWgsl);
+        buildShadowTableModules(built, surfaceWgsl);
         surfaceShaders[surfaceShaderCount] = built;
         ++surfaceShaderCount;
         coloredShaders[surfaceShaderCount].setSource(0, surfaceWgsl);
@@ -677,11 +683,23 @@ struct Scene3DTextured {
             composeSurfaceShader(surfaceWgsl, false), composeSurfaceShader(surfaceWgsl, true));
         if (!built.valid) return false;
         built.displace = surfaceDisplaceKind(surfaceWgsl);
+        buildShadowTableModules(built, surfaceWgsl);
         surfaceShaders[id - 1].release();
         surfaceShaders[id - 1] = built;
         coloredShaders[id].setSource(0, surfaceWgsl);
         releaseVariants(id);
         return true;
+    }
+
+    /// Modules of the batched shadow stage, when the vertex hook allows it.
+    private void buildShadowTableModules(ref SurfacePipelines built, scope const(char)[] surfaceWgsl) @trusted {
+        import engine.gpu.shaders : composeSurfaceShadowTableShader, surfaceDisplaceBatchable;
+        import engine.gpu.shader : createShaderModule;
+        if (!surfaceDisplaceBatchable(surfaceWgsl)) return;
+        built.shadowTableModules[0] = createShaderModule(device, composeSurfaceShadowTableShader(surfaceWgsl, false),
+            "custom_surface_shadow_table");
+        built.shadowTableModules[1] = createShaderModule(device, composeSurfaceShadowTableShader(surfaceWgsl, true),
+            "custom_surface_shadow_table_tangent");
     }
 
     /// Seconds exposed to shaders as `frame.time`; call before `begin`.
@@ -1575,11 +1593,38 @@ struct Scene3DTextured {
         return *slot;
     }
 
+    /// Whether a caster draws its back faces in shadow passes.
+    private bool casterDoubleSided(ref const TexMesh mesh, ref const Material mat) const nothrow @nogc {
+        return mat.renderState.doubleSided;
+    }
+
+    /// Group 1 of the batched shadow stage for `mat` in `sib`, or null when the
+    /// material cannot be batched (no table module, batching off, no slot table).
+    private WGPUBindGroup tableShadowBindGroup(ref StaticInstanceBuffer sib, ref const Material mat) nothrow @nogc @trusted {
+        if (!batchShadowCasters || mat.renderState.alphaMask || !mat.surfaceSlot.valid) return null;
+        immutable id = mat.surfaceShader;
+        if (id == 0 || id > surfaceShaderCount || surfaceShaders[id - 1].shadowTableModules[0] is null) return null;
+        return sib.gpuData.tableBindGroup(device, shadowPipe.tableBindGroupLayout, mat.surfaceSlot.chunk);
+    }
+
+    /// Batched depth-only pipeline of a surface shader, built on first use.
+    private WGPURenderPipeline tableShadowPipeline(uint shaderId, uint vertexStride, bool doubleSided) nothrow @nogc @trusted {
+        if (shaderId == 0 || shaderId > surfaceShaderCount) return null;
+        auto custom = &surfaceShaders[shaderId - 1];
+        immutable tangent = vertexStride == 48;
+        auto mod = custom.shadowTableModules[tangent ? 1 : 0];
+        if (mod is null || shadowPipe.tablePipelineLayout is null) return null;
+        auto slot = &custom.shadowTablePipelines[(tangent ? 2u : 0u) + (doubleSided ? 1u : 0u)];
+        if (*slot is null)
+            *slot = createSurfaceShadowPipeline(device, shadowPipe.tablePipelineLayout, mod,
+                tangent ? 48 : 32, doubleSided, false, true);
+        return *slot;
+    }
+
     /// Set the shadow pipeline and bind groups of a static (non-skinned)
     /// caster. Returns true when the caster is alpha masked.
-    private bool bindShadowCaster(WGPURenderPassEncoder pass, uint vertexStride, ref Material mat,
+    private bool bindShadowCaster(WGPURenderPassEncoder pass, uint vertexStride, ref Material mat, bool ds,
                                   uint dynOffset, ref bool groupZeroIsSurface) nothrow @nogc @trusted {
-        immutable ds = mat.renderState.doubleSided;
         bool masked = mat.renderState.alphaMask;
         auto p = displacedShadowPipeline(mat.surfaceShader, vertexStride, ds, masked);
         if (p !is null) {
@@ -1667,7 +1712,8 @@ struct Scene3DTextured {
                     frameStats.shadowInstancesDrawn += count;
                     continue;
                 }
-                immutable masked = bindShadowCaster(pass, b.mesh.vertexStride, *b.material, dynOffset,
+                immutable masked = bindShadowCaster(pass, b.mesh.vertexStride, *b.material,
+                                                    casterDoubleSided(*b.mesh, *b.material), dynOffset,
                                                     groupZeroIsSurface);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, b.mesh.vertexBuffer, 0, b.mesh.vertexBufSize);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 1, instBuf, 0, instBytes);
@@ -1802,7 +1848,8 @@ struct Scene3DTextured {
                 continue;
             }
             boundGroup = run.group;
-            masked = bindShadowCaster(pass, mesh.vertexStride, *mat, dynOffset, groupZeroIsSurface);
+            masked = bindShadowCaster(pass, mesh.vertexStride, *mat, casterDoubleSided(*mesh, *mat), dynOffset,
+                                      groupZeroIsSurface);
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertexBuffer, 0, mesh.vertexBufSize);
             if (!instancesBound) {
                 wgpuRenderPassEncoderSetVertexBuffer(
@@ -1872,8 +1919,14 @@ struct Scene3DTextured {
             auto mesh = sib.meshes[sib.groups[d.partGroup[gi]].mesh];
             auto mat = sib.materials[sib.groups[d.partGroup[gi]].material];
             if (!mat.renderState.depthWrite) { i++; continue; }
-            // Plain opaque casters only differ by stride and culling; the others bind their material.
+            immutable ds = casterDoubleSided(*mesh, *mat);
+            // Plain opaque casters only differ by stride and culling. Displaced casters whose
+            // vertex hook reads only `surfaceParams` batch per surface shader and parameter
+            // chunk (`vs_shadow_table`); the others bind their material.
             immutable plain = !mat.renderState.alphaMask && mat.surfaceShader == 0;
+            auto tableBg = plain ? null : tableShadowBindGroup(sib, *mat);
+            auto tablePipe = tableBg is null ? null : tableShadowPipeline(mat.surfaceShader, mesh.vertexStride, ds);
+            immutable table = tablePipe !is null;
             immutable first = d.groups[gi].firstArg;
             uint count = 0;
             for (; i < d.order.length; i++) {
@@ -1881,12 +1934,25 @@ struct Scene3DTextured {
                 auto mj = sib.meshes[sib.groups[d.partGroup[gj]].mesh];
                 auto tj = sib.materials[sib.groups[d.partGroup[gj]].material];
                 if (mj.vertexStride != mesh.vertexStride || mj.indexFormat != mesh.indexFormat
-                        || !tj.renderState.depthWrite || tj.renderState.doubleSided != mat.renderState.doubleSided)
+                        || !tj.renderState.depthWrite || casterDoubleSided(*mj, *tj) != ds)
                     break;
-                if (plain ? (tj.renderState.alphaMask || tj.surfaceShader != 0) : tj !is mat) break;
+                if (table) {
+                    if (tj.surfaceShader != mat.surfaceShader || tj.renderState.alphaMask
+                            || tj.surfaceSlot.chunk != mat.surfaceSlot.chunk)
+                        break;
+                } else if (plain ? (tj.renderState.alphaMask || tj.surfaceShader != 0) : tj !is mat) {
+                    break;
+                }
                 count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
             }
-            bindShadowCaster(pass, mesh.vertexStride, *mat, dynOffset, groupZeroIsSurface);
+            if (table) {
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, shadowSurfaceBg, 1, &dynOffset);
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, tableBg, 0, null);
+                wgpuRenderPassEncoderSetPipeline(pass, tablePipe);
+                groupZeroIsSurface = true;
+            } else {
+                bindShadowCaster(pass, mesh.vertexStride, *mat, ds, dynOffset, groupZeroIsSurface);
+            }
             immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
             if (si != boundStride) {
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, d.pool.vertices[si], 0, d.pool.vertexBytes[si]);
