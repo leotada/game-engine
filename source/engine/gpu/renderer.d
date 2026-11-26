@@ -127,6 +127,14 @@ struct Renderer {
         frame.resumeScenePass();
     }
 
+    /// Darken again the surfaces drawn with an ambient share since `applyAmbientOcclusion`.
+    package(engine) void reapplyAmbientOcclusion(ref FrameContext frame, float[4] viewport) nothrow @nogc {
+        if (!frame.valid || frame.postResolved) return;
+        frame.suspendScenePass();
+        gtao.recomposite(frame.encoder, hdrView, rtW, rtH, viewport);
+        frame.resumeScenePass();
+    }
+
     /// Volumetric light of the sun and the local lights (off by default).
     ref VolumetricSettings volumetrics() return nothrow @nogc { return volSettings; }
 

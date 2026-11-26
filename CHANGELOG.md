@@ -24,6 +24,8 @@
   targets at reduced resolution. Custom passes keep insertion order after a removal. Existing `addPostPass` is unchanged.
 - **Ambient occlusion (GTAO)**: `Renderer.ambientOcclusion()`, off by default. Ambient light only, no depth prepass, no
   temporal data; radius, intensity, quality and half resolution. Outdoor demo: `--ao`.
+- **GTAO on SSR materials** (`AoSettings.ssrMaterials`, on by default): car paint, chrome and puddles occlude and are darkened;
+  their color also reaches the opaque snapshot, so reflections and refraction see them. One extra draw of those batches.
 - **SMAA 1x and CMAA2** (`AaMode.smaa`, `AaMode.cmaa2`) and **specular antialiasing** (`GltfImportOptions.specularAa`,
   `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
 - **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),

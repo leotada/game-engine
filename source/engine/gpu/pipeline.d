@@ -437,6 +437,8 @@ struct RenderState {
     /// Set by the engine while `AoSettings` is enabled: no blending, and alpha
     /// holds `1 - ambient share of the color`.
     package(engine) bool ambientAlpha = false;
+    /// Set by the engine for a redraw over the depth this draw already wrote (`lessEqual`).
+    package(engine) bool depthEqual = false;
     /// Set by the engine for materials with sprite features (`soft`, `litParticle`, `flipbook`).
     package(engine) bool sprite = false;
     /// Set by the engine for materials whose normal map holds X and Y only.
@@ -762,7 +764,7 @@ private WGPURenderPipeline createTexturedDrawPipelineWithAttrs(
     WGPUDepthStencilState depthState;
     depthState.format = WGPUTextureFormat.depth24Plus;
     depthState.depthWriteEnabled = state.depthWrite ? WGPUOptionalBool.true_ : WGPUOptionalBool.false_;
-    depthState.depthCompare = WGPUCompareFunction.less;
+    depthState.depthCompare = state.depthEqual ? WGPUCompareFunction.lessEqual : WGPUCompareFunction.less;
 
     WGPURenderPipelineDescriptor pipeDesc;
     pipeDesc.layout = layout;

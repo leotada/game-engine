@@ -39,6 +39,10 @@ struct AoSettings {
     /// write), drawn without blending. Set it when those materials have no
     /// partial alpha. `BlendMode.opaque`, `alphaMask` and terrain always take part.
     bool treatDefaultBlendAsOpaque = false;
+    /// Also occlude and darken materials with `MaterialFlags.ssr`. They are drawn
+    /// once more before the occlusion (depth, and the color the reflections see),
+    /// then darkened after their own pass. Costs that extra draw.
+    bool ssrMaterials = true;
 }
 
 private enum AO_MIPS = 5;
@@ -93,6 +97,7 @@ struct GtaoPass {
     private WGPUTextureView boundDepth;
     private uint width, height, divisor;
     private uint sceneCount; /// scenes composited this frame
+    private uint lastOffset; /// uniform offset of the last `run`
 
     @disable this(this);
 
@@ -128,6 +133,21 @@ struct GtaoPass {
             pass(encoder, aoB.view, AoPipe.blurX, blurXBg, offset);
             pass(encoder, aoA.view, AoPipe.blurY, blurYBg, offset);
         }
+        composite(encoder, color, w, h, viewport, offset);
+        lastOffset = offset;
+    }
+
+    /// Darken again with the occlusion of the last `run`: pixels whose alpha holds
+    /// an ambient share are darkened, the others (alpha 1) are left as they are.
+    package(engine) void recomposite(WGPUCommandEncoder encoder, WGPUTextureView color, uint w, uint h,
+                                     float[4] viewport) nothrow @nogc @trusted {
+        if (sceneCount == 0) return;
+        auto g = gpuScope!"gpu.gtao.recomposite"(encoder);
+        composite(encoder, color, w, h, viewport, lastOffset);
+    }
+
+    private void composite(WGPUCommandEncoder encoder, WGPUTextureView color, uint w, uint h,
+                           float[4] viewport, uint offset) nothrow @nogc @trusted {
         auto gc = gpuScope!"gpu.gtao.composite"(encoder);
         WGPURenderPassColorAttachment ca;
         ca.view = color;

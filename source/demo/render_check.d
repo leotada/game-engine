@@ -1072,6 +1072,9 @@ private bool checkAo(ref App app) {
     scope(exit) blended.destroy();
     auto unlit = make(RenderState(BlendMode.opaque), MaterialFlags.unlit);
     scope(exit) unlit.destroy();
+    auto ssrMat = make(RenderState(BlendMode.opaque), MaterialFlags.ssr);
+    scope(exit) ssrMat.destroy();
+    Material* boxMat = &opaque;
     Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 60.0f);
     cam.lookAt(Vec3(0, 10, 0), Vec3(0, 0, 0));
     cam.up = Vec3(0, 0, -1);
@@ -1093,7 +1096,7 @@ private bool checkAo(ref App app) {
             scene.setIblIntensity(ibl);
             scene.begin(cam);
             scene.draw(quad, floor_, Vec3(0, 0, 0), Vec3(9, 1, 9));
-            if (box) scene.draw(cube, opaque, Vec3(2.5f, 0.125f, 0), Vec3(3, 0.25f, 9));
+            if (box) scene.draw(cube, *boxMat, Vec3(2.5f, 0.125f, 0), Vec3(3, 0.25f, 9));
             scene.renderShadows(f, lights);
             scene.end(f);
         });
@@ -1186,6 +1189,15 @@ private bool checkAo(ref App app) {
     ao.treatDefaultBlendAsOpaque = true;
     ok &= expect(darkened(blended), "treatDefaultBlendAsOpaque adds the default blend state");
     ao.treatDefaultBlendAsOpaque = false;
+    // SSR materials are drawn after the opaque snapshot: a prepass puts them in the occlusion.
+    ok &= expect(darkened(ssrMat), "SSR materials are darkened");
+    () @trusted { boxMat = &ssrMat; }();
+    ok &= expect(darkened(opaque), "SSR materials occlude");
+    ao.ssrMaterials = false;
+    ok &= expect(!darkened(opaque), "ssrMaterials = false: SSR materials do not occlude");
+    () @trusted { boxMat = &opaque; }();
+    ok &= expect(!darkened(ssrMat), "ssrMaterials = false: SSR materials are not darkened");
+    ao.ssrMaterials = true;
 
     // Static buffers, CPU and GPU culled: same as the dynamic draw.
     auto dynOn = shoot("ao_dyn", true, opaque, bright, false);

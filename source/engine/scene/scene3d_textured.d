@@ -375,6 +375,8 @@ struct Scene3DTextured {
         /// pass `[dirFirst, dirFirst + dirCount)`; point / spot shadows draw all.
         bool         prepared = false;
         uint         colorFirst, colorCount, dirFirst, dirCount;
+        /// SSR batch drawn before GTAO this frame: redrawn over its depth, darkened after pass 1.
+        bool         aoPrepass = false;
     }
     private BatchMap batchMap;
 
@@ -2123,6 +2125,7 @@ struct Scene3DTextured {
         // Pass 3: additive.
         auto zPrepare = profileZone!"scene.end.prepare"();
         foreach (ref b; batches[0 .. batchCount]) {
+            b.aoPrepass = false;
             if (b.instances.length == 0) continue;
             prepareBatch(b, null);
             frameStats.batches++;
@@ -2137,6 +2140,7 @@ struct Scene3DTextured {
         bool sceneDirtySinceSnapshot = false;
         bool softDepthReady = false;
         immutable aoPass = frame.owner !is null && frame.owner.aoAvailable;
+        bool aoPrepassDrawn = false;
         ambientAlphaPass = !aoPass ? 0 : frame.owner.ambientOcclusion.treatDefaultBlendAsOpaque ? 2 : 1;
         // Unrolled so every pass gets its own compile-time zone names.
         static foreach (pass; 0 .. 4) {{
@@ -2224,6 +2228,19 @@ struct Scene3DTextured {
                         sceneDirtySinceSnapshot = true;
                     }
                 }
+                if (aoPass && frame.owner.ambientOcclusion.ssrMaterials) {
+                    // SSR materials occlude and are occluded too. Without the opaque snapshot their
+                    // reflections fall back to the probes here; the color stays for the snapshot.
+                    auto zPre = profileZone!"scene.end.opaque.ssrPrepass"();
+                    auto gPre = gpuFrameScope!"gpu.scene.opaque.ssrPrepass"(frame);
+                    foreach (ref b; batches[0 .. batchCount]) {
+                        if (b.colorCount == 0 || renderPassOf(*b.material) != 1) continue;
+                        if (!drawState(*b.material).ambientAlpha) continue;
+                        drawBatch(frame, b);
+                        b.aoPrepass = true;
+                        aoPrepassDrawn = true;
+                    }
+                }
                 ambientAlphaPass = 0;
                 if (aoPass) {
                     frame.owner.applyAmbientOcclusion(frame, frameCamera, frameData.viewportRect);
@@ -2249,6 +2266,11 @@ struct Scene3DTextured {
                     frame.setBindGroup(2, iblBindGroup);
                 }
             } else if (pass == 1) {
+                if (aoPrepassDrawn) {
+                    frame.owner.reapplyAmbientOcclusion(frame, frameData.viewportRect);
+                    frame.setBindGroup(0, frameBindGroup);
+                    frame.setBindGroup(2, iblBindGroup);
+                }
                 auto zHooks = profileZone!"scene.end.ssr.transparentHooks"();
                 auto gHooks = gpuFrameScope!"gpu.scene.ssr.transparentHooks"(frame);
                 foreach (hook; transparentHooks[0 .. transparentHookCount]) {
@@ -2394,7 +2416,7 @@ struct Scene3DTextured {
 
         if (b.skinnedMesh !is null) {
             immutable colored = b.skinnedMesh.hasVertexColors;
-            auto pipe = skinnedPipelineFor(drawState(*b.material), colored);
+            auto pipe = skinnedPipelineFor(batchState(b), colored);
             if (pipe is null) return;
             frame.setPipeline(pipe);
             frame.setBindGroup(1, b.material.bindGroup);
@@ -2410,7 +2432,7 @@ struct Scene3DTextured {
         }
 
         immutable tangent = b.mesh.vertexStride == 48;
-        auto pipe = pipelineFor(b.material.surfaceShader, drawState(*b.material), tangent, b.mesh.hasVertexColors);
+        auto pipe = pipelineFor(b.material.surfaceShader, batchState(b), tangent, b.mesh.hasVertexColors);
         if (pipe is null) return;
         frame.setPipeline(pipe);
         frame.setBindGroup(1, b.material.bindGroup);
@@ -2436,6 +2458,17 @@ struct Scene3DTextured {
                 && (s.blend == BlendMode.opaque || s.alphaMask
                     || (s.blend == BlendMode.alpha && ambientAlphaPass == 2)))
             s.ambientAlpha = true;
+        return s;
+    }
+
+    /// Render state of a batch draw: after the GTAO prepass, SSR batches redraw over
+    /// their own depth and write their ambient share again.
+    private RenderState batchState(ref const Batch b) const nothrow @nogc {
+        RenderState s = drawState(*b.material);
+        if (b.aoPrepass && ambientAlphaPass == 0) {
+            s.ambientAlpha = true;
+            s.depthEqual = true;
+        }
         return s;
     }
 
