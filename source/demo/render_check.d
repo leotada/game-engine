@@ -1106,6 +1106,142 @@ private bool checkThinWall(ref App app) {
     return ok;
 }
 
+/// Whole-object LOD: the trunk and crown of each tree pick the same level
+/// (`StaticInstanceDesc.objectId` + `buildObjectLod`), on the GPU and CPU
+/// paths. Each level is painted its own color; without the id (control) the
+/// parts of some tree disagree.
+private bool checkObjectLod(ref App app) {
+    import engine.graphics.object_lod : buildObjectLod, ObjectLod, ObjectLodSettings;
+    import std.math : cos, PI, sin;
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    // Crown: a fine sphere of radius 1.5 at y = 4. Trunk: a 0.6 x 3 x 0.6 box.
+    TexVert[] crown;
+    uint[] ci;
+    enum seg = 48, ring = 24;
+    foreach (y; 0 .. ring + 1) foreach (x; 0 .. seg + 1) {
+        immutable float phi = cast(float) PI * y / ring, th = 2 * cast(float) PI * x / seg;
+        immutable float nx = sin(phi) * cos(th), ny = cos(phi), nz = sin(phi) * sin(th);
+        crown ~= TexVert([nx * 1.5f, ny * 1.5f + 4, nz * 1.5f], [nx, ny, nz], [cast(float) x / seg, cast(float) y / ring]);
+    }
+    foreach (y; 0 .. ring) foreach (x; 0 .. seg) {
+        immutable a = y * (seg + 1) + x, b = a + seg + 1;
+        ci ~= [a, b, a + 1, a + 1, b, b + 1];
+    }
+    import engine.graphics.texmesh : texCubeIndices, texCubeVertices;
+    TexVert[] trunk;
+    foreach (v; texCubeVertices) {
+        TexVert w = v;
+        w.pos = [v.pos[0] * 0.6f, (v.pos[1] + 0.5f) * 3, v.pos[2] * 0.6f];
+        trunk ~= w;
+    }
+    uint[] ti;
+    foreach (i; texCubeIndices) ti ~= i;
+    ObjectLodSettings ls;
+    ls.levels = 3;
+    auto lod = buildObjectLod([crown, trunk], [ci, ti], ls);
+    writefln("  levels: %s triangles, errors %s", [lod.triangles(0), lod.triangles(1), lod.triangles(2)], lod.errors);
+    // One vertex copy per level, painted: crown R, G, B; trunk RG, RB, GB.
+    static immutable ubyte[4][3][2] paint = [
+        [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]],
+        [[255, 255, 0, 255], [255, 0, 255, 255], [0, 255, 255, 255]]];
+    TexMesh[2] parts;
+    foreach (pi; 0 .. 2) {
+        const p = &lod.parts[pi];
+        TexVert[] v;
+        ubyte[4][] col;
+        uint[] idx;
+        uint[3] first, count;
+        foreach (l, level; p.levels) {
+            immutable base = cast(uint) v.length;
+            v ~= p.vertices;
+            foreach (_; 0 .. p.vertices.length) col ~= paint[pi][l];
+            first[l] = cast(uint) idx.length;
+            foreach (i; level) idx ~= base + i;
+            count[l] = cast(uint) level.length;
+        }
+        parts[pi] = TexMesh.fromData(app.gpu, v, idx);
+        parts[pi].setLodChain(first[], count[], lod.errors[0 .. 3], 1);
+        parts[pi].setVertexColors(app.gpu, col);
+    }
+    scope(exit) foreach (ref m; parts) m.destroy();
+    MaterialParams mp;
+    mp.flags = MaterialFlags.unlit;
+    auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    mat.renderState = RenderState(BlendMode.opaque, true, true, false);
+    auto meshes = new TexMesh*[2];
+    auto mats = new Material*[1];
+    () @trusted { meshes[0] = &parts[0]; meshes[1] = &parts[1]; mats[0] = &mat; }();
+    enum trees = 20;
+    float[trees] dist;
+    foreach (t; 0 .. trees) dist[t] = 8.0f * (200.0f / 8.0f) ^^ (t / cast(float) (trees - 1));
+    Mat4 placed(size_t t) { return Mat4.translation(0, 0, -dist[t]); }
+    // Returns per tree [crown level, trunk level] (-1 = not seen).
+    int[2][trees] levelsOf(bool gpuCull, bool withId, string tag) {
+        StaticInstanceDesc[] descs;
+        foreach (t; 0 .. trees)
+            foreach (pi; 0 .. 2) {
+                StaticInstanceDesc d;
+                d.mesh = cast(uint) pi;
+                d.model = placed(t);
+                d.objectId = withId ? cast(uint) t + 1 : 0;
+                descs ~= d;
+            }
+        StaticBuildOptions o;
+        o.gpuCull = gpuCull;
+        auto sib = StaticInstanceBuffer.build(app.gpu, meshes, mats, descs, o);
+        scope(exit) sib.destroy();
+        Mat4 hidden;
+        hidden.m[] = 0;
+        int[2][trees] result;
+        foreach (t; 0 .. trees) {
+            foreach (j; 0 .. descs.length) sib.updateInstance(j, j / 2 == t ? placed(t) : hidden);
+            void frameOf(ref FrameContext f) {
+                Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.1f, 400.0f);
+                cam.lookAt(Vec3(0, 3, 0), Vec3(0, 3, -1));
+                scene.begin(cam);
+                scene.submitStatic(sib);
+                scene.end(f);
+            }
+            auto shot = capture(app, null, &frameOf);
+            uint[3][2] hits;
+            if (shot.valid)
+                foreach (i; 0 .. shot.px.length / 4) {
+                    immutable r = shot.px[i * 4] > 128, g = shot.px[i * 4 + 1] > 128, b = shot.px[i * 4 + 2] > 128;
+                    foreach (pi; 0 .. 2) foreach (l; 0 .. 3)
+                        if (r == (paint[pi][l][0] > 0) && g == (paint[pi][l][1] > 0) && b == (paint[pi][l][2] > 0))
+                            hits[pi][l]++;
+                }
+            foreach (pi; 0 .. 2) {
+                int best = -1;
+                foreach (l; 0 .. 3) if (hits[pi][l] > 0 && (best < 0 || hits[pi][l] > hits[pi][best])) best = cast(int) l;
+                result[t][pi] = best;
+            }
+        }
+        writefln("  %s: %s", tag, result);
+        return result;
+    }
+    bool ok = true;
+    bool agree(int[2][trees] r, bool all) {
+        uint same = 0, seen = 0;
+        foreach (t; 0 .. trees)
+            if (r[t][0] >= 0 && r[t][1] >= 0) { seen++; if (r[t][0] == r[t][1]) same++; }
+        return all ? seen == trees && same == seen : same < seen;
+    }
+    immutable gpu = levelsOf(true, true, "gpu, objectId");
+    ok &= expect(agree(gpu, true), "GPU culling: every tree draws trunk and crown at one level");
+    ok &= expect(gpu[0][0] == 0 && gpu[trees - 1][0] == 2, "near trees full, far trees at the last level");
+    ok &= expect(agree(levelsOf(false, true, "cpu, objectId"), true), "CPU path: every tree at one level");
+    ok &= expect(agree(levelsOf(true, false, "gpu, no id"), false), "control: without the id some tree mixes levels");
+    return ok;
+}
+
 /// Sphere with a coarser second level in the same index buffer.
 private TexMesh lodSphere(ref App app, uint segments, uint rings) {
     import engine.graphics.types : TexVert;
@@ -3141,6 +3277,7 @@ private immutable Check[] checks = [
     Check("shadowbatch", &checkShadowBatch),
     Check("backfaces", &checkClosedBackFaces),
     Check("thinwall", &checkThinWall),
+    Check("objectlod", &checkObjectLod),
 ];
 
 int main(string[] args) {
