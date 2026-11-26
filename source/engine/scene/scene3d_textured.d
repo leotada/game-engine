@@ -1595,7 +1595,8 @@ struct Scene3DTextured {
 
     /// Whether a caster draws its back faces in shadow passes.
     private bool casterDoubleSided(ref const TexMesh mesh, ref const Material mat) const nothrow @nogc {
-        return mat.renderState.doubleSided;
+        import engine.graphics.material : drawsBackFaces;
+        return drawsBackFaces(mat, mesh.closed);
     }
 
     /// Group 1 of the batched shadow stage for `mat` in `sib`, or null when the
@@ -1983,12 +1984,13 @@ struct Scene3DTextured {
                 immutable gj = d.order[i];
                 auto mj = sib.meshes[sib.groups[d.partGroup[gj]].mesh];
                 if (sib.materials[sib.groups[d.partGroup[gj]].material] !is mat || mj.vertexStride != mesh.vertexStride
-                        || mj.hasVertexColors != mesh.hasVertexColors
+                        || mj.hasVertexColors != mesh.hasVertexColors || mj.closed != mesh.closed
                         || mj.indexFormat != mesh.indexFormat)
                     break;
                 count += d.groups[gj].lodLevels > 1 ? d.groups[gj].lodLevels : 1;
             }
-            auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), mesh.vertexStride == 48, mesh.hasVertexColors);
+            auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat, mesh.closed), mesh.vertexStride == 48,
+                                    mesh.hasVertexColors);
             if (pipe is null) continue;
             immutable si = MeshPool.strideIndex(mesh.vertexStride), fi = MeshPool.formatIndex(mesh.indexFormat);
             frame.setPipeline(pipe);
@@ -2018,7 +2020,7 @@ struct Scene3DTextured {
                 boundGroup = run.group;
                 auto mat = sib.materials[g.material];
                 immutable tangent = mesh.vertexStride == 48;
-                auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat), tangent, mesh.hasVertexColors);
+                auto pipe = pipelineFor(mat.surfaceShader, drawState(*mat, mesh.closed), tangent, mesh.hasVertexColors);
                 groupDrawable = pipe !is null;
                 if (!groupDrawable) continue;
                 frame.setPipeline(pipe);
@@ -2515,8 +2517,10 @@ struct Scene3DTextured {
     /// Pipeline for a surface shader id + render state, built on first use.
     /// Render state of a color draw. While GTAO runs, opaque surfaces write their
     /// ambient share to alpha.
-    private RenderState drawState(ref const Material m) const nothrow @nogc {
+    private RenderState drawState(ref const Material m, bool meshClosed = false) const nothrow @nogc {
+        import engine.graphics.material : drawsBackFaces;
         RenderState s = m.renderState;
+        s.doubleSided = drawsBackFaces(m, meshClosed);
         s.sprite = m.sprite;
         s.normalXy = m.normalXy;
         s.thin = !m.thin ? 0 : s.depthWrite ? 1 : 2;
@@ -2530,7 +2534,7 @@ struct Scene3DTextured {
     /// Render state of a batch draw: after the GTAO prepass, SSR batches redraw over
     /// their own depth and write their ambient share again.
     private RenderState batchState(ref const Batch b) const nothrow @nogc {
-        RenderState s = drawState(*b.material);
+        RenderState s = drawState(*b.material, b.mesh !is null && b.mesh.closed);
         if (b.aoPrepass && ambientAlphaPass == 0) {
             s.ambientAlpha = true;
             s.depthEqual = true;

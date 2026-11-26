@@ -49,6 +49,10 @@ struct TexMesh {
     Aabb localBounds;
     /// Object-space bounding sphere (from `localBounds`), used for culling.
     BoundingSphere localSphere;
+    /// The mesh is closed and faces outward (`isClosedMesh`, tested at upload):
+    /// its back faces show only from inside, so double-sided materials skip them
+    /// unless `Material.drawClosedBackFaces` is set. Not updated by `updateVertices`.
+    bool closed;
 
     @disable this(this);
 
@@ -290,6 +294,10 @@ if ((is(I == ushort) || is(I == uint)) && V.sizeof % 4 == 0) {
     m.vertexStride = cast(uint) V.sizeof;
     m.localBounds = Aabb.fromPositions(verts);
     m.localSphere = BoundingSphere.fromAabb(m.localBounds);
+    {
+        import engine.graphics.closed_mesh : isClosedMesh;
+        m.closed = isClosedMesh(verts, indices);
+    }
     static if (is(I == uint))
         m.indexFormat = WGPUIndexFormat.uint32;
     else

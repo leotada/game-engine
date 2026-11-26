@@ -160,6 +160,12 @@ struct MaterialParams {
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);
 
+/// Whether draws of `m` on a mesh rasterize back faces: double-sided materials
+/// do, except on closed meshes (see `Material.drawClosedBackFaces`).
+bool drawsBackFaces(ref const Material m, bool meshClosed) pure nothrow @nogc {
+    return m.renderState.doubleSided && (!meshClosed || m.drawClosedBackFaces);
+}
+
 /// Shared 1×1 fallback textures so every material binds a fixed BGL layout.
 struct MaterialDefaults {
     Texture white;       // albedo / AO / coat / fuzz / transmission fallback
@@ -230,6 +236,10 @@ struct Material {
     /// pipeline; `Scene3DTextured` draws depth-writing batches first, then
     /// alpha/transmissive batches back to front, then additive batches.
     RenderState renderState;
+    /// Double-sided materials skip the back faces of closed meshes
+    /// (`TexMesh.closed`), which only show from inside the mesh. Set it to keep
+    /// them, e.g. when the camera can enter the mesh.
+    bool drawClosedBackFaces = false;
     /// Largest distance (world units) a `displace` / `displaceEx` hook moves a
     /// vertex. GPU culling (`StaticBuildOptions.gpuCull`) grows the bounds by it.
     float displacementBound = 0;

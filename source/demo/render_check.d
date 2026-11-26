@@ -952,6 +952,92 @@ fn displaceEx(d: DisplaceIn) -> vec3<f32> {
     return ok;
 }
 
+/// Double-sided materials skip the back faces of closed meshes: same image from
+/// outside, nothing drawn from inside unless `drawClosedBackFaces`; open meshes
+/// keep both sides.
+private bool checkClosedBackFaces(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto ball = TexMesh.sphere(app.gpu, 24, 12);
+    scope(exit) ball.destroy();
+    bool ok = expect(cube.closed && ball.closed && !quad.closed, "cube and sphere are closed, the quad is open");
+    MaterialParams mp;
+    mp.baseColor = [0.8f, 0.3f, 0.2f];
+    mp.flags = MaterialFlags.unlit;
+    auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    mat.renderState = RenderState(BlendMode.opaque, true, true, false);
+    auto meshes = new TexMesh*[2];
+    auto mats = new Material*[1];
+    () @trusted { meshes[0] = &cube; meshes[1] = &ball; mats[0] = &mat; }();
+    StaticInstanceDesc[] descs;
+    foreach (i; 0 .. 6) {
+        StaticInstanceDesc d;
+        d.mesh = i % 2;
+        d.material = 0;
+        d.model = Mat4.translation(-5.0f + 2.0f * i, 0.0f, -4.0f) * Mat4.scaling(1.5f, 1.5f, 1.5f);
+        descs ~= d;
+    }
+    StaticBuildOptions o;
+    o.gpuCull = true;
+    auto sib = StaticInstanceBuffer.build(app.gpu, meshes, mats, descs, o);
+    scope(exit) sib.destroy();
+    Vec3 eye, at;
+    void frameOf(ref FrameContext f) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.05f, 100.0f);
+        cam.lookAt(eye, at);
+        scene.begin(cam);
+        scene.draw(cube, mat, Vec3(0, 0, 2), Vec3(1.5f, 1.5f, 1.5f), Color4.white, 0.6f);
+        scene.draw(ball, mat, Vec3(3, 0, 2), Vec3(1.5f, 1.5f, 1.5f));
+        scene.draw(quad, mat, Vec3(-3, 0.5f, 2), Vec3(2, 1, 2));  // seen from below
+        scene.draw(cube, mat, Vec3(0, 0, 40), Vec3(10, 10, 10)); // the camera goes inside
+        scene.submitStatic(sib);
+        scene.end(f);
+    }
+    uint lit(ref const Shot a) {
+        uint n = 0;
+        foreach (i; 0 .. a.px.length / 4) if (a.px[i * 4] > 40) n++;
+        return n;
+    }
+    uint differ(ref const Shot a, ref const Shot b) {
+        if (!a.valid || !b.valid) return uint.max;
+        uint n = 0;
+        foreach (i; 0 .. a.px.length / 4)
+            foreach (c; 0 .. 3)
+                if (a.px[i * 4 + c] != b.px[i * 4 + c]) { n++; break; }
+        return n;
+    }
+    eye = Vec3(0, -1.5f, 9);
+    at = Vec3(0, 0, 0);
+    mat.drawClosedBackFaces = false;
+    auto outCull = capture(app, "backfaces_out", &frameOf);
+    mat.drawClosedBackFaces = true;
+    auto outKeep = capture(app, "backfaces_out_keep", &frameOf);
+    eye = Vec3(0, 0, 40);
+    at = Vec3(0, 0, 50);
+    mat.drawClosedBackFaces = false;
+    auto inCull = capture(app, "backfaces_in", &frameOf);
+    mat.drawClosedBackFaces = true;
+    auto inKeep = capture(app, "backfaces_in_keep", &frameOf);
+    mat.drawClosedBackFaces = false;
+    immutable dOut = differ(outCull, outKeep);
+    writefln("  outside: %s px differ; inside: %s lit px culled, %s kept; open quad from below: %s lit px",
+             dOut, lit(inCull), lit(inKeep), lit(outCull));
+    ok &= expect(dOut == 0, "same image from outside");
+    ok &= expect(lit(inKeep) > lit(inCull) + 50_000, "back faces skipped inside a closed mesh (control: kept with the flag)");
+    ok &= expect(lit(outCull) > 20_000, "open and closed meshes drawn from outside");
+    return ok;
+}
+
 /// Sphere with a coarser second level in the same index buffer.
 private TexMesh lodSphere(ref App app, uint segments, uint rings) {
     import engine.graphics.types : TexVert;
@@ -2985,6 +3071,7 @@ private immutable Check[] checks = [
     Check("stars", &checkStars),
     Check("antitile", &checkAntiTiling),
     Check("shadowbatch", &checkShadowBatch),
+    Check("backfaces", &checkClosedBackFaces),
 ];
 
 int main(string[] args) {

@@ -378,6 +378,7 @@ struct StaticInstanceBuffer {
         auto order = new uint[groups.length];
         foreach (i, ref o; order) o = cast(uint) i;
         // Neighbors in this order share pool buffers, then the shadow state, then the material.
+        import engine.graphics.material : drawsBackFaces;
         ulong key(uint gi) {
             auto mesh = meshes[groups[gi].mesh];
             auto mat = materials[groups[gi].material];
@@ -387,7 +388,7 @@ struct StaticInstanceBuffer {
             return (cast(ulong) MeshPool.strideIndex(mesh.vertexStride) << 63)
                  | (cast(ulong) MeshPool.formatIndex(mesh.indexFormat) << 62)
                  | (cls << 61) | (cast(ulong) mat.renderState.depthWrite << 60)
-                 | (cast(ulong) mat.renderState.doubleSided << 59)
+                 | (cast(ulong) drawsBackFaces(*mat, mesh.closed) << 59)
                  | (cast(ulong) mat.renderState.alphaMask << 58)
                  | (shader << 50)
                  | ((cast(ulong) mat.surfaceSlot.chunk & 0x3F) << 44)
