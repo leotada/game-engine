@@ -36,7 +36,7 @@ import engine.graphics.types : Color4;
 import engine.math.bounds : Aabb, BoundingSphere, maxAxisScale;
 import engine.math.frustum : Frustum;
 import engine.math.mat : Mat4;
-import engine.math.vec : Vec3;
+import engine.math.vec : Vec3, Vec4;
 import engine.scene.cascades : ReceiverCull;
 import engine.gpu.static_cull : CullGroup, CullMeta, cullMetaOf, MeshPool, StaticGpuData;
 import bindings.wgpu : WGPUBuffer, WGPUBufferUsage, WGPUQueue;
@@ -51,6 +51,14 @@ struct StaticInstanceDesc {
     Color4 tint = Color4.white;
     /// Same meaning as `Scene3DTextured.drawMatrix`'s `custom`.
     float[4] custom = [1.0f, 0.0f, 0.0f, 0.0f];
+    /**
+     * Parts of one object (a tree's trunk, leaves and flowers) share a nonzero
+     * id. They are culled and pick their LOD from the bounding sphere of the
+     * whole object, so they appear, vanish and change level together. Give
+     * their meshes the same LOD errors (`buildObjectLod`) for equal levels.
+     * 0 = an object of its own.
+     */
+    uint objectId;
 }
 
 /// Build options.
@@ -119,6 +127,12 @@ struct StaticLayout {
     uint[] slotOf;
     /// `cellBounds[cell]` = union of every range bound in that cell (empty for unused cells).
     Aabb[] cellBounds;
+    /// World culling sphere per instance slot (the object's sphere for `objectId` parts).
+    BoundingSphere[] spheres;
+    /// Per slot: the object's sphere in the instance's local space (radius 0
+    /// without `objectId`), so `updateInstance` can move it. Empty when no
+    /// instance has an id.
+    BoundingSphere[] objectLocal;
 }
 
 /**
@@ -155,6 +169,24 @@ StaticLayout buildStaticLayout(scope const(StaticInstanceDesc)[] descs,
             keyGroup[i] = g;
         }
         spheres[i] = meshSpheres[d.mesh].transformed(d.model);
+    }
+    // Parts of one object take the box around all their spheres.
+    Aabb[uint] objectBox;
+    foreach (i, ref d; descs)
+        if (d.objectId != 0) {
+            immutable s = spheres[i];
+            immutable b = Aabb(s.center - Vec3(s.radius, s.radius, s.radius), s.center + Vec3(s.radius, s.radius, s.radius));
+            if (auto p = d.objectId in objectBox) *p = p.merge(b);
+            else objectBox[d.objectId] = b;
+        }
+    foreach (i, ref d; descs) {
+        if (d.objectId != 0) {
+            immutable b = objectBox[d.objectId];
+            // Several parts: the sphere of the box; one part keeps its own sphere.
+            immutable s = spheres[i];
+            if (b.min != s.center - Vec3(s.radius, s.radius, s.radius) || b.max != s.center + Vec3(s.radius, s.radius, s.radius))
+                spheres[i] = BoundingSphere.fromAabb(b);
+        }
         if (spheres[i].center.x < minX) minX = spheres[i].center.x;
         if (spheres[i].center.z < minZ) minZ = spheres[i].center.z;
     }
@@ -177,10 +209,21 @@ StaticLayout buildStaticLayout(scope const(StaticInstanceDesc)[] descs,
 
     layout.instances = new TexInstanceData[descs.length];
     layout.slotOf = new uint[descs.length];
+    layout.spheres = new BoundingSphere[descs.length];
     foreach (slot, src; order) {
         auto d = &descs[src];
         layout.instances[slot] = TexInstanceData(d.model.m, d.tint.toArray(), d.custom);
         layout.slotOf[src] = cast(uint) slot;
+        layout.spheres[slot] = spheres[src];
+        if (d.objectId != 0) {
+            if (layout.objectLocal.length == 0) layout.objectLocal = new BoundingSphere[descs.length];
+            immutable sc = maxAxisScale(d.model);
+            if (sc > 0) {
+                immutable c = d.model.inverse() * Vec4(spheres[src].center.x, spheres[src].center.y,
+                                                       spheres[src].center.z, 1);
+                layout.objectLocal[slot] = BoundingSphere(Vec3(c.x, c.y, c.z), spheres[src].radius / sc);
+            }
+        }
         immutable g = keyGroup[src], c = cellOf[src];
         if (layout.ranges.length == 0 || layout.ranges[$ - 1].group != g || layout.ranges[$ - 1].cell != c) {
             StaticRange r;
@@ -297,6 +340,8 @@ struct StaticInstanceBuffer {
     package(engine) WGPUBuffer instanceBuf;
     package(engine) uint instanceCount;
     private Pod!uint[] slotOf;
+    /// `StaticLayout.objectLocal`.
+    private Pod!BoundingSphere[] objectLocal;
     private WGPUQueue queue;
     /// GPU culling state; inactive on the CPU path.
     StaticGpuData gpuData;
@@ -334,6 +379,7 @@ struct StaticInstanceBuffer {
         sib.ranges = layout.ranges;
         sib.cellBounds = layout.cellBounds;
         sib.slotOf = layout.slotOf;
+        sib.objectLocal = layout.objectLocal;
         sib.instanceCount = cast(uint) layout.instances.length;
         immutable useGpu = opts.gpuCull && layout.instances.length > 0 && StaticGpuData.supported(gpu)
             // One compute workgroup per block, at most 65535 per dispatch.
@@ -370,7 +416,7 @@ struct StaticInstanceBuffer {
                 } else {
                     Mat4 m;
                     m.m = layout.instances[slot].model;
-                    metas[slot] = cullMetaOf(meshes[groups[r.group].mesh].localSphere.transformed(m), maxAxisScale(m));
+                    metas[slot] = cullMetaOf(layout.spheres[slot], maxAxisScale(m));
                 }
             }
         }
@@ -472,7 +518,10 @@ struct StaticInstanceBuffer {
         if (gpuData.active && !rangeParity) {
             foreach (ref r; ranges)
                 if (slotOf[descIndex] >= r.firstInstance && slotOf[descIndex] < r.firstInstance + r.count) {
-                    auto sphere = meshes[groups[r.group].mesh].localSphere.transformed(model);
+                    immutable slot = slotOf[descIndex];
+                    auto sphere = slot < objectLocal.length && objectLocal[slot].radius > 0
+                        ? objectLocal[slot].transformed(model)
+                        : meshes[groups[r.group].mesh].localSphere.transformed(model);
                     gpuData.setMeta(queue, slotOf[descIndex], cullMetaOf(sphere, maxAxisScale(model)));
                     break;
                 }
@@ -537,6 +586,30 @@ version (unittest) {
     // slotOf maps back: desc 3 (scaled g0 prop) sits inside range 0.
     assert(layout.slotOf[3] < 2 && layout.instances[layout.slotOf[3]].model[12] == 20);
     assert(layout.instances[layout.slotOf[5]].model[12] == 290);
+}
+
+@("staticInstances.objectId") @safe unittest {
+    // A trunk (mesh 0, low and thin) and a crown (mesh 1, high and wide) of two trees.
+    BoundingSphere[2] spheres = [BoundingSphere(Vec3(0, 1, 0), 1), BoundingSphere(Vec3(0, 4, 0), 3)];
+    StaticInstanceDesc[] descs = [prop(0, 0, 10, 10), prop(1, 1, 10, 10), prop(0, 0, 50, 10), prop(1, 1, 50, 10),
+                                  prop(0, 2, 90, 10)];
+    descs[0].objectId = descs[1].objectId = 7;
+    descs[2].objectId = descs[3].objectId = 8;
+    auto layout = buildStaticLayout(descs, spheres[], 128);
+    // Parts of one tree share the sphere around both parts.
+    auto t0 = layout.spheres[layout.slotOf[0]], c0 = layout.spheres[layout.slotOf[1]];
+    assert(t0 == c0 && t0.center.y > 1 && t0.center.y < 4 && t0.radius >= 3);
+    assert(layout.spheres[layout.slotOf[2]] == layout.spheres[layout.slotOf[3]]);
+    assert(layout.spheres[layout.slotOf[2]] != t0);
+    // No id: its own sphere.
+    assert(layout.spheres[layout.slotOf[4]] == BoundingSphere(Vec3(90, 1, 10), 1));
+    // The object sphere follows a moved part (`updateInstance`).
+    auto local = layout.objectLocal[layout.slotOf[1]];
+    assert(local.radius > 0 && layout.objectLocal[layout.slotOf[4]].radius == 0);
+    auto back = local.transformed(descs[1].model);
+    assert((back.center - c0.center).length < 1e-4f && back.radius == c0.radius);
+    // Range bounds of both groups match (same trees), so the CPU path picks one LOD for both.
+    assert(layout.ranges[0].bounds == layout.ranges[1].bounds);
 }
 
 @("staticInstances.runs") @safe unittest {
