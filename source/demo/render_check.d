@@ -1038,6 +1038,87 @@ private bool checkClosedBackFaces(ref App app) {
     return ok;
 }
 
+/// `TexMesh.derive` draws exactly like a fresh upload of the same vertices,
+/// keeps the topology, colors and closedness of its source, and outlives it.
+private bool checkDeriveMesh(ref App app) {
+    import engine.graphics.texmesh : Closedness;
+    import std.math : cos, PI, sin;
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    // A ball with per-vertex colors and shadow indices: every buffer `derive` copies.
+    enum seg = 48, ring = 24;
+    TexVert[] rest;
+    ubyte[4][] colors;
+    foreach (y; 0 .. ring + 1) foreach (x; 0 .. seg + 1) {
+        immutable float phi = cast(float) PI * y / ring, th = 2 * cast(float) PI * x / seg;
+        immutable float nx = sin(phi) * cos(th), ny = cos(phi), nz = sin(phi) * sin(th);
+        rest ~= TexVert([nx, ny, nz], [nx, ny, nz], [cast(float) x / seg, cast(float) y / ring]);
+        colors ~= cast(ubyte[4]) [cast(ubyte) (255 * x / seg), cast(ubyte) (255 * y / ring), 128, 255];
+    }
+    ushort[] idx;
+    foreach (y; 0 .. ring) foreach (x; 0 .. seg) {
+        immutable ushort a = cast(ushort) (y * (seg + 1) + x), b = cast(ushort) (a + seg + 1);
+        idx ~= [a, cast(ushort) (a + 1), b, cast(ushort) (a + 1), cast(ushort) (b + 1), b];
+    }
+    // Dent the side facing the camera.
+    TexVert[] dented = rest.dup;
+    foreach (ref v; dented) if (v.pos[2] > 0.3f) v.pos[2] = 0.3f + (v.pos[2] - 0.3f) * 0.2f;
+    auto source = TexMesh.fromData(app.gpu, rest, idx, idx);
+    source.setVertexColors(app.gpu, colors);
+    auto derived = TexMesh.derive(app.gpu, source, dented);
+    scope(exit) derived.destroy();
+    auto fresh = TexMesh.fromData(app.gpu, dented, idx, idx, Closedness.closed);
+    scope(exit) fresh.destroy();
+    fresh.setVertexColors(app.gpu, colors);
+    auto restCopy = TexMesh.fromData(app.gpu, rest, idx, idx, Closedness.closed);
+    scope(exit) restCopy.destroy();
+    restCopy.setVertexColors(app.gpu, colors);
+    bool ok = expect(source.closed && derived.closed, "the derived mesh inherits closed");
+    ok &= expect(derived.colorLodRange().count == source.colorLodRange().count && derived.hasVertexColors
+                 && derived.shadowDrawBytes() == source.shadowDrawBytes(),
+                 "the derived mesh has the source's index counts and colors");
+    ok &= expect(derived.localBounds.max.z < source.localBounds.max.z - 0.5f,
+                 "the derived bounds follow the new vertices");
+    source.destroy(); // the derived mesh owns copies of every buffer
+    MaterialParams mp;
+    mp.baseColor = [1, 1, 1];
+    mp.flags = MaterialFlags.unlit;
+    auto mat = Material.create(app.gpu, scene.materialLayout(), sampler, white, mp, null, null, null, null);
+    scope(exit) mat.destroy();
+    TexMesh* shown;
+    void frameOf(ref FrameContext f) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.05f, 100.0f);
+        cam.lookAt(Vec3(0.6f, 0.4f, 4), Vec3(0, 0, 0));
+        scene.begin(cam);
+        () @trusted { scene.draw(*shown, mat, Vec3(0, 0, 0), Vec3(1, 1, 1)); }();
+        scene.end(f);
+    }
+    uint differ(ref const Shot a, ref const Shot b) {
+        if (!a.valid || !b.valid) return uint.max;
+        uint n = 0;
+        foreach (i; 0 .. a.px.length / 4)
+            foreach (c; 0 .. 3)
+                if (a.px[i * 4 + c] != b.px[i * 4 + c]) { n++; break; }
+        return n;
+    }
+    () @trusted { shown = &derived; }();
+    auto a = capture(app, "derive", &frameOf);
+    () @trusted { shown = &fresh; }();
+    auto b = capture(app, "derive_fresh", &frameOf);
+    () @trusted { shown = &restCopy; }();
+    auto c = capture(app, "derive_rest", &frameOf);
+    immutable same = differ(a, b), control = differ(a, c);
+    writefln("  derived vs fresh upload: %s px differ; dented vs rest (control): %s px", same, control);
+    ok &= expect(same == 0, "a derived mesh draws like a fresh upload of its vertices");
+    ok &= expect(control > 2_000, "the dent shows (control)");
+    return ok;
+}
+
 /// Thin-walled foliage lit from behind takes one shadow tap for its back side:
 /// close to the full lookup, and still shadowed by what blocks the sun.
 private bool checkThinWall(ref App app) {
@@ -3276,6 +3357,7 @@ private immutable Check[] checks = [
     Check("antitile", &checkAntiTiling),
     Check("shadowbatch", &checkShadowBatch),
     Check("backfaces", &checkClosedBackFaces),
+    Check("derive", &checkDeriveMesh),
     Check("thinwall", &checkThinWall),
     Check("objectlod", &checkObjectLod),
 ];

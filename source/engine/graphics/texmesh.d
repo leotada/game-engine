@@ -1,7 +1,7 @@
 /// Textured mesh (position + normal + uv) and built-in textured primitives.
 module engine.graphics.texmesh;
 
-import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
+import bindings.wgpu;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 public import engine.graphics.closed_mesh : Closedness;
@@ -197,6 +197,71 @@ struct TexMesh {
             colorBuffer = createVertexBuffer(gpu.getDevice(), gpu.getQueue(), colors.ptr, colors.length * 4);
         else
             updateBuffer(gpu.getQueue(), colorBuffer, colors.ptr, colors.length * 4);
+    }
+
+    /**
+     * A new mesh with the topology of `source` and its own vertices: for
+     * deformable copies (crash damage, destruction, digging) of a mesh that
+     * keeps drawing. Only `verts` cross from the CPU. The index, shadow index
+     * and color buffers are copied on the GPU, so each mesh still owns and
+     * destroys its own buffers. `closed`, the LOD chain and the formats come
+     * from `source`; the bounds are recomputed from `verts`. Set `closed` on the
+     * result if the new vertices open the surface. Later changes go through
+     * `updateVertices`. `verts` must match the source vertex type and count.
+     */
+    static TexMesh derive(V)(ref GpuContext gpu, ref const TexMesh source, scope const(V)[] verts) nothrow @nogc
+    if (is(V == TexVert) || is(V == TexTanVert)) {
+        assert(V.sizeof == source.vertexStride && verts.length * V.sizeof == source.vertexBufSize,
+               "derive: vertex type and count must match the source mesh");
+        auto device = gpu.getDevice();
+        TexMesh m;
+        m.indexCount = source.indexCount;
+        m.vertexBufSize = source.vertexBufSize;
+        m.indexBufSize = source.indexBufSize;
+        m.shadowIndexBufSize = source.shadowIndexBufSize;
+        m.indexFormat = source.indexFormat;
+        m.vertexStride = source.vertexStride;
+        m.lodLevels = source.lodLevels;
+        m.lodFirst = source.lodFirst;
+        m.lodDrawCount = source.lodDrawCount;
+        m.lodErrors = source.lodErrors;
+        m.lodMeshScale = source.lodMeshScale;
+        m.closed = source.closed;
+        m.localBounds = Aabb.fromPositions(verts);
+        m.localSphere = BoundingSphere.fromAabb(m.localBounds);
+        m.vertexBuffer = () @trusted {
+            return createVertexBuffer(device, gpu.getQueue(), verts.ptr, verts.length * V.sizeof);
+        }();
+        // Same usages and padded sizes as `createIndexBuffer` / `createVertexBuffer`.
+        enum copyUsage = WGPUBufferUsage.copyDst | WGPUBufferUsage.copySrc;
+        static ulong align4(ulong v) pure nothrow @nogc { return (v + 3) & ~3UL; }
+        if (source.indexBuffer !is null)
+            m.indexBuffer = createBufferWithUsage(device, align4(m.indexBufSize), WGPUBufferUsage.index | copyUsage);
+        if (source.shadowIndexBuffer !is null)
+            m.shadowIndexBuffer = createBufferWithUsage(device, align4(m.shadowIndexBufSize),
+                                                        WGPUBufferUsage.index | copyUsage);
+        immutable colorBytes = verts.length * 4;
+        if (source.colorBuffer !is null)
+            m.colorBuffer = createBufferWithUsage(device, colorBytes, WGPUBufferUsage.vertex | copyUsage);
+        () @trusted {
+            WGPUCommandEncoderDescriptor ed;
+            auto enc = wgpuDeviceCreateCommandEncoder(device, &ed);
+            if (m.indexBuffer !is null)
+                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.indexBuffer, 0, m.indexBuffer, 0,
+                                                     align4(m.indexBufSize));
+            if (m.shadowIndexBuffer !is null)
+                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.shadowIndexBuffer, 0,
+                                                     m.shadowIndexBuffer, 0, align4(m.shadowIndexBufSize));
+            if (m.colorBuffer !is null)
+                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.colorBuffer, 0, m.colorBuffer, 0,
+                                                     colorBytes);
+            WGPUCommandBufferDescriptor cd;
+            auto cb = wgpuCommandEncoderFinish(enc, &cd);
+            wgpuQueueSubmit(gpu.getQueue(), 1, &cb);
+            wgpuCommandBufferRelease(cb);
+            wgpuCommandEncoderRelease(enc);
+        }();
+        return m;
     }
 
     /// True when the mesh carries vertex colors.
