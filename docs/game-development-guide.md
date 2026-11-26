@@ -468,6 +468,25 @@ For editor-integrated dynamic ECS and hot-reloadable D gameplay scripts (`import
 
 Deep dives: [scripting-guide.md](scripting-guide.md) · [why-this-is-fast.md](why-this-is-fast.md) · [gc-safe-architecture-plan.md](gc-safe-architecture-plan.md) · [symgc-multiplatform-integration.md](symgc-multiplatform-integration.md).
 
+### 7.3 Background Jobs (`engine.core.jobs`)
+
+Move a CPU spike (mesh deformation, baking, decoding) off the frame: `JobQueue` runs `@safe nothrow` functions on worker threads and hands the result back a frame later.
+
+```d
+JobQueue jobs;
+jobs.start(1);                          // at load (allocates); jobs.stop() joins at shutdown
+
+static void dent(ref DentJob j) @safe nothrow { /* writes only j's data */ }
+auto t = jobs.submit!dent(&slot.job);   // frame N: returns at once (null ticket when full)
+
+if (jobs.isDone(t)) {                   // frame N+1, or jobs.finish(t) to wait
+    profileSample!"deform.job"(jobs.finish(t)); // frees the ticket, returns the run time in ms
+    mesh.updateVertices(gpu, slot.job.verts);
+}
+```
+
+The context belongs to the job until `finish` returns, so it must outlive it (heap or long-lived storage, never a stack local). Submit and finish from one thread. `start(0)` (and WebAssembly) runs jobs inline at `submit`, which keeps tests deterministic. Zones opened inside a job are not recorded (the profiler is per thread); push the time `finish` returns instead. Why a CPU spike costs more than its own time on the GPU: [profiling.md](profiling.md#gpu-clocks-and-cpu-spikes).
+
 ---
 
 ## 8. Input: Keyboard, Mouse, Gamepads & Action Maps (`engine.platform`)

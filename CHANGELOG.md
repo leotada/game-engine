@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Background jobs (`docs/game-development-guide.md` §7.3, `docs/profiling.md`)
+
+- **`engine.core.jobs.JobQueue`**: a fixed-capacity queue of `@safe nothrow` jobs run by worker threads.
+  `submit!fn(&ctx)` returns a ticket at once (null when full), `isDone` polls, and `finish` waits, frees the
+  ticket and returns the run time for `profileSample`. `start(0)` and WebAssembly run jobs inline.
+
 ### Mesh uploads (`docs/graphics.md`, "Deformable meshes")
 
 - **Linear closed-mesh test**: `isClosedMesh` uses a hash and per-vertex buckets instead of sorting, and is
