@@ -220,6 +220,21 @@ Verification: `dub run --config=surface-shadow-check` renders a top-down scene a
 
 Verification: `dub run --config=render-check -- --check=mask`.
 
+### Anti-tiling
+
+Three opt-in tools against visible texture repetition (`common/hex_tiling.wgsl`):
+
+- **Hex-tiling** (`MaterialFlags.antiTiling`): the UV plane is cut into hexagons about a third of a texture wide. Albedo, metal-roughness, normal and occlusion are each read three times, one read per nearby hexagon, each with a random offset and rotation, and blended with weights that favor the brighter read (Mikkelsen 2022, "Practical Real-Time Hex-Tiling", JCGT 11(3)). `antiTilingRotation` is the largest turn as a fraction of half a turn: 1 for isotropic surfaces, 0 for offsets only. `antiTilingContrast` (0.6) sets how much the brightest read wins near the hexagon edges. The normal of each read is rotated back into the mesh's tangent frame, MikkTSpace with +Y along −V. Emissive, coat, fuzz and the other maps keep one read. Patterns on a grid (bricks, roof tiles, planks, paving) blur at the hexagon edges; use the offset below instead.
+- **Per-object UV offset** (`MaterialFlags.objectUvOffset`): each object shifts its UV by up to `objectUvOffset` (16 by default), picked from the translation of its model matrix. There is no rotation, so rows stay level. Copies of a mesh around the world, or buildings sharing a material with metric UVs, no longer start their textures at the same point. It is also applied in alpha-masked shadow passes.
+- **Terrain:** see [terrain-guide.md](terrain-guide.md) (`TerrainLayer.antiTiling`, `TerrainRenderSettings.macro*`).
+
+Cost: about three times the texture reads of those four maps. On a game map at 1600×900, a terrain with five hex layers went from 0.6 to 1.06 ms of GPU.
+
+Verification: `dub run --config=render-check -- --check=antitile`:
+- The autocorrelation of a plane with a 40× repeated texture drops from 1.00 at its period to 0.03 with hex-tiling, and to 0.02 with offsets only. Brightness is kept within 5%.
+- Lighting from a normal map baked from the same heights still follows the visible slope (correlation −0.87 with hex-tiling, −0.95 without). With a wrong sign it would fall to about 0.
+- Two copies of a quad differ only with `objectUvOffset`.
+
 ### ShadowMap (Depth-Only Pipeline)
 
 Depth map for directional shadows:

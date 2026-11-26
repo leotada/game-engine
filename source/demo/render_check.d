@@ -2615,6 +2615,183 @@ private bool checkThin(ref App app) {
     return ok;
 }
 
+/// Hex-tiling (`MaterialFlags.antiTiling`): a texture repeated 40 times across a plane loses its
+/// period and keeps its brightness; a normal map baked from the same heights still lights the bumps
+/// that are seen (each read's normal is rotated back into the mesh's tangent frame).
+private bool checkAntiTiling(ref App app) {
+    import std.math : sqrt;
+    import engine.graphics.texmesh : TexMesh;
+    Scene3DTextured scene = Scene3DTextured.create(app.gpu, 16, false);
+    scope(exit) scene.destroy();
+    app.renderer.postSettings() = neutralPost();
+    enum float REPEAT = 40;
+    auto v = new TexTanVert[4];
+    v[] = [
+        TexTanVert([-0.5f, 0, -0.5f], [0, 1, 0], [0, 0], [1, 0, 0, 1]),
+        TexTanVert([0.5f, 0, -0.5f], [0, 1, 0], [REPEAT, 0], [1, 0, 0, 1]),
+        TexTanVert([0.5f, 0, 0.5f], [0, 1, 0], [REPEAT, REPEAT], [1, 0, 0, 1]),
+        TexTanVert([-0.5f, 0, 0.5f], [0, 1, 0], [0, REPEAT], [1, 0, 0, 1]),
+    ];
+    auto idx = new ushort[6];
+    idx[] = [0, 2, 1, 0, 3, 2];
+    auto plane = TexMesh.fromData(app.gpu, v[], idx[]);
+    scope(exit) plane.destroy();
+    auto smp = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) smp.destroy();
+
+    // Blotchy 64² pattern (smoothed white noise from an LCG), sRGB, mipmapped.
+    enum uint N = 64;
+    auto raw = new float[N * N];
+    uint seed = 12345;
+    foreach (ref r; raw) {
+        seed = seed * 1664525u + 1013904223u;
+        r = (seed >> 8) / 16777216.0f;
+    }
+    auto hgt = new float[N * N];
+    auto pix = new ubyte[N * N * 4];
+    foreach (y; 0 .. N) foreach (x; 0 .. N) {
+        float acc = 0;
+        foreach (dy; -2 .. 3) foreach (dx; -2 .. 3)
+            acc += raw[((y + dy + N) % N) * N + (x + dx + N) % N];
+        hgt[y * N + x] = acc / 25;
+        immutable c = cast(ubyte)(40 + acc / 25 * 180);
+        pix[(y * N + x) * 4 .. (y * N + x) * 4 + 4] = [c, c, c, 255];
+    }
+    auto pattern = Texture.fromPixels(app.gpu, pix, N, N, TextureDesc.mippedSrgb());
+    scope(exit) pattern.destroy();
+    // Normals of the same heights in the MikkTSpace frame (+X along +U, +Y along -V).
+    auto npx = new ubyte[N * N * 4];
+    foreach (y; 0 .. N) foreach (x; 0 .. N) {
+        enum float K = 6;
+        immutable du = (hgt[y * N + (x + 1) % N] - hgt[y * N + (x + N - 1) % N]) * K;
+        immutable dv = (hgt[((y + 1) % N) * N + x] - hgt[((y + N - 1) % N) * N + x]) * K;
+        immutable len = sqrt(du * du + dv * dv + 1);
+        ubyte enc(float c) { return cast(ubyte)((c / len * 0.5f + 0.5f) * 255 + 0.5f); }
+        npx[(y * N + x) * 4 .. (y * N + x) * 4 + 4] = [enc(-du), enc(dv), enc(1), 255];
+    }
+    TextureDesc nd;
+    nd.generateMips = true;
+    nd.normalMap = true;
+    auto tilt = Texture.fromPixels(app.gpu, npx, N, N, nd);
+    scope(exit) tilt.destroy();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+
+    Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.5f, 100.0f);
+    cam.lookAt(Vec3(0, 10, 0), Vec3(0, 0, 0));
+    cam.up = Vec3(0, 0, -1);
+    LightList lights;
+    scope(exit) lights.release();
+
+    Shot shoot(string name, ref Texture albedo, bool lit, uint flags, float rotation) {
+        Texture* normal = lit ? (() @trusted => &tilt)() : null;
+        MaterialParams mp;
+        mp.flags = flags | (normal !is null ? MaterialFlags.normal : MaterialFlags.unlit);
+        mp.antiTilingRotation = rotation;
+        mp.specularWeight = 0;
+        auto m = Material.create(app.gpu, scene.materialLayout(), smp, albedo, mp, null, normal, null, null);
+        scope(exit) m.destroy();
+        return capture(app, name, (ref FrameContext f) {
+            lights.clear();
+            lights.dirEnabled = normal !is null;
+            lights.dir.direction = Vec3(1, 1, 0).normalized();
+            lights.dir.intensity = 2.0f;
+            lights.dir.castShadows = false;
+            scene.begin(cam);
+            scene.draw(plane, m, Vec3(0, 0, 0), Vec3(40, 1, 40));
+            scene.renderShadows(f, lights);
+            scene.end(f);
+        });
+    }
+
+    auto off = shoot("antitile_off", pattern, false, 0, 1);
+    auto on = shoot("antitile_on", pattern, false, MaterialFlags.antiTiling, 1);
+    auto shifted = shoot("antitile_offsets", pattern, false, MaterialFlags.antiTiling, 0);
+    if (!off.valid || !on.valid || !shifted.valid) return expect(false, "frame captured");
+
+    // Correlation of the central region with itself moved `dx` pixels to the right.
+    immutable x0 = off.w / 4, x1 = off.w / 2, y0 = off.h / 4, y1 = off.h * 3 / 4;
+    float mean(ref Shot s) {
+        double t = 0;
+        foreach (y; y0 .. y1) foreach (x; x0 .. x1) t += s.luma(x, y);
+        return cast(float)(t / ((x1 - x0) * (y1 - y0)));
+    }
+    float corr(ref Shot s, uint dx) {
+        immutable m = mean(s);
+        double ab = 0, aa = 0, bb = 0;
+        foreach (y; y0 .. y1) foreach (x; x0 .. x1) {
+            immutable a = s.luma(x, y) - m, b = s.luma(x + dx, y) - m;
+            ab += a * b; aa += a * a; bb += b * b;
+        }
+        return cast(float)(ab / sqrt(aa * bb + 1e-9));
+    }
+    uint period = 0;
+    float best = -1;
+    foreach (dx; 6 .. off.w / 4) {
+        immutable c = corr(off, dx);
+        if (c > best) { best = c; period = dx; }
+    }
+    immutable cOn = corr(on, period), cShift = corr(shifted, period);
+    immutable mOff = mean(off), mOn = mean(on), mShift = mean(shifted);
+    writefln("  period %s px: correlation off %.2f, hex %.2f, offsets only %.2f; mean %.1f / %.1f / %.1f",
+             period, best, cOn, cShift, mOff, mOn, mShift);
+    bool ok = expect(best > 0.8f, "the plain texture repeats");
+    ok &= expect(cOn < 0.35f, "hex-tiling breaks the period");
+    ok &= expect(cShift < 0.45f, "offsets alone break the period");
+    ok &= expect(abs(mOn - mOff) < mOff * 0.05f && abs(mShift - mOff) < mOff * 0.05f, "brightness is kept");
+
+    // Light from +X: the lit image follows the slope along X of the heights on screen (the unlit
+    // pattern of the same material). A normal rotated the wrong way averages that out.
+    float slopeMatch(ref Shot pattern, ref Shot lit) {
+        immutable lm = mean(lit);
+        double ab = 0, aa = 0, bb = 0;
+        foreach (y; y0 .. y1) foreach (x; x0 .. x1) {
+            immutable a = pattern.luma(x + 1, y) - pattern.luma(x - 1, y), b = lit.luma(x, y) - lm;
+            ab += a * b; aa += a * a; bb += b * b;
+        }
+        return cast(float)(ab / sqrt(aa * bb + 1e-9));
+    }
+    auto litOff = shoot("antitile_normal_off", white, true, 0, 1);
+    auto litOn = shoot("antitile_normal_on", white, true, MaterialFlags.antiTiling, 1);
+    if (!litOff.valid || !litOn.valid) return expect(false, "frame captured");
+    immutable sOff = slopeMatch(off, litOff), sOn = slopeMatch(on, litOn);
+    writefln("  lighting follows the visible slope: plain %.2f, hex %.2f", sOff, sOn);
+    ok &= expect(sOff < -0.5f, "the normal map lights the slopes (plain)");
+    ok &= expect(sOn < sOff * 0.75f, "hex-tiling keeps the normals of each rotated read");
+
+    // Two copies of a 4 m quad, 5 m apart: the same picture unless each shifts its UV.
+    auto tile = TexMesh.quad(app.gpu);
+    scope(exit) tile.destroy();
+    float twinDiff(string name, uint flags) {
+        MaterialParams mp;
+        mp.flags = MaterialFlags.unlit | flags;
+        auto m = Material.create(app.gpu, scene.materialLayout(), smp, pattern, mp, null, null, null, null);
+        scope(exit) m.destroy();
+        auto sh = capture(app, name, (ref FrameContext f) {
+            scene.begin(cam);
+            scene.draw(tile, m, Vec3(-2.5f, 0, 0), Vec3(4, 1, 4));
+            scene.draw(tile, m, Vec3(2.5f, 0, 0), Vec3(4, 1, 4));
+            scene.end(f);
+        });
+        if (!sh.valid) return -1;
+        import std.math : tan;
+        immutable k = (sh.h * 0.5f) / (tan(0.45f) * 10.0f);
+        immutable shift = cast(int)(5.0f * k + 0.5f);
+        double d = 0;
+        uint n = 0;
+        foreach (y; cast(uint)(sh.h / 2 - k) .. cast(uint)(sh.h / 2 + k))
+            foreach (x; cast(uint)(sh.w / 2 - 3.5f * k) .. cast(uint)(sh.w / 2 - 1.5f * k)) {
+                d += abs(sh.luma(x, y) - sh.luma(x + shift, y));
+                ++n;
+            }
+        return cast(float)(d / n);
+    }
+    immutable same = twinDiff("antitile_twins", 0), moved = twinDiff("antitile_twins_offset", MaterialFlags.objectUvOffset);
+    writefln("  copies of a mesh: mean difference %.2f without offset, %.2f with", same, moved);
+    ok &= expect(same >= 0 && same < 2 && moved > 6, "each copy starts its texture elsewhere");
+    return ok;
+}
+
 /// Stars are round: every isolated bright blob must be compact (no voxel
 /// slivers or X shapes) and peak at its center.
 private bool checkStars(ref App app) {
@@ -2694,6 +2871,7 @@ private immutable Check[] checks = [
     Check("bc", &checkBc),
     Check("thin", &checkThin),
     Check("stars", &checkStars),
+    Check("antitile", &checkAntiTiling),
 ];
 
 int main(string[] args) {

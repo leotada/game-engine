@@ -122,6 +122,9 @@ Gameplay queries are `terrain.heightAt(x, z)`, `terrain.normalAt(x, z)`, `terrai
   - The four heaviest layers per pixel are height-blended using the albedo alpha × `heightBlend`, with `TerrainRenderSettings.blendDepth` as the transition depth.
   - Steep slopes switch to triplanar projection for layers with `triplanarSharpness > 0`.
   - Past about 40 m, a second UV scale (`detileScale`) is mixed into the albedo to break up tiling.
+  - Layers with `antiTiling` use hex-tiling on flat ground: three reads per map with random offsets and rotations up to `antiTilingRotation` (a fraction of half a turn) ([graphics.md](graphics.md#anti-tiling)). Leave it off for patterns on a grid, such as paving, which blur at the hexagon edges. It costs about three times the texture reads of the layer; triplanar slopes keep one read per projection.
+  - `TerrainRenderSettings.macroBrightness`, `macroSaturation` and `macroRoughness` add a world-space noise of `macroSize` meters (two octaves, plus an offset field for saturation). It varies the albedo and the roughness over tens of meters, which hides repetition seen from afar. All are 0 by default (off).
+  - Layer normal maps use +Y along +V (`bakeNormalsFromHeightField`), the opposite of glTF / OpenGL maps (+Y along −V). Flip the green channel of an OpenGL map before loading it as a terrain layer.
   - All fetches use `textureSampleGrad`, so the data-dependent loop is valid WGSL.
 - **Normals and surface effects:**
   - The smooth normal comes from a mipmapped normal map (central differences at load). Layer normals add detail, scaled by `normalStrength`.

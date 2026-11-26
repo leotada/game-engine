@@ -20,6 +20,12 @@ struct TerrainLayer {
     float heightBlend = 1.0f;
     /// Triplanar blend sharpness on steep slopes (0 disables triplanar).
     float triplanarSharpness = 4.0f;
+    /// Hex-tiling on flat ground: three reads per map instead of one, with random offsets and
+    /// rotations, so the repetition disappears (`common/hex_tiling.wgsl`). Off by default.
+    bool antiTiling = false;
+    /// Largest random rotation of the hex-tiling reads, as a fraction of half a turn: 1 for
+    /// isotropic ground (dirt, grass, asphalt), 0 (offsets only) for textures with a direction.
+    float antiTilingRotation = 1.0f;
     /// Reported as `RayCastHit.surfaceMaterialId` by terrain colliders.
     ubyte physicsMaterial = 0;
     float friction = 0.8f;

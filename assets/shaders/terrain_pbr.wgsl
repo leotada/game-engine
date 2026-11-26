@@ -2,7 +2,9 @@
 /// Group 0 = scene frame (CSM, lights, fog, wetness), group 1 = terrain,
 /// group 2 = scene IBL. Up to 8 layers from two RGBA8 splat planes; the four
 /// heaviest are height-blended per pixel, with triplanar projection on steep
-/// slopes and a second, larger UV scale in the distance to hide tiling.
+/// slopes and a second, larger UV scale in the distance to hide tiling. Layers
+/// may use hex-tiling (`common/hex_tiling.wgsl`) on flat ground, and a world-space
+/// macro noise varies brightness, saturation and roughness over tens of meters.
 /// Every layer fetch uses `textureSampleGrad` (derivatives taken up front),
 /// so the data-dependent loop stays valid under WGSL uniformity rules.
 
@@ -11,6 +13,7 @@
 #include "common/atmosphere.wgsl"
 #include "common/simple_pbr.wgsl"
 #include "common/terrain_common.wgsl"
+#include "common/hex_tiling.wgsl"
 
 @group(1) @binding(1) var layerSampler: sampler;
 @group(1) @binding(3) var normalTex: texture_2d<f32>;
@@ -88,6 +91,23 @@ fn sampleLayer(i: u32, P: vec3<f32>, dPx: vec3<f32>, dPy: vec3<f32>, N: vec3<f32
         let uv = P.xz * sc;
         let gx = dPx.xz * sc;
         let gy = dPy.xz * sc;
+        let hexRot = layerParam(tp.hexRotation0, tp.hexRotation1, i);
+        if (hexRot >= 0.0) {
+            let ht = hexTiles(uv, hexRot);
+            let ar = hexSampleArray(albedoArr, layerSampler, li, ht, gx, gy);
+            let hw = hexWeights(ht, ar.r0.rgb, ar.r1.rgb, ar.r2.rgb, 0.6);
+            var a = hexBlend(ar, hw);
+            if (farK > 0.001) {
+                let ds = tp.misc.z;
+                let aFar = textureSampleGrad(albedoArr, layerSampler, uv * ds, li, gx * ds, gy * ds);
+                a = vec4<f32>(mix(a.rgb, aFar.rgb, farK * 0.6), a.a);
+            }
+            r.albedo = a;
+            let tn = hexBlendNormal(hexSampleArray(normalArr, layerSampler, li, ht, gx, gy), ht, hw, false);
+            r.normal = normalize(tangentToWorldY(tn, N));
+            r.orm = hexBlend(hexSampleArray(ormArr, layerSampler, li, ht, gx, gy), hw).rgb;
+            return r;
+        }
         var a = textureSampleGrad(albedoArr, layerSampler, uv, li, gx, gy);
         if (farK > 0.001) {
             let ds = tp.misc.z;
@@ -169,6 +189,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var N = normalize(mix(Ng, normalize(nsum), clamp(tp.misc.w, 0.0, 1.0)));
 
     var roughness = clamp(orm.g, 0.04, 1.0);
+    if (tp.macroVar.z > 0.0) {
+        // Two octaves for brightness and roughness, a third, offset field for saturation.
+        let q = P.xz * tp.macroVar.z;
+        let m = hexValueNoise(q) * 0.65 + hexValueNoise(q * 2.7 + vec2<f32>(17.3, 5.1)) * 0.35 - 0.5;
+        let ms = hexValueNoise(q * 0.8 + vec2<f32>(-41.7, 23.9)) - 0.5;
+        albedo *= 1.0 + m * 2.0 * tp.macroVar.x;
+        let lum = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+        albedo = max(mix(vec3<f32>(lum), albedo, 1.0 + ms * 2.0 * tp.macroVar.w), vec3<f32>(0.0));
+        roughness = clamp(roughness - m * 2.0 * tp.macroVar.y, 0.04, 1.0);
+    }
     let metallic = clamp(orm.b, 0.0, 1.0);
     let ao = orm.r;
 

@@ -62,9 +62,19 @@ enum MaterialFlags : uint {
     /// Tubes of `thinRadius` never get narrower than `thinPixels` on screen: vertices move along
     /// their normals and coverage drops (dither, or alpha when `RenderState.depthWrite` is off).
     thin               = 1 << 21,
+    /// Hex-tiling: albedo, metal-roughness, normal and occlusion are read three times with
+    /// random offsets and rotations (`antiTilingRotation`) and blended, so a tiling texture shows
+    /// no repetition. For opaque, irregular tiling surfaces (plaster, concrete, ground); patterns on
+    /// a grid (bricks, roof tiles, planks) blur at the hexagon edges, use `objectUvOffset` there.
+    /// About three times the texture reads of those four maps.
+    antiTiling         = 1 << 22,
+    /// Each object shifts its UV by up to `objectUvOffset` (picked from its position, no rotation),
+    /// so copies of a mesh around the world do not start their textures at the same point. Rows of
+    /// bricks or roof tiles stay level; they just start at another height and phase.
+    objectUvOffset     = 1 << 23,
 }
 
-/// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (240 bytes = 15 × vec4<f32>).
+/// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (256 bytes = 16 × vec4<f32>).
 struct MaterialParams {
     // vec4 [0] (offset 0..16): Base color & weight
     float[3] baseColor = [1.0f, 1.0f, 1.0f];      // openpbr: base_color
@@ -138,6 +148,12 @@ struct MaterialParams {
     float[2] flipbookGrid = [1.0f, 1.0f];         // atlas columns, rows (`MaterialFlags.flipbook`)
     float    flipbookBlend = 1.0f;                // 1 = cross-fade consecutive frames, 0 = hard steps
     float    lightWrap = 0.5f;                    // how far diffuse light wraps around (`MaterialFlags.litParticle`)
+
+    // vec4 [15] (offset 240..256): Hex-tiling (`MaterialFlags.antiTiling`)
+    float    antiTilingRotation = 1.0f;           // largest random turn, fraction of half a turn (0 = offsets only)
+    float    antiTilingContrast = 0.6f;           // 0 = plain blend, 1 = brightest read wins near hexagon edges
+    float    objectUvOffset = 16.0f;              // range of the per-object UV shift, in UV units (`MaterialFlags.objectUvOffset`)
+    float    _pad15 = 0.0f;
 }
 static assert(MaterialParams.sizeof == MATERIAL_PARAMS_SIZE);
 static assert(isPod!MaterialParams);

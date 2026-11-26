@@ -43,6 +43,13 @@ struct TerrainRenderSettings {
     float detileScale = 0.17f;
     /// 0 = smooth heightmap normal only, 1 = full layer normal detail.
     float normalStrength = 1.0f;
+    /// Macro variation: world-space noise of `macroSize` meters that scales the albedo by up to
+    /// ±`macroBrightness`, its saturation by ±`macroSaturation` and lowers or raises the
+    /// roughness by up to `macroRoughness`. Breaks repetition seen from afar. 0 = off.
+    float macroBrightness = 0.0f;
+    float macroSaturation = 0.0f;
+    float macroRoughness = 0.0f;
+    float macroSize = 40.0f;
     bool castShadows = true;
 }
 
@@ -56,7 +63,7 @@ struct TerrainStats {
 
 struct TerrainRenderer {
     enum uint MAX_SHADOW_VIEWS = 8;
-    private enum uint PARAMS_SIZE = 176;
+    private enum uint PARAMS_SIZE = 224;
 
     private WGPUDevice device;
     private WGPUQueue queue;
@@ -241,6 +248,14 @@ struct TerrainRenderer {
             params[24 + i] = m.layers[i].heightBlend;
             params[32 + i] = m.layers[i].triplanarSharpness;
         }
+        params[44 .. 52] = -1.0f;
+        foreach (i; 0 .. m.layerCount)
+            if (m.layers[i].antiTiling)
+                params[44 + i] = m.layers[i].antiTilingRotation < 0 ? 0 : m.layers[i].antiTilingRotation;
+        immutable bool macroOn = settings.macroSize > 0
+            && (settings.macroBrightness > 0 || settings.macroSaturation > 0 || settings.macroRoughness > 0);
+        params[52 .. 56] = [settings.macroBrightness, settings.macroRoughness,
+                            macroOn ? 1.0f / settings.macroSize : 0.0f, settings.macroSaturation];
         params[40 .. 44] = [cast(float) m.layerCount, settings.blendDepth, settings.detileScale, settings.normalStrength];
     }
 

@@ -293,7 +293,7 @@ decals.spawn(hit.point, hit.normal, Vec2(2, 2), 1.0f, angle, layer);  // skid ma
 - **Fog:** `FogSettings` sets density, height base and falloff, start distance and sun lobe. Scene files store it under `settings.fog`.
 - **Wetness:** `scene.setWeather(wetness, rain, clouds)` drives it. Instances with `custom.w = 1` are sheltered.
 - **Terrain:**
-  - Up to 8 layers, using `TerrainLayer` (`uvScale`, `heightBlend`, `triplanarSharpness`, `physicsMaterial`).
+  - Up to 8 layers, using `TerrainLayer` (`uvScale`, `heightBlend`, `triplanarSharpness`, `antiTiling`, `antiTilingRotation`, `physicsMaterial`).
   - Configure collider filtering, ECS `EntityId`, hit events, and tile body capture with `TerrainColliderDesc` (`buildTerrainColliders(physics, terrain, layers[], desc, outBodies)`).
   - Synthesize custom tileable PBR layers with `ProcLayerDesc` (`ProcNoiseBasis.fbm`, `ridged`, `voronoi`, `brick`) + `generateLayerTextures`, or bake custom heightfields via `bakePbrMapsFromHeightField` and `engine.math.noise` tiled primitives.
   - At most 5 draws per frame.

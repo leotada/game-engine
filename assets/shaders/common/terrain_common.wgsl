@@ -21,6 +21,11 @@ struct TerrainParams {
     triplanar1: vec4<f32>,
     /// layer count, blend depth, far detile scale, normal strength.
     misc: vec4<f32>,
+    /// Hex-tiling largest rotation per layer (fraction of half a turn); negative = off.
+    hexRotation0: vec4<f32>,
+    hexRotation1: vec4<f32>,
+    /// Macro variation: brightness amount, roughness amount, frequency (1/m), saturation amount.
+    macroVar: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> tp: TerrainParams;

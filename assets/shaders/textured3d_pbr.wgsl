@@ -2,6 +2,7 @@
 #include "common/atmosphere.wgsl"
 #include "common/waves.wgsl"
 #include "common/caustics.wgsl"
+#include "common/hex_tiling.wgsl"
 
 struct MaterialParams {
     baseColor: vec3<f32>,
@@ -61,6 +62,11 @@ struct MaterialParams {
     flipbookGrid: vec2<f32>,
     flipbookBlend: f32,
     lightWrap: f32,
+
+    antiTilingRotation: f32,
+    antiTilingContrast: f32,
+    objectUvOffset: f32,
+    _pad15: f32,
 };
 @group(1) @binding(0) var<uniform> mat: MaterialParams;
 @group(1) @binding(1) var texSampler: sampler;
@@ -110,6 +116,18 @@ const FLAG_GEOMETRIC_SPECULAR_AA: u32 = 65536u;
 const FLAG_SOFT: u32 = 131072u;
 const FLAG_LIT_PARTICLE: u32 = 262144u;
 const FLAG_FLIPBOOK: u32 = 524288u;
+const FLAG_ANTI_TILING: u32 = 4194304u;
+const FLAG_OBJECT_UV_OFFSET: u32 = 8388608u;
+
+/// UV shift of a whole object from its position (`MaterialFlags.objectUvOffset`): identical meshes
+/// placed around the world start their textures at different points.
+fn objectUvOffset(model: mat4x4<f32>) -> vec2<f32> {
+    if ((mat.flags & FLAG_OBJECT_UV_OFFSET) == 0u) {
+        return vec2<f32>(0.0);
+    }
+    let p = floor(model[3].xz * 4.0) + vec2<f32>(floor(model[3].y * 4.0), 0.0);
+    return hexHash(p).xy * mat.objectUvOffset;
+}
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -627,7 +645,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.worldTangent = normalize(t - N * dot(N, t));
     out.worldBitangent = cross(N, out.worldTangent);
 #endif
-    out.uv = in.uv;
+    out.uv = in.uv + objectUvOffset(model);
     out.tint = in.tint.rgb;
     // Undisplaced object-space position: a stable domain for procedural noise.
     out.localPos = in.position;
@@ -694,7 +712,7 @@ fn vs_shadow_mask(in: ShadowMaskInput) -> ShadowMaskOutput {
     let localPos = engineDisplace(in.position, in.normal, in.uv, in.custom, model);
     var out: ShadowMaskOutput;
     out.clipPos = shadowLight.viewProj * model * vec4<f32>(localPos, 1.0);
-    out.uv = in.uv;
+    out.uv = in.uv + objectUvOffset(model);
     out.tintAlpha = in.tint.a;
     return out;
 }
@@ -750,11 +768,23 @@ fn evalSpotOpenPbr(baseIn: OpenPbrEvalInput, worldPos: vec3<f32>, N: vec3<f32>, 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let flipbook = SPRITE_FEATURES && (mat.flags & FLAG_FLIPBOOK) != 0u;
+    // Hex-tiling (`MaterialFlags.antiTiling`): three reads of albedo, metal-roughness, normal and
+    // occlusion; the other maps keep one read.
+    let hexOn = !flipbook && (mat.flags & FLAG_ANTI_TILING) != 0u;
+    let uvDx = dpdx(in.uv);
+    let uvDy = dpdy(in.uv);
+    var ht: HexTiles;
+    var hw = vec3<f32>(1.0, 0.0, 0.0);
     var book: Flipbook;
     var albedoSample: vec4<f32>;
     if (flipbook) {
         book = flipbookFrames(in.uv, in.custom.w);
         albedoSample = flipbookSample(albedoMap, book);
+    } else if (hexOn) {
+        ht = hexTiles(in.uv, mat.antiTilingRotation);
+        let ar = hexSample(albedoMap, texSampler, ht, uvDx, uvDy);
+        hw = hexWeights(ht, ar.r0.rgb, ar.r1.rgb, ar.r2.rgb, mat.antiTilingContrast);
+        albedoSample = hexBlend(ar, hw);
     } else {
         albedoSample = textureSample(albedoMap, texSampler, in.uv);
     }
@@ -766,7 +796,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var metalness = mat.baseMetalness;
     var roughness = mat.specularRoughness;
     if ((mat.flags & FLAG_MR) != 0u) {
-        let mr = textureSample(mrMap, texSampler, in.uv);
+        var mr: vec4<f32>;
+        if (hexOn) {
+            mr = hexBlend(hexSample(mrMap, texSampler, ht, uvDx, uvDy), hw);
+        } else {
+            mr = textureSample(mrMap, texSampler, in.uv);
+        }
         roughness = clamp(roughness * mr.g, 0.04, 1.0);
         metalness = clamp(metalness * mr.b, 0.0, 1.0);
     } else {
@@ -782,6 +817,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var nTexel: vec3<f32>;
         if (flipbook) {
             nTexel = flipbookSample(normalMap, book).xyz;
+        } else if (hexOn) {
+            // MikkTSpace bitangent runs along -V. Rebuilt in [0, 1] so the decode below stays shared.
+            nTexel = hexBlendNormal(hexSample(normalMap, texSampler, ht, uvDx, uvDy), ht, hw, true) * 0.5 + 0.5;
         } else {
             nTexel = textureSample(normalMap, texSampler, in.uv).xyz;
         }
@@ -797,7 +835,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var ao = 1.0;
     if ((mat.flags & FLAG_AO) != 0u) {
-        ao = textureSample(occlusionMap, texSampler, in.uv).r;
+        if (hexOn) {
+            ao = hexBlend(hexSample(occlusionMap, texSampler, ht, uvDx, uvDy), hw).r;
+        } else {
+            ao = textureSample(occlusionMap, texSampler, in.uv).r;
+        }
     }
 
     var emissive = mat.emissionColor * mat.emissionLuminance;

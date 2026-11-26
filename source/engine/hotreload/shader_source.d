@@ -270,6 +270,8 @@ string getEmbeddedShaderSource(string virtualPath) nothrow @trusted {
             return import("decal_pbr.wgsl");
         case "common/terrain_common.wgsl":
             return import("common/terrain_common.wgsl");
+        case "common/hex_tiling.wgsl":
+            return import("common/hex_tiling.wgsl");
         case "terrain_pbr.wgsl":
             return import("terrain_pbr.wgsl");
         case "terrain_shadow.wgsl":

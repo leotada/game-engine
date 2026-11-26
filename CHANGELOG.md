@@ -26,6 +26,12 @@
   temporal data; radius, intensity, quality and half resolution. Outdoor demo: `--ao`.
 - **GTAO on SSR materials** (`AoSettings.ssrMaterials`, on by default): car paint, chrome and puddles occlude and are darkened;
   their color also reaches the opaque snapshot, so reflections and refraction see them. One extra draw of those batches.
+- **Anti-tiling** (`MaterialFlags.antiTiling`, `MaterialFlags.objectUvOffset`, `TerrainLayer.antiTiling`,
+  `TerrainRenderSettings.macro*`): hex-tiling (Mikkelsen 2022) reads albedo, metal-roughness, normal and occlusion three
+  times with random offsets and rotations, so a tiling texture shows no period; normals are rotated back into the
+  tangent frame. Meshes can also shift their UV per object, from their position. The terrain adds a world-space macro
+  noise on brightness, saturation and roughness. `MaterialParams` grows to 256 bytes. All off by default.
+  Cost: about +0.45 ms of GPU on a 1600×900 terrain with five hex layers.
 - **SMAA 1x and CMAA2** (`AaMode.smaa`, `AaMode.cmaa2`) and **specular antialiasing** (`GltfImportOptions.specularAa`,
   `specularAaTexture`, `MaterialFlags.geometricSpecularAa`). Off by default.
 - **Vertex color**: `TexMesh.setVertexColors`, `SkinnedMesh.setVertexColors`, `GltfImportOptions.vertexColors` (`COLOR_0`),
