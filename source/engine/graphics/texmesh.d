@@ -1,7 +1,7 @@
 /// Textured mesh (position + normal + uv) and built-in textured primitives.
 module engine.graphics.texmesh;
 
-import bindings.wgpu;
+import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
 public import engine.graphics.closed_mesh : Closedness;
@@ -57,6 +57,10 @@ struct TexMesh {
     /// argument of `fromData` (`Closedness.detect` runs `isClosedMesh`) and
     /// inherited by `derive`. Not updated by `updateVertices`.
     bool closed;
+    /// The index and shadow index buffers are shared with a `derive` copy (or its source).
+    package(engine) bool sharesIndices;
+    /// The color buffer is shared with a `derive` copy (or its source).
+    package(engine) bool sharesColors;
 
     @disable this(this);
 
@@ -193,6 +197,12 @@ struct TexMesh {
     void setVertexColors(ref GpuContext gpu, scope const(ubyte[4])[] colors) @trusted {
         if (colors.length == 0) return;
         assert(colors.length * vertexStride == vertexBufSize, "one color per vertex");
+        if (colorBuffer !is null && sharesColors) {
+            // Another mesh draws with this buffer (`derive`): leave it to that mesh.
+            releaseBuffer(colorBuffer);
+            colorBuffer = null;
+            sharesColors = false;
+        }
         if (colorBuffer is null)
             colorBuffer = createVertexBuffer(gpu.getDevice(), gpu.getQueue(), colors.ptr, colors.length * 4);
         else
@@ -202,18 +212,20 @@ struct TexMesh {
     /**
      * A new mesh with the topology of `source` and its own vertices: for
      * deformable copies (crash damage, destruction, digging) of a mesh that
-     * keeps drawing. Only `verts` cross from the CPU. The index, shadow index
-     * and color buffers are copied on the GPU, so each mesh still owns and
-     * destroys its own buffers. `closed`, the LOD chain and the formats come
-     * from `source`; the bounds are recomputed from `verts`. Set `closed` on the
-     * result if the new vertices open the surface. Later changes go through
-     * `updateVertices`. `verts` must match the source vertex type and count.
+     * keeps drawing. Only `verts` cross to the GPU. The index, shadow index and
+     * color buffers are shared by reference count (no copy, no queue submit):
+     * index buffers never change after upload, and `setVertexColors` on either
+     * mesh gives it its own color buffer instead of writing the shared one.
+     * Destroy the meshes in any order; shared memory is freed with the last
+     * one. `closed`, the LOD chain and the formats come from `source`; the
+     * bounds are recomputed from `verts`. Set `closed` on the result if the new
+     * vertices open the surface. Later changes go through `updateVertices`.
+     * `verts` must match the source vertex type and count.
      */
-    static TexMesh derive(V)(ref GpuContext gpu, ref const TexMesh source, scope const(V)[] verts) nothrow @nogc
+    static TexMesh derive(V)(ref GpuContext gpu, ref TexMesh source, scope const(V)[] verts) nothrow @nogc
     if (is(V == TexVert) || is(V == TexTanVert)) {
         assert(V.sizeof == source.vertexStride && verts.length * V.sizeof == source.vertexBufSize,
                "derive: vertex type and count must match the source mesh");
-        auto device = gpu.getDevice();
         TexMesh m;
         m.indexCount = source.indexCount;
         m.vertexBufSize = source.vertexBufSize;
@@ -230,52 +242,37 @@ struct TexMesh {
         m.localBounds = Aabb.fromPositions(verts);
         m.localSphere = BoundingSphere.fromAabb(m.localBounds);
         m.vertexBuffer = () @trusted {
-            return createVertexBuffer(device, gpu.getQueue(), verts.ptr, verts.length * V.sizeof);
+            return createVertexBuffer(gpu.getDevice(), gpu.getQueue(), verts.ptr, verts.length * V.sizeof);
         }();
-        // Same usages and padded sizes as `createIndexBuffer` / `createVertexBuffer`.
-        enum copyUsage = WGPUBufferUsage.copyDst | WGPUBufferUsage.copySrc;
-        static ulong align4(ulong v) pure nothrow @nogc { return (v + 3) & ~3UL; }
-        if (source.indexBuffer !is null)
-            m.indexBuffer = createBufferWithUsage(device, align4(m.indexBufSize), WGPUBufferUsage.index | copyUsage);
-        if (source.shadowIndexBuffer !is null)
-            m.shadowIndexBuffer = createBufferWithUsage(device, align4(m.shadowIndexBufSize),
-                                                        WGPUBufferUsage.index | copyUsage);
-        immutable colorBytes = verts.length * 4;
-        if (source.colorBuffer !is null)
-            m.colorBuffer = createBufferWithUsage(device, colorBytes, WGPUBufferUsage.vertex | copyUsage);
-        () @trusted {
-            WGPUCommandEncoderDescriptor ed;
-            auto enc = wgpuDeviceCreateCommandEncoder(device, &ed);
-            if (m.indexBuffer !is null)
-                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.indexBuffer, 0, m.indexBuffer, 0,
-                                                     align4(m.indexBufSize));
-            if (m.shadowIndexBuffer !is null)
-                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.shadowIndexBuffer, 0,
-                                                     m.shadowIndexBuffer, 0, align4(m.shadowIndexBufSize));
-            if (m.colorBuffer !is null)
-                wgpuCommandEncoderCopyBufferToBuffer(enc, cast(WGPUBuffer) source.colorBuffer, 0, m.colorBuffer, 0,
-                                                     colorBytes);
-            WGPUCommandBufferDescriptor cd;
-            auto cb = wgpuCommandEncoderFinish(enc, &cd);
-            wgpuQueueSubmit(gpu.getQueue(), 1, &cb);
-            wgpuCommandBufferRelease(cb);
-            wgpuCommandEncoderRelease(enc);
-        }();
+        m.indexBuffer = retainBuffer(source.indexBuffer);
+        m.shadowIndexBuffer = retainBuffer(source.shadowIndexBuffer);
+        m.colorBuffer = retainBuffer(source.colorBuffer);
+        source.sharesIndices = m.sharesIndices = true;
+        if (m.colorBuffer !is null) source.sharesColors = m.sharesColors = true;
         return m;
     }
 
     /// True when the mesh carries vertex colors.
     bool hasVertexColors() const pure nothrow @nogc { return colorBuffer !is null; }
 
+    /// Free the GPU buffers. Buffers shared with `derive` copies are released
+    /// (freed with the last mesh that holds them) instead of destroyed.
     void destroy() nothrow @nogc {
-        destroyBuffer(colorBuffer);
-        colorBuffer = null;
+        if (sharesColors) releaseBuffer(colorBuffer);
+        else destroyBuffer(colorBuffer);
         destroyBuffer(vertexBuffer);
-        destroyBuffer(indexBuffer);
-        destroyBuffer(shadowIndexBuffer);
+        if (sharesIndices) {
+            releaseBuffer(indexBuffer);
+            releaseBuffer(shadowIndexBuffer);
+        } else {
+            destroyBuffer(indexBuffer);
+            destroyBuffer(shadowIndexBuffer);
+        }
+        colorBuffer = null;
         vertexBuffer = null;
         indexBuffer = null;
         shadowIndexBuffer = null;
+        sharesIndices = sharesColors = false;
     }
 }
 

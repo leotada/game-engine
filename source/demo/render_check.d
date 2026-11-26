@@ -1039,7 +1039,8 @@ private bool checkClosedBackFaces(ref App app) {
 }
 
 /// `TexMesh.derive` draws exactly like a fresh upload of the same vertices,
-/// keeps the topology, colors and closedness of its source, and outlives it.
+/// keeps the topology, colors and closedness of its source, recolors without
+/// touching the source's colors, and survives destruction in any order.
 private bool checkDeriveMesh(ref App app) {
     import engine.graphics.texmesh : Closedness;
     import std.math : cos, PI, sin;
@@ -1050,7 +1051,7 @@ private bool checkDeriveMesh(ref App app) {
     app.renderer.postSettings() = neutralPost();
     auto white = Texture.solid(app.gpu, 255, 255, 255);
     scope(exit) white.destroy();
-    // A ball with per-vertex colors and shadow indices: every buffer `derive` copies.
+    // A ball with per-vertex colors and shadow indices: every buffer `derive` shares.
     enum seg = 48, ring = 24;
     TexVert[] rest;
     ubyte[4][] colors;
@@ -1084,7 +1085,6 @@ private bool checkDeriveMesh(ref App app) {
                  "the derived mesh has the source's index counts and colors");
     ok &= expect(derived.localBounds.max.z < source.localBounds.max.z - 0.5f,
                  "the derived bounds follow the new vertices");
-    source.destroy(); // the derived mesh owns copies of every buffer
     MaterialParams mp;
     mp.baseColor = [1, 1, 1];
     mp.flags = MaterialFlags.unlit;
@@ -1106,16 +1106,52 @@ private bool checkDeriveMesh(ref App app) {
                 if (a.px[i * 4 + c] != b.px[i * 4 + c]) { n++; break; }
         return n;
     }
-    () @trusted { shown = &derived; }();
-    auto a = capture(app, "derive", &frameOf);
-    () @trusted { shown = &fresh; }();
-    auto b = capture(app, "derive_fresh", &frameOf);
-    () @trusted { shown = &restCopy; }();
-    auto c = capture(app, "derive_rest", &frameOf);
-    immutable same = differ(a, b), control = differ(a, c);
+    Shot shot(TexMesh* m, string name) {
+        () @trusted { shown = m; }();
+        return capture(app, name, &frameOf);
+    }
+    Shot fromDerived, fromFresh, fromRest;
+    () @trusted {
+        fromDerived = shot(&derived, "derive");
+        fromFresh = shot(&fresh, "derive_fresh");
+        fromRest = shot(&restCopy, "derive_rest");
+    }();
+    immutable same = differ(fromDerived, fromFresh), control = differ(fromDerived, fromRest);
     writefln("  derived vs fresh upload: %s px differ; dented vs rest (control): %s px", same, control);
     ok &= expect(same == 0, "a derived mesh draws like a fresh upload of its vertices");
     ok &= expect(control > 2_000, "the dent shows (control)");
+    // Recolor the copy: it gets its own color buffer, the source keeps its colors.
+    ubyte[4][] red = colors.dup;
+    foreach (ref c; red) c = [255, c[1] / 4, 0, 255];
+    derived.setVertexColors(app.gpu, red);
+    fresh.setVertexColors(app.gpu, red);
+    Shot srcAfter, restAfter, derivedRed, freshRed;
+    () @trusted {
+        srcAfter = shot(&source, "derive_source_after");
+        restAfter = shot(&restCopy, "derive_rest_after");
+        derivedRed = shot(&derived, "derive_red");
+        freshRed = shot(&fresh, "derive_fresh_red");
+    }();
+    immutable srcSame = differ(srcAfter, restAfter), redSame = differ(derivedRed, freshRed);
+    immutable redControl = differ(derivedRed, fromDerived);
+    writefln("  after recoloring the copy: source vs rest %s px, copy vs fresh %s px, recolor (control) %s px",
+             srcSame, redSame, redControl);
+    ok &= expect(srcSame == 0, "recoloring a derived mesh leaves its source's colors");
+    ok &= expect(redSame == 0 && redControl > 2_000, "the derived mesh shows its new colors");
+    // Destroy in any order: a copy of the copy outlives both.
+    source.destroy();
+    auto second = TexMesh.derive(app.gpu, derived, rest);
+    scope(exit) second.destroy();
+    derived.destroy();
+    restCopy.setVertexColors(app.gpu, red);
+    Shot fromSecond, restRed;
+    () @trusted {
+        fromSecond = shot(&second, "derive_second");
+        restRed = shot(&restCopy, "derive_rest_red");
+    }();
+    immutable chain = differ(fromSecond, restRed);
+    writefln("  copy of a copy after both were destroyed vs fresh upload: %s px", chain);
+    ok &= expect(chain == 0, "shared buffers live until the last mesh holding them is destroyed");
     return ok;
 }
 

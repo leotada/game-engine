@@ -111,6 +111,19 @@ void destroyBuffer(WGPUBuffer buf) nothrow @nogc @trusted {
     }
 }
 
+/// Take another reference to `buf` (null stays null). Pair with `releaseBuffer`.
+WGPUBuffer retainBuffer(WGPUBuffer buf) nothrow @nogc @trusted {
+    if (buf !is null) wgpuBufferAddRef(buf);
+    return buf;
+}
+
+/// Drop one reference without destroying: the memory is freed once the last
+/// reference is gone and the GPU no longer uses it. For buffers other owners
+/// still draw with (`destroyBuffer` would invalidate them for everyone).
+void releaseBuffer(WGPUBuffer buf) nothrow @nogc @trusted {
+    if (buf !is null) wgpuBufferRelease(buf);
+}
+
 WGPUBindGroup createUniformBindGroup(WGPUDevice device, WGPUBindGroupLayout layout,
                                       WGPUBuffer uniformBuf, ulong size) @trusted {
     WGPUBindGroupEntry bgEntry;
