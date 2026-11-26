@@ -189,7 +189,7 @@ ObjectLod buildObjectLod(scope const(TexVert[])[] partVertices, scope const(uint
 
 version (WebGPU) {} else {
     import engine.gpu.context : GpuContext;
-    import engine.graphics.texmesh : TexMesh;
+    import engine.graphics.texmesh : Closedness, TexMesh;
 
     /**
      * Upload one part with its levels in one index buffer and the object's
@@ -205,13 +205,13 @@ version (WebGPU) {} else {
             counts[l] = cast(uint) level.length;
             concat ~= level;
         }
-        auto mesh = TexMesh.fromData(gpu, p.vertices, concat);
-        immutable n = p.levels.length;
-        mesh.setLodChain(first[0 .. n], counts[0 .. n], lod.errors[0 .. n], 1);
         // Closed when its fullest level is (the merged part has only the last one).
+        immutable n = p.levels.length;
         size_t full = 0;
         foreach (l, level; p.levels) if (level.length > p.levels[full].length) full = l;
-        mesh.closed = n > 0 && isClosedMesh(p.vertices, p.levels[full]);
+        immutable closed = n > 0 && isClosedMesh(p.vertices, p.levels[full]) ? Closedness.closed : Closedness.open;
+        auto mesh = TexMesh.fromData(gpu, p.vertices, concat, null, closed);
+        mesh.setLodChain(first[0 .. n], counts[0 .. n], lod.errors[0 .. n], 1);
         if (p.colors.length) mesh.setVertexColors(gpu, p.colors);
         return mesh;
     }

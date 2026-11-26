@@ -305,7 +305,10 @@ private TexMesh uploadChain(V)(ref GpuContext gpu, LodChain!(V, uint) chain) {
     uint[8] first, counts;
     float[8] errors;
     auto concat = concatLodLevels(chain.levels[0 .. n], first[], counts[], errors[]);
-    auto mesh = TexMesh.fromData(gpu, chain.vertices, concat);
+    // LOD0 is the full mesh: test it alone, not the concatenated chain.
+    import engine.graphics.closed_mesh : Closedness, isClosedMesh;
+    immutable closed = n > 0 && isClosedMesh(chain.vertices, chain.levels[0].indices) ? Closedness.closed : Closedness.open;
+    auto mesh = TexMesh.fromData(gpu, chain.vertices, concat, null, closed);
     mesh.setLodChain(first[0 .. n], counts[0 .. n], errors[0 .. n], simplifyScale(positionsOf!V(chain.vertices)));
     return mesh;
 }

@@ -4,6 +4,8 @@ module engine.graphics.texmesh;
 import bindings.wgpu : WGPUBuffer, WGPUIndexFormat;
 import engine.gpu.buffer;
 import engine.gpu.context : GpuContext;
+public import engine.graphics.closed_mesh : Closedness;
+import engine.graphics.closed_mesh : isClosedMesh;
 import engine.graphics.types : TexTanVert, TexVert;
 import engine.math.bounds : Aabb, BoundingSphere;
 
@@ -49,87 +51,61 @@ struct TexMesh {
     Aabb localBounds;
     /// Object-space bounding sphere (from `localBounds`), used for culling.
     BoundingSphere localSphere;
-    /// The mesh is closed and faces outward (`isClosedMesh`, tested at upload):
-    /// its back faces show only from inside, so double-sided materials skip them
-    /// unless `Material.drawClosedBackFaces` is set. Not updated by `updateVertices`.
+    /// The mesh is closed and faces outward: its back faces show only from
+    /// inside, so double-sided materials skip them unless
+    /// `Material.drawClosedBackFaces` is set. Set at upload from the `closed`
+    /// argument of `fromData` (`Closedness.detect` runs `isClosedMesh`) and
+    /// inherited by `derive`. Not updated by `updateVertices`.
     bool closed;
 
     @disable this(this);
 
     /// Build a TexMesh from vertex + index data.
     /// `uint` indices are stored as `ushort` when every index fits in 65535.
-    static TexMesh fromData(I)(ref GpuContext gpu, const(TexVert)[] verts, const(I)[] indices, const(I)[] shadowIndices = null)
+    /// `closed` sets `TexMesh.closed`; pass `Closedness.open` or `.closed` when
+    /// it is known to skip the `isClosedMesh` test (linear, but the largest
+    /// cost of uploading a dense mesh).
+    static TexMesh fromData(I)(ref GpuContext gpu, const(TexVert)[] verts, const(I)[] indices,
+                               const(I)[] shadowIndices = null, Closedness closed = Closedness.detect)
     if (is(I == ushort) || is(I == uint)) {
         static if (is(I == uint)) {
             if (indicesFitU16(indices) && indicesFitU16(shadowIndices))
-                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices));
+                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices), closed);
         }
-        return upload!TexVert(gpu, verts, indices, shadowIndices);
+        return upload!TexVert(gpu, verts, indices, shadowIndices, closed);
     }
 
     /// `TexTanVert` upload. Stride is 48. `uint` indices narrow when every index fits in 65535.
-    static TexMesh fromData(I)(ref GpuContext gpu, const(TexTanVert)[] verts, const(I)[] indices, const(I)[] shadowIndices = null)
+    static TexMesh fromData(I)(ref GpuContext gpu, const(TexTanVert)[] verts, const(I)[] indices,
+                               const(I)[] shadowIndices = null, Closedness closed = Closedness.detect)
     if (is(I == ushort) || is(I == uint)) {
         static if (is(I == uint)) {
             if (indicesFitU16(indices) && indicesFitU16(shadowIndices))
-                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices));
+                return fromData(gpu, verts, narrowU16(indices), narrowU16(shadowIndices), closed);
         }
-        return upload!TexTanVert(gpu, verts, indices, shadowIndices);
+        return upload!TexTanVert(gpu, verts, indices, shadowIndices, closed);
     }
 
     /// Textured unit cube with per-face UVs (0..1 on each face).
     static TexMesh cube(ref GpuContext gpu) {
-        return fromData(gpu, texCubeVertices[], texCubeIndices[]);
+        return fromData(gpu, texCubeVertices[], texCubeIndices[], null, Closedness.closed);
     }
 
     /// Textured unit quad on the XZ plane (useful for ground planes, walls, sprites).
     /// Normal points +Y. Size: 1×1 centered at origin.
     static TexMesh quad(ref GpuContext gpu) {
-        return fromData(gpu, texQuadVertices[], texQuadIndices[]);
+        return fromData(gpu, texQuadVertices[], texQuadIndices[], null, Closedness.open);
     }
 
     /// UV sphere of radius 0.5 centered at origin (unit diameter).
     /// `segments` = longitude subdivisions, `rings` = latitude subdivisions.
     /// `withTangents` builds a `TexTanVert` sphere for normal-mapped draws.
     static TexMesh sphere(ref GpuContext gpu, uint segments = 32, uint rings = 16, bool withTangents = false) {
-        import std.math : sin, cos, PI;
-        assert(segments >= 3 && rings >= 2);
-
-        immutable uint vertCount = (rings + 1) * (segments + 1);
-        auto verts = new TexVert[vertCount];
-        auto indices = new ushort[rings * segments * 6];
-
-        uint vi = 0;
-        foreach (y; 0 .. rings + 1) {
-            immutable v = cast(float) y / cast(float) rings;
-            immutable phi = v * PI;
-            immutable sy = cast(float) cos(phi);
-            immutable sr = cast(float) sin(phi);
-            foreach (x; 0 .. segments + 1) {
-                immutable u = cast(float) x / cast(float) segments;
-                immutable theta = u * 2.0f * PI;
-                immutable nx = sr * cast(float) cos(theta);
-                immutable nz = sr * cast(float) sin(theta);
-                verts[vi++] = TexVert([nx * 0.5f, sy * 0.5f, nz * 0.5f],
-                                      [nx, sy, nz], [u, 1.0f - v]);
-            }
-        }
-
-        uint ii = 0;
-        foreach (y; 0 .. rings) {
-            foreach (x; 0 .. segments) {
-                immutable ushort a = cast(ushort)(y * (segments + 1) + x);
-                immutable ushort b = cast(ushort)(a + segments + 1);
-                indices[ii++] = a;
-                indices[ii++] = cast(ushort)(a + 1);
-                indices[ii++] = b;
-                indices[ii++] = cast(ushort)(a + 1);
-                indices[ii++] = cast(ushort)(b + 1);
-                indices[ii++] = b;
-            }
-        }
+        TexVert[] verts;
+        ushort[] indices;
+        uvSphereGeometry(segments, rings, verts, indices);
         if (!withTangents)
-            return fromData(gpu, verts, indices);
+            return fromData(gpu, verts, indices, null, Closedness.closed);
         return uploadSphereTangents(gpu, verts, indices);
     }
 
@@ -238,6 +214,47 @@ struct TexMesh {
     }
 }
 
+/// Vertices and indices of `TexMesh.sphere` (closed: the seam column and the
+/// pole rings weld in `isClosedMesh`).
+private void uvSphereGeometry(uint segments, uint rings, out TexVert[] verts, out ushort[] indices) {
+    import std.math : sin, cos, PI;
+    assert(segments >= 3 && rings >= 2);
+
+    immutable uint vertCount = (rings + 1) * (segments + 1);
+    verts = new TexVert[vertCount];
+    indices = new ushort[rings * segments * 6];
+
+    uint vi = 0;
+    foreach (y; 0 .. rings + 1) {
+        immutable v = cast(float) y / cast(float) rings;
+        immutable phi = v * PI;
+        immutable sy = cast(float) cos(phi);
+        immutable sr = cast(float) sin(phi);
+        foreach (x; 0 .. segments + 1) {
+            immutable u = cast(float) x / cast(float) segments;
+            immutable theta = u * 2.0f * PI;
+            immutable nx = sr * cast(float) cos(theta);
+            immutable nz = sr * cast(float) sin(theta);
+            verts[vi++] = TexVert([nx * 0.5f, sy * 0.5f, nz * 0.5f],
+                                  [nx, sy, nz], [u, 1.0f - v]);
+        }
+    }
+
+    uint ii = 0;
+    foreach (y; 0 .. rings) {
+        foreach (x; 0 .. segments) {
+            immutable ushort a = cast(ushort)(y * (segments + 1) + x);
+            immutable ushort b = cast(ushort)(a + segments + 1);
+            indices[ii++] = a;
+            indices[ii++] = cast(ushort)(a + 1);
+            indices[ii++] = b;
+            indices[ii++] = cast(ushort)(a + 1);
+            indices[ii++] = cast(ushort)(b + 1);
+            indices[ii++] = b;
+        }
+    }
+}
+
 private TexMesh uploadSphereTangents(ref GpuContext gpu, TexVert[] verts, ushort[] indices) {
     import engine.meshopt.pipeline : optimizeMesh;
     import engine.meshopt.tangent : generateTangents;
@@ -263,7 +280,7 @@ private TexMesh uploadSphereTangents(ref GpuContext gpu, TexVert[] verts, ushort
         idx[i] = cast(uint) i;
     }
     auto opt = optimizeMesh(expanded, idx);
-    return TexMesh.fromData(gpu, opt.vertices, opt.indices, opt.shadowIndices);
+    return TexMesh.fromData(gpu, opt.vertices, opt.indices, opt.shadowIndices, Closedness.closed);
 }
 
 private bool indicesFitU16(scope const(uint)[] indices) pure nothrow @nogc {
@@ -281,7 +298,8 @@ private ushort[] narrowU16(const(uint)[] indices) {
     return dst;
 }
 
-private TexMesh upload(V, I)(ref GpuContext gpu, const(V)[] verts, const(I)[] indices, const(I)[] shadowIndices)
+private TexMesh upload(V, I)(ref GpuContext gpu, const(V)[] verts, const(I)[] indices, const(I)[] shadowIndices,
+                             Closedness closed)
 if ((is(I == ushort) || is(I == uint)) && V.sizeof % 4 == 0) {
     auto device = gpu.getDevice();
     auto queue = gpu.getQueue();
@@ -294,10 +312,7 @@ if ((is(I == ushort) || is(I == uint)) && V.sizeof % 4 == 0) {
     m.vertexStride = cast(uint) V.sizeof;
     m.localBounds = Aabb.fromPositions(verts);
     m.localSphere = BoundingSphere.fromAabb(m.localBounds);
-    {
-        import engine.graphics.closed_mesh : isClosedMesh;
-        m.closed = isClosedMesh(verts, indices);
-    }
+    m.closed = closed == Closedness.detect ? isClosedMesh(verts, indices) : closed == Closedness.closed;
     static if (is(I == uint))
         m.indexFormat = WGPUIndexFormat.uint32;
     else
@@ -365,6 +380,15 @@ immutable TexVert[4] texQuadVertices = [
 ];
 
 immutable ushort[6] texQuadIndices = [0, 2, 1,  0, 3, 2];
+
+@("texmesh.declared closedness matches the test") unittest {
+    foreach (size; [[3u, 2u], [4u, 3u], [32u, 16u], [64u, 32u]]) {
+        TexVert[] verts;
+        ushort[] indices;
+        uvSphereGeometry(size[0], size[1], verts, indices);
+        assert(isClosedMesh(verts, indices));
+    }
+}
 
 @("texmesh.shadowLod") pure nothrow @nogc unittest {
     TexMesh mesh;
