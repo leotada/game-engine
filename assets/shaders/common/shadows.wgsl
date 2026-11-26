@@ -179,6 +179,32 @@ fn sampleDirShadowPCF(worldPos: vec3<f32>, normal: vec3<f32>, L: vec3<f32>) -> f
     return mix(s, 1.0, fade);
 }
 
+/// Back-face visibility of a thin wall: one hardware-filtered tap (2×2) in the
+/// cascade of `worldPos`, from just behind the surface along `L`. No thickness.
+fn sampleDirShadowBackThin(worldPos: vec3<f32>, L: vec3<f32>) -> f32 {
+    let count = i32(frame.cascadeParams.x);
+    if (count <= 0) {
+        return sampleDirShadowFixed(worldPos + L * 0.04, L, L);
+    }
+    let viewDepth = dot(worldPos - frame.cameraPos, frame.cameraForward);
+    if (viewDepth >= frame.cascadeParams.w) {
+        return 1.0;
+    }
+    let i = dirCascadeIndex(worldPos);
+    let texel = frame.cascadeTexel[i].x;
+    let samplePos = worldPos + L * (0.04 + texel * 0.75);
+    let p = frame.cascadeViewProj[i] * vec4<f32>(samplePos, 1.0);
+    let ndc = p.xyz / p.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z >= 1.0) {
+        return 1.0;
+    }
+    let bias = texel * frame.cascadeTexel[i].y * 0.5 + frame.shadowBias * 0.25;
+    let s = textureSampleCompareLevel(dirShadowMap, shadowSampler, uv, i, max(ndc.z, 0.0) - bias);
+    let fade = smoothstep(frame.cascadeParams.z, frame.cascadeParams.w, viewDepth);
+    return mix(s, 1.0, fade);
+}
+
 /// Evaluate directional back-face shadow visibility and estimate world-space
 /// shadow-map thickness in meters (`vec2(backShadow, worldThicknessMeters)`).
 fn sampleDirShadowBackAndThickness(worldPos: vec3<f32>, N: vec3<f32>, L: vec3<f32>) -> vec2<f32> {

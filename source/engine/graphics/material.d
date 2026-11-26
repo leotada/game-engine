@@ -74,6 +74,10 @@ enum MaterialFlags : uint {
     /// so copies of a mesh around the world do not start their textures at the same point. Rows of
     /// bricks or roof tiles stay level; they just start at another height and phase.
     objectUvOffset     = 1 << 23,
+    /// With `thinWalled`: keep the full back-face shadow lookup (3×3 PCF across
+    /// cascades and the shadow-map thickness). By default a thin wall takes one
+    /// filtered shadow tap for its back side and the material thickness.
+    fullBackShadow     = 1 << 24,
 }
 
 /// Canonical OpenPBR Surface v1.1 + OPBR-6/7/8 uniform block matching WGSL `MaterialParams` (256 bytes = 16 × vec4<f32>).

@@ -128,6 +128,8 @@ fn objectUvOffset(model: mat4x4<f32>) -> vec2<f32> {
     let p = floor(model[3].xz * 4.0) + vec2<f32>(floor(model[3].y * 4.0), 0.0);
     return hexHash(p).xy * mat.objectUvOffset;
 }
+/// Thin-walled materials keep the full back-face shadow lookup (`MaterialFlags.fullBackShadow`).
+const FLAG_FULL_BACK_SHADOW: u32 = 16777216u;
 
 fn engineDissolveHash(p: vec3<f32>) -> f32 {
     let q = fract(p * 0.3183099 + vec3<f32>(0.1)) * 17.0;
@@ -1143,9 +1145,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (frame.dirLight.castShadows != 0u) {
             shadow = sampleDirShadowPCF(in.worldPos, N, L);
             if (sssWeight > 0.001) {
-                let bt = sampleDirShadowBackAndThickness(in.worldPos, N, L);
-                backShadow = bt.x;
-                sssThick = max(bt.y, transThick);
+                if (sssThin && (mat.flags & FLAG_FULL_BACK_SHADOW) == 0u) {
+                    // A thin wall has no depth to measure: one shadow tap for the back side.
+                    backShadow = sampleDirShadowBackThin(in.worldPos, L);
+                } else {
+                    let bt = sampleDirShadowBackAndThickness(in.worldPos, N, L);
+                    backShadow = bt.x;
+                    sssThick = max(bt.y, transThick);
+                }
             }
         }
         pbrIn.frontShadow = shadow;

@@ -1038,6 +1038,74 @@ private bool checkClosedBackFaces(ref App app) {
     return ok;
 }
 
+/// Thin-walled foliage lit from behind takes one shadow tap for its back side:
+/// close to the full lookup, and still shadowed by what blocks the sun.
+private bool checkThinWall(ref App app) {
+    auto scene = Scene3DTextured.create(app.gpu, 64, false);
+    scope(exit) scene.destroy();
+    auto sampler = Sampler.create(app.gpu, TextureFilter.linear, TextureWrap.repeat);
+    scope(exit) sampler.destroy();
+    app.renderer.postSettings() = neutralPost();
+    auto white = Texture.solid(app.gpu, 255, 255, 255);
+    scope(exit) white.destroy();
+    auto quad = TexMesh.quad(app.gpu);
+    scope(exit) quad.destroy();
+    auto cube = TexMesh.cube(app.gpu);
+    scope(exit) cube.destroy();
+    MaterialParams lp;
+    lp.baseColor = [0.2f, 0.5f, 0.15f];
+    lp.flags = MaterialFlags.thinWalled;
+    lp.subsurfaceWeight = 0.6f;
+    lp.subsurfaceColor = [0.4f, 0.8f, 0.2f];
+    lp.subsurfaceRadius = 0.35f;
+    lp.transmissionThickness = 0.08f;
+    auto leaf = Material.create(app.gpu, scene.materialLayout(), sampler, white, lp, null, null, null, null);
+    scope(exit) leaf.destroy();
+    leaf.renderState = RenderState(BlendMode.opaque, true, true, false);
+    MaterialParams bp;
+    bp.baseColor = [0.3f, 0.3f, 0.3f];
+    auto block = Material.create(app.gpu, scene.materialLayout(), sampler, white, bp, null, null, null, null);
+    scope(exit) block.destroy();
+    LightList lights;
+    scope(exit) lights.release();
+    lights.dirEnabled = true;
+    lights.dir.direction = Vec3(0, 0.25f, -1).normalized(); // the sun is behind the leaf
+    lights.dir.intensity = 4;
+    lights.dir.castShadows = true;
+    lights.dir.cascades.count = 2;
+    lights.dir.cascades.maxDistance = 40;
+    void frameOf(ref FrameContext f) {
+        Camera cam = Camera.create(0.9f, WIN_W, WIN_H, 0.1f, 100.0f);
+        cam.lookAt(Vec3(0, 0, 5), Vec3(0, 0, 0));
+        scene.begin(cam);
+        // The leaf faces the camera (+Z); the slab blocks the sun on its left half.
+        scene.drawMatrix(quad, leaf, Mat4.rotationX(1.5707964f) * Mat4.scaling(4, 1, 3), Color4.white);
+        scene.drawMatrix(cube, block, Mat4.translation(-2.2f, 0.5f, -3) * Mat4.scaling(4, 6, 0.2f), Color4.white);
+        scene.renderShadows(f, lights);
+        scene.end(f);
+    }
+    float mean(ref const Shot a, uint x0, uint x1) {
+        double t = 0;
+        uint n = 0;
+        foreach (y; WIN_H / 2 - 40 .. WIN_H / 2 + 40)
+            foreach (x; x0 .. x1) { t += a.luma(x, y); n++; }
+        return cast(float) (t / n);
+    }
+    auto fast = capture(app, "thinwall", &frameOf);
+    leaf.updateParams(app.gpu, () { auto q = lp; q.flags |= MaterialFlags.fullBackShadow; return q; }());
+    auto full = capture(app, "thinwall_full", &frameOf);
+    leaf.updateParams(app.gpu, lp);
+    if (!fast.valid || !full.valid) return expect(false, "frames captured");
+    immutable lx0 = WIN_W / 2 - 150, lx1 = WIN_W / 2 - 60, rx0 = WIN_W / 2 + 60, rx1 = WIN_W / 2 + 150;
+    immutable fShade = mean(fast, lx0, lx1), fLit = mean(fast, rx0, rx1);
+    immutable gShade = mean(full, lx0, lx1), gLit = mean(full, rx0, rx1);
+    writefln("  one tap: shaded %.1f lit %.1f; full lookup: shaded %.1f lit %.1f", fShade, fLit, gShade, gLit);
+    bool ok = expect(fLit > fShade + 8 && gLit > gShade + 8, "what blocks the sun darkens the back light (control)");
+    ok &= expect(abs(fLit - gLit) < 0.08f * gLit && abs(fShade - gShade) < 0.08f * gLit + 2,
+                 "one tap stays within 8% of the full lookup");
+    return ok;
+}
+
 /// Sphere with a coarser second level in the same index buffer.
 private TexMesh lodSphere(ref App app, uint segments, uint rings) {
     import engine.graphics.types : TexVert;
@@ -3072,6 +3140,7 @@ private immutable Check[] checks = [
     Check("antitile", &checkAntiTiling),
     Check("shadowbatch", &checkShadowBatch),
     Check("backfaces", &checkClosedBackFaces),
+    Check("thinwall", &checkThinWall),
 ];
 
 int main(string[] args) {
