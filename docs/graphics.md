@@ -175,7 +175,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
   - **Thin-Film Iridescence:** Physical Airy thin-film reflectance modulating dielectric/conductor Fresnel (`thinFilmWeight`, `thinFilmThicknessMin`..`thinFilmThickness` driven by `anisoFilm.a`, `thinFilmIor`)
   - **Coat Slab:** Dielectric clearcoat GGX with per-pixel weight/roughness (`coatMap`), tangent-space `coatNormalMap`, optical absorption tint (`coatColor`), coat-induced base roughening (`coatRoughenBase`), and internal reflection darkening (`coatDarkening`)
   - **Fuzz / Sheen Slab:** Charlie microcylinder NDF + Ashikhmin visibility (`fuzzWeight`, `fuzzColor`, `fuzzRoughness`, modulated by `fuzzMap`) energy-conserved over coat and base
-  - **Subsurface & Thin-Walled Translucency (`OPBR-8`):** Penner pre-integrated per-channel RGB wrap scattering + back-lit exponential profile (`subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceRadiusScale`, `subsurfaceAnisotropy`, modulated by `transmissionMap.b`), directional shadow blocker thickness estimation (`sampleDirShadowBackAndThickness`), and Henyey-Greenstein thin-walled back-face transmission (`MaterialFlags.thinWalled`)
+  - **Subsurface & Thin-Walled Translucency (`OPBR-8`):** Penner pre-integrated per-channel RGB wrap scattering + back-lit exponential profile (`subsurfaceWeight`, `subsurfaceColor`, `subsurfaceRadius`, `subsurfaceRadiusScale`, `subsurfaceAnisotropy`, modulated by `transmissionMap.b`), directional shadow blocker thickness estimation (`sampleDirShadowBackAndThickness`), and Henyey-Greenstein thin-walled back-face transmission (`MaterialFlags.thinWalled`; one shadow tap for the back side unless `MaterialFlags.fullBackShadow`, see [Cheap trees and foliage](#cheap-trees-and-foliage))
   - **Refractive Transmission (`OPBR-7`):** 4-pass `Scene3DTextured.end()` (0 standard opaque → 1 SSR opaque + water → 2 `Material.transmissive` / alpha back-to-front → 3 additive), sampling `opaqueSceneColorMap` via screen-space refracted UVs with roughness-based mip selection, optional RGB dispersion (`transmissionDispersion`), Beer-Lambert volume absorption, and coat/fuzz attenuation
   - **Local Probes & SSR (`OPBR-9`):** Parallax-corrected box/sphere `@component ReflectionProbe` volumes (`MAX_REFLECTION_PROBES = 4`, `Scene3DTextured.setReflectionProbes`) + 16-step adaptive raymarched SSR with 3-step binary refinement (`Scene3DTextured.setSsr`, `MaterialFlags.ssr`) blended into base and coat specular IBL. SSR marches the resolved *opaque* scene (pass 0), so it reflects cars, buildings and terrain drawn as standard opaque materials, but not other `MaterialFlags.ssr` materials (pass 1), transparent/transmissive surfaces, or anything off-screen (use `ReflectionProbe` for those)
   - **glTF 2.0 Mapping (`engine.assets.gltf`):** Parses `doubleSided`, material `name`, and `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_clearcoat`, `KHR_materials_sheen`, `KHR_materials_iridescence`, `KHR_materials_emissive_strength`, `KHR_materials_anisotropy`, `KHR_materials_transmission`, `KHR_materials_volume`, `KHR_materials_dispersion`, and `KHR_materials_diffuse_transmission` (`buildGltfLayerMaps` packs per-pixel layer maps at load time in `loadGltfAsset` and `loadGltfSkinnedCharacter`)
@@ -195,6 +195,7 @@ Variant of Pipeline3D implementing the single-pass **OpenPBR Surface v1.1** shad
 - **Per-instance vec4:** `d.custom` is the instance `custom` vec4 that already rides in the 96-byte `TexInstanceData` (`StaticInstanceDesc.custom`, `drawMatrix(..., custom)`). Stock meaning is `x` emission multiplier, `y` white flash, `z` dissolve, `w` shelter; a surface shader may reinterpret the channels it does not use (zero emission makes `x` free; keep `z` out of reach of dissolve). Use it for a per-instance phase, e.g. `sin(frame.time * speed + d.custom.x)`. `d.instancePos` also differs per instance for a free phase seed.
 - **Painted bend weight:** the mesh UV is exposed (`d.uv`), so a modeler can paint the weight into a UV channel (e.g. `uv.y`). Vertex color is **not** exposed to the vertex hook (it lives in an optional stream the shadow passes do not bind); `surface` reads it as `in.vertexColor`.
 - **Shadow passes:** materials with either hook get a depth-only `vs_shadow` pipeline (cascades, point cube faces, spot maps; dynamic batches and `StaticInstanceBuffer`) built lazily from the same composed module, with the same `surfaceParams`, `frame.time` and instance data, so shadows follow the animation. Materials without a hook keep the stock shadow pipeline. Skinned meshes do not use surface shaders. Shadow group 0 holds the frame uniforms (binding 0) and the light matrix (binding 20, dynamic offset); group 1 is the material bind group.
+- **Batched shadow casters:** when a snippet's vertex hook reads only `surfaceParams`, `frame.time`, instance data and the vertex (no material textures or other material fields), static GPU-culled casters of every material with that shader share one draw per shadow view: the per-material `surfaceParams` are read from the shared parameter buffer by instance (`Scene3DTextured.batchShadowCasters`, on by default). See [Cheap trees and foliage](#cheap-trees-and-foliage).
 - **Cost:** the per-instance vec4 needs no extra memory (it is part of the existing stride). A displaced caster re-reads the 16-byte `custom` attribute once per instance per shadow view (e.g. 4 cascades + local faces) and binds a second pipeline/bind group when switching between displaced and stock casters; there is no extra buffer or upload. Displacement ALU runs once per vertex per shadow view in addition to the main pass.
 
 ```wgsl
@@ -326,7 +327,7 @@ struct SpriteUniforms { viewProj: mat4x4<f32> };
 
 `engine/graphics/texture.d` encapsulates GPU RGBA8 texture creation, configurable samplers, and uncompressed TGA loading. It also provides procedural helpers (`checker`, `solid`) for testing.
 
-`engine/graphics/material.d` creates a `@group(1)` bind group with the 240-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, Transmission/Volume/Dispersion, Subsurface/Thin-Walled Translucency, `flags`, surface options) + sampler + albedo, optional standard maps (`2..6`), surface params (`7`), and optional `MaterialLayerMaps` (`8..12`). Missing maps use default 1×1 textures (`MaterialDefaults`).
+`engine/graphics/material.d` creates a `@group(1)` bind group with the 240-byte OpenPBR Surface v1.1 `MaterialParams` UBO (Base, Specular/IOR/Anisotropy, Coat, Fuzz/Sheen, Thin-Film Iridescence, Emission, Geometry Opacity, Transmission/Volume/Dispersion, Subsurface/Thin-Walled Translucency, `flags`, surface options) + sampler + albedo, optional standard maps (`2..6`), surface params (`7`, a 64-byte slot of a buffer shared by up to 256 materials, uploaded once per frame), and optional `MaterialLayerMaps` (`8..12`). Missing maps use default 1×1 textures (`MaterialDefaults`).
 
 ### Supported Image Formats
 
@@ -388,6 +389,8 @@ Dynamic draws are grouped into one batch per `(TexMesh*, Material*, lod)` key (s
 
 `uploadLodMesh(gpu, vertices, indices, shadowIndices, tangents, LodSettings)` (`engine.assets.gltf_optimize`) runs `buildLodChain`, concatenates every level into one index buffer and records each level's `firstIndex`, count and relative error with `TexMesh.setLodChain`. `loadGltfAsset` calls it when `GltfLoadOptions.generateLods` is set. With a chain, shadows use the LOD index ranges instead of the welded shadow index buffer (the vertex buffer is reordered by the simplifier).
 
+For objects made of several meshes (a tree's trunk, leaves and flowers), use the whole-object LOD below instead: every part then changes level at the same distance.
+
 **Limitation:** `simplify` (topology-preserving) cannot reduce meshes made of independent closed boxes with duplicated vertices per face (it collapses edges, and every face edge is a border). Only `simplifySloppy` (`LodSettings.sloppyFallback = true`) reduces those, and it can shrink thin planes, so validate each level against the bounding box of the original (or weld vertices before building the chain).
 
 ### Retained static instancing (`engine.scene.static_instances`)
@@ -433,6 +436,64 @@ Measured (RX 6600, 1080p, LDC release, 40,000 instances, 3 cascades, two runs):
 | 4 materials | GPU | 9 + 27 | 0.35 to 0.40 ms | 0.02 ms | 0.22 ms | 0.09 ms | 0.88 ms |
 
 The gain follows the number of draws the CPU path issues. With few materials it is small.
+
+### Cheap trees and foliage
+
+Five engine changes make vegetation cheap without touching game code. The first four are on by default and each has an opt-out. Whole-object LOD needs the game to build its meshes with it.
+
+| Change | Default | Opt-out | What it saves |
+|:---|:---|:---|:---|
+| Shared surface parameters | always | none | One queue write per frame for every material's `surfaceParams`, instead of one per `updateSurfaceParams` call |
+| Batched displaced shadow casters | on | `Scene3DTextured.batchShadowCasters = false` | One shadow draw per (surface shader, cascade) instead of one per material |
+| Closed meshes draw front faces only | on | `Material.drawClosedBackFaces = true` | The hidden back faces of double-sided closed meshes (shading overdraw) |
+| One shadow tap for thin walls | on | `MaterialFlags.fullBackShadow` | The second 3×3 PCF lookup and the shadow-map thickness read of thin-walled subsurface |
+| Whole-object LOD | opt-in | n/a | Triangles of far objects, all parts switching together |
+
+**Shared surface parameters** (`engine.graphics.surface_params`). Each material owns a 256-byte slot of a 64 KB chunk buffer. `Material.updateSurfaceParams` only writes a CPU mirror; `Renderer.endFrame` uploads the dirty range of each chunk in one write (`flushSurfaceParams`). The color pass binds the slot as before (binding 7, at the slot offset).
+
+**Batched displaced shadow casters.** A surface shader whose `displace` / `displaceEx` hook reads only `surfaceParams`, `frame.time`, the instance data and the vertex gets a second shadow module (`vs_shadow_table`). That module reads `surfaceParams` from the chunk buffer as a storage array, indexed by a per-instance slot filled at `StaticInstanceBuffer.build`. Consecutive GPU-culled static casters with the same surface shader, chunk, mask state and culling then draw in one multi-draw per shadow view. Hooks that read material textures or other material fields keep one draw per material (`surfaceDisplaceBatchable` decides from the WGSL text). Only static GPU-culled buffers batch. Dynamic draws and the CPU path keep one draw per material.
+
+**Closed meshes draw front faces only.** At upload, `TexMesh.closed` tells whether the mesh is closed and faces outward: vertices closer than a millionth of the bounds diagonal are welded (UV and normal seams split vertices), every directed edge must have a reverse twin, and the signed volume must be positive (`engine.graphics.closed_mesh`, meshes above 3 M indices count as open). The back faces of a closed mesh only show from inside, so a double-sided material culls them on that mesh, in color and shadow passes, on the static (CPU and GPU culled) and dynamic paths (`drawsBackFaces(material, meshClosed)`). Open meshes (leaf cards, planes) keep both faces. Set `Material.drawClosedBackFaces` when the camera can enter the mesh. Skinned meshes are not tested and keep the material state. `TexMesh.updateVertices` does not update `closed`.
+
+**One shadow tap for thin walls.** Thin-walled subsurface (`MaterialFlags.thinWalled`) lit from behind used `sampleDirShadowBackAndThickness`: a second 3×3 PCF (two when blending cascades) and a shadow-map thickness read per pixel. A thin wall has no depth to measure, so it now takes one hardware-filtered tap (2×2) just behind the surface along the light (`sampleDirShadowBackThin`) and keeps `transmissionThickness`. `MaterialFlags.fullBackShadow` restores the full lookup. Solid subsurface is unchanged.
+
+**Whole-object LOD** (`engine.graphics.object_lod`, `StaticInstanceDesc.objectId`). A tree drawn as trunk + leaves + flowers is three meshes; with separate chains each part changes level at its own distance, and the parts can disagree. `buildObjectLod(partVertices, partIndices, settings, dropFromLevel, partColors)` simplifies every part to the same number of levels and gives each level one error in object units (the largest of the parts). `uploadObjectLodPart(gpu, lod, part)` uploads a part with that chain. Parts of one instance share a nonzero `StaticInstanceDesc.objectId`: they are culled and pick their level from the sphere around the whole object, so they appear, vanish and change level together (GPU and CPU paths; `updateInstance` keeps that sphere).
+
+```d
+import engine.graphics.object_lod;
+
+ObjectLodSettings ls;                     // levels 4, ratio 0.4, maxError 0.25, sloppy fallback
+auto lod = buildObjectLod([trunkVerts, leafVerts], [trunkIdx, leafIdx], ls);
+auto trunk = uploadObjectLodPart(gpu, lod, 0);
+auto leaves = uploadObjectLodPart(gpu, lod, 1);
+foreach (t, ref tree; trees) {            // one id per tree, same id on every part
+    descs ~= StaticInstanceDesc(0, barkMat, tree.model);
+    descs[$ - 1].objectId = cast(uint) t + 1;
+    descs ~= StaticInstanceDesc(1, leafMat, tree.model);
+    descs[$ - 1].objectId = cast(uint) t + 1;
+}
+```
+
+- **Foliage defaults:** no attribute weights, `simplifySloppy` when the regular simplifier stalls (it may open holes within the level's error), ratio 0.4 per level, `minTriangles` 8 per part.
+- **Dropping parts:** `dropFromLevel[p]` empties part `p` from that level on (flowers, fruit). An empty level draws nothing.
+- **Merged far level:** `ObjectLodSettings.mergeFarLevel` adds a last part that holds every part's coarsest triangles with `partColors[p]` as vertex color, empty at the other levels, while the other parts are empty at the last level. Draw it with one material that multiplies the vertex color (white base color) to replace several draws per object at a distance.
+- **Errors** are in object units with mesh scale 1; the instance scale applies as usual. Keep `lodBias` at 1 unless the far levels look too coarse.
+
+Verification: `dub run --config=render-check` with `--check=shadowbatch` (batched and per-material shadows identical, fewer draws; a control with equal parameters differs), `--check=backfaces` (same image from outside, nothing drawn from inside a closed mesh unless the opt-out is set, open meshes keep both faces), `--check=thinwall` (one tap within 8% of the full lookup, an occluder still darkens the back light), `--check=objectlod` (each level painted its own color: trunk and crown agree for every tree on the GPU and CPU paths, and disagree for some tree without the id). Unit tests cover the closed-mesh test, the parameter pool, the batchable test, object spheres and the LOD chains.
+
+Measured in Viatura VI (RX 6600, 1080p, LDC release, GPU culling, 52,000 plants with 66 wind materials, mean of 3 runs of 10 s). Each "off" row turns one change off on the branch:
+
+| Run | Frame | `gpu.frame` | `gpu.scene.opaque.static` | `gpu.staticCull` | `renderer.submit` |
+|:---|:---|:---|:---|:---|:---|
+| Before (master 86443d1) | 9.24 | 5.42 | 2.16 | 0.31 | 2.54 |
+| All changes | 7.71 | 4.25 | 1.13 | 0.20 | 2.19 |
+| All + whole-object LOD | 7.68 | 4.24 | 1.09 | 0.21 | 2.22 |
+| Back faces of closed meshes kept | 8.52 | 5.17 | 2.03 | 0.20 | 2.19 |
+| Full thin-wall shadow lookup | 7.77 | 4.33 | 1.20 | 0.20 | 2.16 |
+| Shadow casters not batched | 7.92 | 4.26 | 1.13 | 0.20 | 2.44 |
+| No plants at all | 7.27 | 3.37 | 0.32 | 0.14 | 1.97 |
+
+The plants went from about 2.05 to 0.88 ms of GPU and from 2.0 to 0.4 ms of frame. Culling closed back faces gives most of the GPU gain and batching most of the CPU gain. The game's trees are already low-poly (570 to 990 triangles), so whole-object LOD saves little there; it pays on denser meshes. With all changes, 0.08% of the pixels of a game frame differ from master by more than 8 of 255, none by more than 32; with whole-object LOD, 0.14%.
 
 In an external city game (153,543 building instances plus 51,719 tree instances, 1080p, three interleaved runs): frame 7.13 to 7.41 ms → 6.76 to 6.85 ms, GPU frame 4.99 to 5.10 → 5.12 to 5.14 ms, `gpu.staticCull` 0.30 ms (0.81 ms before large groups were split), `gpu.scene.opaque.static` 2.32 to 2.39 → 2.16 to 2.18 ms. The gain is on the CPU.
 

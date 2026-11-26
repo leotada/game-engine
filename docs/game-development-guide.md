@@ -198,6 +198,13 @@ auto rocks = StaticInstanceBuffer.build(app.gpu, [&rock.subMeshes[0]], [rock.mat
 // Many groups or tens of thousands of props: StaticBuildOptions.gpuCull culls and draws on the GPU
 // (see graphics.md, "GPU culling and indirect draws").
 
+// Multi-part objects (trees: trunk + crown + flowers): one LOD chain for the whole object and one
+// objectId per instance on every part, so the parts cull and change level together
+// (see graphics.md, "Cheap trees and foliage").
+auto lod = buildObjectLod([trunkVerts, leafVerts], [trunkIdx, leafIdx]);  // engine.graphics.object_lod
+auto trunk = uploadObjectLodPart(app.gpu, lod, 0), crown = uploadObjectLodPart(app.gpu, lod, 1);
+// desc.objectId = treeIndex + 1;  // same id on the trunk and crown descs of one tree
+
 // Per-instance state is POD: hide parts, swap materials, detach a door.
 ModelInstance inst;
 inst.setMaterialOverride(0, pool.add(bluePaint));
@@ -212,6 +219,12 @@ scene.end(frame);
 auto st = scene.stats();      // draw calls, visible instances, LOD histogram
 auto bs = scene.batchStats(); // batches used this frame, peak, capacity, growths
 ```
+
+Foliage is cheap by default: double-sided materials skip the back faces of closed meshes (`Material.drawClosedBackFaces`
+keeps them), thin-walled subsurface takes one shadow tap for its back side (`MaterialFlags.fullBackShadow` restores the
+full lookup), and wind surface shaders whose vertex hook reads only `surfaceParams` draw their static GPU-culled shadows
+in one batch per shader (`scene.batchShadowCasters`). Details and game numbers:
+[graphics.md](graphics.md#cheap-trees-and-foliage).
 
 - **Batch budget:** `Scene3DTextured.create(gpu, maxBatches)` sets only the initial size of the `(mesh, material, lod)` batch table. The table doubles when a frame needs more batches, so draws are not dropped. Use `batchStats().peak` in `--perf` output or a headless budget check, and raise `maxBatches` when `growths > 0`. Details: [graphics.md › Batch table](graphics.md#batch-table).
 

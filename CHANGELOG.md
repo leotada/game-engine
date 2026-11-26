@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Vegetation cost (`docs/graphics.md`, "Cheap trees and foliage")
+
+- **Closed meshes draw front faces only** (default on): `TexMesh.closed` is tested at upload, and double-sided
+  materials cull back faces on closed meshes in color and shadow passes. Opt-out `Material.drawClosedBackFaces`.
+- **One shadow tap for thin walls** (default on): thin-walled subsurface no longer runs a second 3×3 PCF and a
+  shadow-map thickness read. Opt-out `MaterialFlags.fullBackShadow` (bit 24).
+- **Batched displaced shadow casters** (default on): static GPU-culled casters with the same surface shader draw in one
+  multi-draw per shadow view when the vertex hook reads only `surfaceParams`. Opt-out `Scene3DTextured.batchShadowCasters`.
+- **Shared surface parameters**: every material's `surfaceParams` live in shared chunk buffers uploaded once per frame
+  (`engine.graphics.surface_params`); `updateSurfaceParams` no longer issues its own queue write.
+- **Whole-object LOD** (opt-in): `buildObjectLod` / `uploadObjectLodPart` (`engine.graphics.object_lod`) give every part
+  of an object one LOD chain with shared errors, part dropping and an optional merged vertex-colored far level;
+  `StaticInstanceDesc.objectId` culls and picks the level of all parts from the whole object's sphere.
+- **Faster GPU culling**: the per-group LOD sum is a workgroup scan, groups are split into 64-block parts instead of 16.
+  `gpu.staticCull` in Viatura VI: 0.31 to 0.20 ms.
+- Viatura VI at 1080p: plants from 2.05 to 0.88 ms of GPU, frame from 9.24 to 7.71 ms.
+- `render-check` gains `shadowbatch`, `backfaces`, `thinwall` and `objectlod`.
+
 ### Rendering features (opt-in, `docs/plan-viatura-rendering.md`)
 
 - **Foundation**: bindings for indirect / multi-draw-indirect draws, indirect dispatch, BC formats and WGSL override

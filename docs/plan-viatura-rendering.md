@@ -85,6 +85,14 @@ same cost (four interleaved runs at 1080p: 7.07 to 7.41 against 7.17 to 7.36 ms;
 | E13 | b63b0e6, 34fe46e, 7f28ec2 |
 | E14 | 275eb20 on `feat/hiz`, unmerged; numbers in ee4829c |
 
+## Follow-up: tree cost
+
+Requested after E14: make vegetation cost as little as possible for every engine user. Five changes on
+`feat/tree-cost` (d8b4931 surface parameter pool, 90bd053 batched displaced shadow casters, 52665da closed-mesh
+back faces, 10b5d13 thin-wall shadow tap, fc59b1e + f3693ef whole-object LOD, b6b1fe3 culling scan). The first four
+are on by default with opt-outs; whole-object LOD needs the game to build its trees with it. Impostors are deferred
+until requested. Game numbers and the API: `docs/graphics.md`, "Cheap trees and foliage".
+
 ## Deviations and open items
 
 - **E13:** the optional expansion in shadow passes is not implemented.
