@@ -88,7 +88,10 @@ same cost (four interleaved runs at 1080p: 7.07 to 7.41 against 7.17 to 7.36 ms;
 ## Deviations and open items
 
 - **E13:** the optional expansion in shadow passes is not implemented.
-- **E14:** built without history instead of two-phase, measured, not merged. Terrain was not an occluder.
+- **E14:** built without history instead of two-phase, measured, not merged. Terrain was not an occluder. A later static
+  analysis found defects in the branch (sphere-cube bounds, occluder selection before the frustum test, strict default
+  `occluderPixels`) and ruled out the early-depth explanation first given. The ceiling in that game is small anyway
+  (`docs/graphics.md`).
 - **E5:** specular antialiasing is checked over five light angles, because one angle was unstable.
 - **E11:** point and spot shadows stay on the CPU path; visible instance counts are not read back.
 - **Not verified:** external KTX2 validator, a complete export with `.ktx2`, game timings of E7, E9 (lit, flipbook), E10 and E13.

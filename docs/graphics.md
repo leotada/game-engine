@@ -429,14 +429,28 @@ A history-free Hi-Z test was built on top of `gpuCull` (occluders depth-only, ma
 
 | Scene (1080p) | Occluded / tested | `gpu.scene.opaque.static` | Occlusion passes | `renderer.submit` | GPU frame |
 |:---|:---|:---|:---|:---|:---|
-| City game, patrol (3 runs) | about 15,000 / 30,000 (sampled at 900p) | 2.17 → 2.16 ms | 0.34 ms | 2.22 → 2.45 ms | 5.12 → 5.39 ms |
+| City game, patrol (3 runs, `occluderPixels` 24) | about 15,000 / 30,000 (sampled at 900p) | 2.17 → 2.16 ms | 0.34 ms | 2.22 → 2.45 ms | 5.12 → 5.39 ms |
 | Test street | 16,146 / 19,889 | 1.31 → 1.35 ms | 0.11 ms | 0.35 → 0.47 ms | 1.56 → 1.68 ms |
 | Test crossing | 7,231 / 8,636 | 1.57 → 1.12 ms | 0.11 ms | 0.33 → 0.43 ms | 1.81 → 1.45 ms |
 | Test roof (nearly everything hidden) | 17,738 / 22,062 | 0.76 → 0.90 ms | 0.11 ms | 0.33 → 0.45 ms | 0.98 → 1.20 ms |
 
-Hardware depth testing already rejects the hidden pixels, and the remaining vertex cost is small. A likely reason for the slower opaque pass is that removing hidden instances also removes the depth they wrote early, so more of what is behind them gets shaded (not confirmed with a capture). Terrain was not registered as an occluder in these runs, and scenes where hidden instances are vertex heavy were not measured.
+The game runs used `occluderPixels` 24. The default of 96 hides about 13% of the tested instances there, against 50% at 24 px, for almost the same occluder cost. At 900p `gpu.scene.opaque.static` fell by about 0.10 ms, and the GPU frame still rose by about 0.10 ms.
 
-The code is kept, unmerged, on the local branch `feat/hiz` (275eb20). It differs from the requested two-phase design: without history nothing can go stale on camera cuts. One control of its `render-check` (translucent materials taken as occluders must change the image) misses its own threshold: 35 px, more than 100 required.
+Why the gain is small (static analysis, after the runs):
+
+- **Little to remove.** Hardware depth testing already rejected the hidden pixels. A CPU model of the test scenes reproduces the occluded counts of the GPU (three exact, the others within 8). In it, the shaded pixels are the same on and off, while the triangles drop about five times (street 2.05 M → 0.39 M). The hidden parts are small: house kit parts have a median of 12 triangles (mean 28). About 15,000 hidden parts in the game are roughly 0.4 M triangles, worth an estimated 0.1 ms at best.
+- **Not explained.** Why the opaque pass gets slower in the street and roof scenes, with the same pixels and fewer triangles. An earlier version of this section blamed lost early depth. The model rules that out.
+- **CPU cost.** `renderer.submit` rose 0.23 ms in the game. The cause was not identified.
+
+Known defects of the branch:
+
+- Instances are tested with the cube around their bounding sphere, not their box. For the house kit that is 59 times the volume (median), so hidden parts behind a façade often test as visible.
+- Occluder selection reads every building instance (153,543, about 15 MB) before the frustum test. This is the likely reason `gpu.occlusion.occluderCull` costs 0.21 ms, against 0.09 ms for the instance test.
+- The default `occluderPixels` of 96 is too strict for that game.
+- The occluder pass and the instance test each run a full cull chain. The occluder depth target uses the shadow pipeline and depth bias, so the main pass cannot reuse it.
+- Terrain is never an occluder, and trees never are either (their wind shader is excluded).
+
+The code is kept, unmerged, on the local branch `feat/hiz` (275eb20). It differs from the requested two-phase design: without history nothing can go stale on camera cuts. One control of its `render-check` (translucent materials taken as occluders must change the image) misses its own threshold: 35 px, more than 100 required. The "identical image" result therefore comes from a check whose sensitivity is not proven.
 
 ### `SpatialGrid` (`engine.scene.spatial_grid`)
 
