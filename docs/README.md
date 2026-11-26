@@ -49,7 +49,7 @@ Index of documents in `docs/`. Guides describe existing features and architectur
 | [plan-navigation-recast.md](plan-navigation-recast.md) | Delivered (C shim `OW-6`; pure-D deferred) | 3D NavMesh, TileCache dynamic obstacles & Crowd navigation (`engine.nav`) |
 | [plan-ow3-outdoor-rendering.md](plan-ow3-outdoor-rendering.md) | Done | OW-3 implementation plan: CSM, HDR fog, sky/day-night/runtime IBL/wetness, terrain, decals |
 | [plan-open-world-readiness.md](plan-open-world-readiness.md) | Done (`OW-1..OW-8`) | Semi-open-world 9 km² readiness: Box3D physics (**Done**), open-world rendering (**Done**), CSM/terrain/fog/sky/decals (**Done**), spatial/DSP/OGG audio (**Done**), ragdoll/sockets + UI clip/rotate (**Done**), Recast nav (**Done**), chunk streaming & Windows steadygc (**Done**), asset/tunable hot-reload & Blender splines (**Done**) |
-| [plan-viatura-rendering.md](plan-viatura-rendering.md) | Done (Hi-Z occlusion evaluated, not included) | Opt-in rendering features (#14): sRGB, alpha mask, AA, GTAO, volumetric light, GPU culling, BC7/BC5, particles, thin geometry |
+| [plan-viatura-rendering.md](plan-viatura-rendering.md) | Done (Hi-Z occlusion evaluated, not included) | Opt-in rendering features (#14): sRGB, alpha mask, AA, GTAO, volumetric light, GPU culling, BC7/BC5, particles, thin geometry; follow-up on vegetation cost |
 
 ## History / Cancelled
 

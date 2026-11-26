@@ -27,7 +27,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 | 11 | Split-screen local co-op | [plan-split-screen.md](plan-split-screen.md) | Medium | Multi-view renderers (dynamic uniform offsets) + SDL3 gamepads; no blockers for rendering phases |
 | 12 | SDL3_image, SDL3_ttf & Multiplatform Release Export | [plan-sdl3-image-ttf-and-export.md](plan-sdl3-image-ttf-and-export.md) | **Done** | Replaced `stb_image`/`stb_truetype` with `SDL3_image`/`SDL3_ttf` (dynamic dev, static release) and added release exporter for Linux, Windows, macOS, and Web |
 | 13 | Semi-open-world readiness (9 km²) | [plan-open-world-readiness.md](plan-open-world-readiness.md) | **Done (`OW-1..OW-8`)** | 8-phase plan (`OW-1..OW-8`): complete Box3D physics (**Done**), culling/LOD/CSM/terrain/decals/weather (**Done**), 3D/DSP/OGG audio (**Done**), ozz-physics ragdoll + UI circle clip/rotate (**Done**), Recast C-shim nav (**Done**), chunk streaming & Windows `steadygc` (**Done**), asset/tunable hot-reload & Blender splines (`OW-8`, **Done**) |
-| 14 | Opt-in rendering features (sRGB, alpha mask, GTAO, volumetric light, GPU culling, BC7/BC5, ...) | [plan-viatura-rendering.md](plan-viatura-rendering.md) | **Done** | Hi-Z occlusion measured and left out. Open: thin-geometry expansion in shadows, external KTX2 validation, a complete export with `.ktx2` |
+| 14 | Opt-in rendering features (sRGB, alpha mask, GTAO, volumetric light, GPU culling, BC7/BC5, ...) | [plan-viatura-rendering.md](plan-viatura-rendering.md) | **Done** | Follow-up: vegetation cost (closed-mesh back faces, thin-wall shadow tap, batched wind shadows, whole-object LOD). Hi-Z occlusion measured and left out. Open: thin-geometry expansion in shadows, external KTX2 validation, a complete export with `.ktx2` |
 
 ### Ordering Notes
 
@@ -52,7 +52,7 @@ Prioritization by **dependency unblocking**: gameplay → GC hygiene → graphic
 - **Scene:** SceneGraph, camera controllers (orbit/fly/fps), OpenPBR Surface v1.1 materials
 - **Assets:** BMP + glTF mesh + OpenPBR (`loadGltfPbr` with `KHR_materials_*` extensions)
 - **OpenPBR + IBL:** Single-pass OpenPBR Surface v1.1 (144-byte `MaterialParams`, 3-channel GGX + Charlie BRDF LUT, procedural IBL, `dub run --config=pbr` 4×5 showcase)
-- **Opt-in rendering features:** sRGB textures, alpha mask, quality FXAA / SMAA / CMAA2 / sharpening, specular AA, GTAO, volumetric light, auto exposure + 3D LUT, vertex color, soft / lit / flipbook particles, BC7 / BC5 textures, thin geometry, GPU culling, post pass inputs — see [graphics.md](graphics.md)
+- **Opt-in rendering features:** sRGB textures, alpha mask, quality FXAA / SMAA / CMAA2 / sharpening, specular AA, GTAO, volumetric light, auto exposure + 3D LUT, vertex color, soft / lit / flipbook particles, BC7 / BC5 textures, thin geometry, GPU culling, post pass inputs, cheap vegetation (closed-mesh back-face culling, one-tap thin-wall shadows, batched displaced shadow casters, whole-object LOD) — see [graphics.md](graphics.md)
 - **Post-Processing:** HDR scene RT (`rgba16float`), bloom (Karis average downsample + tent upsample), ACES tone mapping, FXAA; `app.resolvePost(frame)` before UI
 - **Audio:** WAV playback via SDL3 audio streams
 - **DevTools:** 3D gizmos + FPS/label debug overlay
