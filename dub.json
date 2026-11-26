@@ -556,6 +556,21 @@
             "versions": ["MeshoptCodecBench"]
         },
         {
+            "name": "closed-mesh-bench",
+            "targetType": "executable",
+            "targetName": "closed-mesh-bench",
+            "mainSourceFile": "tools/benchmarks/closed_mesh_bench.d",
+            "sourcePaths": [],
+            "sourceFiles": [
+                "tools/benchmarks/closed_mesh_bench.d",
+                "source/engine/graphics/closed_mesh.d",
+                "source/engine/graphics/types.d"
+            ],
+            "importPaths": ["source"],
+            "libs": [],
+            "versions": ["ClosedMeshBench"]
+        },
+        {
             "name": "meshopt-fuzz",
             "targetType": "executable",
             "targetName": "meshopt-fuzz",
