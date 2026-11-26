@@ -453,7 +453,7 @@ Five engine changes make vegetation cheap without touching game code. The first 
 
 **Batched displaced shadow casters.** A surface shader whose `displace` / `displaceEx` hook reads only `surfaceParams`, `frame.time`, the instance data and the vertex gets a second shadow module (`vs_shadow_table`). That module reads `surfaceParams` from the chunk buffer as a storage array, indexed by a per-instance slot filled at `StaticInstanceBuffer.build`. Consecutive GPU-culled static casters with the same surface shader, chunk, mask state and culling then draw in one multi-draw per shadow view. Hooks that read material textures or other material fields keep one draw per material (`surfaceDisplaceBatchable` decides from the WGSL text). Only static GPU-culled buffers batch. Dynamic draws and the CPU path keep one draw per material.
 
-**Closed meshes draw front faces only.** At upload, `TexMesh.closed` tells whether the mesh is closed and faces outward: vertices closer than a millionth of the bounds diagonal are welded (UV and normal seams split vertices), every directed edge must have a reverse twin, and the signed volume must be positive (`isClosedMesh(verts, indices)` in `engine.graphics.closed_mesh`, usable on CPU data; meshes above 3 M indices count as open). The back faces of a closed mesh only show from inside, so a double-sided material culls them on that mesh, in color and shadow passes, on the static (CPU and GPU culled) and dynamic paths (`drawsBackFaces(material, meshClosed)`). Open meshes (leaf cards, planes) keep both faces. Set `Material.drawClosedBackFaces` when the camera can enter the mesh. Skinned meshes are not tested and keep the material state. `TexMesh.updateVertices` does not update `closed`.
+**Closed meshes draw front faces only.** At upload, `TexMesh.closed` tells whether the mesh is closed and faces outward: vertices closer than a millionth of the bounds diagonal are welded (UV and normal seams split vertices), every directed edge must have a reverse twin, and the signed volume must be positive (`isClosedMesh(verts, indices)` in `engine.graphics.closed_mesh`, usable on CPU data; meshes above 3 M indices count as open). The test is linear, `nothrow @nogc` and allocates nothing on the GC heap: it welds through a hash on one packed cell key and balances edges in per-vertex buckets built by a counting sort, in one per-thread scratch block (kept up to 8 MB). It still costs about 1.5 ms for 65,000 triangles, so a caller that knows the answer passes it: `TexMesh.fromData(gpu, verts, indices, shadowIndices, Closedness.closed)` (or `.open`; the default `.detect` runs the test). The built-in cube, quad and sphere declare theirs, LOD chains (`uploadLodMesh`, `uploadObjectLodPart`) test only their full level, and `TexMesh.derive` inherits the source's value. The back faces of a closed mesh only show from inside, so a double-sided material culls them on that mesh, in color and shadow passes, on the static (CPU and GPU culled) and dynamic paths (`drawsBackFaces(material, meshClosed)`). Open meshes (leaf cards, planes) keep both faces. Set `Material.drawClosedBackFaces` when the camera can enter the mesh. Skinned meshes are not tested and keep the material state. `TexMesh.updateVertices` does not update `closed`.
 
 **One shadow tap for thin walls.** Thin-walled subsurface (`MaterialFlags.thinWalled`) lit from behind used `sampleDirShadowBackAndThickness`: a second 3×3 PCF (two when blending cascades) and a shadow-map thickness read per pixel. A thin wall has no depth to measure, so it now takes one hardware-filtered tap (2×2) just behind the surface along the light (`sampleDirShadowBackThin`) and keeps `transmissionThickness`. `MaterialFlags.fullBackShadow` restores the full lookup. Solid subsurface is unchanged.
 
@@ -479,7 +479,7 @@ foreach (t, ref tree; trees) {            // one id per tree, same id on every p
 - **Merged far level:** `ObjectLodSettings.mergeFarLevel` adds a last part that holds every part's coarsest triangles with `partColors[p]` as vertex color, empty at the other levels, while the other parts are empty at the last level. Draw it with one material that multiplies the vertex color (white base color) to replace several draws per object at a distance.
 - **Errors** are in object units with mesh scale 1; the instance scale applies as usual. Keep `lodBias` at 1 unless the far levels look too coarse.
 
-Verification: `dub run --config=render-check` with `--check=shadowbatch` (batched and per-material shadows identical, fewer draws; a control with equal parameters differs), `--check=backfaces` (same image from outside, nothing drawn from inside a closed mesh unless the opt-out is set, open meshes keep both faces), `--check=thinwall` (one tap within 8% of the full lookup, an occluder still darkens the back light), `--check=objectlod` (each level painted its own color: trunk and crown agree for every tree on the GPU and CPU paths, and disagree for some tree without the id). Unit tests cover the closed-mesh test, the parameter pool, the batchable test, object spheres and the LOD chains.
+Verification: `dub run --config=render-check` with `--check=shadowbatch` (batched and per-material shadows identical, fewer draws; a control with equal parameters differs), `--check=backfaces` (same image from outside, nothing drawn from inside a closed mesh unless the opt-out is set, open meshes keep both faces), `--check=thinwall` (one tap within 8% of the full lookup, an occluder still darkens the back light), `--check=objectlod` (each level painted its own color: trunk and crown agree for every tree on the GPU and CPU paths, and disagree for some tree without the id). Unit tests cover the closed-mesh test (including a differential test against the sort-based version it replaced, `isClosedMeshReference`), the parameter pool, the batchable test, object spheres and the LOD chains.
 
 Measured in Viatura VI (RX 6600, 1080p, LDC release, GPU culling, 52,000 plants with 66 wind materials, mean of 3 runs of 10 s). Each "off" row turns one change off on the branch:
 
@@ -527,6 +527,35 @@ Known defects of the branch:
 - Terrain is never an occluder, and trees never are either (their wind shader is excluded).
 
 The code is kept, unmerged, on the local branch `feat/hiz` (275eb20). It differs from the requested two-phase design: without history nothing can go stale on camera cuts. One control of its `render-check` (translucent materials taken as occluders must change the image) misses its own threshold: 35 px, more than 100 required. The "identical image" result therefore comes from a check whose sensitivity is not proven.
+
+### Deformable meshes (`TexMesh.derive`)
+
+Crash damage, destruction and digging change a mesh's vertices but not its triangles. `TexMesh.derive(gpu, source, verts)` makes a new mesh with the topology of `source` and its own vertex buffer. It is `nothrow @nogc` and safe to call inside the frame.
+
+```d
+auto body = TexMesh.fromData(gpu, restVerts, indices);    // shared rest mesh
+// First hit on one car: give it its own deformable copy.
+auto dented = TexMesh.derive(gpu, body, damagedVerts);   // uploads only the vertices
+// Later hits: update in place.
+dented.updateVertices(gpu, damagedVerts);
+```
+
+- **What crosses to the GPU:** only `verts`. The index, shadow index and color buffers are shared by reference count (`retainBuffer` / `releaseBuffer` in `engine.gpu.buffer`): no copy, no queue submit, no extra VRAM.
+- **Inherited:** `closed`, the LOD chain and errors, the index format and the vertex stride. `localBounds` and `localSphere` are recomputed from `verts`, because a dent can move the surface outside the old box. If the new vertices open the surface, set `closed = false` on the result.
+- **Ownership:** each mesh still calls its own `destroy()`, in any order. Meshes that share buffers release them instead of destroying them; the memory is freed with the last one. Copies of copies work the same way.
+- **Colors:** `setVertexColors` on a mesh whose colors are shared gives that mesh its own color buffer, so the other mesh keeps its colors. Index buffers never change after upload, so sharing them is always safe.
+- **Limits:** `verts` must have the source's vertex type and count (asserted). `updateVertices` does not update `closed` or the bounds.
+
+Why sharing and not a GPU copy: copying the buffers costs one queue submit per call. With 15 dense meshes derived before a frame with shadows, that frame's `renderer.submit.finish` took about 2 ms instead of 0.15 ms (every time after earlier mesh churn, 1 run in 8 from a cold start). A deferred, batched copy would also fail validation if the source were destroyed before the flush.
+
+Verification: `dub run --config=render-check -- --check=derive`. A derived mesh draws pixel-identical to a fresh upload of the same vertices. Recoloring the copy leaves the source's colors. A copy of a copy still draws after its source and the copy it came from are destroyed. `dub run --config=closed-mesh-bench --compiler=ldc2 --build=release` times `isClosedMesh` against the sort-based reference:
+
+| Triangles | Sort-based (ms) | Linear (ms) |
+|---:|---:|---:|
+| 4,096 | 0.77 | 0.09 |
+| 16,384 | 3.13 | 0.36 |
+| 65,536 | 13.30 | 1.55 |
+| 262,144 | 57.72 | 6.96 |
 
 ### `SpatialGrid` (`engine.scene.spatial_grid`)
 

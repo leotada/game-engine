@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Mesh uploads (`docs/graphics.md`, "Deformable meshes")
+
+- **Linear closed-mesh test**: `isClosedMesh` uses a hash and per-vertex buckets instead of sorting, and is
+  `nothrow @nogc` with one reused scratch block per thread. It gives the same answers and is 8 to 9 times faster
+  (65,536 triangles: 13.3 to 1.55 ms). `closed-mesh-bench` compares it with the old version.
+- **Known closedness**: `TexMesh.fromData(..., shadowIndices, Closedness.closed / .open)` skips the test (default
+  `Closedness.detect`). Built-in primitives declare theirs. LOD chains test only their full level: object LOD parts
+  used to run the test twice, glTF LOD chains on every level at once.
+- **`TexMesh.derive(gpu, source, verts)`**: a deformable copy that uploads only its vertices and shares the index,
+  shadow index and color buffers by reference count (`retainBuffer` / `releaseBuffer`). `nothrow @nogc`. Meshes can
+  be destroyed in any order, and `setVertexColors` on a shared mesh gives it its own buffer. Viatura VI's first crash
+  of each car used to cost 19.2 ms in `deform.upload`, 17.7 ms of it in the closed-mesh test.
+- `render-check` gains `derive`.
+
 ### Vegetation cost (`docs/graphics.md`, "Cheap trees and foliage")
 
 - **Closed meshes draw front faces only** (default on): `TexMesh.closed` is tested at upload, and double-sided
