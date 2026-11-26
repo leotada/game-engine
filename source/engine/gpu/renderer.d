@@ -655,6 +655,11 @@ struct Renderer {
 
         if (captureBuf !is null && frame.texture !is null) encodeCapture(frame);
         gpuProfilerResolve(frame.encoder);
+        {
+            // Material surface parameters changed this frame: one queue write per chunk.
+            import engine.graphics.surface_params : flushSurfaceParams;
+            flushSurfaceParams(queue);
+        }
 
         {
             auto z = profileZone!"renderer.submit"();

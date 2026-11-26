@@ -6,6 +6,8 @@ import bindings.wgpu;
 import engine.core.pod : isPod;
 import engine.gpu.buffer : createUniformBuffer, updateBuffer, destroyBuffer;
 import engine.gpu.context : GpuContext;
+import engine.graphics.surface_params : SurfaceSlot, allocSurfaceSlot, freeSurfaceSlot, setSurfaceParams,
+    surfaceChunkBuffer;
 import engine.gpu.pipeline : MATERIAL_BINDING_COUNT, MATERIAL_PARAMS_SIZE, SURFACE_PARAMS_SIZE, RenderState, BlendMode;
 import engine.graphics.texture : Texture, Sampler;
 import engine.core.log;
@@ -206,7 +208,8 @@ package(engine) MaterialDefaults gMaterialDefaults;
 struct Material {
     package(engine) WGPUBindGroup bindGroup;
     package(engine) WGPUBuffer paramsBuf;
-    package(engine) WGPUBuffer surfaceBuf;
+    /// Slot of this material's `surfaceParams` block (`engine.graphics.surface_params`).
+    package(engine) SurfaceSlot surfaceSlot;
     /// Custom surface shader used to draw this material: 0 is the stock PBR
     /// shader, otherwise an id from `Scene3DTextured.createSurfaceShader`.
     uint surfaceShader = 0;
@@ -277,9 +280,8 @@ struct Material {
         m.paramsBuf = createUniformBuffer(gpu.getDevice(), MATERIAL_PARAMS_SIZE);
         updateBuffer(gpu.getQueue(), m.paramsBuf, (&params)[0 .. 1]);
 
-        m.surfaceBuf = createUniformBuffer(gpu.getDevice(), SURFACE_PARAMS_SIZE);
-        immutable float[16] zeroSurface = 0.0f;
-        updateBuffer(gpu.getQueue(), m.surfaceBuf, zeroSurface[]);
+        m.surfaceSlot = allocSurfaceSlot(gpu.getDevice());
+        if (!m.surfaceSlot.valid) fatal("Failed to allocate the surface parameters of a Material");
 
         WGPUBindGroupEntry[MATERIAL_BINDING_COUNT] entries;
         entries[0].binding = 0;
@@ -302,8 +304,8 @@ struct Material {
         entries[6].textureView = em.view;
 
         entries[7].binding = 7;
-        entries[7].buffer  = m.surfaceBuf;
-        entries[7].offset  = 0;
+        entries[7].buffer  = surfaceChunkBuffer(m.surfaceSlot.chunk);
+        entries[7].offset  = m.surfaceSlot.offset;
         entries[7].size    = SURFACE_PARAMS_SIZE;
 
         entries[8].binding  = 8;
@@ -344,18 +346,19 @@ struct Material {
         updateBuffer(gpu.getQueue(), paramsBuf, (&params)[0 .. 1]);
     }
 
-    /// Upload the 4 × vec4 block a custom surface shader reads as
-    /// `surfaceParams.p0 .. p3`.
+    /// Set the 4 × vec4 block a custom surface shader reads as
+    /// `surfaceParams.p0 .. p3`. The values reach the GPU with the next
+    /// `flushSurfaceParams` (done by `Renderer.endFrame` before the frame is
+    /// submitted), in one write shared by every material.
     void updateSurfaceParams(ref GpuContext gpu, in float[16] values) nothrow @nogc @trusted {
-        if (surfaceBuf is null) return;
-        updateBuffer(gpu.getQueue(), surfaceBuf, values[]);
+        if (bindGroup is null) return;
+        setSurfaceParams(surfaceSlot, values);
     }
 
     void destroy() nothrow @nogc @trusted {
         if (bindGroup !is null) { wgpuBindGroupRelease(bindGroup); bindGroup = null; }
         destroyBuffer(paramsBuf);
         paramsBuf = null;
-        destroyBuffer(surfaceBuf);
-        surfaceBuf = null;
+        freeSurfaceSlot(surfaceSlot);
     }
 }
