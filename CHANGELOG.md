@@ -7,6 +7,8 @@
 - **`engine.core.jobs.JobQueue`**: a fixed-capacity queue of `@safe nothrow` jobs run by worker threads.
   `submit!fn(&ctx)` returns a ticket at once (null when full), `isDone` polls, and `finish` waits, frees the
   ticket and returns the run time for `profileSample`. `start(0)` and WebAssembly run jobs inline.
+- `docs/profiling.md` "GPU clocks and CPU spikes": a CPU spike lets the GPU drop its clock, so the next GPU
+  frame is slow in every pass. Measured with Viatura VI's crash deformation on an RX 6600.
 
 ### Mesh uploads (`docs/graphics.md`, "Deformable meshes")
 

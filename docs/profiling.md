@@ -130,3 +130,26 @@ submit, so a large value there means expensive command recording, not GPU work.
 - The zone table holds `MAX_PROFILE_ZONES` (512) names; nesting is limited to `MAX_ZONE_DEPTH` (64).
   Overflows are counted in `profilerOverflow()`.
 - Not available on WebAssembly (no native timestamp features); CPU zones still work.
+- Zones opened on other threads (for example inside `JobQueue` jobs) go to that thread's profiler and
+  are not in the report or the trace. `JobQueue.finish` returns the job's run time: push it with
+  `profileSample!"name"(ms)` from the frame thread.
+
+## GPU clocks and CPU spikes
+
+GPUs lower their clock when they go idle, and need several milliseconds to raise it again. When one
+frame's CPU work is a few milliseconds late, the GPU waits for the submit, drops its clock, and runs the
+**next** frame slowly: every pass gets slower by the same factor, including passes that have nothing to
+do with the spike. When the CPU runs ahead again, it then waits in `renderer.submit` (or acquire) for
+the GPU to catch up, so a second spike appears a few frames later.
+
+Measured on an RX 6600 (Linux, `amdgpu`, vsync off, ~95% GPU load): a 5 ms CPU spike left the GPU at its
+700 MHz floor for ~9 ms of the next frame, which then took 16-20 ms instead of 6.5 ms. The memory clock
+did not change. CPU hiccups with no GPU work of their own did the same.
+
+- The fix is on the CPU side: keep frame CPU time even. Spread large work across frames or run it on a
+  worker (`engine.core.jobs`). New buffers, `writeBuffer` and barriers are not the cause.
+- Uncapped benchmarks (vsync off) are the most sensitive case. For repeatable numbers, pin the clocks
+  while measuring. On AMD/Linux: `echo high | sudo tee /sys/class/drm/card*/device/power_dpm_force_performance_level`
+  (back to `auto` afterwards), or GameMode with `amd_performance_level=high`.
+- To check whether a slow GPU frame is a clock drop, sample `pp_dpm_sclk` (the current clock has a `*`)
+  during the run.
